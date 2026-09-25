@@ -21,6 +21,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
 	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -40,7 +41,8 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 	case strings.HasPrefix(path, "/api/v1/assistant/"):
 		return 20 << 20
 	case strings.HasPrefix(path, "/api/v1/canvas-projects"):
-		return 5 << 20
+		// 传输层硬上限；实际单项目上限由后台 canvas_project_max_kb 在接口内判断。
+		return (settings.CanvasProjectHardMaxMB + 1) << 20
 	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates/") && strings.HasSuffix(path, "/cover"):
 		return promptCoverMaxBytes + (1 << 20)
 	case path == "/api/v1/admin/canvas-workflow-templates/analyze":
@@ -395,6 +397,7 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/commerce/handheld/items/:id/save-asset", s.saveHandheldItemAsset)
 
 	// canvas projects
+	api.GET("/me/canvas-project-quota", s.myCanvasProjectQuota)
 	api.GET("/canvas-projects", s.listCanvasProjects)
 	api.POST("/canvas-projects", s.createCanvasProject)
 	api.GET("/canvas-projects/:id", s.getCanvasProject)

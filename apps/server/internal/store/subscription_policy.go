@@ -8,6 +8,7 @@ import (
 
 type SubscriptionPolicy struct {
 	ConcurrencyBonus     *int     `json:"concurrencyBonus,omitempty"`
+	CanvasProjectBonus   int      `json:"canvasProjectBonus,omitempty"`
 	LockModelPrices      *bool    `json:"lockModelPrices,omitempty"`
 	AllowTopupPriceLock  bool     `json:"allowTopupPriceLock"`
 	TaskConcurrency      int      `json:"taskConcurrency,omitempty"`
@@ -77,6 +78,9 @@ func (p SubscriptionPolicy) Covers(old SubscriptionPolicy) bool {
 func (p *SubscriptionPolicy) Normalize() error {
 	if p.ExtraConcurrency() < 0 || p.ExtraConcurrency() > 1000 {
 		return fmt.Errorf("订阅额外并发须为0-1000的整数")
+	}
+	if p.CanvasProjectBonus < 0 || p.CanvasProjectBonus > MaxCanvasProjectBonus {
+		return fmt.Errorf("订阅额外画布项目数须为0-%d的整数", MaxCanvasProjectBonus)
 	}
 	if p.TaskConcurrency < 0 || p.TaskConcurrency > 1000 || p.AssistantConcurrency < 0 || p.AssistantConcurrency > 100 {
 		return fmt.Errorf("任务并发须为0-1000，助手并发须为0-100；0使用购买时的平台默认值")

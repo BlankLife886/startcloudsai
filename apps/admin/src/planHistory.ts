@@ -16,7 +16,7 @@ const labels: Record<string, string> = {
   'subscription_policy.channels':'使用渠道', 'subscription_policy.featureKeys':'适用场景',
   'subscription_policy.modelIds':'适用模型编号', 'subscription_policy.refundWindowHours':'退款申请时限',
   'subscription_policy.lockModelPrices':'订阅模型价格保护', 'subscription_policy.allowTopupPriceLock':'允许额度包沿用锁价',
-  'subscription_policy.concurrencyBonus':'额外图片并发', 'subscription_policy.taskConcurrency':'历史任务并发',
+  'subscription_policy.concurrencyBonus':'额外图片并发', 'subscription_policy.canvasProjectBonus':'额外画布项目数', 'subscription_policy.taskConcurrency':'历史任务并发',
   'subscription_policy.assistantConcurrency':'历史助手并发', 'subscription_policy.version':'权益规则版本',
 };
 const names: Record<string,string> = { web:'网站',api:'API',topup:'额度包',subscription:'订阅',general:'通用',text_to_image:'文生图',ai_assistant:'AI助手',ui_design:'UI设计',ecommerce_design:'电商创作',illustration_coloring:'插画上色',model_sheet:'角色设定',game_art:'游戏美术',background_remove:'背景移除',infinite_canvas:'无限画布' };
@@ -44,7 +44,7 @@ function display(key: string, value: any): string {
   if (key === 'duration_days') return `${value} 天`;
   if (key.endsWith('.refundWindowHours')) return `${value} 小时`;
   if (key.endsWith('.priceLockMinYuan')) return Number(value) > 0 ? `满 ¥${value}` : '不接受锁价';
-  if (key.endsWith('.concurrencyBonus')) return `+${value}`;
+  if (key.endsWith('.concurrencyBonus') || key.endsWith('.canvasProjectBonus')) return `+${value}`;
   if (Array.isArray(value)) return value.length ? value.map(v => ['subscription_policy.channels','subscription_policy.featureKeys'].includes(key) ? names[v] || String(v) : String(v)).join('、') : key.endsWith('.featureKeys') || key.endsWith('.modelIds') ? '全部' : '无';
   if (value === '') return '未设置';
   return ['kind','subscription_policy.series'].includes(key) ? names[value] || String(value) : String(value);

@@ -6,6 +6,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { createCanvasProjectFromUploadedTemplate, getCanvasWorkflowTemplate, listCanvasWorkflowTemplates } from "@/services/canvas-workflow-template-api";
 import { inspectCanvasWorkflowTemplate, queryCanvasWorkflowTemplates } from "./canvas-workflow-template-agent.ts";
+import { checkCanvasProjectCapacity } from "@/lib/canvas/canvas-project-quota";
 
 // Execute site-level Agent tools in the browser, including canvas lists, prompt search, and asset operations.
 // Image assets share the signed-in user's cloud library; text stays in the local canvas store.
@@ -86,6 +87,8 @@ async function createFromWorkflowTemplate(input: SiteToolInput) {
     const store = useCanvasStore.getState();
     if (!store.hydrated) throw new Error(siteText("canvasLoading"));
     if (!store.ownerUserId) throw new Error(siteText("workflowTemplateAuthRequired"));
+    const blocked = await checkCanvasProjectCapacity();
+    if (blocked) throw new Error(blocked);
     const detail = await getCanvasWorkflowTemplate(templateId);
     const project = createCanvasProjectFromUploadedTemplate(detail);
     const title = String(input.title || "").trim();

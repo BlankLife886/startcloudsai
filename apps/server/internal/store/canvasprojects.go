@@ -25,6 +25,8 @@ type CanvasProjectSummary struct {
 	Revision  int64     `json:"revision"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// SizeBytes 是文档大小（数据库生成列 document_bytes）。
+	SizeBytes int64 `json:"sizeBytes"`
 }
 
 const canvasProjectCols = `id, user_id, title, document, revision, created_at, updated_at`
@@ -63,7 +65,7 @@ func GetUserCanvasProject(ctx context.Context, q Q, userID, id uuid.UUID) (*Canv
 }
 
 func ListUserCanvasProjects(ctx context.Context, q Q, userID uuid.UUID, limit int) ([]*CanvasProjectSummary, error) {
-	rows, err := q.Query(ctx, `SELECT id, title, revision, created_at, updated_at
+	rows, err := q.Query(ctx, `SELECT id, title, revision, created_at, updated_at, document_bytes
 		FROM canvas_projects WHERE user_id = $1 ORDER BY updated_at DESC, id DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err
@@ -72,7 +74,7 @@ func ListUserCanvasProjects(ctx context.Context, q Q, userID uuid.UUID, limit in
 	items := make([]*CanvasProjectSummary, 0)
 	for rows.Next() {
 		var item CanvasProjectSummary
-		if err := rows.Scan(&item.ID, &item.Title, &item.Revision, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Title, &item.Revision, &item.CreatedAt, &item.UpdatedAt, &item.SizeBytes); err != nil {
 			return nil, err
 		}
 		items = append(items, &item)

@@ -53,10 +53,11 @@ func (s *Server) listPlans(c *gin.Context) {
 		methods = append(methods, "wechat")
 	}
 	ok(c, gin.H{
-		"items":           items,
-		"baseConcurrency": baseConcurrency,
-		"paymentEnabled":  client != nil && configErr == nil && len(methods) > 0,
-		"paymentMethods":  methods,
+		"items":              items,
+		"baseConcurrency":    baseConcurrency,
+		"baseCanvasProjects": settings.ResolveCanvasProjectMaxCount(c.Request.Context(), s.St.Pool),
+		"paymentEnabled":     client != nil && configErr == nil && len(methods) > 0,
+		"paymentMethods":     methods,
 	})
 }
 

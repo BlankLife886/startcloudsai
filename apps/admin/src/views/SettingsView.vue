@@ -95,6 +95,8 @@ const form = reactive({
   userMaxConcurrentTasks: 4,
   userMaxConcurrentChats: 4,
   canvasBatchMaxCount: 100,
+  canvasProjectMaxCount: 30,
+  canvasProjectMaxKb: 30720,
   globalMaxConcurrentTasks: 2000,
   globalMaxConcurrentChats: 32,
   globalMaxActiveTasks: 12000,
@@ -143,6 +145,11 @@ const form = reactive({
   lanjingPayWechatEnabled: true,
 });
 
+const canvasProjectMaxKbLabel = computed(() => {
+  const kb = Number(form.canvasProjectMaxKb) || 0;
+  return kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`;
+});
+
 const settingsSignature = () =>
   JSON.stringify({
     userMaxRunningTasks: form.userMaxRunningTasks,
@@ -150,6 +157,8 @@ const settingsSignature = () =>
     userMaxConcurrentTasks: form.userMaxConcurrentTasks,
     userMaxConcurrentChats: form.userMaxConcurrentChats,
     canvasBatchMaxCount: form.canvasBatchMaxCount,
+    canvasProjectMaxCount: form.canvasProjectMaxCount,
+    canvasProjectMaxKb: form.canvasProjectMaxKb,
     globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
     globalMaxConcurrentChats: form.globalMaxConcurrentChats,
     globalMaxActiveTasks: form.globalMaxActiveTasks,
@@ -495,6 +504,8 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 4;
   form.userMaxConcurrentChats = settings.userMaxConcurrentChats ?? 4;
   form.canvasBatchMaxCount = settings.canvasBatchMaxCount ?? 100;
+  form.canvasProjectMaxCount = settings.canvasProjectMaxCount ?? 30;
+  form.canvasProjectMaxKb = settings.canvasProjectMaxKb ?? 30720;
   form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks != null && settings.globalMaxConcurrentTasks > 0
     ? settings.globalMaxConcurrentTasks : settings.effectiveGlobalConcurrency ?? 2000;
   form.globalMaxConcurrentChats = settings.globalMaxConcurrentChats ?? 32;
@@ -647,6 +658,8 @@ async function commitSave() {
           userMaxConcurrentTasks: form.userMaxConcurrentTasks,
           userMaxConcurrentChats: form.userMaxConcurrentChats,
           canvasBatchMaxCount: form.canvasBatchMaxCount,
+          canvasProjectMaxCount: form.canvasProjectMaxCount,
+          canvasProjectMaxKb: form.canvasProjectMaxKb,
           globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
           globalMaxConcurrentChats: form.globalMaxConcurrentChats,
           globalMaxActiveTasks: form.globalMaxActiveTasks,
@@ -1367,6 +1380,25 @@ onMounted(() => {
               <small>无限画布「批量配置」一次最多生成的节点数，每个节点一个任务；仍受上面的图片并发约束</small>
             </span>
             <el-input-number v-model="form.canvasBatchMaxCount" :min="1" :max="100" :precision="0" />
+          </label>
+        </div>
+      </div>
+      <div class="settings-card">
+        <header class="card-head"><strong>画布项目</strong><small>控制每个用户能保存的无限画布项目数与单个项目大小</small></header>
+        <div class="field-grid is-stack">
+          <label class="field-row">
+            <span>
+              <strong>每用户画布项目数（基础，个）</strong>
+              <small>订阅可在套餐里追加；达到上限后只拦新建，已有项目不受影响</small>
+            </span>
+            <el-input-number v-model="form.canvasProjectMaxCount" :min="1" :max="10000" :precision="0" />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>单个画布项目大小上限（KB）</strong>
+              <small>新建和保存时校验，最大 102400 KB（100 MB）；画布每次保存都会上传整个项目，过大会拖慢自动保存。当前 ≈ {{ canvasProjectMaxKbLabel }}</small>
+            </span>
+            <el-input-number v-model="form.canvasProjectMaxKb" :min="1" :max="102400" :step="1024" :precision="0" />
           </label>
         </div>
       </div>

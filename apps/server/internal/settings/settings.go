@@ -37,6 +37,8 @@ var Defaults = map[string]json.RawMessage{
 	"image_thumb_max_edge":                        json.RawMessage(`512`),
 	"image_fetch_concurrency":                     json.RawMessage(`8`),
 	"canvas_batch_max_count":                      json.RawMessage(`100`),
+	"canvas_project_max_count":                    json.RawMessage(`30`),
+	"canvas_project_max_kb":                       json.RawMessage(`30720`),
 	"cross_provider_same_model_balancing_enabled": json.RawMessage(`false`),
 	"admin_image_analysis_provider_id":            json.RawMessage(`""`),
 	"admin_image_analysis_model_id":               json.RawMessage(`""`),
@@ -208,6 +210,35 @@ func ResolveCanvasBatchMaxCount(ctx context.Context, q store.Q) int {
 		return CanvasBatchHardMaxCount
 	}
 	return int(v)
+}
+
+// 画布项目配额：每个用户的基础项目数（订阅可在此之上加成）与单个项目文档大小上限。
+// 单项目上限以 KB 配置，受传输层硬上限约束（服务端请求体与网关均为 CanvasProjectHardMaxMB + 1MB）。
+const (
+	DefaultCanvasProjectMaxCount = 30
+	CanvasProjectMaxCountLimit   = 10000
+	CanvasProjectHardMaxMB       = 100
+	DefaultCanvasProjectMaxKB    = 30 << 10
+	CanvasProjectMinKB           = 1
+	CanvasProjectHardMaxKB       = CanvasProjectHardMaxMB << 10
+)
+
+// ResolveCanvasProjectMaxCount 返回后台配置的每用户基础画布项目数，无效时取默认值。
+func ResolveCanvasProjectMaxCount(ctx context.Context, q store.Q) int {
+	v, err := GetInt(ctx, q, "canvas_project_max_count")
+	if err != nil || v < 1 || v > CanvasProjectMaxCountLimit {
+		return DefaultCanvasProjectMaxCount
+	}
+	return int(v)
+}
+
+// ResolveCanvasProjectMaxBytes 返回后台配置的单个画布项目大小上限（字节），无效时取默认值。
+func ResolveCanvasProjectMaxBytes(ctx context.Context, q store.Q) int64 {
+	v, err := GetInt(ctx, q, "canvas_project_max_kb")
+	if err != nil || v < CanvasProjectMinKB || v > CanvasProjectHardMaxKB {
+		v = DefaultCanvasProjectMaxKB
+	}
+	return v << 10
 }
 
 const (

@@ -474,7 +474,8 @@ func (s *Server) adminListPlans(c *gin.Context, _ *store.User) {
 	for _, p := range plans {
 		items = append(items, adminPlanDict(p, usageByPlan[p.ID]))
 	}
-	ok(c, gin.H{"items": items, "baseConcurrency": base})
+	ok(c, gin.H{"items": items, "baseConcurrency": base,
+		"baseCanvasProjects": settings.ResolveCanvasProjectMaxCount(c.Request.Context(), s.St.Pool)})
 }
 
 func (s *Server) adminPlanVersions(c *gin.Context, _ *store.User) {
@@ -2221,6 +2222,8 @@ var settingsCamel = map[string]string{
 	"image_thumb_max_edge":                        "imageThumbMaxEdge",
 	"image_fetch_concurrency":                     "imageFetchConcurrency",
 	"canvas_batch_max_count":                      "canvasBatchMaxCount",
+	"canvas_project_max_count":                    "canvasProjectMaxCount",
+	"canvas_project_max_kb":                       "canvasProjectMaxKb",
 	"cross_provider_same_model_balancing_enabled": "crossProviderSameModelBalancingEnabled",
 	"admin_image_analysis_provider_id":            "adminImageAnalysisProviderId",
 	"admin_image_analysis_model_id":               "adminImageAnalysisModelId",
@@ -2545,6 +2548,18 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 32 {
 				fail(c, apperr.E("validation_error", "imageFetchConcurrency: 须在 1-32 之间", 422))
+				return
+			}
+		case "canvas_project_max_count":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > settings.CanvasProjectMaxCountLimit {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("canvasProjectMaxCount: 须在 1-%d 之间", settings.CanvasProjectMaxCountLimit), 422))
+				return
+			}
+		case "canvas_project_max_kb":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < settings.CanvasProjectMinKB || v > settings.CanvasProjectHardMaxKB {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("canvasProjectMaxKb: 须在 %d-%d KB 之间", settings.CanvasProjectMinKB, settings.CanvasProjectHardMaxKB), 422))
 				return
 			}
 		case "canvas_batch_max_count":

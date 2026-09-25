@@ -19,6 +19,9 @@ import { useCanvasHost } from "@/components/layout/canvas-host-context";
 import { CanvasWorkflowTemplateDialog } from "@/components/canvas/canvas-workflow-template-dialog";
 import { CanvasWorkflowShelf } from "@/components/canvas/canvas-workflow-shelf";
 import { createCanvasProjectFromUploadedTemplate, getCanvasWorkflowTemplate, type CanvasWorkflowTemplateSummary } from "@/services/canvas-workflow-template-api";
+import { canvasProjectOccupancy, checkCanvasProjectCapacity } from "@/lib/canvas/canvas-project-quota";
+import { pendingCloudProjectDeleteCount } from "@/stores/canvas/use-canvas-store";
+import { fetchCanvasProjectQuota, type CanvasProjectQuota } from "@/services/canvas-cloud-repository";
 
 gsap.registerPlugin(useGSAP);
 
@@ -39,6 +42,8 @@ export default function CanvasPage() {
     const [cardEntryState, setCardEntryState] = useState("waiting");
     const [projectQuery, setProjectQuery] = useState("");
     const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false);
+    const [projectQuota, setProjectQuota] = useState<CanvasProjectQuota | null>(null);
+    const cloudProjectsVersion = useCanvasStore((state) => state.cloudProjectsVersion);
     const hydrated = useCanvasStore((state) => state.hydrated);
     const projects = useCanvasStore((state) => state.projects);
     const createProject = useCanvasStore((state) => state.createProject);
@@ -117,9 +122,14 @@ export default function CanvasPage() {
     const enterProject = (id: string) => {
         navigate(`/canvas/${id}${agentQuery}`);
     };
-    const createAndEnter = () => {
+    const createAndEnter = async () => {
         if (!isAuthenticated) {
             requestAuth();
+            return;
+        }
+        const blocked = await checkCanvasProjectCapacity();
+        if (blocked) {
+            message.warning(blocked);
             return;
         }
         enterProject(createProject(t("canvas.defaultTitle", { count: visibleProjects.length + 1 })));
@@ -130,6 +140,11 @@ export default function CanvasPage() {
             return;
         }
         try {
+            const blocked = await checkCanvasProjectCapacity();
+            if (blocked) {
+                message.warning(blocked);
+                return;
+            }
             const detail = await getCanvasWorkflowTemplate(template.id);
             const id = importProject(createCanvasProjectFromUploadedTemplate(detail));
             setTemplateLibraryOpen(false);
@@ -151,6 +166,11 @@ export default function CanvasPage() {
             const projectFile = zip.get("projects.json");
             if (!projectFile) throw new Error("missing projects.json");
             const data = JSON.parse(await projectFile.text()) as CanvasExportFile;
+            const blocked = await checkCanvasProjectCapacity(data.projects.length);
+            if (blocked) {
+                message.warning(blocked);
+                return;
+            }
             await Promise.all(
                 data.projects.flatMap((project) =>
                     project.files.map(async (item) => {
@@ -178,8 +198,35 @@ export default function CanvasPage() {
             navigate("/canvas", { replace: true });
             return;
         }
-        enterProject(mode === "new" ? createProject(t("canvas.defaultTitle", { count: visibleProjects.length + 1 })) : visibleProjects[0]?.id || createProject(t("canvas.defaultTitle", { count: visibleProjects.length + 1 })));
-    }, [createProject, hydrated, isAuthenticated, mode, navigate, requestAuth, t, visibleProjects]);
+        const existing = mode === "recent" ? visibleProjects[0]?.id : "";
+        if (existing) {
+            enterProject(existing);
+            return;
+        }
+        void checkCanvasProjectCapacity().then((blocked) => {
+            if (blocked) {
+                message.warning(blocked);
+                navigate("/canvas", { replace: true });
+                return;
+            }
+            enterProject(createProject(t("canvas.defaultTitle", { count: visibleProjects.length + 1 })));
+        });
+    }, [createProject, hydrated, isAuthenticated, message, mode, navigate, requestAuth, t, visibleProjects]);
+
+    // 列表页显示「已用 / 上限」；项目增删后刷新。
+    useEffect(() => {
+        if (!hydrated || !isAuthenticated) {
+            setProjectQuota(null);
+            return;
+        }
+        let active = true;
+        fetchCanvasProjectQuota()
+            .then((quota) => { if (active) setProjectQuota(quota); })
+            .catch(() => { if (active) setProjectQuota(null); });
+        return () => { active = false; };
+    }, [hydrated, isAuthenticated, visibleProjects.length, cloudProjectsVersion]);
+    const unsyncedProjectCount = useCanvasStore((state) => state.projects.filter((project) => !project.revision).length);
+    const occupiedProjects = projectQuota ? canvasProjectOccupancy(projectQuota, unsyncedProjectCount, pendingCloudProjectDeleteCount()) : 0;
 
     if (hydrated && (mode === "new" || mode === "recent")) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">{t("canvas.opening")}</main>;
 
@@ -211,7 +258,15 @@ export default function CanvasPage() {
                         </p>
                     </div>
                     <div className="canvas-home-toolbar__actions flex items-center gap-2">
-                        <Button className="canvas-home-cta" type="primary" disabled={!hydrated} onClick={createAndEnter} icon={<Plus className="size-4" />}>
+                        {projectQuota && (
+                            <span
+                                className={`text-xs tabular-nums ${occupiedProjects >= projectQuota.limit ? "text-amber-600 dark:text-amber-400" : "text-slate-500 dark:text-slate-400"}`}
+                                title={projectQuota.planBonus > 0 ? `基础 ${projectQuota.base} + 订阅 ${projectQuota.planBonus}` : undefined}
+                            >
+                                项目 {occupiedProjects} / {projectQuota.limit}
+                            </span>
+                        )}
+                        <Button className="canvas-home-cta" type="primary" disabled={!hydrated} onClick={() => void createAndEnter()} icon={<Plus className="size-4" />}>
                             {t("canvas.create")}
                         </Button>
                         <Button disabled={!hydrated} onClick={() => setTemplateLibraryOpen(true)} icon={<LayoutTemplate className="size-4" />}>
@@ -301,7 +356,7 @@ export default function CanvasPage() {
                     ) : (
                         <div className="canvas-project-grid mt-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
                             {projectQuery.trim() ? null : (
-                                <button type="button" className="canvas-project-tile group text-left" onClick={createAndEnter}>
+                                <button type="button" className="canvas-project-tile group text-left" onClick={() => void createAndEnter()}>
                                     <span className="canvas-project-tile__preview is-create flex items-center justify-center">
                                         <span className="canvas-project-tile__plus">
                                             <Plus className="size-4" />

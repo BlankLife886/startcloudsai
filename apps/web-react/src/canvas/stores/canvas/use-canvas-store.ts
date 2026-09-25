@@ -9,7 +9,7 @@ import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, Viewport
 import type { CanvasWorkflowCheckpoint } from "@/lib/canvas/canvas-workflow";
 import type { CanvasAgentContinuation } from "@/lib/canvas/canvas-agent-continuation";
 import { canvasProjectNeedsCloudRetry, markCanvasProjectMediaDeleted, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots, trackCanvasProjectGraphChanges, type CanvasCloudProjectSummary, type CanvasGraphSyncState } from "@/lib/canvas/canvas-project-sync";
-import { createCloudCanvasProject, deleteCloudCanvasProject, getCloudCanvasProject, listCloudCanvasProjectSummaries, updateCloudCanvasProject } from "@/services/canvas-cloud-repository";
+import { canvasProjectDocument, createCloudCanvasProject, deleteCloudCanvasProject, getCloudCanvasProject, listCloudCanvasProjectSummaries, updateCloudCanvasProject } from "@/services/canvas-cloud-repository";
 import { StarcloudsApiError } from "@/services/starclouds-api";
 import { HISTORY_MEDIA_REMOVED_EVENT } from "@react/legacy-modules/services/tasksApi.js";
 
@@ -19,6 +19,8 @@ export type CanvasProject = {
     createdAt: string;
     updatedAt: string;
     revision?: number;
+    /** 最近一次云端确认的文档大小（字节）；本地未同步的改动不计入。 */
+    sizeBytes?: number;
     /** Local changes that have not been confirmed by the cloud yet ("未同步"). Cleared when a cloud save succeeds. */
     pendingSync?: boolean;
     /** Cloud-only list entry whose document has not been downloaded yet; fetched when the project is opened. */
@@ -39,6 +41,10 @@ export type CanvasProject = {
 
 type CanvasStore = {
     hydrated: boolean;
+    /** 云端项目数变化（删除完成、首次上传）时递增，供配额展示刷新；不持久化。 */
+    cloudProjectsVersion: number;
+    /** 因超出单项目大小上限而无法保存到云端的项目；保存成功后清除，不持久化。 */
+    cloudSaveBlocked: Record<string, CanvasCloudSaveBlock>;
     ownerUserId: string | null;
     projects: CanvasProject[];
     createProject: (title?: string) => string;
@@ -74,6 +80,15 @@ function isUuid(value: string) {
 // Sync notifications: the store runs outside React, so pages register a
 // notifier (usually antd message) to surface save failures to the user
 // instead of swallowing them silently.
+
+export type CanvasCloudSaveBlock = {
+    /** 服务端给出的原因。 */
+    reason: string;
+    /** 被拒绝的那次保存实际上传的文档大小（字节）。 */
+    attemptedBytes: number;
+    /** 最后一次尝试保存的时间（ISO）。 */
+    attemptedAt: string;
+};
 
 export type CanvasSyncNotification = {
     kind: "save_failed" | "save_recovered";
@@ -168,12 +183,44 @@ function replaceCloudProject(saved: CanvasProject, expectedProject?: CanvasProje
             // (still pendingSync), adopt the saved revision, and — after a
             // conflict merge — the remotely merged nodes as well.
             const base = mergeIntoLocal ? mergeCanvasProjectDocuments(project, saved) : project;
-            const after = { ...base, revision: saved.revision, pendingSync: true };
+            const after = { ...base, revision: saved.revision, sizeBytes: saved.sizeBytes, pendingSync: true };
             if (mergeIntoLocal) merged = { before: project, after };
             return after;
         }),
     }));
     if (merged) notifyCanvasProjectMerge(merged);
+}
+
+// 已从本地移除、但云端删除请求尚未完成的项目；服务端仍会把它们计入已用数。
+const pendingCloudDeleteIds = new Set<string>();
+
+/** 正在等待云端删除完成的项目数。 */
+export function pendingCloudProjectDeleteCount() {
+    return pendingCloudDeleteIds.size;
+}
+
+function setCloudSaveBlocked(id: string, block: CanvasCloudSaveBlock | null) {
+    const current = useCanvasStore.getState().cloudSaveBlocked;
+    if (!block && !(id in current)) return;
+    const next = { ...current };
+    if (block) next[id] = block;
+    else delete next[id];
+    useCanvasStore.setState({ cloudSaveBlocked: next });
+}
+
+/** 与上传内容一致的文档字节数（UTF-8）；仅在保存被拒时计算一次，避免每次编辑都序列化大文档。 */
+function measureCanvasDocumentBytes(id: string) {
+    const project = useCanvasStore.getState().projects.find((item) => item.id === id);
+    if (!project) return 0;
+    try {
+        return new TextEncoder().encode(JSON.stringify(canvasProjectDocument(project))).length;
+    } catch {
+        return 0;
+    }
+}
+
+function bumpCloudProjectsVersion() {
+    useCanvasStore.setState((state) => ({ cloudProjectsVersion: state.cloudProjectsVersion + 1 }));
 }
 
 async function persistProjectToCloud(id: string, userId: string) {
@@ -199,6 +246,9 @@ async function persistProjectToCloud(id: string, userId: string) {
     if (saved) {
         replaceCloudProject(saved, project, mergedRemote);
         notifyCloudSaveRecovered(id);
+        setCloudSaveBlocked(id, null);
+        // 首次上传即在云端新建了项目，已用数随之变化。
+        if (!project.revision) bumpCloudProjectsVersion();
     }
     const latest = useCanvasStore.getState().projects.find((item) => item.id === id);
     if (canvasProjectNeedsCloudRetry(latest)) scheduleCloudSave(id, 1500);
@@ -224,6 +274,9 @@ function scheduleCloudSave(id: string, delay = cloudSaveBaseDelayMs) {
             .then(() => persistProjectToCloud(id, userId))
             .catch((error) => {
                 console.error("Canvas cloud save failed", error);
+                if (error instanceof StarcloudsApiError && error.code === "canvas_document_too_large") {
+                    setCloudSaveBlocked(id, { reason: error.message, attemptedBytes: measureCanvasDocumentBytes(id), attemptedAt: new Date().toISOString() });
+                }
                 notifyCloudSaveFailed(id, error);
             })
             .finally(() => {
@@ -241,6 +294,7 @@ function createStubProject(summary: CanvasCloudProjectSummary): CanvasProject {
         createdAt: summary.createdAt,
         updatedAt: summary.updatedAt,
         revision: summary.revision,
+        sizeBytes: summary.sizeBytes,
         nodes: [],
         connections: [],
         chatSessions: [],
@@ -406,6 +460,8 @@ export const useCanvasStore = create<CanvasStore>()(
     persist(
         (set, get) => ({
             hydrated: false,
+            cloudProjectsVersion: 0,
+            cloudSaveBlocked: {},
             ownerUserId: null,
             projects: [],
             createProject: (title = i18n.t("canvas.project.untitled")) => {
@@ -462,6 +518,7 @@ export const useCanvasStore = create<CanvasStore>()(
             },
             deleteProjects: (ids) => {
                 const userId = get().ownerUserId;
+                ids.forEach((id) => pendingCloudDeleteIds.add(id));
                 set((state) => {
                     const projects = state.projects.filter((project) => !ids.includes(project.id));
                     return { projects };
@@ -476,7 +533,11 @@ export const useCanvasStore = create<CanvasStore>()(
                             if (!userId || cloudSyncUserId !== userId || useCanvasStore.getState().ownerUserId !== userId) return;
                             return deleteCloudCanvasProject(id);
                         })
-                        .catch((error) => console.error("Canvas cloud delete failed", error));
+                        .catch((error) => console.error("Canvas cloud delete failed", error))
+                        .finally(() => {
+                            pendingCloudDeleteIds.delete(id);
+                            bumpCloudProjectsVersion();
+                        });
                 });
             },
             replaceProjects: (projects) => set({ projects }),

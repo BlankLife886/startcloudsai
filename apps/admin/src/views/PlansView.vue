@@ -19,7 +19,7 @@ type PlanKind = "topup" | "subscription";
 
 interface Plan {
   rechargePolicy?: { pointsPerYuan: number; priceLockMinYuan: number } | null;
-  subscriptionPolicy?: { version: number; series: string; tier: number; channels: string[]; featureKeys: string[]; modelIds: string[]; refundWindowHours?: number; lockModelPrices?: boolean; allowTopupPriceLock?: boolean; concurrencyBonus?: number };
+  subscriptionPolicy?: { version: number; series: string; tier: number; channels: string[]; featureKeys: string[]; modelIds: string[]; refundWindowHours?: number; lockModelPrices?: boolean; allowTopupPriceLock?: boolean; concurrencyBonus?: number; canvasProjectBonus?: number };
   revision: number;
   priceLockEligible: boolean;
   id: string;
@@ -52,6 +52,7 @@ interface PlanForm {
   allowTopupPriceLock: boolean;
   priceLockEligible: boolean;
   concurrencyBonus: number;
+  canvasProjectBonus: number;
   series: string;
   tier: number;
   channels: string[];
@@ -76,6 +77,7 @@ interface PlanForm {
 
 const plans = ref<Plan[]>([]);
 const baseConcurrency = ref(4);
+const baseCanvasProjects = ref(30);
 const loading = ref(false);
 const loadError = ref("");
 const saving = ref(false);
@@ -87,7 +89,7 @@ const statusFilter = ref<"" | "active" | "inactive">("");
 function defaultForm(): PlanForm {
   return {
     customAmount: true, pointsPerYuan: 100, priceLockMinYuan: 30,
-    lockModelPrices: true, allowTopupPriceLock: false, priceLockEligible: false, concurrencyBonus: 0,
+    lockModelPrices: true, allowTopupPriceLock: false, priceLockEligible: false, concurrencyBonus: 0, canvasProjectBonus: 0,
     series: "general", tier: 1, channels: ["web", "api"], featureKeys: [], modelIdsText: "", refundWindowHours: 3,
     code: "",
     name: "",
@@ -167,12 +169,15 @@ async function loadPlans() {
   loading.value = true;
   loadError.value = "";
   try {
-    const data = await request<Plan[] | { items: Plan[]; baseConcurrency?: number }>(
+    const data = await request<Plan[] | { items: Plan[]; baseConcurrency?: number; baseCanvasProjects?: number }>(
       "/api/v1/admin/plans",
       { silent: true },
     );
     plans.value = normalizeList(data).items;
-    if (!Array.isArray(data)) baseConcurrency.value = data.baseConcurrency ?? 4;
+    if (!Array.isArray(data)) {
+      baseConcurrency.value = data.baseConcurrency ?? 4;
+      baseCanvasProjects.value = data.baseCanvasProjects ?? 30;
+    }
   } catch (error) {
     plans.value = [];
     loadError.value = error instanceof Error ? error.message : "套餐读取失败";
@@ -204,6 +209,7 @@ function openEdit(row: unknown) {
     lockModelPrices: plan.subscriptionPolicy?.lockModelPrices ?? true,
     allowTopupPriceLock: plan.subscriptionPolicy?.allowTopupPriceLock ?? false,
     concurrencyBonus: plan.subscriptionPolicy?.concurrencyBonus ?? 0,
+    canvasProjectBonus: plan.subscriptionPolicy?.canvasProjectBonus ?? 0,
     code: plan.code,
     name: plan.name,
     description: plan.description || "",
@@ -299,7 +305,7 @@ function buildPayload() {
     dailyGrantCents:
       form.kind === "subscription" ? normalizePoints(form.dailyGrantPoints) : 0,
     features: parseFeatures(),
-    subscriptionPolicy: { version: 2, series: form.series.trim(), tier: form.tier, channels: form.channels, featureKeys: form.featureKeys, modelIds: form.modelIdsText.split("\n").map(v => v.trim()).filter(Boolean), refundWindowHours: form.refundWindowHours, lockModelPrices: form.lockModelPrices, allowTopupPriceLock: form.lockModelPrices && form.allowTopupPriceLock, concurrencyBonus: form.concurrencyBonus },
+    subscriptionPolicy: { version: 2, series: form.series.trim(), tier: form.tier, channels: form.channels, featureKeys: form.featureKeys, modelIds: form.modelIdsText.split("\n").map(v => v.trim()).filter(Boolean), refundWindowHours: form.refundWindowHours, lockModelPrices: form.lockModelPrices, allowTopupPriceLock: form.lockModelPrices && form.allowTopupPriceLock, concurrencyBonus: form.concurrencyBonus, canvasProjectBonus: form.canvasProjectBonus },
     active: form.active,
     recommended: form.recommended,
     sort: Math.max(0, Math.round(Number(form.sort || 0))),
@@ -551,6 +557,7 @@ onMounted(loadPlans);
 
           <dl class="plan-card__meta">
             <div v-if="row.kind === 'subscription'"><dt>图片并发</dt><dd>{{ baseConcurrency }} + {{ row.subscriptionPolicy?.concurrencyBonus ?? 0 }} = {{ baseConcurrency + (row.subscriptionPolicy?.concurrencyBonus ?? 0) }} 张</dd></div>
+            <div v-if="row.kind === 'subscription'"><dt>画布项目</dt><dd>{{ baseCanvasProjects }} + {{ row.subscriptionPolicy?.canvasProjectBonus ?? 0 }} = {{ baseCanvasProjects + (row.subscriptionPolicy?.canvasProjectBonus ?? 0) }} 个</dd></div>
             <div v-if="row.rechargePolicy && row.priceLockEligible"><dt>锁价门槛</dt><dd>单笔满 {{ row.rechargePolicy.priceLockMinYuan }} 元</dd></div>
             <div><dt>权益版本</dt><dd><el-button link type="primary" @click="showVersions(row)">第 {{ row.revision || 1 }} 版 · 变更记录</el-button></dd></div>
             <div><dt>锁价</dt><dd>{{ row.kind === 'topup' ? (row.priceLockEligible ? '接受符合资格的订阅锁价' : '按实时价格消费') : (row.subscriptionPolicy?.lockModelPrices === false ? '不锁定模型价格' : row.subscriptionPolicy?.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分') }}</dd></div>
@@ -726,6 +733,8 @@ onMounted(loadPlans);
           <div class="plan-form__grid">
             <el-form-item label="订阅额外图片并发"><el-input-number v-model="form.concurrencyBonus" :min="0" :max="1000" :precision="0" /></el-form-item>
             <el-form-item label="生效后图片并发"><span>基础 {{ baseConcurrency }} + 订阅 {{ form.concurrencyBonus }} = {{ baseConcurrency + form.concurrencyBonus }} 张；对话额度单独配置</span></el-form-item>
+            <el-form-item label="订阅额外画布项目数"><el-input-number v-model="form.canvasProjectBonus" :min="0" :max="10000" :precision="0" /></el-form-item>
+            <el-form-item label="生效后画布项目数"><span>基础 {{ baseCanvasProjects }} + 订阅 {{ form.canvasProjectBonus }} = {{ baseCanvasProjects + form.canvasProjectBonus }} 个；已购用户按购买时的套餐生效</span></el-form-item>
           </div>
           <div class="plan-form__grid">
             <el-form-item label="订阅系列"><el-input v-model="form.series" maxlength="64" /></el-form-item>

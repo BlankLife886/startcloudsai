@@ -18,6 +18,8 @@ export type CanvasCloudProjectSummary = {
     revision: number;
     createdAt: string;
     updatedAt: string;
+    /** 云端文档大小（字节）。 */
+    sizeBytes?: number;
 };
 
 /** A completed cloud save only needs another pass when local edits are still pending. */
@@ -46,10 +48,12 @@ export function mergeCanvasProjectSnapshots<T extends CanvasProjectSnapshot>(sum
         if (!local) return createStub(summary);
         if (local.revision === summary.revision) {
             if (local.pendingSync || local.updatedAt > summary.updatedAt) localNewerIds.push(local.id);
-            return local;
+            const localSize = (local as { sizeBytes?: number }).sizeBytes;
+            return summary.sizeBytes === undefined || summary.sizeBytes === localSize ? local : { ...local, sizeBytes: summary.sizeBytes };
         }
         return {
             ...local,
+            ...(summary.sizeBytes === undefined ? {} : { sizeBytes: summary.sizeBytes }),
             title: local.pendingSync ? local.title : summary.title,
             updatedAt: summary.updatedAt > local.updatedAt ? summary.updatedAt : local.updatedAt,
             documentStale: true,

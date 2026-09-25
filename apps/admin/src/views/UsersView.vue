@@ -382,8 +382,15 @@ async function submitConcurrency() {
 }
 
 // ---------- 用户详情抽屉 ----------
+function formatCanvasBytes(bytes: number): string {
+  const value = Math.max(0, Number(bytes) || 0)
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`
+}
+
 interface UserDetail {
   concurrency?: {base: number; bonus: number; planBonus?: number; manualBonus?: number; limit: number; running: number; imageRunning?: number; imageLimit?: number; chatRunning?: number; chatLimit?: number}
+  canvasProjects?: {base: number; planBonus: number; limit: number; used: number; maxBytes: number; totalBytes: number; largestBytes: number}
   user: AdminUser
   wallet: UserWallet
   subscription?: UserSubscription | null
@@ -1050,6 +1057,13 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                         基础 {{ overview.concurrency.base }} + 订阅 {{ overview.concurrency.planBonus ?? overview.concurrency.bonus }} + 手动 {{ overview.concurrency.manualBonus ?? 0 }}
                         = {{ overview.concurrency.imageLimit ?? overview.concurrency.limit }} 张；当前占用 {{ overview.concurrency.imageRunning ?? overview.concurrency.running }} 张
                         <button type="button" class="detail-link" @click="openConcurrency">调整手动追加</button>
+                      </dd>
+                    </div>
+                    <div v-if="overview.canvasProjects">
+                      <dt>画布项目</dt>
+                      <dd>
+                        已用 {{ overview.canvasProjects.used }} / {{ overview.canvasProjects.limit }} 个（基础 {{ overview.canvasProjects.base }} + 订阅 {{ overview.canvasProjects.planBonus }}）；
+                        总大小 {{ formatCanvasBytes(overview.canvasProjects.totalBytes) }}，最大单个 {{ formatCanvasBytes(overview.canvasProjects.largestBytes) }} / 上限 {{ formatCanvasBytes(overview.canvasProjects.maxBytes) }}
                       </dd>
                     </div>
                     <div v-if="overview.concurrency?.chatLimit != null"><dt>对话并发</dt><dd>当前 {{ overview.concurrency.chatRunning ?? 0 }} / {{ overview.concurrency.chatLimit }} 次，与图片额度独立</dd></div>

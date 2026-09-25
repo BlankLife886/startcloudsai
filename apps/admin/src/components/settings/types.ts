@@ -78,6 +78,8 @@ export interface AdminSettings {
 	imageThumbMaxEdge?: number
   imageFetchConcurrency?: number
   canvasBatchMaxCount?: number
+  canvasProjectMaxCount?: number
+  canvasProjectMaxKb?: number
   platformLoggingEnabled?: boolean
   platformLogSecurityEnabled?: boolean
   platformLogOperationsEnabled?: boolean

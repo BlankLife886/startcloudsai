@@ -50,7 +50,10 @@ func Capture(ctx context.Context, q store.Q, policy store.SubscriptionPolicy, re
 	if bonus < 0 || bonus > 1000 {
 		return nil, fmt.Errorf("invalid subscription concurrency bonus")
 	}
-	return &store.BillingContract{ID: uuid.New(), PriceBookID: id, CapturedAt: at, PlanRevision: revision, ConcurrencyBonus: &bonus, LockModelPrices: policy.ModelPricesLocked(), AllowTopupPriceLock: policy.AllowTopupPriceLock}, nil
+	if policy.CanvasProjectBonus < 0 || policy.CanvasProjectBonus > store.MaxCanvasProjectBonus {
+		return nil, fmt.Errorf("invalid subscription canvas project bonus")
+	}
+	return &store.BillingContract{ID: uuid.New(), PriceBookID: id, CapturedAt: at, PlanRevision: revision, ConcurrencyBonus: &bonus, CanvasProjectBonus: policy.CanvasProjectBonus, LockModelPrices: policy.ModelPricesLocked(), AllowTopupPriceLock: policy.AllowTopupPriceLock}, nil
 }
 
 type Request struct {

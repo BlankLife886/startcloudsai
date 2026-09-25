@@ -10,6 +10,7 @@ import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { cn } from "@/lib/utils";
 import { useCanvasPreviewSrc, useViewportMedia } from "./canvas-preview-image";
+import { formatCanvasProjectBytes } from "@/lib/canvas/canvas-project-quota-rules";
 
 const PREVIEW_WIDTH = 640;
 const PREVIEW_HEIGHT = 360;
@@ -410,6 +411,9 @@ export function CanvasProjectCard({ project }: { project: CanvasProject }) {
                                 : t("canvas.project.stats", { nodes: project.nodes.length, connections: project.connections.length })}
                         </span>
                         <span className="canvas-project-tile__pill">{t("canvas.project.updated", { date: updatedAt })}</span>
+                        {typeof project.sizeBytes === "number" && project.sizeBytes > 0 ? (
+                            <span className="canvas-project-tile__pill" title="云端保存的项目大小">{formatCanvasProjectBytes(project.sizeBytes)}</span>
+                        ) : null}
                     </span>
                 </button>
             </div>

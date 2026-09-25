@@ -77,6 +77,11 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	canvasProjects, err := s.canvasProjectQuota(store.WithBillingTime(ctx, s.subscriptionNow()), s.St.Pool, userID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	trialApp, err := store.GetTrialAccessApplicationByUser(ctx, s.St.Pool, userID)
 	if err != nil {
 		fail(c, err)
@@ -109,14 +114,15 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 		}
 	}
 	ok(c, gin.H{
-		"user":         adminUserDict(user, nil),
-		"wallet":       walletOut,
-		"subscription": subOut,
-		"concurrency":  concurrency,
-		"trialAccess":  trialAccessApplicationDict(trialApp, false),
-		"checkin":      checkinOut,
-		"growthGroup":  growthOut,
-		"profile":      profileOut,
+		"user":           adminUserDict(user, nil),
+		"wallet":         walletOut,
+		"subscription":   subOut,
+		"concurrency":    concurrency,
+		"canvasProjects": canvasProjects,
+		"trialAccess":    trialAccessApplicationDict(trialApp, false),
+		"checkin":        checkinOut,
+		"growthGroup":    growthOut,
+		"profile":        profileOut,
 		"security": gin.H{
 			"activeSessions":       sessions.ActiveCount,
 			"lastSessionIp":        sessions.LastIP,

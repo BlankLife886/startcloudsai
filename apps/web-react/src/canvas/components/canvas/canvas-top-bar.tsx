@@ -11,6 +11,8 @@ import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { CanvasShortcutsDialog } from "./canvas-shortcuts-dialog";
+import { formatCanvasProjectBytes } from "@/lib/canvas/canvas-project-quota-rules";
+import type { CanvasCloudSaveBlock } from "@/stores/canvas/use-canvas-store";
 
 export function CanvasTopBar({
     onRename,
@@ -27,6 +29,7 @@ export function CanvasTopBar({
     onRefreshWorkflow,
     onBackgroundModeChange,
     onShowImageInfoChange,
+    projectSize,
     children,
 }: {
     onRename: () => void;
@@ -54,6 +57,8 @@ export function CanvasTopBar({
     onRefreshWorkflow: () => void;
     onBackgroundModeChange: (mode: CanvasBackgroundMode) => void;
     onShowImageInfoChange: (show: boolean) => void;
+    /** 超出单项目上限时显示的阻塞提示；正常大小在画布右下角（CanvasProjectSizeIndicator）显示。 */
+    projectSize?: { bytes: number; maxBytes: number; blocked?: CanvasCloudSaveBlock } | null;
     children?: ReactNode;
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
@@ -83,6 +88,20 @@ export function CanvasTopBar({
                 {children ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2" style={{ width: "clamp(260px, calc(100% - 822px), 720px)" }}><div className="pointer-events-auto flex justify-center">{children}</div></div> : null}
 
                 <div className="pointer-events-auto ml-auto flex items-center gap-2" data-canvas-topbar-actions data-guide="canvas-actions">
+                    {projectSize?.blocked ? (
+                        <Tooltip
+                            title={<CanvasSizeBlockedDetail blocked={projectSize.blocked} cloudBytes={projectSize.bytes} maxBytes={projectSize.maxBytes} />}
+                            placement="bottomRight"
+                            styles={{ root: { maxWidth: 380 } }}
+                        >
+                            <span
+                                className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium"
+                                style={{ color: "#dc2626", background: "rgba(220,38,38,.08)", border: "1px solid rgba(220,38,38,.3)" }}
+                            >
+                                超出上限 · 未保存
+                            </span>
+                        </Tooltip>
+                    ) : null}
                     <div className="canvas-workflow-control-slot relative z-20 shrink-0">
                         <WorkflowControl theme={theme} workflowRun={workflowRun} onRun={onRunWorkflow} onStop={onStopWorkflow} onRefresh={onRefreshWorkflow} />
                     </div>
@@ -394,5 +413,38 @@ function ChromeAction({
                 {children}
             </button>
         </Tooltip>
+    );
+}
+
+function CanvasSizeBlockedDetail({ blocked, cloudBytes, maxBytes }: { blocked: CanvasCloudSaveBlock; cloudBytes: number; maxBytes: number }) {
+    const attempted = blocked.attemptedBytes;
+    const over = attempted > 0 && maxBytes > 0 ? attempted - maxBytes : 0;
+    const attemptedAt = new Date(blocked.attemptedAt);
+    const attemptedTime = Number.isNaN(attemptedAt.getTime())
+        ? ""
+        : attemptedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const rows: Array<[string, string]> = [
+        [
+            "当前大小",
+            attempted > 0 && maxBytes > 0
+                ? `${formatCanvasProjectBytes(attempted)}，单个项目上限 ${formatCanvasProjectBytes(maxBytes)}，超出 ${formatCanvasProjectBytes(Math.max(over, 1))}`
+                : blocked.reason,
+        ],
+        ["云端版本", cloudBytes > 0 ? `停在上次成功保存的版本（${formatCanvasProjectBytes(cloudBytes)}）；在其他设备或浏览器打开看到的是这个版本` : "停在上次成功保存的版本；在其他设备或浏览器打开看到的是这个版本"],
+        ["最新改动", "只保存在当前浏览器的本地缓存里；刷新页面或重开浏览器仍在，打开时会自动再次尝试保存"],
+        ["可能丢失", "清除浏览器数据、在无痕窗口编辑后关闭、换电脑或换浏览器、磁盘空间紧张时浏览器自动清理"],
+        ["怎么处理", "删除不需要的节点、图片或对话记录，或把一部分内容拆到新画布；降到上限以下后会自动保存到云端。需要保留全部内容时，先用右上角「导出」备份"],
+    ];
+    return (
+        <div className="space-y-1.5 py-0.5 text-[12px] leading-5">
+            <div className="font-semibold">这个画布超出了单个项目大小上限，最新改动没有保存到云端</div>
+            {rows.map(([label, text]) => (
+                <div key={label} className="flex gap-2">
+                    <span className="shrink-0 opacity-70">{label}</span>
+                    <span>{text}</span>
+                </div>
+            ))}
+            {attemptedTime ? <div className="opacity-60">最后一次尝试保存：{attemptedTime}</div> : null}
+        </div>
     );
 }

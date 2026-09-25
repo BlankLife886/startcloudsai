@@ -49,6 +49,8 @@ const FIELDS: Record<string, FieldMeta> = {
   globalMaxConcurrentTasks: { label: '全站图片并发', section: 'concurrency', unit: '张' },
   userMaxConcurrentTasks: { label: '个人基础图片并发', section: 'concurrency', unit: '张' },
   canvasBatchMaxCount: { label: '画布批量生成上限', section: 'concurrency', unit: '个' },
+  canvasProjectMaxCount: { label: '每用户画布项目数（基础）', section: 'concurrency', unit: '个' },
+  canvasProjectMaxKb: { label: '单个画布项目大小上限', section: 'concurrency', unit: 'KB' },
   globalMaxConcurrentChats: { label: '全站对话并发', section: 'concurrency', unit: '次' },
   userMaxConcurrentChats: { label: '个人对话并发', section: 'concurrency', unit: '次' },
   globalMaxActiveTasks: { label: '全站待处理容量', section: 'concurrency' },

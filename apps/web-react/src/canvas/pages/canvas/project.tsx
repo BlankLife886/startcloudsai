@@ -14,6 +14,9 @@ import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/vide
 import { defaultCanvasImageRatio, applyCanvasImageModelSettings, canvasExactSizeSettings, canvasExactSizeSettingsForNode, canvasImageModelCapabilities, canvasImageSizeParams } from "@/lib/canvas/canvas-image-model";
 import { defaultConfig, modelOptionMeta, resolveModelForCapability, useConfigStore, useEffectiveConfig, type ReasoningEffort } from "@/stores/use-config-store";
 import { clampCanvasBatchCount } from "@/lib/canvas/canvas-batch-limit";
+import { checkCanvasProjectCapacity } from "@/lib/canvas/canvas-project-quota";
+import { CanvasProjectSizeIndicator } from "@/components/canvas/canvas-project-size-indicator";
+import { fetchCanvasProjectQuota } from "@/services/canvas-cloud-repository";
 import { adoptGeneratedImage, uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
@@ -396,6 +399,16 @@ function InfiniteCanvasPage() {
     const updateProject = useCanvasStore((state) => state.updateProject);
 	const currentProject = useCanvasStore((state) => state.projects.find((project) => project.id === projectId));
 	const currentProjectTitle = currentProject?.title;
+	const currentProjectSizeBytes = currentProject?.sizeBytes;
+	const currentProjectSaveBlocked = useCanvasStore((state) => state.cloudSaveBlocked[projectId]);
+	const [canvasProjectMaxBytes, setCanvasProjectMaxBytes] = useState(0);
+	useEffect(() => {
+		let active = true;
+		fetchCanvasProjectQuota()
+			.then((quota) => { if (active) setCanvasProjectMaxBytes(quota.maxBytes); })
+			.catch(() => undefined);
+		return () => { active = false; };
+	}, []);
     const startEditingProject = useCanvasUiStore((state) => state.startEditingProject);
     const canvasThemeName = useThemeStore((state) => state.theme);
     const theme = canvasThemes[canvasThemeName];
@@ -2233,10 +2246,15 @@ function InfiniteCanvasPage() {
         applyHistory(next);
     }, [applyHistory, flushPendingHistoryCommit]);
 
-    const createAndOpenProject = useCallback(() => {
+    const createAndOpenProject = useCallback(async () => {
+        const blocked = await checkCanvasProjectCapacity();
+        if (blocked) {
+            message.warning(blocked);
+            return;
+        }
         const id = createProject(t("canvas.defaultTitle", { count: useCanvasStore.getState().projects.length + 1 }));
         navigate(`/canvas/${id}`);
-    }, [createProject, navigate, t]);
+    }, [createProject, message, navigate, t]);
 
     const exportCurrentProject = useCallback(async () => {
         const project = useCanvasStore.getState().projects.find((item) => item.id === projectId);
@@ -7686,6 +7704,7 @@ function InfiniteCanvasPage() {
                     onRefreshWorkflow={() => window.location.reload()}
                     onBackgroundModeChange={setBackgroundMode}
                     onShowImageInfoChange={setShowImageInfo}
+                    projectSize={currentProjectSaveBlocked ? { bytes: currentProjectSizeBytes || 0, maxBytes: canvasProjectMaxBytes, blocked: currentProjectSaveBlocked } : null}
                 >
                     <CanvasToolbar
                         selectedCount={selectedNodeIds.size}
@@ -7863,6 +7882,7 @@ function InfiniteCanvasPage() {
                     onDelete={(node) => deleteNodes(new Set([node.id]))}
                 />
 
+                {!currentProjectSaveBlocked ? <CanvasProjectSizeIndicator bytes={currentProjectSizeBytes || 0} maxBytes={canvasProjectMaxBytes} /> : null}
                 <CanvasZoomControls scale={viewport.k} onScaleChange={setZoomScale} onReset={resetViewport} isMiniMapOpen={isMiniMapOpen} onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)}>
                     <Minimap active={isMiniMapOpen} nodes={visibleNodes} connections={displayConnections} viewport={viewport} viewportSize={size} viewportApiRef={viewportApiRef} />
                 </CanvasZoomControls>

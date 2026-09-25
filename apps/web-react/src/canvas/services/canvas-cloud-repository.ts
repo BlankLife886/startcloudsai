@@ -16,6 +16,7 @@ type CanvasProjectResponse = {
     revision: number;
     createdAt: string;
     updatedAt: string;
+    sizeBytes?: number;
 };
 
 type CanvasProjectSummary = Omit<CanvasProjectResponse, "document">;
@@ -93,6 +94,7 @@ export function canvasProjectFromResponse(item: CanvasProjectResponse): CanvasPr
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
         revision: item.revision,
+        ...(typeof item.sizeBytes === "number" ? { sizeBytes: item.sizeBytes } : {}),
         nodes,
         connections,
         chatSessions: Array.isArray(document.chatSessions) ? document.chatSessions : [],
@@ -115,6 +117,7 @@ export async function listCloudCanvasProjectSummaries(): Promise<CanvasCloudProj
         revision: item.revision,
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
+        sizeBytes: typeof item.sizeBytes === "number" ? item.sizeBytes : undefined,
     }));
 }
 
@@ -144,6 +147,19 @@ export async function updateCloudCanvasProject(project: CanvasProject) {
         revision: project.revision,
     });
     return canvasProjectFromResponse(response);
+}
+
+export type CanvasProjectQuota = {
+    base: number;
+    planBonus: number;
+    limit: number;
+    used: number;
+    maxBytes: number;
+};
+
+/** 当前用户的画布项目配额（基础 + 订阅加成、已用、单项目大小上限）。 */
+export function fetchCanvasProjectQuota() {
+    return starcloudsRequest<CanvasProjectQuota>("/me/canvas-project-quota");
 }
 
 export function deleteCloudCanvasProject(id: string) {
