@@ -42,7 +42,7 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 		return 20 << 20
 	case strings.HasPrefix(path, "/api/v1/canvas-projects"):
 		// 传输层硬上限；实际单项目上限由后台 canvas_project_max_kb 在接口内判断。
-		return (settings.CanvasProjectHardMaxMB + 1) << 20
+		return settings.CanvasProjectRequestMaxMB << 20
 	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates/") && strings.HasSuffix(path, "/cover"):
 		return promptCoverMaxBytes + (1 << 20)
 	case path == "/api/v1/admin/canvas-workflow-templates/analyze":

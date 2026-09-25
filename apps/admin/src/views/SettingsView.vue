@@ -96,7 +96,7 @@ const form = reactive({
   userMaxConcurrentChats: 4,
   canvasBatchMaxCount: 100,
   canvasProjectMaxCount: 30,
-  canvasProjectMaxKb: 30720,
+  canvasProjectMaxKb: 3072,
   globalMaxConcurrentTasks: 2000,
   globalMaxConcurrentChats: 32,
   globalMaxActiveTasks: 12000,
@@ -505,7 +505,7 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.userMaxConcurrentChats = settings.userMaxConcurrentChats ?? 4;
   form.canvasBatchMaxCount = settings.canvasBatchMaxCount ?? 100;
   form.canvasProjectMaxCount = settings.canvasProjectMaxCount ?? 30;
-  form.canvasProjectMaxKb = settings.canvasProjectMaxKb ?? 30720;
+  form.canvasProjectMaxKb = settings.canvasProjectMaxKb ?? 3072;
   form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks != null && settings.globalMaxConcurrentTasks > 0
     ? settings.globalMaxConcurrentTasks : settings.effectiveGlobalConcurrency ?? 2000;
   form.globalMaxConcurrentChats = settings.globalMaxConcurrentChats ?? 32;
@@ -1396,9 +1396,9 @@ onMounted(() => {
           <label class="field-row">
             <span>
               <strong>单个画布项目大小上限（KB）</strong>
-              <small>新建和保存时校验，最大 102400 KB（100 MB）；画布每次保存都会上传整个项目，过大会拖慢自动保存。当前 ≈ {{ canvasProjectMaxKbLabel }}</small>
+              <small>新建和保存时校验，最大 9216 KB（9 MB）；图片单独上传不计入，一般 1–3 MB 足够。画布每次保存都会上传整个项目，过大会拖慢自动保存。当前 ≈ {{ canvasProjectMaxKbLabel }}</small>
             </span>
-            <el-input-number v-model="form.canvasProjectMaxKb" :min="1" :max="102400" :step="1024" :precision="0" />
+            <el-input-number v-model="form.canvasProjectMaxKb" :min="1" :max="9216" :step="512" :precision="0" />
           </label>
         </div>
       </div>

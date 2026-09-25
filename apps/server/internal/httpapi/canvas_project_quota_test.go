@@ -50,7 +50,7 @@ func TestCanvasProjectCountLimitFollowsAdminSetting(t *testing.T) {
 	}
 	w := env.do(t, http.MethodGet, "/api/v1/me/canvas-project-quota", nil, token)
 	quota, _ := decode(t, w)
-	if w.Code != http.StatusOK || quota["used"] != float64(2) || quota["limit"] != float64(2) || quota["base"] != float64(2) || quota["maxBytes"] != float64(30<<20) {
+	if w.Code != http.StatusOK || quota["used"] != float64(2) || quota["limit"] != float64(2) || quota["base"] != float64(2) || quota["maxBytes"] != float64(3<<20) {
 		t.Fatalf("quota: status %d body %s", w.Code, w.Body.String())
 	}
 	if w := env.do(t, http.MethodDelete, "/api/v1/canvas-projects/"+firstID, nil, token); w.Code != http.StatusNoContent {
