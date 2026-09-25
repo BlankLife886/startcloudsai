@@ -1395,7 +1395,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       outputType: "image",
       resolutionScale: supportsResolution ? resolution : "",
       superResolutionEnabled: feature.superResolutionEnabled !== false,
-      selectedSkillIds,
+      // 技能控件隐藏时用户既看不到也关不掉已选技能（旧设置、创作台默认值），此时不附加任何技能。
+      selectedSkillIds: SHOW_GENERATION_SKILL_CONTROLS ? selectedSkillIds : [],
       customSkills: [],
     });
     const skillPrompt = buildWallpaperSkillPrompt(activeSkills);

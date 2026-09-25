@@ -1554,7 +1554,8 @@ export function StudioHubView() {
     }
     const config = {
       ...selectedConfig,
-      skills: [...(selectedConfig.skills || [])],
+      // 技能控件隐藏时不交接默认/历史技能，避免目标页面附加用户看不到的指令。
+      skills: SHOW_GENERATION_SKILL_CONTROLS ? [...(selectedConfig.skills || [])] : [],
       referenceImages: references.map((item) => ({ ...item })),
       autoStart: true,
       costConfirmed: true,
