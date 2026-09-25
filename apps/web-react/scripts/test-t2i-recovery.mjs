@@ -10,6 +10,7 @@ import { savePendingBatch, readPendingBatch } from '../src/features/text-to-imag
 import { submissionFailure, submissionTask, serverTaskCounts, LOCAL_SUBMISSION_STATUSES, QUEUE_CAPACITY_CODES, taskStatePresentation } from '../src/features/text-to-image/submissionState.js';
 import { taskTimestamp, taskGenerationElapsedMs, taskTotalElapsedMs } from '../src/legacy-modules/features/ai-wallpaper/domain/taskGenerationTiming.js';
 import { IMAGE_COUNT_HARD_MAX } from '../src/legacy-modules/features/ai-shared/modelImageCapabilities.js';
+import { SKILL_TASK_TYPES } from '../src/features/skills/skillComposition.js';
 
 const read = (path) => ts.createSourceFile(path, fs.readFileSync(new URL(path, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const view = read('../src/views/TextToImageView.jsx');
@@ -649,7 +650,7 @@ test('submission queue validates account scope immediately before sending the PO
     exports: {}, AbortController, DOMException, setTimeout, clearTimeout, scheduleWalletRefresh() {},
     apiPost: async () => { posts++; return { task: { id: 'should-not-exist' } }; },
     withSubmissionSlot: async (operation) => { await queued.promise; return operation(); },
-    resolveSkillsForTaskType: async () => [], composeSkillPrompt: (prompt) => String(prompt || ''),
+    SKILL_TASK_TYPES, expandSkillMentions: async (prompt) => ({ prompt: String(prompt || ''), skills: [] }),
   };
   execute([declaration(api, 'postTaskWithRecovery'), declaration(api, 'createTask')].join('\n'), context);
   const result = context.exports.createTask({ type: 't2i', idempotencyKey: 'stable', isCurrentSession: () => current });
@@ -659,35 +660,41 @@ test('submission queue validates account scope immediately before sending the PO
   assert.equal(posts, 0);
 });
 
-// Skill 是增强项：装载信息读不到时必须照常提交，否则一次接口抖动就挡住所有生成。
-test('a failing skill lookup still submits the generation with the original prompt', async () => {
+// Skill 是增强项：`@技能` 展开出错时必须照常提交原提示词，否则一次技能库抖动就挡住所有生成。
+test('a failing skill expansion still submits the generation with the original prompt', async () => {
   let sent = null;
   const context = {
     exports: {}, AbortController, DOMException, setTimeout, clearTimeout, scheduleWalletRefresh() {},
     apiPost: async (_path, body) => { sent = body; return { task: { id: 'submitted' } }; },
     withSubmissionSlot: (operation) => operation(),
-    resolveSkillsForTaskType: async () => { throw new Error('skill lookup down'); },
-    composeSkillPrompt: (prompt, skills) => [...skills.map((s) => s.instruction), String(prompt || '')].join('\n\n'),
+    SKILL_TASK_TYPES,
+    expandSkillMentions: async () => { throw new Error('skill library down'); },
   };
   execute([declaration(api, 'postTaskWithRecovery'), declaration(api, 'createTask')].join('\n'), context);
-  const task = await context.exports.createTask({ type: 't2i', prompt: '一只猫' });
-  assert.equal(task.id, 'submitted', '读不到 Skill 时生成必须照常提交');
-  assert.equal(sent.prompt, '一只猫', '失败时按没有装载处理，提示词保持原样');
+  const task = await context.exports.createTask({ type: 't2i', prompt: '一只猫 @柔光' });
+  assert.equal(task.id, 'submitted', '技能展开失败时生成必须照常提交');
+  assert.equal(sent.prompt, '一只猫 @柔光', '失败时按没有技能处理，提示词保持原样');
 });
 
-// 装载成功时指令要真的拼进提交体，而不是只在本地算一遍。
-test('loaded skills reach the submitted prompt', async () => {
+// `@技能` 展开结果要真的进入提交体，而不是只在本地算一遍；不支持技能的任务类型不展开。
+test('expanded skill mentions reach the submitted prompt only for skill task types', async () => {
   let sent = null;
+  let expansions = 0;
   const context = {
     exports: {}, AbortController, DOMException, setTimeout, clearTimeout, scheduleWalletRefresh() {},
     apiPost: async (_path, body) => { sent = body; return { task: { id: 'submitted' } }; },
     withSubmissionSlot: (operation) => operation(),
-    resolveSkillsForTaskType: async () => [{ instruction: '柔和顶光' }],
-    composeSkillPrompt: (prompt, skills) => [...skills.map((s) => s.instruction), String(prompt || '')].join('\n\n'),
+    SKILL_TASK_TYPES,
+    expandSkillMentions: async () => { expansions++; return { prompt: '柔和顶光\n\n一只猫', skills: [{ name: '柔光' }] }; },
   };
   execute([declaration(api, 'postTaskWithRecovery'), declaration(api, 'createTask')].join('\n'), context);
-  await context.exports.createTask({ type: 't2i', prompt: '一只猫' });
+  await context.exports.createTask({ type: 't2i', prompt: '一只猫 @柔光' });
   assert.equal(sent.prompt, '柔和顶光\n\n一只猫');
+  const nonSkillType = ['coloring', 'background_remove', 'media_tool'].find((type) => !SKILL_TASK_TYPES.includes(type));
+  assert.ok(nonSkillType, 'fixture needs a task type without skill support');
+  await context.exports.createTask({ type: nonSkillType, prompt: '线稿 @柔光' });
+  assert.equal(sent.prompt, '线稿 @柔光', '不支持技能的任务类型不展开 @提及');
+  assert.equal(expansions, 1);
 });
 
 test('accepted response from an old account never triggers cancellation under the new account', async () => {

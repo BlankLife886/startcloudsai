@@ -3,7 +3,7 @@
  * 鉴权靠 HttpOnly Cookie（sc_session），前端不再保存 token/CSRF；
  * 仅在内存/会话存储里缓存 user 供刷新前快速渲染。
  */
-import { apiDelete, apiGet, apiPost, isMalformedSuccessResponse } from './apiClient'
+import { apiDelete, apiGet, apiPost, isMalformedSuccessResponse } from './apiClient.js'
 
 const AUTH_SESSION_FALLBACK_KEY = 'sc_auth_session_cache'
 let currentAccountRequest = null
