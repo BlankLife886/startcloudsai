@@ -216,8 +216,9 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		"ai.optimize":        gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
 		"ai.puzzle":          gin.H{"enabled": true, "config": gin.H{"publicModels": allImageModels}},
 		"ai.infiniteCanvas": gin.H{"enabled": len(canvasImageModels)+len(canvasTextModels) > 0, "config": gin.H{
-			"imageModels": canvasImageModels,
-			"textModels":  canvasTextModels,
+			"imageModels":   canvasImageModels,
+			"textModels":    canvasTextModels,
+			"batchMaxCount": settings.ResolveCanvasBatchMaxCount(ctx, s.St.Pool),
 		}},
 	}
 	ok(c, gin.H{

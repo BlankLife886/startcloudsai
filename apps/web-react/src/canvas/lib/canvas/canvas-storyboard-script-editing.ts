@@ -1,4 +1,5 @@
 import { parseStoryboardScript, type StoryboardParseMode, type StoryboardStyle } from "./storyboard-parser.ts";
+import { CANVAS_BATCH_HARD_MAX_COUNT, clampCanvasBatchCount } from "./canvas-batch-limit.ts";
 import type { CanvasConnection, CanvasNodeData, StoryboardInputRole } from "../../types/canvas.ts";
 
 const STORYBOARD_TEXT_ROLE_LABELS: Record<StoryboardInputRole, string> = {
@@ -125,19 +126,21 @@ export function estimateStoryboardWorkflowShotCount(
         storyboardInputRoles?: Record<string, StoryboardInputRole>;
     } | undefined,
     imageInputs: StoryboardInputLike[],
+    /** 后台「画布批量生成上限」，缺省为平台硬上限。 */
+    maxCount: number = CANVAS_BATCH_HARD_MAX_COUNT,
 ): number {
     const batchMode = metadata?.batchMode === "refs" ? "refs" : metadata?.batchMode === "variants" ? "variants" : "split";
     if (batchMode === "variants") {
-        return Math.min(100, Math.max(1, Math.floor(Number(metadata?.batchVariantCount) || 4)));
+        return clampCanvasBatchCount(metadata?.batchVariantCount, 4, maxCount);
     }
     if (batchMode === "refs") {
         const roles = metadata?.storyboardInputRoles || {};
         const { inputImages } = classifyStoryboardBatchImages(imageInputs, roles, "refs");
-        return Math.max(1, Math.min(100, inputImages.length || imageInputs.length || 1));
+        return clampCanvasBatchCount(inputImages.length || imageInputs.length, 1, maxCount);
     }
     const declared = Number(metadata?.storyboardShotCount || metadata?.storyboardSceneCount);
-    if (Number.isFinite(declared) && declared > 0) return Math.min(100, Math.floor(declared));
-    return 6;
+    if (Number.isFinite(declared) && declared > 0) return clampCanvasBatchCount(declared, 1, maxCount);
+    return clampCanvasBatchCount(6, 6, maxCount);
 }
 
 export function resolveStoryboardScriptInput(input: {

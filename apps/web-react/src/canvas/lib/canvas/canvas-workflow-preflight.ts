@@ -7,7 +7,7 @@ import { canvasImageSizeParams } from "@/lib/canvas/canvas-image-model";
 import { isCanvasLocalImageOperation } from "@/lib/canvas/canvas-local-image-operation";
 import { estimateStoryboardWorkflowShotCount } from "@/lib/canvas/canvas-storyboard-script-editing";
 import { validateCanvasWorkflowNodeReadiness, type CanvasWorkflowNodeReadinessIssue, type CanvasWorkflowPlan } from "@/lib/canvas/canvas-workflow";
-import { modelOptionMeta, type AiConfig } from "@/stores/use-config-store";
+import { modelOptionMeta, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 
 type WorkflowPreflightFailureReason = "node_missing" | "unsupported_media" | "empty_input" | "readiness" | "model_unavailable" | "pricing_unavailable" | "invalid_image_size";
@@ -89,6 +89,7 @@ export function preflightCanvasWorkflow(options: {
                 generationInputs
                     .filter((input) => input.type === "image" && input.image)
                     .map((input) => ({ nodeId: input.nodeId, type: input.type, title: input.title, image: input.image })),
+                useConfigStore.getState().batchMaxCount,
             )
             : getGenerationCount(config.count);
         const localOperation = isCanvasLocalImageOperation(node.metadata?.localImageOperation);

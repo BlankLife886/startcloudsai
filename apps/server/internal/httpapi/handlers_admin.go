@@ -2220,6 +2220,7 @@ var settingsCamel = map[string]string{
 	"image_display_max_edge":                      "imageDisplayMaxEdge",
 	"image_thumb_max_edge":                        "imageThumbMaxEdge",
 	"image_fetch_concurrency":                     "imageFetchConcurrency",
+	"canvas_batch_max_count":                      "canvasBatchMaxCount",
 	"cross_provider_same_model_balancing_enabled": "crossProviderSameModelBalancingEnabled",
 	"admin_image_analysis_provider_id":            "adminImageAnalysisProviderId",
 	"admin_image_analysis_model_id":               "adminImageAnalysisModelId",
@@ -2544,6 +2545,12 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 32 {
 				fail(c, apperr.E("validation_error", "imageFetchConcurrency: 须在 1-32 之间", 422))
+				return
+			}
+		case "canvas_batch_max_count":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > settings.CanvasBatchHardMaxCount {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("canvasBatchMaxCount: 须在 1-%d 之间", settings.CanvasBatchHardMaxCount), 422))
 				return
 			}
 		case "signup_bonus_cents", "daily_limit", "growth_group_reward_cents", "growth_failure_bonus_cents", "suggestion_reward_max_cents":

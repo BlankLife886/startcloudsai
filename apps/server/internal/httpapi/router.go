@@ -291,6 +291,7 @@ func (s *Server) Router() *gin.Engine {
 	api.PATCH("/me/profile", s.patchProfile)
 	api.GET("/me/overview", s.overview)
 	api.GET("/me/usage-stats", s.myUsageStats)
+	api.GET("/me/concurrency", s.myConcurrency)
 	api.GET("/me/wallet", s.myWallet)
 	api.GET("/me/referrals", s.myReferrals)
 	api.GET("/me/wallet/summary", s.myWalletSummary)

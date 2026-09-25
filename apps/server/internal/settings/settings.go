@@ -36,6 +36,7 @@ var Defaults = map[string]json.RawMessage{
 	"image_display_max_edge":                      json.RawMessage(`2048`),
 	"image_thumb_max_edge":                        json.RawMessage(`512`),
 	"image_fetch_concurrency":                     json.RawMessage(`8`),
+	"canvas_batch_max_count":                      json.RawMessage(`100`),
 	"cross_provider_same_model_balancing_enabled": json.RawMessage(`false`),
 	"admin_image_analysis_provider_id":            json.RawMessage(`""`),
 	"admin_image_analysis_model_id":               json.RawMessage(`""`),
@@ -194,6 +195,19 @@ func GetInt(ctx context.Context, q store.Q, key string) (int64, error) {
 		return 0, nil
 	}
 	return v, nil
+}
+
+// CanvasBatchHardMaxCount 是无限画布批量配置（一次批量生成的节点/任务数）的硬上限，
+// 与画布分镜解析的最大镜头数一致；后台 canvas_batch_max_count 只能在 1-100 内收紧。
+const CanvasBatchHardMaxCount = 100
+
+// ResolveCanvasBatchMaxCount 返回后台配置的画布批量上限，未配置或无效时取硬上限。
+func ResolveCanvasBatchMaxCount(ctx context.Context, q store.Q) int {
+	v, err := GetInt(ctx, q, "canvas_batch_max_count")
+	if err != nil || v < 1 || v > CanvasBatchHardMaxCount {
+		return CanvasBatchHardMaxCount
+	}
+	return int(v)
 }
 
 const (

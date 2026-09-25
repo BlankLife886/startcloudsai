@@ -13,6 +13,7 @@ import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audi
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
 import { defaultCanvasImageRatio, applyCanvasImageModelSettings, canvasExactSizeSettings, canvasExactSizeSettingsForNode, canvasImageModelCapabilities, canvasImageSizeParams } from "@/lib/canvas/canvas-image-model";
 import { defaultConfig, modelOptionMeta, resolveModelForCapability, useConfigStore, useEffectiveConfig, type ReasoningEffort } from "@/stores/use-config-store";
+import { clampCanvasBatchCount } from "@/lib/canvas/canvas-batch-limit";
 import { adoptGeneratedImage, uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
@@ -185,6 +186,7 @@ import {
 	CANVAS_TASK_PROGRESS_EVENT,
     canvasImageTaskParams,
     canvasManualTaskKey,
+    canvasTaskConcurrencyLimit,
     canvasWorkflowTaskKey,
     createCanvasTaskNonce,
 	getCanvasAssistantRunRecord,
@@ -4437,7 +4439,11 @@ function InfiniteCanvasPage() {
             | { status: "failed"; message: string }
         > => {
             const parseMode = resolveStoryboardParseMode(options.parseMode);
-            const formattedCount = Math.min(100, Math.max(1, detectStoryboardShotCount(script, options.style, parseMode) || Math.floor(Number(options.sceneCount) || 6)));
+            const formattedCount = clampCanvasBatchCount(
+                detectStoryboardShotCount(script, options.style, parseMode) || Math.floor(Number(options.sceneCount) || 6),
+                1,
+                useConfigStore.getState().batchMaxCount,
+            );
             const fallback = parseStoryboardScript(script, { count: formattedCount, style: options.style, mode: parseMode });
             const fallbackWithUserShotTypes = applyStoryboardShotTypeOverrides(
                 { title: "批量配置", globalStyle: storyboardStyleLabel(options.style), scenes: fallback, source: "rules" },
@@ -5080,8 +5086,14 @@ function InfiniteCanvasPage() {
             // Only claimed workers enter runningNodeIds. Queued shots stay
             // executionStatus/storyboardStatus "queued" until a slot starts.
             // Continuity batches stay serial so the first keyframe can anchor
-            // later shots; independent batches use up to four workers.
-            await Promise.all(Array.from({ length: options.consistency ? 1 : Math.min(4, scenesToRun.length) }, () => worker()));
+            // later shots; independent batches run as many shots as the user's
+            // image concurrency quota allows (quota ÷ images per shot), so the
+            // shots shown as running match the tasks actually submitted.
+            const imagesPerShot = Math.max(1, getGenerationCount(generationConfig.count));
+            const shotWorkers = options.consistency
+                ? 1
+                : Math.min(scenesToRun.length, Math.max(1, Math.floor((await canvasTaskConcurrencyLimit()) / imagesPerShot)));
+            await Promise.all(Array.from({ length: shotWorkers }, () => worker()));
             if (controller.signal.aborted) {
                 const canceledMessage = t("canvas.storyboard.statusCanceled");
                 scenes.forEach((scene) => {

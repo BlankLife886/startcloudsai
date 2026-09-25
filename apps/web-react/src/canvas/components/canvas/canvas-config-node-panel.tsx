@@ -51,6 +51,7 @@ import {
   canvasImageSettingsFromModel,
   resolveCanvasImageModel,
 } from "@/lib/canvas/canvas-image-model";
+import { clampCanvasBatchCount } from "@/lib/canvas/canvas-batch-limit";
 import {
   formatGenerationDuration,
   useGenerationElapsed,
@@ -335,7 +336,8 @@ function CanvasStoryboardConfigNodePanel({
   const style = (node.metadata?.storyboardStyle || "cinematic") as StoryboardStyle;
   const parseMode = resolveStoryboardParseMode(node.metadata?.storyboardParseMode);
   const batchMode = resolveBatchMode(node.metadata?.batchMode);
-  const variantCount = Math.min(100, Math.max(1, Math.floor(Number(node.metadata?.batchVariantCount) || 4)));
+  const batchMaxCount = useConfigStore((state) => state.batchMaxCount);
+  const variantCount = clampCanvasBatchCount(node.metadata?.batchVariantCount, 4, batchMaxCount);
   const selectedImageInputs = useMemo(
     () =>
       inputs.filter(
@@ -365,9 +367,10 @@ function CanvasStoryboardConfigNodePanel({
   };
   const autoShotCount = useMemo(() => {
     if (batchMode === "variants") return variantCount;
-    if (batchMode === "refs") return driverImages.length;
-    return detectStoryboardShotCount(script, style, parseMode) || (script.trim() ? 1 : 0);
-  }, [batchMode, variantCount, driverImages.length, script, style, parseMode]);
+    // 后台「画布批量生成上限」同样约束按参考图/按脚本拆分的镜头数。
+    if (batchMode === "refs") return Math.min(batchMaxCount, driverImages.length);
+    return Math.min(batchMaxCount, detectStoryboardShotCount(script, style, parseMode) || (script.trim() ? 1 : 0));
+  }, [batchMode, variantCount, batchMaxCount, driverImages.length, script, style, parseMode]);
   const promptPreviewRows = useMemo(() => {
     if (batchMode === "variants" || batchMode === "refs") {
       const trimmed = script.trim();
@@ -573,6 +576,7 @@ function CanvasStoryboardConfigNodePanel({
             </span>
             <StoryboardCountStepper
               value={variantCount}
+              max={batchMaxCount}
               disabled={running}
               label={t("canvas.storyboard.configVariantCountAria")}
               theme={theme}
@@ -685,18 +689,19 @@ function CanvasStoryboardConfigNodePanel({
 
 
 const COUNT_STEPPER_MIN = 1;
-const COUNT_STEPPER_MAX = 100;
 const COUNT_STEPPER_HOLD_DELAY_MS = 380;
 const COUNT_STEPPER_HOLD_INTERVAL_MS = 80;
 
 function StoryboardCountStepper({
   value,
+  max,
   disabled,
   label,
   theme,
   onChange,
 }: {
   value: number;
+  max: number;
   disabled: boolean;
   label: string;
   theme: (typeof canvasThemes)[keyof typeof canvasThemes];
@@ -716,7 +721,7 @@ function StoryboardCountStepper({
   useEffect(() => endHold, [endHold]);
 
   const nudge = (delta: number) => {
-    const next = Math.min(COUNT_STEPPER_MAX, Math.max(COUNT_STEPPER_MIN, valueRef.current + delta));
+    const next = Math.min(max, Math.max(COUNT_STEPPER_MIN, valueRef.current + delta));
     if (next !== valueRef.current) onChange(next);
   };
 
@@ -737,7 +742,7 @@ function StoryboardCountStepper({
     const parsed = Math.floor(Number(draft));
     setDraft(null);
     if (!Number.isFinite(parsed)) return;
-    const next = Math.min(COUNT_STEPPER_MAX, Math.max(COUNT_STEPPER_MIN, parsed));
+    const next = Math.min(max, Math.max(COUNT_STEPPER_MIN, parsed));
     if (next !== value) onChange(next);
   };
 
@@ -772,7 +777,7 @@ function StoryboardCountStepper({
       />
       <button
         type="button"
-        disabled={disabled || value >= COUNT_STEPPER_MAX}
+        disabled={disabled || value >= max}
         aria-label={`${label} +`}
         onPointerDown={(event) => beginHold(event, 1)}
         onPointerLeave={endHold}

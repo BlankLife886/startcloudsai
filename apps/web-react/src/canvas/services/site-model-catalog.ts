@@ -1,4 +1,5 @@
 import { starcloudsRequest } from "@/services/starclouds-api";
+import { normalizeCanvasBatchMaxCount } from "@/lib/canvas/canvas-batch-limit";
 import { normalizeExactSizeCapabilities } from "@react/config/exactImageSize.js";
 import { MODEL_REASONING_EFFORTS, defaultCanvasAgentPricing, type CanvasAgentPricing, type ChannelModel, type ModelChannel, type ModelReasoningEffort, type ModelReasoningPrice } from "@/stores/use-config-store";
 
@@ -45,6 +46,7 @@ type RuntimeConfig = {
                     standardMultiplier?: unknown;
                     deepMultiplier?: unknown;
                 };
+                batchMaxCount?: unknown;
             };
         };
         "ai.imageTools"?: {
@@ -82,6 +84,8 @@ export type SiteModelCatalog = {
     channel: ModelChannel;
     defaults: Partial<Record<"image" | "text" | "video" | "audio", string>>;
     agentPricing: CanvasAgentPricing;
+    /** 后台「画布批量生成上限」，缺省时为硬上限。 */
+    batchMaxCount: number;
 };
 
 export async function fetchSiteModelCatalog(): Promise<SiteModelCatalog> {
@@ -114,6 +118,7 @@ export async function fetchSiteModelCatalog(): Promise<SiteModelCatalog> {
             standardMultiplier: positiveNumber(feature?.config?.agentPricing?.standardMultiplier) || defaultCanvasAgentPricing.standardMultiplier,
             deepMultiplier: positiveNumber(feature?.config?.agentPricing?.deepMultiplier) || defaultCanvasAgentPricing.deepMultiplier,
         },
+        batchMaxCount: normalizeCanvasBatchMaxCount(feature?.config?.batchMaxCount),
     };
 }
 

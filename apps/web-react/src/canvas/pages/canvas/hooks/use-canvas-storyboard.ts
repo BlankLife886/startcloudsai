@@ -10,7 +10,8 @@ import { isGenerationCanceled } from "@/lib/canvas/canvas-generation-helpers";
 import { detectStoryboardShotCount, buildStoryboardVariantPlan, buildStoryboardRefPlan, buildStoryboardRefShotIds, resolveBatchMode, resolveStoryboardConsistency, resolveStoryboardParseMode, STORYBOARD_INPUT_LIMIT, STORYBOARD_MAX_SCENES } from "@/lib/canvas/storyboard-parser";
 import type { StoryboardPlan } from "@/lib/canvas/storyboard-parser";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
-import type { ReasoningEffort } from "@/stores/use-config-store";
+import { useConfigStore, type ReasoningEffort } from "@/stores/use-config-store";
+import { clampCanvasBatchCount } from "@/lib/canvas/canvas-batch-limit";
 
 type CommitNodes = (updater: (current: CanvasNodeData[]) => CanvasNodeData[]) => CanvasNodeData[];
 
@@ -224,13 +225,18 @@ export function useCanvasStoryboardConfigRunner(params: UseCanvasStoryboardConfi
             const style = asStoryboardStyle(node.metadata.storyboardStyle);
             const parseMode = resolveStoryboardParseMode(node.metadata.storyboardParseMode);
             const aiPolish = batchMode === "split" ? node.metadata.storyboardAiPolish === true : false;
-            const variantCount = Math.min(100, Math.max(1, Math.floor(Number(node.metadata.batchVariantCount) || 4)));
-            const detectedCount =
+            // 后台「画布批量生成上限」约束所有批量模式最终生成的节点数。
+            const batchMaxCount = useConfigStore.getState().batchMaxCount;
+            const variantCount = clampCanvasBatchCount(node.metadata.batchVariantCount, 4, batchMaxCount);
+            const detectedCount = clampCanvasBatchCount(
                 batchMode === "variants"
                     ? variantCount
                     : batchMode === "refs"
                       ? selectedImageCount
-                      : detectStoryboardShotCount(script, style, parseMode) || 6;
+                      : detectStoryboardShotCount(script, style, parseMode) || 6,
+                1,
+                batchMaxCount,
+            );
             const options: StoryboardGenerationOptions = {
                 style,
                 sceneCount: detectedCount,

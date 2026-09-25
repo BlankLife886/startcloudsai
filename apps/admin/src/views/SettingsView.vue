@@ -94,6 +94,7 @@ const form = reactive({
   userMaxRunningImages: 400,
   userMaxConcurrentTasks: 4,
   userMaxConcurrentChats: 4,
+  canvasBatchMaxCount: 100,
   globalMaxConcurrentTasks: 2000,
   globalMaxConcurrentChats: 32,
   globalMaxActiveTasks: 12000,
@@ -148,6 +149,7 @@ const settingsSignature = () =>
     userMaxRunningImages: form.userMaxRunningImages,
     userMaxConcurrentTasks: form.userMaxConcurrentTasks,
     userMaxConcurrentChats: form.userMaxConcurrentChats,
+    canvasBatchMaxCount: form.canvasBatchMaxCount,
     globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
     globalMaxConcurrentChats: form.globalMaxConcurrentChats,
     globalMaxActiveTasks: form.globalMaxActiveTasks,
@@ -492,6 +494,7 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.userMaxRunningImages = settings.userMaxRunningImages ?? 400;
   form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 4;
   form.userMaxConcurrentChats = settings.userMaxConcurrentChats ?? 4;
+  form.canvasBatchMaxCount = settings.canvasBatchMaxCount ?? 100;
   form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks != null && settings.globalMaxConcurrentTasks > 0
     ? settings.globalMaxConcurrentTasks : settings.effectiveGlobalConcurrency ?? 2000;
   form.globalMaxConcurrentChats = settings.globalMaxConcurrentChats ?? 32;
@@ -643,6 +646,7 @@ async function commitSave() {
           userMaxRunningImages: form.userMaxRunningImages,
           userMaxConcurrentTasks: form.userMaxConcurrentTasks,
           userMaxConcurrentChats: form.userMaxConcurrentChats,
+          canvasBatchMaxCount: form.canvasBatchMaxCount,
           globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
           globalMaxConcurrentChats: form.globalMaxConcurrentChats,
           globalMaxActiveTasks: form.globalMaxActiveTasks,
@@ -1356,6 +1360,13 @@ onMounted(() => {
           <label class="field-row">
             <span><strong>个人对话并发（次）</strong><small>同一账号允许同时执行的对话次数</small></span>
             <el-input-number v-model="form.userMaxConcurrentChats" :min="1" :max="10000" />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>画布批量生成上限（个）</strong>
+              <small>无限画布「批量配置」一次最多生成的节点数，每个节点一个任务；仍受上面的图片并发约束</small>
+            </span>
+            <el-input-number v-model="form.canvasBatchMaxCount" :min="1" :max="100" :precision="0" />
           </label>
         </div>
       </div>

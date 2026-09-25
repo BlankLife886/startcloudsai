@@ -2,6 +2,8 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { CANVAS_BATCH_HARD_MAX_COUNT, normalizeCanvasBatchMaxCount } from "@/lib/canvas/canvas-batch-limit";
+
 export type ModelCapability = "image" | "video" | "text" | "audio";
 export type ReasoningEffort = ModelReasoningEffort | "auto";
 export type ModelReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -134,9 +136,11 @@ export const defaultConfig: AiConfig = {
 type ConfigStore = {
     config: AiConfig;
     agentPricing: CanvasAgentPricing;
+    /** 后台配置的画布批量生成上限（不持久化，以服务端为准）。 */
+    batchMaxCount: number;
     isConfigOpen: boolean;
     shouldPromptContinue: boolean;
-    installSiteCatalog: (channel: ModelChannel, defaults: Partial<Record<ModelCapability, string>>, agentPricing?: Partial<CanvasAgentPricing>) => void;
+    installSiteCatalog: (channel: ModelChannel, defaults: Partial<Record<ModelCapability, string>>, agentPricing?: Partial<CanvasAgentPricing>, batchMaxCount?: number) => void;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
     openConfigDialog: (shouldPromptContinue?: boolean) => void;
@@ -244,9 +248,10 @@ export const useConfigStore = create<ConfigStore>()(
         (set) => ({
             config: defaultConfig,
             agentPricing: defaultCanvasAgentPricing,
+            batchMaxCount: CANVAS_BATCH_HARD_MAX_COUNT,
             isConfigOpen: false,
             shouldPromptContinue: false,
-            installSiteCatalog: (channel, defaults, agentPricing) =>
+            installSiteCatalog: (channel, defaults, agentPricing, batchMaxCount) =>
                 set((state) => {
                     const channels = [channel];
                     const value = (capability: ModelCapability) => (defaults[capability] ? encodeChannelModel(channel.id, defaults[capability]!) : "");
@@ -254,6 +259,7 @@ export const useConfigStore = create<ConfigStore>()(
                     const textModel = value("text");
                     const exactModel = state.config.sizeMode === "exact" ? state.config.imageModel || state.config.model : "";
                     return {
+                        batchMaxCount: normalizeCanvasBatchMaxCount(batchMaxCount),
                         agentPricing: {
                             standardMultiplier: agentPricing?.standardMultiplier || defaultCanvasAgentPricing.standardMultiplier,
                             deepMultiplier: agentPricing?.deepMultiplier || defaultCanvasAgentPricing.deepMultiplier,

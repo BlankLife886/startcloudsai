@@ -6,6 +6,7 @@ import { canvasImageSizeParams, canvasImageMaxCount, canvasImageMaxReferences, c
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { createCanvasAgentToolDelivery, createCanvasAgentToolJournal, type CanvasAgentToolResultEnvelope } from "@/lib/canvas/canvas-agent-tool-delivery";
 import { compactCanvasSnapshot, resolveCanvasAgentCompletion } from "@/lib/canvas/canvas-hosted-agent";
+import { createCanvasTaskGate } from "@/lib/canvas/canvas-task-gate";
 import { uploadImage } from "@/services/image-storage";
 import { StarcloudsApiError, starcloudsApiUrl, starcloudsFileUrl, starcloudsJson, starcloudsRequest } from "@/services/starclouds-api";
 import type { AgentChatItem, AgentMessageAttachment, AgentReasoningEffort } from "@/stores/use-agent-store";
@@ -102,56 +103,45 @@ export function createCanvasTaskNonce() {
 // ---------------------------------------------------------------------------
 // Concurrency gate
 //
-// At most CANVAS_TASK_CONCURRENCY canvas tasks may be in flight (submitted and
-// not yet terminal) at any moment, so a large workflow wave queues instead of
-// stampeding the backend with dozens of simultaneous submissions and streams.
+// 在途画布任务按张数占用名额，上限取用户实际的出图并发额度（/me/concurrency，基础 + 订阅 +
+// 手动），让一大波工作流排在前端而不是一次性冲到后端；读取失败时退回 6。
 
-const CANVAS_TASK_CONCURRENCY = 6;
+const CANVAS_CONCURRENCY_TTL_MS = 60_000;
+const canvasTaskGate = createCanvasTaskGate({ abortError });
+let canvasConcurrencyFetchedAt = 0;
+let canvasConcurrencyRequest: Promise<void> | null = null;
 
-type CanvasTaskGateWaiter = {
-    resolve: () => void;
-    signal?: AbortSignal;
-    onAbort?: () => void;
-};
+type UserConcurrencyResponse = { imageLimit?: number; limit?: number };
 
-let activeCanvasTaskCount = 0;
-const canvasTaskGateWaiters: CanvasTaskGateWaiter[] = [];
-
-function releaseCanvasTaskSlot() {
-    activeCanvasTaskCount = Math.max(0, activeCanvasTaskCount - 1);
-    const waiter = canvasTaskGateWaiters.shift();
-    if (!waiter) return;
-    activeCanvasTaskCount += 1;
-    if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
-    waiter.resolve();
+/** 刷新画布并发上限；缓存 60 秒，失败时保留当前值（初始为 6）。 */
+export function refreshCanvasTaskConcurrency(force = false): Promise<void> {
+    if (!force && Date.now() - canvasConcurrencyFetchedAt < CANVAS_CONCURRENCY_TTL_MS) return Promise.resolve();
+    if (canvasConcurrencyRequest) return canvasConcurrencyRequest;
+    canvasConcurrencyRequest = starcloudsRequest<UserConcurrencyResponse>("/me/concurrency")
+        .then((concurrency) => {
+            canvasTaskGate.setLimit(concurrency?.imageLimit ?? concurrency?.limit);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+            canvasConcurrencyFetchedAt = Date.now();
+            canvasConcurrencyRequest = null;
+        });
+    return canvasConcurrencyRequest;
 }
 
-function acquireCanvasTaskSlot(signal?: AbortSignal) {
-    if (signal?.aborted) return Promise.reject(abortError());
-    if (activeCanvasTaskCount < CANVAS_TASK_CONCURRENCY) {
-        activeCanvasTaskCount += 1;
-        return Promise.resolve();
-    }
-    return new Promise<void>((resolve, reject) => {
-        const waiter: CanvasTaskGateWaiter = { resolve, signal };
-        canvasTaskGateWaiters.push(waiter);
-        if (!signal) return;
-        waiter.onAbort = () => {
-            const index = canvasTaskGateWaiters.indexOf(waiter);
-            if (index >= 0) canvasTaskGateWaiters.splice(index, 1);
-            reject(abortError());
-        };
-        signal.addEventListener("abort", waiter.onAbort, { once: true });
-        if (signal.aborted) waiter.onAbort();
-    });
+/** 当前画布并发名额（按张计）；先按需刷新用户额度。 */
+export async function canvasTaskConcurrencyLimit(): Promise<number> {
+    await refreshCanvasTaskConcurrency();
+    return canvasTaskGate.snapshot().limit;
 }
 
-async function withCanvasTaskSlot<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
-    await acquireCanvasTaskSlot(signal);
+async function withCanvasTaskSlot<T>(signal: AbortSignal | undefined, units: number, run: () => Promise<T>): Promise<T> {
+    await refreshCanvasTaskConcurrency();
+    const held = await canvasTaskGate.acquire(units, signal);
     try {
         return await run();
     } finally {
-        releaseCanvasTaskSlot();
+        canvasTaskGate.release(held);
     }
 }
 
@@ -232,7 +222,7 @@ export async function requestCanvasBackgroundRemoval(reference: ReferenceImage, 
     const inputKey = await ensureReferenceKey(reference);
     const modelKey = publicModelKey.trim();
     if (!modelKey) throw new Error("背景移除工具暂不可用");
-    const task = await withCanvasTaskSlot(signal, async () => {
+    const task = await withCanvasTaskSlot(signal, 1, async () => {
         if (signal?.aborted) throw abortError();
         onBeforeCreate?.();
         const created = await starcloudsJson<CanvasTask>("/tasks", "POST", {
@@ -444,7 +434,7 @@ export async function requestCanvasImages(config: AiConfig, prompt: string, refe
     const maskKey = mask ? await ensureReferenceKey(mask) : "";
     if (signal?.aborted) throw abortError();
     const count = Math.max(1, Math.min(canvasImageMaxCount(modelOptionMeta(config, config.model)), Math.floor(Math.abs(Number(config.count)) || 1)));
-    const task = await withCanvasTaskSlot(signal, async () => {
+    const task = await withCanvasTaskSlot(signal, count, async () => {
         if (signal?.aborted) throw abortError();
         onBeforeCreate?.();
         const created = await starcloudsJson<CanvasTask>("/tasks", "POST", {

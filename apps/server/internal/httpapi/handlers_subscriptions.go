@@ -34,6 +34,23 @@ func publicSubscriptionChange(change *store.SubscriptionChange) gin.H {
 		"refundCalculation": change.RefundCalculation, "createdAt": change.CreatedAt, "updatedAt": change.UpdatedAt,
 		"completedAt": change.CompletedAt, "expiresAt": change.ExpiresAt}
 }
+// myConcurrency 返回当前用户的执行并发额度（基础 + 订阅 + 手动）与占用，供前端按实际额度
+// 控制同时提交的任务数；比 /me/subscriptions 轻，不做订阅积分过期等写操作。
+func (s *Server) myConcurrency(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	concurrency, err := store.GetUserConcurrency(store.WithBillingTime(ctx, s.subscriptionNow()), s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, concurrency)
+}
+
 func (s *Server) mySubscriptions(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
