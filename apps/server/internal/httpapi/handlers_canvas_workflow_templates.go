@@ -520,7 +520,7 @@ func canvasTemplateJSON(item *store.CanvasWorkflowTemplate, includeDocument bool
 		"id": item.ID.String(), "slug": item.Slug, "title": item.Title, "category": item.Category,
 		"categoryLabel": item.CategoryLabel, "industry": item.Industry, "summary": item.Summary,
 		"platforms": item.Platforms, "deliverables": item.Deliverables, "accent": item.Accent,
-		"coverUrl": promptCoverURL(&coverKey), "nodeCount": item.NodeCount, "enabled": item.Enabled, "sort": item.Sort,
+		"coverUrl": promptCoverURL(&coverKey), "nodeCount": item.NodeCount, "documentBytes": item.DocumentBytes, "enabled": item.Enabled, "sort": item.Sort,
 		"createdAt": isoValue(item.CreatedAt), "updatedAt": isoValue(item.UpdatedAt),
 	}
 	if includeDocument {

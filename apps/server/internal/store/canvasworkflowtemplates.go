@@ -24,23 +24,27 @@ type CanvasWorkflowTemplate struct {
 	CoverKey      string          `json:"coverKey"`
 	Document      json.RawMessage `json:"document,omitempty"`
 	NodeCount     int             `json:"nodeCount"`
-	Enabled       bool            `json:"enabled"`
-	Sort          int             `json:"sort"`
-	CreatedAt     time.Time       `json:"createdAt"`
-	UpdatedAt     time.Time       `json:"updatedAt"`
+	// DocumentBytes 是模板文档的 JSON 字节数，列表查询不取文档本身时也能展示大小。
+	DocumentBytes int64     `json:"documentBytes"`
+	Enabled       bool      `json:"enabled"`
+	Sort          int       `json:"sort"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 const canvasWorkflowTemplateCols = `id, slug, title, category, category_label, industry, summary,
-	platforms, deliverables, accent, cover_key, document, node_count, enabled, sort, created_at, updated_at`
+	platforms, deliverables, accent, cover_key, document, node_count, enabled, sort, created_at, updated_at,
+	COALESCE(octet_length(document::text), 0)`
 
 const canvasWorkflowTemplateSummaryCols = `id, slug, title, category, category_label, industry, summary,
-	platforms, deliverables, accent, cover_key, 'null'::jsonb, node_count, enabled, sort, created_at, updated_at`
+	platforms, deliverables, accent, cover_key, 'null'::jsonb, node_count, enabled, sort, created_at, updated_at,
+	COALESCE(octet_length(document::text), 0)`
 
 func scanCanvasWorkflowTemplate(row pgx.Row) (*CanvasWorkflowTemplate, error) {
 	var item CanvasWorkflowTemplate
 	if err := row.Scan(&item.ID, &item.Slug, &item.Title, &item.Category, &item.CategoryLabel, &item.Industry,
 		&item.Summary, &item.Platforms, &item.Deliverables, &item.Accent, &item.CoverKey, &item.Document, &item.NodeCount,
-		&item.Enabled, &item.Sort, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		&item.Enabled, &item.Sort, &item.CreatedAt, &item.UpdatedAt, &item.DocumentBytes); err != nil {
 		return nil, err
 	}
 	return &item, nil
