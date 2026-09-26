@@ -406,7 +406,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                     borderWidth: data.type === CanvasNodeType.Image ? 0 : undefined,
                     outline: data.type === CanvasNodeType.Image ? `1px solid ${isActive ? theme.node.activeStroke : isRelated ? theme.node.muted : hovered ? theme.node.strokeHover : theme.node.stroke}` : undefined,
                     outlineOffset: data.type === CanvasNodeType.Image ? -1 : undefined,
-                    background: isGroup ? theme.toolbar.panel : transparentBg ? "transparent" : theme.node.fill,
+                    background: isGroup ? (theme.scheme === "dark" ? "rgba(255,255,255,.025)" : "rgba(255,255,255,.55)") : transparentBg ? "transparent" : theme.node.fill,
                     borderColor: isConfigCard
                         ? isSelected || isConnectionTarget ? theme.node.activeStroke : hovered ? theme.node.strokeHover : theme.node.stroke
                         : isGroup
@@ -493,9 +493,9 @@ export const CanvasNode = React.memo(function CanvasNode({
                 </div>
 
                 {data.metadata?.status === "loading" && hasImageContent ? (
-                    <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[inherit]" style={{ background: `${theme.canvas.background}88` }}>
-                        <div className="flex items-center gap-2 text-xs font-medium" style={{ color: theme.node.text }}>
-                            <RefreshCw className="size-4 animate-spin" />
+                    <div className="pointer-events-none absolute inset-0 z-20 flex items-start justify-start rounded-[inherit] p-2.5" style={{ background: "rgba(12,10,20,.32)" }}>
+                        <div className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold shadow-sm" style={{ background: "rgba(255,255,255,.94)", color: "#b45309" }}>
+                            <RefreshCw className="size-3 animate-spin" />
                             <span>
                                 {data.metadata?.uploading
                                     ? t("canvas.node.uploading")
@@ -588,12 +588,12 @@ function GroupNodeContent({ node, theme, groupChildCount, storyboardGroupStats }
                   ? t("canvas.storyboard.statusRunning")
                   : t("canvas.storyboard.statusQueued");
         const statusColor = status === "succeeded"
-            ? "#36b37e"
+            ? "#22c55e"
             : status === "failed"
-              ? "#e05a5a"
-              : status === "canceled"
+              ? "#e5484d"
+              : status === "canceled" || status === "queued"
                 ? theme.node.muted
-                : theme.node.activeStroke;
+                : "#f5a524";
         const title = storyboard.storyboardTitle || node.title || t("canvas.storyboard.title");
         const knownShots = new Map((stats?.shots || []).map((shot) => [shot.index, shot]));
         const fallbackStatus = status === "succeeded" ? "succeeded" as const : status === "failed" ? "failed" as const : status === "canceled" ? "canceled" as const : "queued" as const;
@@ -611,18 +611,18 @@ function GroupNodeContent({ node, theme, groupChildCount, storyboardGroupStats }
                 : statusLabel;
         const statusTone = (shotStatus: StoryboardGroupShot["status"]) =>
             shotStatus === "succeeded"
-                ? "#36b37e"
+                ? "#22c55e"
                 : shotStatus === "failed"
-                  ? "#e05a5a"
+                  ? "#e5484d"
                   : shotStatus === "canceled"
                     ? theme.node.muted
                     : shotStatus === "queued"
                       ? theme.node.muted
-                      : theme.node.activeStroke;
+                      : "#f5a524";
         return (
             <div className="pointer-events-none flex h-full w-full flex-col p-4">
                 <div className="flex min-w-0 items-center gap-2">
-                    <span className="grid size-9 shrink-0 place-items-center rounded-xl" style={{ background: theme.toolbar.activeBg, color: theme.node.activeStroke }}>
+                    <span className="grid size-8 shrink-0 place-items-center rounded-[10px]" style={{ background: theme.toolbar.activeBg, color: theme.node.activeStroke }}>
                         <Clapperboard className="size-4" />
                     </span>
                     <div className="min-w-0">
@@ -648,12 +648,11 @@ function GroupNodeContent({ node, theme, groupChildCount, storyboardGroupStats }
                     })}
                     {shots.length > 10 ? <span className="px-1 text-[10px] font-medium" style={{ color: theme.node.muted }}>+{shots.length - 10}</span> : null}
                 </div>
-                <div className="relative mt-3 min-h-0 flex-1 overflow-hidden rounded-2xl border" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}>
+                <div className="relative mt-3 min-h-0 flex-1 overflow-hidden rounded-[14px]" style={{ background: theme.toolbar.itemHover }}>
                     <div className="absolute inset-x-4 top-3 flex items-center justify-between gap-3 text-[10px] font-medium" style={{ color: theme.node.muted }}>
                         <span className="truncate">{storyboard.storyboardGlobalStyle || t("canvas.storyboard.title")}</span>
                         <span className="shrink-0 rounded-md border px-1.5 py-0.5 tabular-nums" style={{ borderColor: theme.node.stroke }}>{storyboard.storyboardAspectRatio || "16:9"}</span>
                     </div>
-                    <div className="absolute inset-3 top-10 rounded-xl border border-dashed" style={{ borderColor: theme.node.stroke }} aria-hidden />
                     <div className="absolute inset-x-4 bottom-3 flex items-center gap-1.5" aria-hidden>
                         {shots.slice(0, 12).map((shot) => {
                             const tone = statusTone(shot.status);
@@ -669,17 +668,14 @@ function GroupNodeContent({ node, theme, groupChildCount, storyboardGroupStats }
         );
     }
     return (
-        <div className="pointer-events-none flex h-full w-full flex-col p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: theme.node.text }}>
-                <span className="grid size-8 place-items-center rounded-xl" style={{ background: theme.toolbar.activeBg, color: theme.node.muted }}>
-                    <Group className="size-4" />
-                </span>
+        <div className="pointer-events-none flex h-full w-full flex-col px-3.5 py-3">
+            <div className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: theme.node.muted }}>
+                <Group className="size-3.5" />
                 <span>{t("canvas.node.group")}</span>
-                <span className="ml-auto rounded-full px-2 py-1 text-[11px] font-medium" style={{ background: theme.node.fill, color: theme.node.muted }}>
+                <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}>
                     {t("canvas.node.nodeCount", { count: groupChildCount })}
                 </span>
             </div>
-            <div className="mt-3 flex-1 rounded-2xl border border-dashed" style={{ borderColor: theme.node.stroke, background: theme.node.fill }} />
         </div>
     );
 }
@@ -714,11 +710,20 @@ function LoadingContent({ node, theme }: Pick<NodeContentRendererProps, "node" |
         );
     }
 
+    return <NodeGeneratingState theme={theme} label={stageLabel} elapsed={formatGenerationDuration(elapsedMs)} />;
+}
+
+function NodeGeneratingState({ theme, label, elapsed }: { theme: NodeContentRendererProps["theme"]; label: string; elapsed?: string }) {
     return (
-        <div className="relative flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.activeStroke }}>
-            <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />
-            <span className="text-[11px] font-medium">{stageLabel}</span>
-            <span className="text-[11px] font-semibold tabular-nums tracking-normal">{formatGenerationDuration(elapsedMs)}</span>
+        <div className="canvas-node-shimmer relative flex h-full w-full flex-col items-center justify-center gap-2.5" data-scheme={theme.scheme} style={{ color: theme.node.activeStroke }}>
+            <div className="size-6 animate-spin rounded-full border-2" style={{ borderColor: `${theme.node.activeStroke}33`, borderTopColor: theme.node.activeStroke }} />
+            <span className="text-[12px] font-semibold">
+                {label}
+                {elapsed ? <span className="ml-1.5 tabular-nums opacity-70">{elapsed}</span> : null}
+            </span>
+            <span className="h-[3px] w-28 overflow-hidden rounded-full" style={{ background: `${theme.node.activeStroke}22` }}>
+                <span className="canvas-node-progress block h-full rounded-full" style={{ background: theme.node.activeStroke }} />
+            </span>
         </div>
     );
 }
@@ -765,11 +770,11 @@ function QueuedContent({ node, theme, onCancelQueued }: Pick<NodeContentRenderer
     }
 
     return (
-        <div className="relative flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: theme.node.muted }}>
-            <span className="grid size-9 place-items-center rounded-full border text-[10px] font-semibold" style={{ borderColor: theme.node.stroke }}>
-                ●
+        <div className="relative flex h-full w-full flex-col items-center justify-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold" style={{ background: theme.scheme === "dark" ? "rgba(245,165,36,.14)" : "#fff4e6", color: theme.scheme === "dark" ? "#f5b651" : "#b45309" }}>
+                <span className="size-1.5 animate-pulse rounded-full" style={{ background: "#f5a524" }} />
+                {t("canvas.storyboard.statusQueued")}
             </span>
-            <span className="text-[12px] font-medium">{t("canvas.storyboard.statusQueued")}</span>
         </div>
     );
 }
@@ -1011,42 +1016,45 @@ function ImageNodeContent(props: NodeContentRendererProps) {
     );
 }
 
+function NodeEmptyState({ theme, icon, title, hint }: { theme: NodeContentRendererProps["theme"]; icon: ReactNode; title: string; hint?: string }) {
+    return (
+        <div className="flex h-full w-full p-3">
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 rounded-[12px] border-[1.5px] border-dashed px-3 text-center" style={{ borderColor: theme.scheme === "dark" ? "#3a3647" : "#dcd7e7", color: theme.node.muted }}>
+                <span className="opacity-70">{icon}</span>
+                <span className="text-[12px] font-semibold">{title}</span>
+                {hint ? (
+                    <span className="text-[11px]" style={{ color: theme.node.faint, opacity: 0.8 }}>
+                        {hint}
+                    </span>
+                ) : null}
+            </div>
+        </div>
+    );
+}
+
 function EmptyImageContent({ node, theme }: NodeContentRendererProps) {
     const { t } = useTranslation();
     const deleted = node.metadata?.deletedByHistory;
-    return (
-        <div className="flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: theme.node.placeholder }}>
-            <ImageIcon className="size-5 opacity-45" />
-            <span className="text-[12px] font-medium opacity-50">{deleted ? node.metadata?.deletionMessage || "该图片已被删除" : t("canvas.node.emptyImage")}</span>
-        </div>
-    );
+    return <NodeEmptyState theme={theme} icon={<ImageIcon className="size-5" />} title={deleted ? node.metadata?.deletionMessage || "该图片已被删除" : t("canvas.node.emptyImage")} hint={deleted ? undefined : t("canvas.node.emptyImageHint")} />;
 }
 
 function VideoNodeContent({ node, theme }: NodeContentRendererProps) {
     const { t } = useTranslation();
     if (!node.metadata?.content)
-        return (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: theme.node.placeholder }}>
-                <Video className="size-5 opacity-45" />
-                <span className="text-[12px] font-medium opacity-50">{t("canvas.node.emptyVideo")}</span>
-            </div>
-        );
+        return <NodeEmptyState theme={theme} icon={<Video className="size-5" />} title={t("canvas.node.emptyVideo")} hint={t("canvas.node.emptyVideoHint")} />;
     return <CanvasPreviewVideo src={node.metadata.content} storageKey={node.metadata.storageKey} className="h-full w-full rounded-[inherit] bg-black object-contain" />;
 }
 
 function AudioNodeContent({ node, theme }: NodeContentRendererProps) {
     const { t } = useTranslation();
     if (!node.metadata?.content)
-        return (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: theme.node.placeholder }}>
-                <Music2 className="size-5 opacity-45" />
-                <span className="text-[12px] font-medium opacity-50">{t("canvas.node.emptyAudio")}</span>
-            </div>
-        );
+        return <NodeEmptyState theme={theme} icon={<Music2 className="size-5" />} title={t("canvas.node.emptyAudio")} hint={t("canvas.node.emptyAudioHint")} />;
     return (
         <div className="flex h-full w-full flex-col justify-center gap-3 px-4" style={{ background: theme.node.fill, color: theme.node.text }}>
-            <div className="flex min-w-0 items-center gap-2 text-sm opacity-70">
-                <Music2 className="size-4 shrink-0" />
+            <div className="flex min-w-0 items-center gap-2 text-[12px] font-semibold">
+                <span className="grid size-7 shrink-0 place-items-center rounded-full text-white" style={{ background: "#22c55e", boxShadow: "0 6px 14px rgba(34,197,94,.28)" }}>
+                    <Music2 className="size-3.5" />
+                </span>
                 <span className="truncate">{t("canvas.node.audio")}</span>
             </div>
             <audio src={node.metadata.content} controls className="w-full" data-canvas-no-zoom />
@@ -1256,7 +1264,7 @@ function ImageSlotStatus({ image, startedAt, generationStage }: { image?: Canvas
     const elapsedMs = useGenerationElapsed(startedAt || fallbackStartedAt, undefined, !failed);
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center" style={{ background: theme.node.fill, color: failed ? theme.node.text : theme.node.activeStroke }}>
-            {failed ? <span className="text-xs leading-5">{image.errorDetails || t("canvas.node.failed")}</span> : <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />}
+            {failed ? <span className="text-xs leading-5" style={{ color: theme.scheme === "dark" ? "#ff8a8e" : "#b42318" }}>{image.errorDetails || t("canvas.node.failed")}</span> : <div className="size-6 animate-spin rounded-full border-2" style={{ borderColor: `${theme.node.activeStroke}33`, borderTopColor: theme.node.activeStroke }} />}
             {failed && needsRecharge ? (
                 <a
                     href="/pricing?plan=topup"

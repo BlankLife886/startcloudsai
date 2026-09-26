@@ -243,11 +243,7 @@ html.dark .canvas-config-price,
 html.color-scheme-dark .canvas-config-generate,
 html.dark .canvas-config-generate,
 .dark .canvas-config-generate {
-  height: 32px !important;
-  border-radius: 999px !important;
-  font-weight: 500 !important;
   letter-spacing: 0.01em;
-  box-shadow: none !important;
   filter: none !important;
 }
 
@@ -263,32 +259,44 @@ html.dark .canvas-config-generate .canvas-config-price,
 }
 
 .canvas-config-refined .canvas-config-tabs {
-  border-bottom: 1px solid rgba(120, 112, 148, .14);
+  border-bottom: 1px solid #efedf5;
+}
+
+.canvas-config-refined[data-color-scheme="dark"] .canvas-config-tabs {
+  border-bottom-color: rgba(255, 255, 255, 0.07);
 }
 
 .canvas-config-refined .canvas-config-model-row .canvas-config-field {
-  background: transparent !important;
-  padding-inline: 2px !important;
-  border-radius: 0 !important;
+  background: #f3f1f8 !important;
+  padding-inline: 10px !important;
+  border-radius: 10px !important;
+}
+
+.canvas-config-refined[data-color-scheme="dark"] .canvas-config-model-row .canvas-config-field {
+  background: rgba(255, 255, 255, 0.05) !important;
 }
 
 .canvas-config-refined .canvas-config-parameters {
-  padding: 10px;
+  padding: 8px;
   border-radius: 12px;
-  background: #f0f2f8;
+  background: #f6f5fa;
+  border: 1px solid #efedf5;
 }
 
 .canvas-config-refined .canvas-config-parameters .canvas-config-field {
-  background: #fafbff !important;
-  border-radius: 7px !important;
+  background: #ffffff !important;
+  border-radius: 8px !important;
+  box-shadow: 0 0 0 1px #ebe8f2 !important;
 }
 
 .canvas-config-refined[data-color-scheme="dark"] .canvas-config-parameters {
-  background: #242a35;
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.06);
 }
 
 .canvas-config-refined[data-color-scheme="dark"] .canvas-config-parameters .canvas-config-field {
-  background: #303846 !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  box-shadow: none !important;
 }
 
 .canvas-config-refined .canvas-config-input-row {
@@ -301,9 +309,8 @@ html.dark .canvas-config-generate .canvas-config-price,
 }
 
 .canvas-config-refined .canvas-config-generate {
-  border-radius: 10px !important;
+  border-radius: 11px !important;
   min-height: 36px;
-  box-shadow: none !important;
   filter: none !important;
 }
 

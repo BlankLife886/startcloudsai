@@ -2499,3 +2499,36 @@ body.canvas-tool-dragging * {
 .settings-no-animations .canvas-edge__flow {
     animation: none !important;
 }
+
+/* Node generation state: a soft shimmer sweep plus an indeterminate progress bar. */
+.canvas-node-shimmer {
+    background: linear-gradient(100deg, #f1eff7 30%, #fbfaff 50%, #f1eff7 70%);
+    background-size: 200% 100%;
+    animation: canvas-node-shimmer 1.6s linear infinite;
+}
+.canvas-node-shimmer[data-scheme="dark"] {
+    background-image: linear-gradient(100deg, #1f1d28 30%, #2a2736 50%, #1f1d28 70%);
+}
+.canvas-node-progress {
+    width: 40%;
+    animation: canvas-node-progress 1.4s ease-in-out infinite;
+}
+@keyframes canvas-node-shimmer {
+    to {
+        background-position: -200% 0;
+    }
+}
+@keyframes canvas-node-progress {
+    0% {
+        transform: translateX(-100%);
+    }
+    100% {
+        transform: translateX(260%);
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .canvas-node-shimmer,
+    .canvas-node-progress {
+        animation: none;
+    }
+}
