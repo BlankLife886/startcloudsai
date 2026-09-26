@@ -36,6 +36,9 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 		// Up to 32 MiB of image files plus multipart metadata. Each file is
 		// additionally checked against UploadMaxBytes by the image handler.
 		return 33 << 20
+	case path == "/api/v1/canvas/html-shares":
+		// A shared page carries its images inline; the handler caps the page itself at 3 MiB.
+		return 4 << 20
 	case path == "/api/v1/uploads" || path == "/api/open/v1/uploads":
 		return uploadMaxBytes + (1 << 20)
 	case strings.HasPrefix(path, "/api/v1/assistant/"):
@@ -408,6 +411,9 @@ func (s *Server) Router() *gin.Engine {
 	api.PATCH("/canvas-projects/:id/workflow-runs/:runId", s.patchCanvasWorkflowRun)
 	api.GET("/canvas-projects/:id/workflow-runs/:runId", s.canvasWorkflowRun)
 	api.GET("/canvas-workflow-templates", s.publicCanvasWorkflowTemplates)
+	api.GET("/public/html-shares/:id", s.publicCanvasHTMLShare)
+	api.POST("/canvas/html-shares", s.publishCanvasHTMLShare)
+	api.DELETE("/canvas/html-shares/:id", s.revokeCanvasHTMLShare)
 	api.GET("/canvas-workflow-templates/:id", s.publicCanvasWorkflowTemplate)
 
 	// uploads & files
