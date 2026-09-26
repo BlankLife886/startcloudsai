@@ -80,8 +80,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     return (
         <div
             data-canvas-no-zoom
-            className="canvas-float-menu canvas-prompt-dock rounded-[20px] border p-3 backdrop-blur-xl"
-            style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+            className="canvas-float-menu canvas-prompt-dock rounded-[20px] border p-3"
+            style={{ background: theme.node.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
             onWheel={(event) => event.stopPropagation()}

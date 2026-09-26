@@ -213,7 +213,7 @@ export function CanvasNodeHoverToolbar({
                 getAnchorElement={() => document.querySelector<HTMLElement>(`.canvas-stage [data-node-id="${CSS.escape(node.id)}"]`)}
                 avoidSelector={`[data-canvas-node-editor="${CSS.escape(node.id)}"]`}
                 placement="top"
-                gap={14}
+                gap={34}
                 data-canvas-node-toolbar
                 className="canvas-float-menu flex rounded-[14px] border p-1 backdrop-blur-xl"
                 style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.item, boxShadow: theme.toolbar.shadow, zIndex: 110 }}

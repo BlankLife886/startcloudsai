@@ -361,7 +361,7 @@ export const CanvasNode = React.memo(function CanvasNode({
         <div
             ref={nodeElementRef}
             data-node-id={data.id}
-            className={`node-element absolute flex select-none flex-col ${isDragging ? "" : "transition-shadow duration-200"} ${isGroup ? "z-[5]" : isSelected ? "z-50" : "z-10"}`}
+            className={`node-element absolute flex select-none flex-col ${isDragging ? "" : "transition-shadow duration-200"} ${isGroup ? "z-[5]" : showPanel ? "z-[70]" : isSelected ? "z-50" : "z-10"}`}
             style={{
                 transform: `translate3d(${posX}px, ${posY}px, 0)`,
                 width: data.width,

@@ -470,8 +470,8 @@
     .ant-dropdown-menu-submenu-popup .ant-dropdown-menu {
         border: 0 !important;
         border-radius: 16px !important;
-        background: rgba(255, 255, 255, 0.86) !important;
-        box-shadow: 0 14px 36px rgba(49, 32, 107, 0.1) !important;
+        background: rgba(255, 255, 255, 0.985) !important;
+        box-shadow: 0 0 0 1px #ebe8f2, 0 2px 4px rgba(30, 20, 80, 0.05), 0 16px 36px rgba(30, 20, 80, 0.13) !important;
         backdrop-filter: blur(22px);
         -webkit-backdrop-filter: blur(22px);
     }
@@ -485,8 +485,8 @@
     .dark .ant-dropdown-menu-submenu-popup .ant-dropdown-menu,
     html.dark .ant-dropdown-menu-submenu-popup .ant-dropdown-menu {
         border: 0 !important;
-        background: rgba(16, 18, 26, 0.86) !important;
-        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.36) !important;
+        background: rgba(28, 26, 36, 0.985) !important;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 18px 40px rgba(0, 0, 0, 0.45) !important;
     }
 
     .canvas-float-menu.canvas-anchor-popover:has(.canvas-storyboard-reasoning-host),
