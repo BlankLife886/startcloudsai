@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import { createPortal } from "react-dom";
 import { Code2, ExternalLink, Eye, FilePenLine, LayoutTemplate, Maximize2, Monitor, RefreshCw, RotateCw, Smartphone, Sparkles, Square, Tablet, X } from "lucide-react";
 
+import { CanvasTextModelTools, useCanvasTextModelSelection } from "@/components/canvas/canvas-node-prompt-panel";
 import { getCanvasPortalRoot } from "@/lib/canvas-portal";
 import type { CanvasNodeContext, CanvasPlugin } from "@/types/canvas-plugin";
 
@@ -427,11 +428,10 @@ function extractHtml(text: string) {
 function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => void }) {
     const hasSite = Boolean(ctx.node.metadata?.content);
     const [prompt, setPrompt] = useState("");
-    const [model, setModel] = useState(() => ctx.ai.defaultModel("text"));
+    const { model, reasoningEffort } = useCanvasTextModelSelection(ctx.node);
     const [error, setError] = useState("");
     const controllerRef = useRef<AbortController | null>(null);
     const running = ctx.node.metadata?.status === "loading";
-    const models = useMemo(() => ctx.ai.listModels("text"), [ctx.ai]);
     const device = readDevice(ctx);
 
     const run = async () => {
@@ -453,7 +453,7 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
         ].join("");
         ctx.updateMetadata({ status: "loading", editing: false });
         try {
-            const result = await ctx.ai.generateText(message, { system: SITE_SYSTEM_PROMPT, model, signal: controller.signal });
+            const result = await ctx.ai.generateText(message, { system: SITE_SYSTEM_PROMPT, model, reasoningEffort, signal: controller.signal });
             const html = extractHtml(result.text);
             if (!/<(html|body|div|section|main)[\s>]/i.test(html)) throw new Error("模型没有返回有效的 HTML，请换个描述或模型再试");
             ctx.updateMetadata({ content: html, status: "success", interactive: true, htmlPrompt: request });
@@ -509,16 +509,10 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
             ) : null}
             {error ? <div className="rounded-lg px-3 py-2 text-[12px]" style={{ background: "rgba(229,72,77,.08)", color: "#e5484d" }}>{error}</div> : null}
             <div className="flex items-center gap-2">
-                {models.length ? (
-                    <select value={model} onChange={(event) => setModel(event.target.value)} className="h-8 max-w-[220px] truncate rounded-lg px-2 text-[12px] outline-none" style={{ background: ctx.theme.scheme === "dark" ? "rgba(255,255,255,.06)" : "#f3f1f9", color: ctx.theme.node.text, border: "none" }}>
-                        {models.map((item) => (
-                            <option key={item.value} value={item.value}>
-                                {item.label}
-                            </option>
-                        ))}
-                    </select>
-                ) : null}
-                <span className="flex-1 text-right text-[11px]" style={{ color: ctx.theme.node.placeholder }}>
+                <div className="flex min-w-0 flex-1 items-center">
+                    <CanvasTextModelTools node={ctx.node} onChange={(patch) => ctx.updateMetadata(patch || {})} />
+                </div>
+                <span className="shrink-0 text-[11px]" style={{ color: ctx.theme.node.placeholder }}>
                     ⌘/Ctrl + Enter
                 </span>
                 {running ? (

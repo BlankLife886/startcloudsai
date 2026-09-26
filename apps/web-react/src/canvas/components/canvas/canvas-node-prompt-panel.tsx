@@ -178,6 +178,21 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     );
 }
 
+/** The text node's model picker and reasoning pill, for plugin panels that generate text (model/reasoningEffort live in node metadata). */
+export function CanvasTextModelTools({ node, onChange }: { node: CanvasNodeData; onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void }) {
+    const globalConfig = useEffectiveConfig();
+    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const config = buildNodeConfig(globalConfig, node, "text");
+    return <PromptComposerTools config={config} mode="text" theme={theme} surface={theme.toolbar.itemHover} nodeId={node.id} onConfigChange={(_, patch) => onChange(patch)} onMissingConfig={() => openConfigDialog(true)} />;
+}
+
+/** Resolved text model and reasoning effort for a node, matching what CanvasTextModelTools shows. */
+export function useCanvasTextModelSelection(node: CanvasNodeData) {
+    const config = buildNodeConfig(useEffectiveConfig(), node, "text");
+    return { model: config.model, reasoningEffort: config.reasoningEffort };
+}
+
 function PromptComposerTools({
     config,
     mode,
