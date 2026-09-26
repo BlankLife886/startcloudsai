@@ -178,8 +178,12 @@ export const ConnectionPath = memo(function ConnectionPath({
             {selected && onCut ? (
                 <g
                     className="canvas-edge__cut"
+                    // Without this the canvas treats a press on the button as a background click: it clears the edge
+                    // selection (unmounting the button) and captures the pointer, so the click never arrives.
+                    data-canvas-no-zoom="true"
                     transform={`translate(${canvasConnectionMidpoint(from, to, fanOut).x} ${canvasConnectionMidpoint(from, to, fanOut).y}) scale(${1 / Math.min(Math.max(zoom || 1, 0.2), 1.5)})`}
                     style={{ pointerEvents: "auto", cursor: "pointer" }}
+                    onPointerDown={(event) => event.stopPropagation()}
                     onMouseDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                         event.stopPropagation();
