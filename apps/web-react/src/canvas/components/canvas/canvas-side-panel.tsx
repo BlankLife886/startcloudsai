@@ -872,6 +872,7 @@ const RecentProjectPreview = memo(function RecentProjectPreview({ project, ancho
         return { images, texts, failed };
     }, [project.nodes]);
     const cardHeight = 162;
+    let images = 0;
     const top = Math.min(Math.max(12, anchor.centerY - cardHeight / 2), window.innerHeight - cardHeight - 12);
     const line = dark ? "rgba(180,170,230,.4)" : "rgba(109,92,255,.35)";
 
@@ -904,6 +905,22 @@ const RecentProjectPreview = memo(function RecentProjectPreview({ project, ancho
                             const color = nodeTypeColor(rect.type, undefined, theme.scheme);
                             const group = rect.type === CanvasNodeType.Group;
                             const failed = nodeRunState(rect.node) === "failed";
+                            // Only ready-made thumbnails are drawn (no originals fetched); nodes without one stay a colour block.
+                            const thumbnail = rect.type === CanvasNodeType.Image && rect.width >= 6 && rect.height >= 6 && images++ < 24 ? rect.node.metadata?.thumbnailUrl || (rect.node.metadata?.images?.find((image) => image.id === rect.node.metadata?.primaryImageId) || rect.node.metadata?.images?.[0])?.thumbnailUrl : undefined;
+                            if (thumbnail) {
+                                const clipId = `recent-thumb-${rect.id}`;
+                                const radius = Math.min(2.5, rect.width / 4, rect.height / 4);
+                                return (
+                                    <g key={rect.id}>
+                                        <clipPath id={clipId}>
+                                            <rect x={rect.x} y={rect.y} width={rect.width} height={rect.height} rx={radius} />
+                                        </clipPath>
+                                        <rect x={rect.x} y={rect.y} width={rect.width} height={rect.height} rx={radius} fill={dark ? "#2a2735" : "#e9e6f2"} />
+                                        <image href={thumbnail} x={rect.x} y={rect.y} width={rect.width} height={rect.height} preserveAspectRatio="xMidYMid slice" clipPath={`url(#${clipId})`} />
+                                        <rect x={rect.x} y={rect.y} width={rect.width} height={rect.height} rx={radius} fill="none" stroke={failed ? "#e5484d" : color} strokeOpacity={failed ? 1 : 0.5} strokeWidth={0.8} />
+                                    </g>
+                                );
+                            }
                             return (
                                 <rect
                                     key={rect.id}
