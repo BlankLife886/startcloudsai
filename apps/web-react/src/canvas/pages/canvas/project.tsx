@@ -32,8 +32,7 @@ import { App } from "antd";
 import { CANVAS_AUDIO_ENABLED, CANVAS_VIDEO_ENABLED, NODE_DEFAULT_SIZE, getNodeSpec, isCanvasGenerationModeEnabled, isCanvasNodeTypeEnabled } from "@/constant/canvas";
 import { ActiveConnectionPath, CanvasConnectionDefs, ConnectionPath, canvasConnectionPathD } from "@/components/canvas/canvas-connections";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
-import { CanvasConfigNodeCard, CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
-import { CanvasInspector } from "@/components/canvas/canvas-inspector";
+import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
@@ -7623,42 +7622,6 @@ function InfiniteCanvasPage() {
         [configInputsById, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, renderPluginPanel, requestStopGeneration, runningNodeIds],
     );
 
-    const handleConfigCancelQueued = useCallback(
-        (nodeId: string) => {
-            const target = nodesRef.current.find((item) => item.id === nodeId);
-            if (target?.metadata?.storyboardConfig) {
-                cancelStoryboardGeneration();
-                return;
-            }
-            cancelQueuedWorkflowNode(nodeId);
-        },
-        [cancelQueuedWorkflowNode, cancelStoryboardGeneration],
-    );
-    const handleConfigStopGeneration = useCallback(
-        (nodeId: string) => {
-            const target = nodesRef.current.find((item) => item.id === nodeId);
-            if (target?.metadata?.storyboardConfig) {
-                cancelStoryboardGeneration();
-                return;
-            }
-            requestStopGeneration(nodeId);
-        },
-        [cancelStoryboardGeneration, requestStopGeneration],
-    );
-    const handleConfigGenerate = useCallback(
-        (nodeId: string) => {
-            const target = nodesRef.current.find((item) => item.id === nodeId);
-            if (target?.metadata?.storyboardConfig) {
-                void runStoryboardFromConfigNode(nodeId);
-                return;
-            }
-            const requested = target?.metadata?.generationMode || "image";
-            const mode = isCanvasGenerationModeEnabled(requested) ? requested : "image";
-            void handleGenerateNode(nodeId, mode, target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
-        },
-        [handleGenerateNode, runStoryboardFromConfigNode],
-    );
-
     const renderNodeContentPanel = useCallback(
         (contentNode: CanvasNodeData) => (
             <CanvasConfigNodePanel
@@ -7670,66 +7633,36 @@ function InfiniteCanvasPage() {
                 onConfigChange={handleConfigNodeChange}
                 onConfigureOperation={configureOperationNode}
                 onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
-                onCancelQueued={handleConfigCancelQueued}
-                onStopGeneration={handleConfigStopGeneration}
-                onGenerate={handleConfigGenerate}
+                onCancelQueued={(nodeId) => {
+                    const target = nodesRef.current.find((item) => item.id === nodeId);
+                    if (target?.metadata?.storyboardConfig) {
+                        cancelStoryboardGeneration();
+                        return;
+                    }
+                    cancelQueuedWorkflowNode(nodeId);
+                }}
+                onStopGeneration={(nodeId) => {
+                    const target = nodesRef.current.find((item) => item.id === nodeId);
+                    if (target?.metadata?.storyboardConfig) {
+                        cancelStoryboardGeneration();
+                        return;
+                    }
+                    requestStopGeneration(nodeId);
+                }}
+                onGenerate={(nodeId) => {
+                    const target = nodesRef.current.find((item) => item.id === nodeId);
+                    if (target?.metadata?.storyboardConfig) {
+                        void runStoryboardFromConfigNode(nodeId);
+                        return;
+                    }
+                    const requested = target?.metadata?.generationMode || "image";
+                    const mode = isCanvasGenerationModeEnabled(requested) ? requested : "image";
+                    void handleGenerateNode(nodeId, mode, target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
+                }}
             />
         ),
-        [configInputsById, configureOperationNode, handleConfigCancelQueued, handleConfigGenerate, handleConfigNodeChange, handleConfigStopGeneration, nodeById, runningNodeIds],
+        [cancelQueuedWorkflowNode, cancelStoryboardGeneration, configInputsById, configureOperationNode, handleConfigNodeChange, handleGenerateNode, nodeById, requestStopGeneration, runStoryboardFromConfigNode, runningNodeIds],
     );
-
-    // On the canvas, executable nodes render as read-only summary cards; editing happens in the inspector.
-    const renderNodeCard = useCallback(
-        (contentNode: CanvasNodeData) => (
-            <CanvasConfigNodeCard
-                node={contentNode}
-                isRunning={runningNodeIds.has(contentNode.id)}
-                inputs={configInputsById.get(contentNode.id) || []}
-                inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
-                onCancelQueued={handleConfigCancelQueued}
-                onStopGeneration={handleConfigStopGeneration}
-                onGenerate={handleConfigGenerate}
-            />
-        ),
-        [configInputsById, handleConfigCancelQueued, handleConfigGenerate, handleConfigStopGeneration, runningNodeIds],
-    );
-
-    const inspectorNodeId = selectionBox ? null : dialogNodeId ?? (selectedNodeIds.size === 1 ? selectedNodeIds.values().next().value ?? null : null);
-    const inspectorNode = inspectorNodeId ? nodeById.get(inspectorNodeId) : undefined;
-    const inspectorDefinition = inspectorNode ? getNodeDefinition(inspectorNode.type) : undefined;
-    const inspectorExecutable = Boolean(inspectorNode && isCanvasExecutableNode(inspectorNode));
-    const inspectorHasPanel = Boolean(
-        inspectorNode &&
-            !inspectorNode.metadata?.hidden &&
-            inspectorNode.type !== CanvasNodeType.Group &&
-            !inspectorDefinition?.hidePanel &&
-            (inspectorExecutable ||
-                inspectorDefinition?.Panel ||
-                inspectorDefinition?.useBuiltinPanel ||
-                inspectorNode.type === CanvasNodeType.Text ||
-                inspectorNode.type === CanvasNodeType.Image ||
-                inspectorNode.type === CanvasNodeType.Video ||
-                inspectorNode.type === CanvasNodeType.Audio),
-    );
-    const inspectorTypeLabel = !inspectorNode
-        ? ""
-        : inspectorNode.metadata?.storyboardConfig
-          ? t("canvas.inspector.batch")
-          : isCanvasOperationNodeType(inspectorNode.type) || inspectorNode.metadata?.localImageOperation
-            ? t("canvas.inspector.operation")
-            : inspectorExecutable
-              ? t("canvas.inspector.config")
-              : inspectorNode.type === CanvasNodeType.Text
-                ? t("canvas.inspector.text")
-                : inspectorNode.type === CanvasNodeType.Image
-                  ? t("canvas.inspector.image")
-                  : inspectorNode.type === CanvasNodeType.Video
-                    ? t("canvas.inspector.video")
-                    : inspectorNode.type === CanvasNodeType.Audio
-                      ? t("canvas.inspector.audio")
-                      : inspectorDefinition
-                        ? t("canvas.inspector.plugin")
-                        : t("canvas.inspector.node");
 
     if (!projectLoaded) return <CanvasRefreshShell />;
 
@@ -7849,7 +7782,7 @@ function InfiniteCanvasPage() {
                             isConnecting={Boolean(connectingParams)}
                             isDragging={isNodeDragging && dragRef.current.initialPositionsById.has(node.id)}
                             editRequestNonce={editingNodeId === node.id ? editRequestNonce : 0}
-                            showPanel={false}
+                            showPanel={dialogNodeId === node.id && !selectionBox && !getNodeDefinition(node.type)?.hidePanel}
                             groupChildCount={groupChildCountById.get(node.id) || 0}
                             storyboardGroupStats={node.metadata?.storyboardId ? storyboardGroupStatsById.get(node.metadata.storyboardId) : undefined}
                             isGroupDropTarget={dropTargetGroupId === node.id}
@@ -7858,8 +7791,8 @@ function InfiniteCanvasPage() {
                             mentionReferences={mentionReferencesByNodeId.get(node.id) || EMPTY_REFERENCES}
                             pluginHost={pluginHost}
                             registryVersion={nodeRegistryVersion}
-                            renderPanel={undefined}
-                            renderNodeContent={isCanvasExecutableNode(node) ? renderNodeCard : undefined}
+                            renderPanel={dialogNodeId === node.id ? renderNodePanel : undefined}
+                            renderNodeContent={isCanvasExecutableNode(node) ? renderNodeContentPanel : undefined}
                             onMouseDown={handleNodeMouseDown}
                             onSelectCapture={handleNodeSelectCapture}
                             onHoverStart={handleNodeHoverStart}
@@ -7950,30 +7883,6 @@ function InfiniteCanvasPage() {
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
                     onDelete={(node) => deleteNodes(new Set([node.id]))}
                 />
-
-                {inspectorNode && inspectorHasPanel ? (
-                    <CanvasInspector
-                        key={inspectorNode.id}
-                        node={inspectorNode}
-                        typeLabel={inspectorTypeLabel}
-                        onRename={openNodeRename}
-                        onClose={() => {
-                            setDialogNodeId(null);
-                            setSelectedNodeIds(new Set());
-                        }}
-                    >
-                        {inspectorExecutable ? (
-                            <>
-                                <div className="canvas-inspector__node overflow-hidden rounded-[14px]" style={{ height: Math.min(760, Math.max(420, inspectorNode.height)) }}>
-                                    {renderNodeContentPanel(inspectorNode)}
-                                </div>
-                                {dialogNodeId === inspectorNode.id ? <div className="mt-3">{renderNodePanel(inspectorNode)}</div> : null}
-                            </>
-                        ) : (
-                            renderNodePanel(inspectorNode)
-                        )}
-                    </CanvasInspector>
-                ) : null}
 
                 {!currentProjectSaveBlocked ? <CanvasProjectSizeIndicator bytes={currentProjectSizeBytes || 0} maxBytes={canvasProjectMaxBytes} /> : null}
                 <CanvasZoomControls scale={viewport.k} onScaleChange={setZoomScale} onReset={resetViewport} isMiniMapOpen={isMiniMapOpen} onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)}>
