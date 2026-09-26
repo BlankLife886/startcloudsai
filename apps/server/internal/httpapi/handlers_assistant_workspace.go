@@ -102,6 +102,9 @@ type assistantRunIn struct {
 	MaskRect                 string                      `json:"maskRect"`
 	CanvasSnapshot           json.RawMessage             `json:"canvasSnapshot"`
 	Queue                    bool                        `json:"queue"`
+	// InlineText asks a chat run to answer in the message body only: no downloadable-file (files_create) mode, even
+	// when the prompt happens to mention files. Canvas plugins that parse the reply (e.g. generated HTML) rely on it.
+	InlineText bool `json:"inlineText"`
 }
 
 type assistantRunImagePlanItem struct {
@@ -1238,6 +1241,9 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	if body.ReasoningEffort != "" {
 		params["reasoningEffort"] = body.ReasoningEffort
+	}
+	if body.InlineText && requestedMode == "chat" {
+		params["inlineText"] = true
 	}
 	if parent := strings.TrimSpace(body.ParentOutputURL); parent != "" {
 		params["parentOutputUrl"] = parent

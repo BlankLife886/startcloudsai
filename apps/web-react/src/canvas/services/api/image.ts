@@ -15,6 +15,10 @@ type RequestOptions = {
     idempotencyKey?: string;
     /** Invoked right before the create request; throw to abort submission (e.g. run canceled while queued). */
     onBeforeCreate?: () => void;
+    /** Text answers only: reply in the message body, never as a downloadable file. */
+    inlineText?: boolean;
+    /** Text answers only: the whole answer so far, while it is being written. */
+    onPartial?: (textSoFar: string) => void;
 };
 
 export function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {

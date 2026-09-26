@@ -7,7 +7,7 @@ import { getCanvasPortalRoot } from "@/lib/canvas-portal";
 import type { CanvasNodeContext, CanvasPlugin } from "@/types/canvas-plugin";
 
 import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "./contracts";
-import { applyHtmlPatches, HTML_EDIT_SYSTEM_PROMPT, parseHtmlPatches, stashHtmlAssets } from "./html-node-edit";
+import { applyHtmlPatches, HTML_CONTINUE_SYSTEM_PROMPT, HTML_EDIT_SYSTEM_PROMPT, htmlContinuationPrompt, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "./html-node-edit";
 import { HTML_DEMO_SITE } from "./html-node-template";
 
 const EDITOR_FONT_SIZE = 12;
@@ -324,18 +324,52 @@ function HtmlPreviewOverlay({ ctx, html, address, onClose }: { ctx: CanvasNodeCo
 
 const PREVIEW_EVENT = "html:preview";
 const RELOAD_EVENT = "html:reload";
+/** Live answer text from the AI panel to the node while it is being written (kept out of node metadata/autosave). */
+const PARTIAL_EVENT = "html:partial";
+type HtmlPartial = { nodeId: string; text: string; phase: string };
 
-function HtmlGenerating({ ctx }: { ctx: CanvasNodeContext }) {
-    return (
-        <div className="relative flex h-full w-full flex-col gap-3 overflow-hidden p-5" style={{ background: ctx.theme.node.fill }}>
-            <div className="canvas-node-shimmer absolute inset-0" />
-            <div className="h-[34%] min-h-8 rounded-xl" style={{ background: "linear-gradient(120deg, #9b7bff, #3d7bff)", opacity: 0.35 }} />
-            <div className="h-2.5 w-[70%] rounded-full" style={{ background: ctx.theme.node.stroke }} />
-            <div className="h-2.5 w-[46%] rounded-full" style={{ background: ctx.theme.node.stroke }} />
-            <div className="mt-auto flex items-center gap-2 text-[12px] font-medium" style={{ color: ctx.theme.node.activeStroke }}>
-                <Sparkles className="size-3.5 animate-pulse" />
-                AI 正在搭建网站…
+/** A page can be previewed as soon as its body has started. */
+function renderablePartial(text: string) {
+    const start = text.search(/<!doctype html|<html/i);
+    if (start < 0) return "";
+    const html = text.slice(start);
+    return /<body[\s>]/i.test(html) ? html : "";
+}
+
+function HtmlGenerating({ ctx, partial }: { ctx: CanvasNodeContext; partial: HtmlPartial | null }) {
+    const scrollRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    }, [partial?.text]);
+    if (!partial?.text) {
+        return (
+            <div className="relative flex h-full w-full flex-col gap-3 overflow-hidden p-5" style={{ background: ctx.theme.node.fill }}>
+                <div className="canvas-node-shimmer absolute inset-0" />
+                <div className="h-[34%] min-h-8 rounded-xl" style={{ background: "linear-gradient(120deg, #9b7bff, #3d7bff)", opacity: 0.35 }} />
+                <div className="h-2.5 w-[70%] rounded-full" style={{ background: ctx.theme.node.stroke }} />
+                <div className="h-2.5 w-[46%] rounded-full" style={{ background: ctx.theme.node.stroke }} />
+                <div className="mt-auto flex items-center gap-2 text-[12px] font-medium" style={{ color: ctx.theme.node.activeStroke }}>
+                    <Sparkles className="size-3.5 animate-pulse" />
+                    {partial?.phase || "AI 正在构思网站…"}
+                </div>
             </div>
+        );
+    }
+    // Code as it is being written, until there is enough of a page to render.
+    return (
+        <div ref={scrollRef} className="h-full w-full overflow-hidden px-4 pb-10 pt-3" style={{ background: "#16141f", color: "#c9c3e6", fontFamily: "monospace", fontSize: 11, lineHeight: "17px", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+            {partial.text.slice(-6000)}
+            <span className="inline-block h-3 w-1.5 animate-pulse align-middle" style={{ background: "#8b6cff" }} />
+        </div>
+    );
+}
+
+function HtmlProgressBar({ ctx, partial }: { ctx: CanvasNodeContext; partial: HtmlPartial | null }) {
+    return (
+        <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] font-medium shadow-lg" style={{ background: ctx.theme.scheme === "dark" ? "rgba(28,26,36,.94)" : "rgba(255,255,255,.95)", color: ctx.theme.node.text, border: `1px solid ${ctx.theme.node.stroke}` }}>
+            <Sparkles className="size-3.5 shrink-0 animate-pulse" style={{ color: ctx.theme.node.activeStroke }} />
+            <span className="min-w-0 flex-1 truncate">{partial?.phase || "AI 正在搭建网站…"}</span>
+            {partial?.text ? <span className="shrink-0 tabular-nums" style={{ color: ctx.theme.node.placeholder }}>{partial.text.length.toLocaleString()} 字</span> : null}
         </div>
     );
 }
@@ -381,24 +415,50 @@ function HtmlContent({ ctx }: { ctx: CanvasNodeContext }) {
     const onRef = useRef(ctx.on);
     onRef.current = ctx.on;
 
+    const [partial, setPartial] = useState<HtmlPartial | null>(null);
+    // The live page is re-rendered at most about once a second; every render reloads the frame.
+    const [livePage, setLivePage] = useState("");
+    const liveAtRef = useRef(0);
+
     useEffect(() => {
         const offPreview = onRef.current(PREVIEW_EVENT, (payload) => payload === nodeId && setPreviewOpen(true));
         const offReload = onRef.current(RELOAD_EVENT, (payload) => payload === nodeId && setReloadKey((key) => key + 1));
+        const offPartial = onRef.current(PARTIAL_EVENT, (payload) => {
+            const next = payload as HtmlPartial;
+            if (next?.nodeId !== nodeId) return;
+            setPartial(next);
+            const page = renderablePartial(next.text);
+            const now = Date.now();
+            if (page && now - liveAtRef.current > 1100) {
+                liveAtRef.current = now;
+                setLivePage(page);
+            }
+        });
         return () => {
             offPreview();
             offReload();
+            offPartial();
         };
     }, [nodeId]);
 
+    useEffect(() => {
+        if (generating) return;
+        setPartial(null);
+        setLivePage("");
+        liveAtRef.current = 0;
+    }, [generating]);
+
     // Content interaction is owned by the host toggle (metadata.interactive); the empty state and editor are always live.
     const interactive = Boolean(ctx.node.metadata?.interactive);
-    const body = editing ? <HtmlEditor ctx={ctx} value={value} /> : generating ? <HtmlGenerating ctx={ctx} /> : !value ? <HtmlEmpty ctx={ctx} /> : null;
+    const showLive = generating && Boolean(livePage);
+    const body = editing ? <HtmlEditor ctx={ctx} value={value} /> : generating ? (showLive ? null : <HtmlGenerating ctx={ctx} partial={partial} />) : !value ? <HtmlEmpty ctx={ctx} /> : null;
 
     return (
         <div className="relative h-full w-full" style={{ borderRadius: "inherit" }}>
-            <DeviceFrame device={device} landscape={landscape} width={ctx.node.width} height={ctx.node.height} html={html} address={editing ? `${address} · 源码` : address} interactive={interactive} reloadKey={reloadKey} dark={dark}>
+            <DeviceFrame device={device} landscape={landscape} width={ctx.node.width} height={ctx.node.height} html={showLive ? livePage : html} address={editing ? `${address} · 源码` : address} interactive={interactive && !generating} reloadKey={reloadKey} dark={dark}>
                 {body ?? undefined}
             </DeviceFrame>
+            {generating ? <HtmlProgressBar ctx={ctx} partial={partial} /> : null}
             {previewOpen && value ? <HtmlPreviewOverlay ctx={ctx} html={html} address={address} onClose={() => setPreviewOpen(false)} /> : null}
         </div>
     );
@@ -415,7 +475,8 @@ const SITE_SYSTEM_PROMPT = `你是一名资深前端工程师兼网页设计师�
 - 必须响应式：同时适配桌面（1280px）、平板（820px）和手机（390px），手机端导航折叠为菜单按钮。
 - 做成真实可交互的网站：用 hash 路由实现多个页面（如 #/、#/about），并包含合适的交互，例如导航高亮、弹窗、标签页、轮播、折叠面板、表单校验与提示、深色模式切换、滚动动效等。
 - 视觉精致现代：统一的配色变量、圆角、阴影、留白与层级，中文排版清晰。
-- 在 <title> 中写网站的域名或名称。`;
+- 在 <title> 中写网站的域名或名称。
+- 代码精炼：复用 CSS 变量和类名，避免重复样式，整页源码尽量控制在 15000 字以内。`;
 
 const SITE_PRESETS = ["SaaS 产品落地页", "个人作品集", "电商商品详情页", "餐厅官网（含菜单与预订）", "App 下载页", "活动报名页"];
 
@@ -474,21 +535,39 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
 
         const controller = new AbortController();
         controllerRef.current = controller;
+        const nodeId = ctx.node.id;
+        const report = (text: string, phase: string) => ctx.emit(PARTIAL_EVENT, { nodeId, text, phase } satisfies HtmlPartial);
+        const writing = hasSite ? "AI 正在修改网站" : "AI 正在写网站";
         ctx.updateMetadata({ status: "loading", editing: false });
+        report("", hasSite ? "AI 正在理解修改要求…" : "AI 正在构思网站…");
         try {
-            const result = await ctx.ai.generateText(message, { system, model, reasoningEffort, signal: controller.signal });
-            const said = result.text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+            const first = await ctx.ai.generateText(message, { system, model, reasoningEffort, signal: controller.signal, onPartial: (text) => report(text, writing) });
+            const said = first.text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
             const quote = said ? `模型回复：「${said.slice(0, 140)}${said.length > 140 ? "…" : ""}」` : "";
-            let html = extractHtml(result.text);
+            let html = extractHtml(first.text);
+            // A reply cut off by the model's output cap is continued, up to four more parts.
+            for (let part = 2; isTruncatedHtml(html) && part <= 5; part += 1) {
+                const soFar = html;
+                const phase = `网页较长，正在续写第 ${part} 段…`;
+                report(soFar, phase);
+                const next = await ctx.ai.generateText(htmlContinuationPrompt(soFar), {
+                    system: HTML_CONTINUE_SYSTEM_PROMPT,
+                    model,
+                    reasoningEffort,
+                    signal: controller.signal,
+                    onPartial: (text) => report(mergeHtmlContinuation(soFar, text), phase),
+                });
+                html = mergeHtmlContinuation(soFar, next.text);
+            }
             if (hasSite && !isCompleteHtml(html)) {
-                const patches = parseHtmlPatches(result.text);
+                const patches = parseHtmlPatches(first.text);
                 if (!patches.length) throw new Error(`模型没有返回可用的修改，原网页未改动。${quote}`);
                 const applied = applyHtmlPatches(base, patches);
                 if (!applied.ok) throw new Error(`模型给出的 ${patches.length} 处修改里，第 ${applied.failed.join("、")} 处对不上原网页，已整体放弃，原网页未改动。可以换个说法或模型再试。`);
                 html = applied.html;
             }
             html = assets.restore(html);
-            if (!isCompleteHtml(html)) throw new Error(`模型没有返回完整的网页，原网页未改动。${quote}`);
+            if (!isCompleteHtml(html)) throw new Error(isTruncatedHtml(html) ? "网页太长，续写 5 段后仍未写完，原网页未改动。可以把需求拆小一些再试。" : `模型没有返回完整的网页，原网页未改动。${quote}`);
             ctx.updateMetadata({ content: html, status: "success", interactive: true, htmlPrompt: request, ...(hasSite ? { htmlPreviousContent: original } : {}) });
             setPrompt("");
         } catch (cause) {

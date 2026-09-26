@@ -1852,7 +1852,7 @@ func (w *Worker) executeAssistantAgent(
 	w.publishAssistantDebug(ctx, run, "agent_start", "进入 Agent，正在准备上下文")
 	inheritAssistantDocumentContext(run, history)
 	fileIDs := assistantRunFileIDs(run)
-	wantsArtifact := assistantArtifactRequested(run.Prompt)
+	wantsArtifact := assistantRunArtifactRequested(run)
 	lastWasImage := lastAssistantMessageWasImage(history, run.UserMessageID, run.AssistantMessageID)
 	forceWebSearchTool := assistantPromptRequestsWebSearch(run.Prompt)
 	forceTaskStatusTool := assistantPromptRequestsTaskStatus(run.Prompt)
@@ -3577,7 +3577,7 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 	var usage sub2api.ChatUsage
 	if len(assistantRunFileIDs(run)) > 0 {
 		text, usedTools, artifacts, usage, err = w.requestAssistantDocumentText(ctx, client, run, payload, onText)
-	} else if assistantArtifactRequested(run.Prompt) {
+	} else if assistantRunArtifactRequested(run) {
 		text, usedTools, artifacts, usage, err = w.requestAssistantArtifactText(ctx, client, run, payload, onText)
 	} else {
 		text, usage, err = requestAssistantChatText(ctx, client, payload, run.Prompt, onText, func(attempt int, hasUsableSuffix bool) {

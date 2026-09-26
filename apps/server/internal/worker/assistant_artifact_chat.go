@@ -13,6 +13,15 @@ import (
 
 const assistantArtifactInstruction = `The user requested one or more downloadable files. Use files_create to create the requested result. Supported formats are TXT, Markdown, CSV, JSON, and PPTX. For PPTX, pass content as a JSON string with title, optional subtitle, and slides; every slide contains a title and a bullets array. Put the complete useful content in the file, then briefly tell the user that the download is available below the answer. Never output a fake path or claim a file exists unless files_create succeeded.`
 
+// assistantRunArtifactRequested is assistantArtifactRequested for a run: callers that asked for an inline answer
+// (params.inlineText) never get the downloadable-file mode.
+func assistantRunArtifactRequested(run *store.AssistantRun) bool {
+	if inline, _ := run.Params["inlineText"].(bool); inline {
+		return false
+	}
+	return assistantArtifactRequested(run.Prompt)
+}
+
 func assistantArtifactRequested(prompt string) bool {
 	value := strings.ToLower(strings.TrimSpace(prompt))
 	if value == "" {

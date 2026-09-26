@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "../src/canvas/components/canvas/nodes/bundled/contracts.ts";
-import { applyHtmlPatches, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
+import { applyHtmlPatches, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
 
 const canvasSource = new URL("../src/canvas/", import.meta.url);
 const readCanvasSource = async (path) => readFile(new URL(path, canvasSource), "utf8");
@@ -164,4 +164,16 @@ test("HTML node edits keep embedded images out of the request and restore them a
     assert.equal(stash.count, 1);
     assert.ok(!stash.text.includes("AAAA"));
     assert.equal(stash.restore(stash.text), page);
+});
+
+test("HTML node continues pages cut off by the output cap and stitches the parts", () => {
+    const first = "<!doctype html>\n<html><head><style>body{margin:0}</style></head><body>\n<section class=\"hero\"><h1>Nimbus</h1>";
+    assert.equal(isTruncatedHtml(first), true);
+    // The continuation repeats the tail of the first part and is wrapped in a code fence.
+    const continuation = "```html\n<section class=\"hero\"><h1>Nimbus</h1>\n<p>hi</p></section></body></html>\n```";
+    const merged = mergeHtmlContinuation(first, continuation);
+    assert.equal(merged.split("<h1>Nimbus</h1>").length, 2, "repeated text is not duplicated");
+    assert.match(merged, /<p>hi<\/p><\/section><\/body><\/html>$/);
+    assert.equal(isTruncatedHtml(merged), false);
+    assert.equal(isTruncatedHtml("好的，已经为你生成"), false, "a non-page reply is not treated as a truncated page");
 });

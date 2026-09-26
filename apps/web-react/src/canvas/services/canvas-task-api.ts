@@ -61,6 +61,10 @@ export type CanvasAssistantTaskOptions = {
     onCreated?: (runId: string) => void | Promise<void>;
     idempotencyKey?: string;
     onBeforeCreate?: () => void;
+    /** Answer in the message body only, never as a downloadable file (the reply is parsed by the caller). */
+    inlineText?: boolean;
+    /** Receives the whole answer so far while the model is still writing. */
+    onPartial?: (textSoFar: string) => void;
 };
 
 function abortError() {
@@ -579,11 +583,43 @@ export async function requestCanvasAssistant(messages: Array<{ role: string; con
         ...(referenceImages.length ? { referenceImages } : {}),
         count: 1,
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(options?.inlineText ? { inlineText: true } : {}),
         idempotencyKey,
     });
     scheduleWalletRefresh();
     await options?.onCreated?.(created.run.id);
-    return waitForCanvasAssistantRun(created.run.id, onDelta, options?.signal);
+    const stream = options?.onPartial ? openCanvasAssistantTextStream(created.run.id, options.onPartial) : null;
+    try {
+        return await waitForCanvasAssistantRun(created.run.id, onDelta, options?.signal);
+    } finally {
+        stream?.close();
+    }
+}
+
+// Live text of a running assistant answer. Polling stays the source of truth for completion; the stream (which sends
+// the whole answer so far on every update) only makes the text appear as it is written. Without Redis it just closes.
+function openCanvasAssistantTextStream(runId: string, onPartial: (textSoFar: string) => void) {
+    if (typeof EventSource === "undefined") return null;
+    let source: EventSource;
+    try {
+        source = new EventSource(starcloudsApiUrl(`/assistant/runs/${encodeURIComponent(runId)}/events`), { withCredentials: true });
+    } catch {
+        return null;
+    }
+    let last = "";
+    source.onmessage = (event) => {
+        try {
+            const payload = JSON.parse(event.data) as { content?: string; done?: boolean };
+            if (typeof payload.content === "string" && payload.content !== last) {
+                last = payload.content;
+                onPartial(last);
+            }
+            if (payload.done) source.close();
+        } catch {
+            // Heartbeats and malformed frames are ignored.
+        }
+    };
+    return source;
 }
 
 export type CanvasAgentTurnResult = {

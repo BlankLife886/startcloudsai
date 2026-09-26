@@ -72,3 +72,30 @@ export function applyHtmlPatches(source: string, patches: HtmlPatch[]): { ok: tr
     });
     return failed.length ? { ok: false, failed } : { ok: true, html };
 }
+
+// Long pages can exceed a model's per-reply output cap. A page that stops before </html> is continued in follow-up
+// requests and the pieces are stitched together.
+
+export const HTML_CONTINUE_SYSTEM_PROMPT = `你在续写一个被截断的 HTML 网页源码。只输出紧接在截断处之后的源码，不要重复已经输出的内容，不要解释，不要 Markdown 代码块，一直写到 </html> 结束。`;
+
+export function htmlContinuationPrompt(partial: string) {
+    return `下面是网页源码被截断前的最后一段：\n${partial.slice(-2400)}\n\n请从截断处直接接着输出剩余的源码，直到 </html>。`;
+}
+
+/** True when the reply is the start of a page that was cut off before its end. */
+export function isTruncatedHtml(html: string) {
+    return /^\s*(<!doctype html|<html)/i.test(html) && !/<\/html>\s*$/i.test(html);
+}
+
+/** Appends a continuation, dropping code fences and any text the model repeated from the end of the previous part. */
+export function mergeHtmlContinuation(previous: string, continuation: string) {
+    let next = continuation.replace(/^\s*```(?:html)?[^\n]*\n/i, "").replace(/\n?```\s*$/, "");
+    const max = Math.min(800, previous.length, next.length);
+    for (let size = max; size >= 12; size -= 1) {
+        if (previous.endsWith(next.slice(0, size))) {
+            next = next.slice(size);
+            break;
+        }
+    }
+    return previous + next;
+}
