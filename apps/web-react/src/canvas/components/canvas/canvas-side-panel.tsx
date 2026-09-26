@@ -42,6 +42,8 @@ type Props = {
     connections: CanvasConnection[];
     selectedNodeIds: Set<string>;
     onFocusNode: (nodeId: string) => void;
+    onHoverNode?: (nodeId: string | null) => void;
+    hoveredNodeId?: string | null;
     onPreviewNode: (nodeId: string) => void;
     onRenameNode: (nodeId: string) => void;
     onDeleteNodes: (nodeIds: Set<string>) => void;
@@ -64,7 +66,7 @@ const STATUS_COLOR: Record<string, string> = {
     idle: "#c7c3d4",
 };
 
-export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes, connections, selectedNodeIds, onFocusNode, onPreviewNode, onRenameNode, onDeleteNodes, onInsertAsset }: Props) {
+export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes, connections, selectedNodeIds, onFocusNode, onHoverNode, hoveredNodeId, onPreviewNode, onRenameNode, onDeleteNodes, onInsertAsset }: Props) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [tab, setTab] = useState<PanelTab>("canvas");
@@ -203,7 +205,7 @@ export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes,
                                 transition={{ duration: 0.24, ease: PANEL_EASE }}
                             >
                                 {tab === "canvas" ? (
-                                    <CanvasNodesTab nodes={nodes} connections={connections} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} onPreviewNode={onPreviewNode} onRenameNode={onRenameNode} onDeleteNodes={onDeleteNodes} theme={theme} />
+                                    <CanvasNodesTab nodes={nodes} connections={connections} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} onHoverNode={onHoverNode} hoveredNodeId={hoveredNodeId} onPreviewNode={onPreviewNode} onRenameNode={onRenameNode} onDeleteNodes={onDeleteNodes} theme={theme} />
                                 ) : tab === "assets" ? (
                                     <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />
                                 ) : tab === "prompts" ? (
@@ -255,7 +257,7 @@ function PanelToggle({
 
 const NODE_FILTER_VALUES = ["all", CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Text, CanvasNodeType.Audio, CanvasNodeType.Config, CanvasNodeType.Group];
 
-function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPreviewNode, onRenameNode, onDeleteNodes, theme }: { nodes: CanvasNodeData[]; connections: CanvasConnection[]; selectedNodeIds: Set<string>; onFocusNode: (nodeId: string) => void; onPreviewNode: (nodeId: string) => void; onRenameNode: (nodeId: string) => void; onDeleteNodes: (nodeIds: Set<string>) => void; theme: CanvasTheme }) {
+function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onHoverNode, hoveredNodeId, onPreviewNode, onRenameNode, onDeleteNodes, theme }: { nodes: CanvasNodeData[]; connections: CanvasConnection[]; selectedNodeIds: Set<string>; onFocusNode: (nodeId: string) => void; onHoverNode?: (nodeId: string | null) => void; hoveredNodeId?: string | null; onPreviewNode: (nodeId: string) => void; onRenameNode: (nodeId: string) => void; onDeleteNodes: (nodeIds: Set<string>) => void; theme: CanvasTheme }) {
     const { message } = App.useApp();
     const { t } = useTranslation();
     const [keyword, setKeyword] = useState("");
@@ -405,7 +407,7 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
                                                         const isChecked = checked.has(node.id);
                                                         const active = selectMode ? isChecked : selectedNodeIds.has(node.id);
                                                         return (
-                                                            <div key={node.id} className="group flex w-full items-center rounded-[10px] transition-colors duration-150 hover:bg-[#f5f3fa] dark:hover:bg-white/[.05]" style={active ? { ...VIRTUAL_NODE_ROW_STYLE, background: theme.scheme === "dark" ? "rgba(139,124,255,.18)" : "#efebff", color: theme.scheme === "dark" ? "#e6e0ff" : "#3b2a9e" } : VIRTUAL_NODE_ROW_STYLE}>
+                                                            <div key={node.id} className={cn("group flex w-full items-center rounded-[10px] transition-colors duration-150 hover:bg-[#f5f3fa] dark:hover:bg-white/[.05]", !active && hoveredNodeId === node.id && "bg-[#f5f3fa] dark:bg-white/[.05]")} onMouseEnter={() => onHoverNode?.(node.id)} onMouseLeave={() => onHoverNode?.(null)} style={active ? { ...VIRTUAL_NODE_ROW_STYLE, background: theme.scheme === "dark" ? "rgba(139,124,255,.18)" : "#efebff", color: theme.scheme === "dark" ? "#e6e0ff" : "#3b2a9e" } : VIRTUAL_NODE_ROW_STYLE}>
                                                                 <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-1.5 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
                                                                     {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
                                                                     <span className="grid size-[30px] shrink-0 place-items-center overflow-hidden rounded-[8px]" style={isImage ? { background: theme.scheme === "dark" ? "#2a2735" : "#eeebf5" } : CanvasIconWellStyle(nodeTypeColor(node.type))}>

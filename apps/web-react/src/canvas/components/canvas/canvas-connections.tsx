@@ -18,6 +18,18 @@ export function canvasCurvePathD(startX: number, startY: number, endX: number, e
     return `M ${startX} ${startY}${trunk ? ` L ${sx} ${startY}` : ""} C ${sx + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`;
 }
 
+/** Midpoint of the curved part of a connection, used to anchor the "cut" button. */
+function canvasConnectionMidpoint(from: CanvasNodeData, to: CanvasNodeData, fanOut = 1) {
+    const x1 = from.position.x + from.width;
+    const y1 = from.position.y + from.height / 2;
+    const x2 = to.position.x;
+    const y2 = to.position.y + to.height / 2;
+    const sx = x1 + (fanOut > 1 ? Math.min(36, Math.max(0, (x2 - x1) * 0.25)) : 0);
+    const back = x2 < sx + 20;
+    const cv = back ? Math.min(220, 90 + Math.abs(sx - x2) * 0.3 + Math.abs(y2 - y1) * 0.15) : Math.min(160, Math.max(40, Math.abs(x2 - sx) * 0.45));
+    return { x: 0.125 * sx + 0.375 * (sx + cv) + 0.375 * (x2 - cv) + 0.125 * x2, y: 0.5 * y1 + 0.5 * y2 };
+}
+
 export function canvasConnectionPathD(from: CanvasNodeData, to: CanvasNodeData, fanOut = 1) {
     const startX = from.position.x + from.width;
     const endX = to.position.x;
@@ -50,6 +62,8 @@ export const ConnectionPath = memo(function ConnectionPath({
     fanOut = 1,
     onSelect,
     onContextMenu,
+    onCut,
+    zoom = 1,
 }: {
     connection: CanvasConnection;
     from: CanvasNodeData;
@@ -61,6 +75,9 @@ export const ConnectionPath = memo(function ConnectionPath({
     fanOut?: number;
     onSelect: (event: ReactMouseEvent<SVGPathElement>, connectionId: string) => void;
     onContextMenu?: (event: ReactMouseEvent<SVGPathElement>, connectionId: string) => void;
+    onCut?: (connectionId: string) => void;
+    /** Canvas zoom, so the cut button keeps a steady on-screen size. */
+    zoom?: number;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const pathD = canvasConnectionPathD(from, to, fanOut);
@@ -139,6 +156,22 @@ export const ConnectionPath = memo(function ConnectionPath({
                     onContextMenu?.(event, connection.id);
                 }}
             />
+            {selected && onCut ? (
+                <g
+                    className="canvas-edge__cut"
+                    transform={`translate(${canvasConnectionMidpoint(from, to, fanOut).x} ${canvasConnectionMidpoint(from, to, fanOut).y}) scale(${1 / Math.min(Math.max(zoom || 1, 0.2), 1.5)})`}
+                    style={{ pointerEvents: "auto", cursor: "pointer" }}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onCut(connection.id);
+                    }}
+                >
+                    <title>断开这条连线</title>
+                    <circle r="11" fill={theme.node.panel} stroke={theme.scheme === "dark" ? "rgba(255,255,255,.14)" : "#ebe8f2"} strokeWidth="1" style={{ filter: "drop-shadow(0 4px 10px rgba(30,20,80,.16))" }} />
+                    <path d="M -3.6 -3.6 L 3.6 3.6 M 3.6 -3.6 L -3.6 3.6" stroke="#e5484d" strokeWidth="2" strokeLinecap="round" />
+                </g>
+            ) : null}
         </g>
     );
 });

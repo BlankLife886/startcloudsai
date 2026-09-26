@@ -617,6 +617,7 @@ function InfiniteCanvasPage() {
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const connectStartPointRef = useRef<{ x: number; y: number } | null>(null);
     const connectionFanOutRef = useRef(new Map<string, number>());
+    const sidePanelHoverNodeIdRef = useRef<string | null>(null);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const workflowRunRef = useRef<{ cancelQueued: boolean; lockLost?: boolean; executing?: boolean; stopped?: boolean; currentNodeId?: string; canceledNodeIds: Set<string> }>({ cancelQueued: false, canceledNodeIds: new Set() });
     const workflowExecutionTokenRef = useRef(0);
@@ -7535,6 +7536,14 @@ function InfiniteCanvasPage() {
     const handleNodeHoverEnd = useCallback((nodeId: string) => {
         setHoveredNodeId((current) => (current === nodeId ? null : current));
     }, []);
+    const [sidePanelHoverNodeId, setSidePanelHoverNodeId] = useState<string | null>(null);
+    // Hovering a row in the side panel lights the node up on the canvas, just like hovering the node itself.
+    const handleSidePanelHover = useCallback((nodeId: string | null) => {
+        const previous = sidePanelHoverNodeIdRef.current;
+        sidePanelHoverNodeIdRef.current = nodeId;
+        setSidePanelHoverNodeId(nodeId);
+        setHoveredNodeId((current) => (nodeId ? nodeId : current === previous ? null : current));
+    }, []);
     const handleNodeViewImage = useCallback((node: CanvasNodeData, image?: CanvasNodeImage) => {
         setPreviewNodeId(node.id);
         setPreviewImageId(image?.id || null);
@@ -7630,12 +7639,14 @@ function InfiniteCanvasPage() {
                         dimmed={Boolean(selectionFocusNodeIds) && !(selectedNodeIds.has(connection.fromNodeId) || selectedNodeIds.has(connection.toNodeId))}
                         flowing={runningNodeIds.has(connection.toNodeId)}
                         fanOut={connectionFanOut.get(connection.fromNodeId) || 1}
+                        onCut={deleteConnection}
+                        zoom={selectedConnectionIds.has(connection.id) ? viewport.k : 1}
                         onSelect={handleConnectionSelect}
                         onContextMenu={handleConnectionContextMenu}
                     />
                 );
             }),
-        [renderedConnections, displayNodeById, handleConnectionContextMenu, handleConnectionSelect, relatedHighlight.connectionIds, selectedConnectionIds, runningNodeIds, connectionFanOut, selectionFocusNodeIds, selectedNodeIds],
+        [renderedConnections, displayNodeById, handleConnectionContextMenu, handleConnectionSelect, relatedHighlight.connectionIds, selectedConnectionIds, runningNodeIds, connectionFanOut, selectionFocusNodeIds, selectedNodeIds, deleteConnection, viewport.k],
     );
 
     const renderNodePanel = useCallback(
@@ -7718,6 +7729,8 @@ function InfiniteCanvasPage() {
                 connections={displayConnections}
                 selectedNodeIds={selectedNodeIds}
                 onFocusNode={focusNode}
+                hoveredNodeId={hoveredNodeId}
+                onHoverNode={handleSidePanelHover}
                 onPreviewNode={(nodeId) => {
                     setPreviewImageId(null);
                     setPreviewNodeId(nodeId);
@@ -7823,6 +7836,7 @@ function InfiniteCanvasPage() {
                             isRelated={relatedHighlight.nodeIds.has(node.id)}
                             isFocusRelated={activeNodeId === node.id}
                             isDimmed={Boolean(selectionFocusNodeIds && !selectionFocusNodeIds.has(node.id) && node.type !== CanvasNodeType.Group)}
+                            isHoverTarget={sidePanelHoverNodeId === node.id}
                             isConnectionTarget={connectionTargetNodeId === node.id}
                             isConnecting={Boolean(connectingParams)}
                             isDragging={isNodeDragging && dragRef.current.initialPositionsById.has(node.id)}

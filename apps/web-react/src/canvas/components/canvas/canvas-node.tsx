@@ -33,6 +33,8 @@ type CanvasNodeProps = {
     isRelated: boolean;
     isFocusRelated: boolean;
     isDimmed?: boolean;
+    /** Highlighted from outside the canvas, e.g. hovering the node's row in the side panel. */
+    isHoverTarget?: boolean;
     isConnectionTarget: boolean;
     isConnecting: boolean;
     isDragging?: boolean;
@@ -129,6 +131,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     isRelated,
     isFocusRelated,
     isDimmed = false,
+    isHoverTarget = false,
     isConnectionTarget,
     isConnecting,
     isDragging = false,
@@ -170,7 +173,8 @@ export const CanvasNode = React.memo(function CanvasNode({
 }: CanvasNodeProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
-    const [hovered, setHovered] = useState(false);
+    const [pointerHovered, setHovered] = useState(false);
+    const hovered = pointerHovered || isHoverTarget;
     const nodeElementRef = useRef<HTMLDivElement>(null);
     const definition = getNodeDefinition(data.type);
     const pluginContext = useMemo<CanvasNodeContext | null>(() => (pluginHost ? buildNodeContext(pluginHost, data, theme, scale, isSelected) : null), [pluginHost, data, theme, scale, isSelected]);
