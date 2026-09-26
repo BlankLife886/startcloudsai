@@ -615,6 +615,7 @@ function InfiniteCanvasPage() {
     const connectionTargetNodeIdRef = useRef(connectionTargetNodeId);
     const selectionBoxRef = useRef(selectionBox);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
+    const connectStartPointRef = useRef<{ x: number; y: number } | null>(null);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const workflowRunRef = useRef<{ cancelQueued: boolean; lockLost?: boolean; executing?: boolean; stopped?: boolean; currentNodeId?: string; canceledNodeIds: Set<string> }>({ cancelQueued: false, canceledNodeIds: new Set() });
     const workflowExecutionTokenRef = useRef(0);
@@ -2606,6 +2607,27 @@ function InfiniteCanvasPage() {
             if (pendingConnectionCreateRef.current) return;
 
             const currentConnection = connectingParamsRef.current;
+            const startPoint = connectStartPointRef.current;
+            connectStartPointRef.current = null;
+            if (currentConnection && startPoint && Math.hypot(event.clientX - startPoint.x, event.clientY - startPoint.y) < 5) {
+                // A plain click on a port (no drag) opens the create menu and places the new node beside the source.
+                const anchor = nodesByIdRef.current.get(currentConnection.nodeId);
+                if (anchor) {
+                    const preferred = {
+                        x: currentConnection.handleType === "source" ? anchor.position.x + anchor.width + 140 : anchor.position.x - 140,
+                        y: anchor.position.y + anchor.height / 2,
+                    };
+                    // Keep the menu (about 240×420 px) inside the visible canvas.
+                    const rect = containerRectRef.current;
+                    const view = viewportRef.current;
+                    const screenX = Math.min(Math.max(preferred.x * view.k + view.x, 24), rect.width - 264);
+                    const screenY = Math.min(Math.max(preferred.y * view.k + view.y, 88), rect.height - 440);
+                    const position = { x: (screenX - view.x) / view.k, y: (screenY - view.y) / view.k };
+                    setMouseWorld(position);
+                    setPendingConnectionCreate({ connection: currentConnection, position });
+                    return;
+                }
+            }
             if (currentConnection) {
                 const dropTarget = getConnectionDropTarget(event.clientX, event.clientY, currentConnection);
                 if (dropTarget.nodeId) {
@@ -2892,6 +2914,7 @@ function InfiniteCanvasPage() {
     const handleConnectStart = useCallback(
         (event: ReactMouseEvent, nodeId: string, handleType: "source" | "target") => {
             event.stopPropagation();
+            connectStartPointRef.current = { x: event.clientX, y: event.clientY };
             setMouseWorld(screenToCanvas(event.clientX, event.clientY));
             const selection = selectedNodeIdsRef.current;
             const sourceNodeIds =
