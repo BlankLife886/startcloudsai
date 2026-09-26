@@ -1142,7 +1142,7 @@ function ImageContent({
             ) : null}
             {primaryImage?.status === "error" ? <BatchImageFailureActions placement="left" errorDetails={primaryImage.errorDetails} onRetry={() => onRetryBatchImage?.(primaryImage.id)} onDelete={() => onDeleteBatchImage?.(primaryImage.id)} /> : null}
             {canDownload ? (
-                <button type="button" className="canvas-node-overlay-btn absolute left-2.5 top-2.5 z-30 flex h-7 items-center gap-1 rounded-full border px-2 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), handleDownload())}>
+                <button type="button" className="canvas-node-overlay-btn canvas-node-hover-reveal absolute left-2.5 top-2.5 z-30 flex h-7 items-center gap-1 rounded-full border px-2 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), handleDownload())}>
                     <DownloadIcon className="size-3" />
                     {t("common.download")}
                 </button>

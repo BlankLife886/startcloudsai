@@ -7585,6 +7585,7 @@ function InfiniteCanvasPage() {
                         from={from}
                         to={to}
                         active={selectedConnectionIds.has(connection.id) || relatedHighlight.connectionIds.has(connection.id)}
+                        selected={selectedConnectionIds.has(connection.id)}
                         onSelect={handleConnectionSelect}
                         onContextMenu={handleConnectionContextMenu}
                     />

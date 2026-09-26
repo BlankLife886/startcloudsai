@@ -38,6 +38,7 @@ export const ConnectionPath = memo(function ConnectionPath({
     from,
     to,
     active,
+    selected = false,
     onSelect,
     onContextMenu,
 }: {
@@ -45,6 +46,7 @@ export const ConnectionPath = memo(function ConnectionPath({
     from: CanvasNodeData;
     to: CanvasNodeData;
     active: boolean;
+    selected?: boolean;
     onSelect: (event: ReactMouseEvent<SVGPathElement>, connectionId: string) => void;
     onContextMenu?: (event: ReactMouseEvent<SVGPathElement>, connectionId: string) => void;
 }) {
@@ -54,7 +56,7 @@ export const ConnectionPath = memo(function ConnectionPath({
     // Every visible path carries data-connection-path so drag and resize can rewrite its geometry directly.
     return (
         <g className={`canvas-edge${active ? " is-active" : ""}`} style={{ "--canvas-edge-hover": theme.canvas.connectionActive } as CSSProperties}>
-            {active ? (
+            {selected ? (
                 <path
                     data-connection-path={connection.id}
                     d={pathD}
@@ -71,22 +73,23 @@ export const ConnectionPath = memo(function ConnectionPath({
                 className="canvas-edge__line"
                 d={pathD}
                 stroke={active ? theme.canvas.connectionActive : theme.canvas.connection}
-                strokeWidth={active ? 2.2 : 1.6}
+                strokeOpacity={active && !selected ? 0.7 : 1}
+                strokeWidth={selected ? 2.2 : active ? 1.8 : 1.6}
                 strokeLinecap="round"
                 fill="none"
                 markerEnd={`url(#${active ? END_MARKER_ACTIVE_ID : END_MARKER_ID})`}
                 style={{ pointerEvents: "none" }}
             />
-            {active ? (
+            {selected ? (
                 <path
                     data-connection-path={connection.id}
                     className="canvas-edge__flow"
                     d={pathD}
                     stroke="#ffffff"
                     strokeOpacity={theme.scheme === "dark" ? 0.55 : 0.85}
-                    strokeWidth="2"
+                    strokeWidth="2.4"
                     strokeLinecap="round"
-                    strokeDasharray="1 14"
+                    strokeDasharray="0.1 18"
                     fill="none"
                     style={{ pointerEvents: "none" }}
                 />

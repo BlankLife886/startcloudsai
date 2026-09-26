@@ -191,6 +191,7 @@ export function CanvasConfigNodePanel({
       node={node}
       isRunning={isRunning}
       inputSummary={inputSummary}
+      inputs={inputs}
       onGenerate={onGenerate}
       onStopGeneration={onStopGeneration}
       onCancelQueued={onCancelQueued}
@@ -202,6 +203,7 @@ export function CanvasConfigNodePanel({
       node={node}
       isRunning={isRunning}
       inputSummary={inputSummary}
+      inputs={inputs}
       onConfigChange={onConfigChange}
       onGenerate={onGenerate}
       onStopGeneration={onStopGeneration}
@@ -389,7 +391,7 @@ function CanvasStoryboardConfigNodePanel({
   const failed = executionStatus === "failed" || generationStage === "failed";
   const completed = !running && (executionStatus === "succeeded" || generationStage === "completed");
   const canceled = !running && (executionStatus === "canceled" || generationStage === "canceled");
-  const accent = nodeTypeColor("image", undefined, theme.scheme);
+  const accent = theme.node.activeStroke;
   const imageConfig = buildNodeConfig(globalConfig, node, "image");
   const stopLabel = t("canvas.storyboard.configStopGenerate");
   const imageParamsSummary = [
@@ -432,8 +434,11 @@ function CanvasStoryboardConfigNodePanel({
               type="button"
               className="canvas-batch-mode-switch-btn"
               style={{
-                background: active ? colorWash(accent, theme.scheme === "dark" ? 0.2 : 0.14) : "transparent",
-                color: active ? accent : theme.node.muted,
+                background: active ? (theme.scheme === "dark" ? "rgba(255,255,255,.1)" : "#ffffff") : "transparent",
+                color: active ? theme.node.text : theme.node.muted,
+                fontWeight: active ? 600 : 500,
+                boxShadow: active && theme.scheme !== "dark" ? "0 1px 3px rgba(20,16,40,.12)" : "none",
+                transition: "background .2s ease, color .2s ease, box-shadow .2s ease",
               }}
               aria-pressed={active}
               title={mode.label}
@@ -1472,6 +1477,7 @@ function CanvasLocalImageOperationPanel({
   node,
   isRunning,
   inputSummary,
+  inputs,
   onGenerate,
   onStopGeneration,
   onCancelQueued,
@@ -1481,6 +1487,7 @@ function CanvasLocalImageOperationPanel({
   | "node"
   | "isRunning"
   | "inputSummary"
+  | "inputs"
   | "onGenerate"
   | "onStopGeneration"
   | "onCancelQueued"
@@ -1513,6 +1520,7 @@ function CanvasLocalImageOperationPanel({
   const hasOutput = Boolean(node.metadata?.workflowOutputNodeIds?.length);
   const canRun = inputSummary.imageCount === 1;
   const accent = nodeTypeColor("image", undefined, theme.scheme);
+  const inputImage = inputs.find((input) => Boolean(input.image))?.image;
   const completedCount = Math.min(
     count,
     Math.max(0, node.metadata?.localImageOperationCompletedCount || 0),
@@ -1524,90 +1532,71 @@ function CanvasLocalImageOperationPanel({
       style={{ color: theme.node.text }}
       onWheel={(event) => event.stopPropagation()}
     >
-      <div
-        className="flex min-h-12 shrink-0 items-center gap-3 rounded-xl px-3"
-        style={{
-          background: colorWash(accent, theme.scheme === "dark" ? 0.12 : 0.08),
-        }}
-      >
+      <div className="flex h-10 shrink-0 items-center gap-2.5">
         <span
-          className="grid size-8 shrink-0 place-items-center rounded-lg"
-          style={{ background: colorWash(accent, 0.16), color: accent }}
+          className="grid size-7 shrink-0 place-items-center rounded-[9px]"
+          style={{ background: theme.toolbar.itemHover, color: theme.node.text }}
         >
-          <Icon className="size-4" />
+          <Icon className="size-3.5" />
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-semibold">{label}</div>
-          <div
-            className="mt-0.5 truncate text-[11px]"
-            style={{ color: theme.node.muted }}
-          >
-            {summary}
-          </div>
         </div>
-        <button
-          type="button"
-          className="grid size-8 shrink-0 place-items-center rounded-lg transition hover:scale-105"
-          style={{
-            background: theme.toolbar.itemHover,
-            color: theme.node.muted,
-          }}
-          title={t("canvas.configNode.configureOperation")}
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={() => onConfigureOperation(node)}
-        >
-          <SlidersHorizontal className="size-3.5" />
-        </button>
-      </div>
-
-      <button
-        type="button"
-        className="mt-2.5 flex min-h-11 items-center justify-between rounded-xl px-3 text-left"
-        style={{ background: theme.toolbar.itemHover }}
-        onMouseDown={(event) => event.stopPropagation()}
-        onClick={() => onConfigureOperation(node)}
-      >
-        <span className="min-w-0">
-          <span
-            className="block text-[11px]"
-            style={{ color: theme.node.muted }}
-          >
-            {t("canvas.configNode.operationParams")}
-          </span>
-          <span className="mt-0.5 block truncate text-[12px] font-semibold">
-            {summary}
-          </span>
-        </span>
-        <ChevronRight className="size-4 shrink-0 opacity-45" />
-      </button>
-
-      <div
-        className="mt-2 flex items-center justify-between rounded-xl px-3 py-2.5"
-        style={{ background: theme.toolbar.itemHover }}
-      >
-        <span className="text-[12px]" style={{ color: theme.node.muted }}>
-          {t("canvas.configNode.operationInput")}
-        </span>
-        <span
-          className="text-[12px] font-semibold"
-          style={{
-            color: canRun
-              ? accent
-              : inputSummary.imageCount > 1
-                ? "#ef4444"
-                : theme.node.muted,
-          }}
-        >
+        <span className="shrink-0 text-[11px]" style={{ color: theme.node.muted }}>
           {t("canvas.configNode.images", { count: inputSummary.imageCount })}
         </span>
       </div>
 
+      <button
+        type="button"
+        className="group/op relative mt-1.5 min-h-0 w-full flex-1 overflow-hidden rounded-[12px] text-left"
+        style={{ background: theme.toolbar.itemHover }}
+        title={t("canvas.configNode.configureOperation")}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={() => onConfigureOperation(node)}
+      >
+        {inputImage ? (
+          <CanvasPreviewImage
+            src={inputImage.dataUrl}
+            storageKey={inputImage.storageKey}
+            alt={label}
+            maxEdge={480}
+            className="absolute inset-0 size-full object-cover"
+          />
+        ) : (
+          <span
+            className="absolute inset-2 flex flex-col items-center justify-center gap-1 rounded-[10px] border-[1.5px] border-dashed text-[12px] font-medium"
+            style={{ borderColor: theme.scheme === "dark" ? "#3a3647" : "#dcd7e7", color: theme.node.muted }}
+          >
+            <ImageIcon className="size-4 opacity-70" />
+            {t("canvas.configNode.operationInput")}
+          </span>
+        )}
+        {inputImage && operation === "crop" ? <span className="pointer-events-none absolute inset-[12%_10%] rounded-[3px] border-2 border-white" style={{ boxShadow: "0 0 0 999px rgba(12,10,20,.42)" }} /> : null}
+        {inputImage && operation === "split" ? (
+          <span
+            className="pointer-events-none absolute inset-0"
+            style={{
+              backgroundImage:
+                "linear-gradient(90deg, transparent calc(33.33% - 1px), rgba(255,255,255,.9) calc(33.33% - 1px), rgba(255,255,255,.9) calc(33.33% + 1px), transparent calc(33.33% + 1px), transparent calc(66.66% - 1px), rgba(255,255,255,.9) calc(66.66% - 1px), rgba(255,255,255,.9) calc(66.66% + 1px), transparent calc(66.66% + 1px)), linear-gradient(180deg, transparent calc(33.33% - 1px), rgba(255,255,255,.9) calc(33.33% - 1px), rgba(255,255,255,.9) calc(33.33% + 1px), transparent calc(33.33% + 1px), transparent calc(66.66% - 1px), rgba(255,255,255,.9) calc(66.66% - 1px), rgba(255,255,255,.9) calc(66.66% + 1px), transparent calc(66.66% + 1px))",
+            }}
+          />
+        ) : null}
+        <span className="absolute inset-x-2 bottom-2 flex items-center gap-1.5">
+          <span className="inline-flex min-w-0 items-center gap-1.5 truncate rounded-[8px] px-2 py-1 text-[11px] font-semibold backdrop-blur-sm" style={{ background: "rgba(255,255,255,.92)", color: "#17151f" }}>
+            <SlidersHorizontal className="size-3 shrink-0 opacity-70" />
+            <span className="truncate">{summary}</span>
+          </span>
+        </span>
+      </button>
+
       <div
-        className="mt-auto min-h-7 px-1 pt-3 text-[11px]"
+        className="flex min-h-7 shrink-0 items-center gap-1.5 px-0.5 pt-2 text-[11px] tabular-nums"
         style={{
-          color: executionStatus === "failed" ? "#ef4444" : theme.node.muted,
+          color: executionStatus === "failed" ? "#e5484d" : running || queued ? "#b45309" : executionStatus === "succeeded" ? (theme.scheme === "dark" ? "#4ade80" : "#15803d") : theme.node.muted,
         }}
       >
+        <span className={`size-1.5 shrink-0 rounded-full ${running || queued ? "animate-pulse" : ""}`} style={{ background: "currentColor" }} />
         {queued
           ? t("canvas.configNode.queuedOperation", { operation: label })
           : running
@@ -1685,6 +1674,7 @@ function CanvasAiOperationPanel({
   node,
   isRunning,
   inputSummary,
+  inputs,
   onConfigChange,
   onGenerate,
   onStopGeneration,
@@ -1695,6 +1685,7 @@ function CanvasAiOperationPanel({
   | "node"
   | "isRunning"
   | "inputSummary"
+  | "inputs"
   | "onConfigChange"
   | "onGenerate"
   | "onStopGeneration"
@@ -1730,6 +1721,7 @@ function CanvasAiOperationPanel({
     node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
   const canRun = inputSummary.imageCount === 1 && Boolean(instruction.trim());
   const hasOutput = Boolean(node.metadata?.workflowOutputNodeIds?.length);
+  const inputImage = inputs.find((input) => Boolean(input.image))?.image;
   const cost = estimateCanvasGenerationCost({
     config,
     kind: angle ? "image" : "text",
@@ -1745,51 +1737,26 @@ function CanvasAiOperationPanel({
       style={{ color: theme.node.text }}
       onWheel={(event) => event.stopPropagation()}
     >
-      <div
-        className="flex min-h-12 shrink-0 items-center gap-3 rounded-xl px-3"
-        style={{
-          background: colorWash(color, theme.scheme === "dark" ? 0.12 : 0.08),
-        }}
-      >
+      <div className="flex h-10 shrink-0 items-center gap-2.5">
         <span
-          className="grid size-8 shrink-0 place-items-center rounded-lg"
-          style={{ background: colorWash(color, 0.16), color }}
+          className="grid size-7 shrink-0 place-items-center rounded-[9px]"
+          style={{ background: theme.toolbar.itemHover, color: theme.node.text }}
         >
           {angle ? (
-            <SlidersHorizontal className="size-4" />
+            <SlidersHorizontal className="size-3.5" />
           ) : (
-            <MessageSquare className="size-4" />
+            <MessageSquare className="size-3.5" />
           )}
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-semibold">{label}</div>
-          <div
-            className="mt-0.5 truncate text-[11px]"
-            style={{ color: theme.node.muted }}
-          >
-            {angle
-              ? angleSummary
-              : t("canvas.operationNodes.reversePromptDescription")}
-          </div>
         </div>
-        {angle ? (
-          <button
-            type="button"
-            className="grid size-8 shrink-0 place-items-center rounded-lg transition hover:scale-105"
-            style={{
-              background: theme.toolbar.itemHover,
-              color: theme.node.muted,
-            }}
-            title={t("canvas.configNode.configureOperation")}
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={() => onConfigureOperation(node)}
-          >
-            <SlidersHorizontal className="size-3.5" />
-          </button>
-        ) : null}
+        <span className="max-w-[55%] shrink-0 truncate text-[11px]" style={{ color: theme.node.muted }}>
+          {angle ? angleSummary : t("canvas.operationNodes.reversePromptDescription")}
+        </span>
       </div>
 
-      <div className="mt-2.5">
+      <div className="mt-1.5">
         <ConfigModelField
           config={config}
           mode={mode}
@@ -1856,10 +1823,17 @@ function CanvasAiOperationPanel({
         </label>
       )}
       <div
-        className="mt-2 flex items-center justify-between rounded-xl px-3 py-2.5"
+        className="mt-2 flex items-center gap-2.5 rounded-xl px-2 py-1.5"
         style={{ background: theme.toolbar.itemHover }}
       >
-        <span className="text-[12px]" style={{ color: theme.node.muted }}>
+        <span className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-[9px]" style={{ background: theme.node.panel, color: theme.node.muted }}>
+          {inputImage ? (
+            <CanvasPreviewImage src={inputImage.dataUrl} storageKey={inputImage.storageKey} alt={label} maxEdge={96} className="size-full object-cover" />
+          ) : (
+            <ImageIcon className="size-4 opacity-60" />
+          )}
+        </span>
+        <span className="flex-1 text-[12px]" style={{ color: theme.node.muted }}>
           {t("canvas.configNode.operationInput")}
         </span>
         <span
@@ -1877,9 +1851,9 @@ function CanvasAiOperationPanel({
         </span>
       </div>
       <div
-        className="mt-auto min-h-7 px-1 pt-3 text-[11px]"
+        className="mt-auto flex min-h-7 items-center gap-1.5 px-0.5 pt-3 text-[11px] tabular-nums"
         style={{
-          color: executionStatus === "failed" ? "#ef4444" : theme.node.muted,
+          color: executionStatus === "failed" ? "#e5484d" : running || queued ? "#b45309" : executionStatus === "succeeded" ? (theme.scheme === "dark" ? "#4ade80" : "#15803d") : theme.node.muted,
         }}
       >
         {queued

@@ -2488,7 +2488,7 @@ body.canvas-tool-dragging * {
 }
 @keyframes canvas-edge-flow {
     to {
-        stroke-dashoffset: -15;
+        stroke-dashoffset: -18.1;
     }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2531,4 +2531,14 @@ body.canvas-tool-dragging * {
     .canvas-node-progress {
         animation: none;
     }
+}
+
+/* Secondary node overlays stay out of the way until the node is hovered. */
+.node-element .canvas-node-hover-reveal {
+    opacity: 0;
+    transition: opacity 0.18s ease;
+}
+.node-element:hover .canvas-node-hover-reveal,
+.node-element:focus-within .canvas-node-hover-reveal {
+    opacity: 1;
 }
