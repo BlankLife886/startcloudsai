@@ -2549,3 +2549,21 @@ body.canvas-tool-dragging * {
         opacity: 1;
     }
 }
+
+/* Recent-project hover card: a plain CSS fade instead of an animation library, so sweeping the list stays cheap. */
+.canvas-recent-preview {
+    animation: canvas-recent-preview-in 0.12s ease-out both;
+}
+
+@keyframes canvas-recent-preview-in {
+    from {
+        opacity: 0;
+        transform: translateX(-4px);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .canvas-recent-preview {
+        animation: none;
+    }
+}
