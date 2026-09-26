@@ -105,6 +105,9 @@ export type CanvasNodeMetadata = {
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
     editing?: boolean;
+    htmlDevice?: "desktop" | "tablet" | "phone"; // HTML plugin: device frame the page is previewed in.
+    htmlLandscape?: boolean;
+    htmlPrompt?: string; // HTML plugin: last AI request that produced the page.
     pluginColor?: string;
     taskId?: string;
     taskKind?: "image" | "assistant";
