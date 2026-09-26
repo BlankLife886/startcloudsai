@@ -81,13 +81,30 @@ function renderHtml(ctx: CanvasNodeContext) {
 // Frames
 // ---------------------------------------------------------------------------------------------------------------
 
+// Keeps links and forms inside the frame: anything aimed at the top/parent window opens in a new tab instead of
+// navigating the canvas away.
+const FRAME_GUARD = `<script>(()=>{const fix=(el)=>{const t=(el.getAttribute("target")||"").toLowerCase();if(t==="_top"||t==="_parent")el.setAttribute("target","_blank")};document.addEventListener("click",(e)=>{const a=e.target&&e.target.closest&&e.target.closest("a[target]");if(a)fix(a)},true);document.addEventListener("submit",(e)=>{if(e.target&&e.target.getAttribute)fix(e.target)},true)})()<\/script>`;
+const DATA_URL_LIMIT = 1_500_000;
+
+function withFrameGuard(html: string) {
+    return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (head) => `${head}${FRAME_GUARD}`) : `${FRAME_GUARD}${html}`;
+}
+
+// The page loads from a data: URL without a sandbox attribute. It still gets an opaque origin (no access to the canvas's
+// DOM, cookies or storage), but unlike a sandboxed srcdoc it stays in the canvas's renderer process: Chrome isolates
+// sandboxed frames into their own process, and such a frame under a CSS scale stops repainting after its content changes,
+// so clicking around inside the preview left it blank. Very large pages fall back to the sandboxed srcdoc.
 function PageFrame({ html, viewport, scale, interactive, reloadKey, title }: { html: string; viewport: { width: number; height: number }; scale: number; interactive: boolean; reloadKey: number; title: string }) {
+    const source = useMemo(() => {
+        const guarded = withFrameGuard(html);
+        const url = `data:text/html;charset=utf-8,${encodeURIComponent(guarded)}`;
+        return url.length <= DATA_URL_LIMIT ? { src: url } : { srcDoc: guarded, sandbox: "allow-scripts allow-forms allow-modals allow-popups" };
+    }, [html]);
     return (
         <iframe
             key={reloadKey}
             title={title}
-            sandbox="allow-scripts allow-forms allow-modals allow-popups"
-            srcDoc={html}
+            {...source}
             className="absolute left-0 top-0 block border-0 bg-white"
             style={{ width: viewport.width, height: viewport.height, transform: `scale(${scale})`, transformOrigin: "0 0", pointerEvents: interactive ? "auto" : "none" }}
         />
@@ -220,8 +237,13 @@ function useWindowSize() {
     return size;
 }
 
+// The new tab shows a wrapper page whose only content is a sandboxed frame: a blob: URL carries the canvas's origin, so
+// the user's HTML must never run in it directly.
 function openInNewTab(html: string) {
-    const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    const escaped = html.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+    const title = htmlAddress(html).replace(/[<&]/g, "");
+    const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>html,body{margin:0;height:100%}iframe{border:0;width:100%;height:100%;display:block}</style></head><body><iframe sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox" srcdoc="${escaped}"></iframe></body></html>`;
+    const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
     window.open(url, "_blank", "noopener");
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
