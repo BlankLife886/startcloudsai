@@ -420,7 +420,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                             : data.type === CanvasNodeType.Image
                               ? `1px solid ${hovered ? theme.node.strokeHover : theme.node.stroke}`
                               : "2px solid transparent",
-                    outlineOffset: isGroup ? undefined : isConnectionTarget ? 4 : isSelected ? 3 : data.type === CanvasNodeType.Image ? -1 : 3,
+                    // Selection hugs the border so the ports, which sit on the border, read as centred on the node edge.
+                    outlineOffset: isGroup ? undefined : isConnectionTarget ? 2 : isSelected ? 0 : data.type === CanvasNodeType.Image ? -1 : 3,
                     background: isGroup
                         ? theme.scheme === "dark"
                             ? "rgba(255,255,255,.025)"

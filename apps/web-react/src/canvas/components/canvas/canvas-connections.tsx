@@ -9,13 +9,37 @@ const END_MARKER_HOT_ID = "canvas-edge-end-hot";
 const HOT_FROM = "#8b6cff";
 const HOT_TO = "#3d7bff";
 
+// Every edge leaves and enters its ports horizontally: a short straight stub runs under the port (so the line visibly
+// comes out of the centre of the "+" instead of bending away from its rim), then the curve takes over.
 // Forward edges bend proportionally but stay calm; edges that run backwards loop out wider so they do not cut through nodes.
-// When one output feeds several nodes, the edges share a short horizontal trunk before fanning out.
+// When one output feeds several nodes, the edges share a longer horizontal trunk before fanning out.
+const EDGE_LEAD = 22;
+const EDGE_TAIL = 12;
+
+function canvasCurveGeometry(startX: number, startY: number, endX: number, endY: number, trunk = 0) {
+    let lead = Math.max(EDGE_LEAD, trunk);
+    let tail = EDGE_TAIL;
+    const gap = endX - startX;
+    // Close forward neighbours: shrink the stubs so they never overlap.
+    if (gap > 0 && gap < lead + tail + 16) {
+        const k = Math.max(0, gap - 16) / (lead + tail);
+        lead *= k;
+        tail *= k;
+    }
+    const sx = startX + lead;
+    const ex = endX - tail;
+    const back = ex < sx + 20;
+    const curvature = back ? Math.min(220, 90 + Math.abs(sx - ex) * 0.3 + Math.abs(endY - startY) * 0.15) : Math.min(160, Math.max(40, Math.abs(ex - sx) * 0.45));
+    return { sx, ex, curvature };
+}
+
 export function canvasCurvePathD(startX: number, startY: number, endX: number, endY: number, trunk = 0) {
-    const sx = startX + trunk;
-    const back = endX < sx + 20;
-    const curvature = back ? Math.min(220, 90 + Math.abs(sx - endX) * 0.3 + Math.abs(endY - startY) * 0.15) : Math.min(160, Math.max(40, Math.abs(endX - sx) * 0.45));
-    return `M ${startX} ${startY}${trunk ? ` L ${sx} ${startY}` : ""} C ${sx + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`;
+    const { sx, ex, curvature } = canvasCurveGeometry(startX, startY, endX, endY, trunk);
+    return `M ${startX} ${startY} L ${sx} ${startY} C ${sx + curvature} ${startY}, ${ex - curvature} ${endY}, ${ex} ${endY} L ${endX} ${endY}`;
+}
+
+function connectionTrunk(from: CanvasNodeData, to: CanvasNodeData, fanOut: number) {
+    return fanOut > 1 ? Math.min(36, Math.max(0, (to.position.x - from.position.x - from.width) * 0.25)) : 0;
 }
 
 /** Midpoint of the curved part of a connection, used to anchor the "cut" button. */
@@ -24,17 +48,12 @@ function canvasConnectionMidpoint(from: CanvasNodeData, to: CanvasNodeData, fanO
     const y1 = from.position.y + from.height / 2;
     const x2 = to.position.x;
     const y2 = to.position.y + to.height / 2;
-    const sx = x1 + (fanOut > 1 ? Math.min(36, Math.max(0, (x2 - x1) * 0.25)) : 0);
-    const back = x2 < sx + 20;
-    const cv = back ? Math.min(220, 90 + Math.abs(sx - x2) * 0.3 + Math.abs(y2 - y1) * 0.15) : Math.min(160, Math.max(40, Math.abs(x2 - sx) * 0.45));
-    return { x: 0.125 * sx + 0.375 * (sx + cv) + 0.375 * (x2 - cv) + 0.125 * x2, y: 0.5 * y1 + 0.5 * y2 };
+    const { sx, ex, curvature: cv } = canvasCurveGeometry(x1, y1, x2, y2, connectionTrunk(from, to, fanOut));
+    return { x: 0.125 * sx + 0.375 * (sx + cv) + 0.375 * (ex - cv) + 0.125 * ex, y: 0.5 * y1 + 0.5 * y2 };
 }
 
 export function canvasConnectionPathD(from: CanvasNodeData, to: CanvasNodeData, fanOut = 1) {
-    const startX = from.position.x + from.width;
-    const endX = to.position.x;
-    const trunk = fanOut > 1 ? Math.min(36, Math.max(0, (endX - startX) * 0.25)) : 0;
-    return canvasCurvePathD(startX, from.position.y + from.height / 2, endX, to.position.y + to.height / 2, trunk);
+    return canvasCurvePathD(from.position.x + from.width, from.position.y + from.height / 2, to.position.x, to.position.y + to.height / 2, connectionTrunk(from, to, fanOut));
 }
 
 export function CanvasConnectionDefs() {
