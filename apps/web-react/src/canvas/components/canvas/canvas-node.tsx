@@ -1418,7 +1418,7 @@ function ConnectionHandleDot({ side, visible, active = false, highlight = false,
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const accent = theme.node.activeStroke;
     // Keep ports a comfortable on-screen size when the canvas is zoomed out.
-    const counterScale = Math.min(3, Math.max(1, 1 / Math.max(scale || 1, 0.05)));
+    const counterScale = Math.min(1.6, Math.max(1, 1 / Math.max(scale || 1, 0.05)));
 
     // Input is a small hollow ring; output is a larger "+" that invites dragging out the next node.
     return (

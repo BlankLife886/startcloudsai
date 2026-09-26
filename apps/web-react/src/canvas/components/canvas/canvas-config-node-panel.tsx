@@ -1183,7 +1183,7 @@ function CanvasGenerationConfigNodePanel({
       }}
       onWheel={(event) => event.stopPropagation()}
     >
-      <div className={`canvas-config-tabs grid h-9 shrink-0 ${MODE_TAB_COLS} gap-1`}>
+      <div className={`canvas-config-mode-switch grid h-9 shrink-0 ${MODE_TAB_COLS} gap-0.5 rounded-[11px] p-[3px]`} style={{ background: dark ? "rgba(255,255,255,.05)" : "#f3f1f8" }}>
         {VISIBLE_MODES.map((item) => {
           const active = mode === item.value;
           const Icon = item.icon;
@@ -1192,10 +1192,12 @@ function CanvasGenerationConfigNodePanel({
               key={item.value}
               type="button"
               aria-pressed={active}
-              className="relative flex items-center justify-center gap-1 text-[12px] font-medium"
+              className="relative flex items-center justify-center gap-1.5 rounded-[8px] text-[12px] transition-[background,color,box-shadow] duration-200"
               style={{
-                color: active ? color : theme.node.muted,
-                borderBottom: `2px solid ${active ? color : "transparent"}`,
+                color: active ? theme.node.text : theme.node.muted,
+                fontWeight: active ? 600 : 500,
+                background: active ? (dark ? "rgba(255,255,255,.1)" : "#ffffff") : "transparent",
+                boxShadow: active && !dark ? "0 1px 3px rgba(20,16,40,.12)" : "none",
               }}
               onClick={() => onConfigChange(node.id, { generationMode: item.value })}
             >
@@ -1263,85 +1265,53 @@ function CanvasGenerationConfigNodePanel({
         </div>
       </div>
 
-      <div className="canvas-config-input-row mt-auto flex min-w-0 shrink-0 items-center gap-2 pt-2">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        className="canvas-config-input-card group mt-2.5 flex min-h-[64px] w-full min-w-0 flex-1 flex-col gap-2 rounded-[12px] px-3 py-2.5 text-left transition-colors"
+        style={{
+          background: dark ? "rgba(255,255,255,.035)" : "#f8f7fb",
+          boxShadow: hasComposerContent || stats.some((item) => item.value > 0) ? "none" : `inset 0 0 0 1.5px ${dark ? "#3a3647" : "#e3dfee"}`,
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={onComposerToggle}
+      >
+        <span className="flex w-full items-center gap-2">
+          <span className="text-[11px] font-semibold" style={{ color: theme.node.muted }}>
+            {t("canvas.configNode.prompt")}
+          </span>
+          <span className="ml-auto inline-flex items-center gap-0.5 text-[11px] font-semibold" style={{ color: hasComposerContent ? theme.node.activeStroke : theme.node.muted }}>
+            {t(hasComposerContent ? "canvas.configNode.composed" : "canvas.configNode.compose")}
+            <ChevronRight className="size-3.5 opacity-70 transition-transform group-hover:translate-x-0.5" />
+          </span>
+        </span>
+        {hasComposerContent ? (
+          <span className="line-clamp-3 w-full whitespace-pre-wrap break-words text-[12px] leading-[1.65]" style={{ color: theme.node.text }}>
+            {(node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim()}
+          </span>
+        ) : (
+          <span className="text-[12px] leading-[1.6]" style={{ color: theme.node.faint }}>
+            {stats.some((item) => item.value > 0) ? t("canvas.configNode.composed") : t("canvas.configNode.emptyInputs")}
+          </span>
+        )}
+        <span className="mt-auto flex w-full min-w-0 items-center gap-2">
           {referenceImages.length ? (
-            <div
-              className="mr-0.5 flex items-center -space-x-1"
-              title={t("canvas.configNode.references")}
-            >
+            <span className="flex shrink-0 -space-x-1.5">
               {referenceImages.slice(0, 4).map((input, index) => (
-                <span
-                  key={`${input.nodeId}:${index}`}
-                  className="relative grid size-7 shrink-0 place-items-center overflow-hidden rounded-lg border"
-                  style={{
-                    background: theme.node.fill,
-                    borderColor: theme.toolbar.panel,
-                    zIndex: 4 - index,
-                  }}
-                >
-                  <CanvasPreviewImage
-                    src={input.image?.dataUrl}
-                    storageKey={input.image?.storageKey}
-                    alt={input.title}
-                    maxEdge={96}
-                    className="size-full object-cover"
-                  />
+                <span key={`${input.nodeId}:${index}`} className="relative grid size-6 overflow-hidden rounded-[7px] border-2" style={{ borderColor: dark ? theme.node.fill : "#f8f7fb", zIndex: 4 - index }}>
+                  <CanvasPreviewImage src={input.image?.dataUrl} storageKey={input.image?.storageKey} alt={input.title} maxEdge={96} className="size-full object-cover" />
                 </span>
               ))}
-              {referenceImages.length > 4 ? (
-                <span
-                  className="relative grid size-7 shrink-0 place-items-center rounded-lg border text-[10px] font-semibold"
-                  style={{
-                    background: theme.toolbar.panel,
-                    borderColor: theme.toolbar.border,
-                    color: theme.node.muted,
-                    zIndex: 0,
-                  }}
-                >
-                  +{referenceImages.length - 4}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-          {stats.length ? (
-            stats.map((item) => (
-              <span
-                key={item.label}
-                className="inline-flex h-6 max-w-full items-center gap-1 px-1 text-[11px]"
-                style={{
-                  background: "transparent",
-                  color: item.value > 0 ? item.color : theme.node.muted,
-                }}
-              >
-                <span className="font-semibold tabular-nums">{item.value}</span>
-                <span className="truncate">{item.label}</span>
-              </span>
-            ))
-          ) : (
-            <span className="text-[12px]" style={{ color: theme.node.muted }}>
-              {t("canvas.configNode.emptyInputs")}
             </span>
-          )}
-        </div>
-        <button
-          type="button"
-          className="inline-flex h-7 shrink-0 items-center gap-0.5 text-[12px] font-medium"
-          style={{
-            color: hasComposerContent ? color : theme.toolbar.activeText,
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={onComposerToggle}
-        >
-          {t(
-            hasComposerContent
-              ? "canvas.configNode.composed"
-              : "canvas.configNode.compose",
-          )}
-          <ChevronRight className="size-3.5 opacity-70" />
-        </button>
-      </div>
-
+          ) : null}
+          <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-[11px] tabular-nums" style={{ color: theme.node.muted }}>
+            {stats.map((item) => (
+              <span key={item.label} style={{ color: item.value > 0 ? theme.node.text : theme.node.muted }}>
+                <b className="font-semibold">{item.value}</b> {item.label}
+              </span>
+            ))}
+          </span>
+        </span>
+      </button>
       {queued ? (
         <div
           className="mt-2.5 flex h-7 shrink-0 items-center gap-1.5 px-1 text-[11px]"
@@ -1421,14 +1391,18 @@ function CanvasGenerationConfigNodePanel({
 
       <button
         type="button"
-        className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[11px] text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+        className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[11px] text-[13px] font-semibold transition disabled:cursor-not-allowed"
         style={{
           background: queued
             ? "#b97716"
             : generating
               ? theme.node.text
-              : `linear-gradient(135deg, #9b7bff 0%, ${theme.node.activeStroke} 60%, #3d7bff 100%)`,
-          color: generating ? theme.node.panel : "#fff",
+              : canGenerate
+                ? `linear-gradient(135deg, #9b7bff 0%, ${theme.node.activeStroke} 60%, #3d7bff 100%)`
+                : dark
+                  ? "rgba(255,255,255,.06)"
+                  : "#f1eff6",
+          color: generating ? theme.node.panel : canGenerate || queued ? "#fff" : theme.node.muted,
           boxShadow: queued || generating || !canGenerate ? "none" : "0 8px 18px rgba(109,92,255,.28)",
         }}
         disabled={!queued && !generating && !canGenerate}
