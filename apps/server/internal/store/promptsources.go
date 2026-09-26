@@ -199,14 +199,17 @@ func UpsertSourcePrompt(ctx context.Context, q Q, sourceID, itemKey, title, prom
 	var inserted bool
 	err := q.QueryRow(ctx,
 		`INSERT INTO prompt_library
-			(title, prompt, task_type, category, tags, cover_key, sort, active, source_id, source_item_key)
-		 VALUES ($3, $4, $5, $9, $6, NULLIF($7, ''), $8, true, $1, $2)
+			(title, prompt, task_type, category, tags, cover_key, sort, active, source_id,
+			 source_item_key, new_until, content_fingerprint)
+		 VALUES ($3, $4, $5, $9, $6, NULLIF($7, ''), $8, true, $1, $2,
+			 now() + interval '24 hours', $10)
 		 ON CONFLICT (source_id, source_item_key) WHERE source_id <> '' AND source_item_key <> ''
 		 DO UPDATE SET
 			title = excluded.title,
 			prompt = excluded.prompt,
 			tags = excluded.tags,
 			cover_key = excluded.cover_key,
+			content_fingerprint = excluded.content_fingerprint,
 			cover_width = CASE
 				WHEN prompt_library.cover_key IS DISTINCT FROM excluded.cover_key THEN NULL
 				ELSE prompt_library.cover_width
@@ -222,7 +225,8 @@ func UpsertSourcePrompt(ctx context.Context, q Q, sourceID, itemKey, title, prom
 		 WHERE (prompt_library.title, prompt_library.prompt, prompt_library.tags, prompt_library.cover_key)
 			IS DISTINCT FROM (excluded.title, excluded.prompt, excluded.tags, excluded.cover_key)
 		 RETURNING (xmax = 0)`,
-		sourceID, itemKey, title, prompt, taskType, tags, coverKey, sort, category).Scan(&inserted)
+		sourceID, itemKey, title, prompt, taskType, tags, coverKey, sort, category,
+		PromptContentFingerprint(prompt)).Scan(&inserted)
 	if err == pgx.ErrNoRows {
 		return SourcePromptUnchanged, nil
 	}

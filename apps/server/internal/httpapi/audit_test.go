@@ -71,6 +71,7 @@ func TestAuditAction(t *testing.T) {
 		{"PATCH", "/api/v1/admin/plans/" + id, "plans.update"},
 		{"DELETE", "/api/v1/admin/plans/" + id, "plans.delete"},
 		{"PATCH", "/api/v1/admin/tasks/" + id, "tasks.update"},
+		{"DELETE", "/api/v1/admin/tasks", "tasks.delete"},
 		{"POST", "/api/v1/admin/users/" + id + "/wallet/entries", "entries.create"},
 		{"PUT", "/api/v1/admin/settings", "settings.update"},
 		{"POST", "/api/v1/admin/providers/c2a/tests", "tests.create"},

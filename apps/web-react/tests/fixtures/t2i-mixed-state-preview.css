@@ -1,0 +1,8 @@
+.t2i-page.mixed-preview { display:block; height:auto; min-height:100vh; padding:24px; background:var(--t2i-bg); color:var(--t2i-ink); font-family:system-ui,sans-serif; }
+.mixed-preview header { max-width:1050px; margin:0 auto 16px; display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.mixed-preview h1 { margin-right:auto; font-size:19px; }
+.mixed-preview header button,.mixed-preview .t2i-stage-bar button { padding:7px 12px; color:var(--t2i-ink); background:var(--t2i-panel); border:1px solid var(--t2i-line); border-radius:8px; cursor:pointer; }
+.mixed-preview .mixed-preview-main { width:100%; max-width:1050px; height:570px; margin:0 auto; }
+.mixed-preview .t2i-stage { grid-template-rows:minmax(0,1fr) auto; }
+.mixed-preview .t2i-stage-bar { font-size:12px; color:var(--t2i-muted); }
+.mixed-preview output,.mixed-preview>p { display:block; max-width:1050px; margin:16px auto; font-size:13px; }

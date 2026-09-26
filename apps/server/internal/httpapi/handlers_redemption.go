@@ -38,18 +38,17 @@ func (s *Server) redeemCode(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "code: 格式不正确", 422))
 		return
 	}
-	// 防爆破：单用户 1h 内 10 次失败锁 1h
+	// 防爆破：单用户 1h 内 10 次失败锁 1h。Reserve 原子地「先 INCR 再判断
+	// 超限」，避免先 Check 后 Fail 之间的窗口被并发请求穿透（TOCTOU）；
+	// 兑换成功后 Success 重置计数，正常用户不受影响。
 	limiterKey := user.ID.String()
-	if remain, allowed := s.RedeemLimiter.Check(limiterKey, ""); !allowed {
+	if remain, allowed := s.RedeemLimiter.Reserve(limiterKey, ""); !allowed {
 		fail(c, apperr.E("rate_limited", auth.LockMessage(remain), 429))
 		return
 	}
 	ctx := c.Request.Context()
-	redeemed, entry, err := redemption.Redeem(ctx, s.St, user.ID, code)
+	redeemed, _, err := redemption.Redeem(ctx, s.St, user.ID, code)
 	if err != nil {
-		if _, isApp := apperr.As(err); isApp {
-			s.RedeemLimiter.Fail(limiterKey, "")
-		}
 		fail(c, err)
 		return
 	}
@@ -59,7 +58,14 @@ func (s *Server) redeemCode(c *gin.Context) {
 	if nerr := store.InsertNotification(ctx, s.St.Pool, &user.ID, "system", "兑换码入账", &msg); nerr != nil {
 		log.Printf("notify redeem code %s: %v", redeemed.ID, nerr)
 	}
-	respondCreated(c, gin.H{"grantCents": redeemed.GrantCents, "balanceCents": entry.BalanceAfterCents})
+	wallet, err := store.GetWallet(ctx, s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	response := walletDict(wallet)
+	response["grantCents"] = redeemed.GrantCents
+	respondCreated(c, response)
 }
 
 // ---------- Admin ----------
@@ -156,6 +162,11 @@ func redemptionCodeDict(r *store.RedemptionCode) gin.H {
 }
 
 func (s *Server) adminListRedemptionCodes(c *gin.Context, _ *store.User) {
+	extra, err := adminListFilter(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	status := c.Query("status")
 	if status != "" && status != "active" && status != "redeemed" && status != "disabled" {
 		fail(c, apperr.E("validation_error", "无效的兑换码状态", 422))
@@ -168,12 +179,33 @@ func (s *Server) adminListRedemptionCodes(c *gin.Context, _ *store.User) {
 	}
 	search := redemption.NormalizeCode(c.Query("search"))
 	rows, err := store.ListRedemptionCodes(c.Request.Context(), s.St.Pool,
-		status, strings.TrimSpace(c.Query("batchId")), search, limit, cursor)
+		status, strings.TrimSpace(c.Query("batchId")), search, limit, cursor, extra)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, redemptionCodeDict))
+	batchID := strings.TrimSpace(c.Query("batchId"))
+	summary, err := store.SummarizeRedemptionCodes(c.Request.Context(), s.St.Pool, batchID, search, extra)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	page := buildPage(rows, limit, redemptionCodeDict)
+	page["summary"] = gin.H{
+		"total": summary.Total, "active": summary.Active, "redeemed": summary.Redeemed,
+		"disabled": summary.Disabled, "expired": summary.Expired,
+	}
+	switch status {
+	case "":
+		page["total"] = summary.Total
+	case "redeemed":
+		page["total"] = summary.Redeemed
+	case "disabled":
+		page["total"] = summary.Disabled
+	case "active":
+		page["total"] = summary.Active + summary.Expired
+	}
+	ok(c, page)
 }
 
 func (s *Server) adminDisableRedemptionCode(c *gin.Context, _ *store.User) {
@@ -206,7 +238,12 @@ func (s *Server) adminDisableRedemptionCode(c *gin.Context, _ *store.User) {
 }
 
 func (s *Server) adminRedemptionBatches(c *gin.Context, _ *store.User) {
-	rows, err := store.ListRedemptionBatches(c.Request.Context(), s.St.Pool, 100)
+	search := strings.TrimSpace(c.Query("search"))
+	if len([]rune(search)) > 100 {
+		fail(c, apperr.E("validation_error", "搜索内容不能超过 100 个字符", 422))
+		return
+	}
+	rows, err := store.ListRedemptionBatches(c.Request.Context(), s.St.Pool, search, 50)
 	if err != nil {
 		fail(c, err)
 		return

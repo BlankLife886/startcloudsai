@@ -1,0 +1,788 @@
+/* AI 详情页工作台：与 CommerceWorkbench / Handheld 同一套画布语言（左输入 · 中长图舞台 · 右策划 · 历史栏），
+   这里只补详情页特有的差异：补充参考卡、长图舞台、Amazon 卡与策划卡。 */
+
+.commerce-studio.is-detail > .commerce-header {
+  position: relative;
+  z-index: 100;
+  overflow: visible;
+}
+
+@media (min-width: 861px) {
+  .commerce-studio.is-detail .commerce-canvas {
+    overflow: hidden;
+    border-radius: 20px;
+  }
+
+  .commerce-studio.is-detail .detail-studio,
+  .commerce-studio.is-detail .detail-output {
+    border-radius: inherit;
+  }
+}
+
+/* ---------- 左侧：商品图 / 补充参考 ---------- */
+
+/* 详情页左栏内容更多（方向 + 清晰度 + 品类 + 描述），流程连线的留白收紧一点，避免小屏被裁 */
+.detail-output .handheld-board--top,
+.detail-output .handheld-brief--canvas {
+  gap: clamp(22px, 3.2cqi, 56px);
+}
+
+.detail-product .handheld-ref-card__tag,
+.detail-extras .handheld-ref-card__tag {
+  gap: 5px;
+}
+
+.detail-extras .handheld-ref-card__tag small {
+  color: var(--commerce-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.detail-extras .handheld-ref-card__hit.is-upload small {
+  color: var(--commerce-muted);
+  font-size: 10px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.detail-extras__grid {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 6px;
+  padding: 34px 8px 32px;
+}
+
+.detail-extras__grid[data-count="1"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.detail-extras__grid[data-count="1"] .detail-extras__add {
+  display: none;
+}
+
+.detail-extras__grid[data-count="1"] .detail-extras__item {
+  grid-column: 1 / -1;
+}
+
+.detail-extras__item {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.detail-extras__shot {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+  background: var(--commerce-settings-control);
+  border: 1px solid var(--commerce-settings-line);
+  border-radius: 10px;
+  cursor: zoom-in;
+}
+
+.detail-extras__shot img,
+.detail-extras__shot .authenticated-image,
+.detail-extras__shot .authenticated-image-media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.detail-extras__add {
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  color: var(--commerce-muted);
+  background: color-mix(in srgb, var(--commerce-settings-control) 72%, transparent);
+  border: 1px dashed var(--commerce-settings-line);
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.detail-extras__add:hover:not(:disabled) {
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+  border-color: var(--commerce-accent-line);
+}
+
+/* Amazon 官方尺寸：替代画幅选择的锁定提示 */
+.detail-official {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 52px;
+  padding: 6px 10px;
+  color: var(--commerce-ink);
+  background: color-mix(in srgb, var(--commerce-panel-solid) 28%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--commerce-accent) 34%, transparent);
+  border-radius: 11px;
+}
+
+.detail-official i {
+  color: var(--commerce-accent-ink);
+  font-size: 14px;
+}
+
+.detail-official strong {
+  display: block;
+  font-size: 11.5px;
+}
+
+.detail-official small {
+  display: block;
+  color: var(--commerce-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.detail-channels > button {
+  min-height: 52px;
+}
+
+/* 品类 / 清晰度 同一行 + 补充描述 */
+.detail-brief {
+  display: grid;
+  gap: 8px;
+}
+
+.detail-brief__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.detail-brief__field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 2px 0;
+}
+
+.detail-brief__row .handheld-picks {
+  flex-wrap: nowrap;
+}
+
+.detail-brief__row .handheld-picks button {
+  min-height: 30px;
+  padding: 0 8px;
+}
+
+.detail-brief__field .handheld-input {
+  min-height: 30px;
+  padding: 4px 9px;
+  font-size: 11.5px;
+}
+
+.detail-brief__field .handheld-input:focus-visible {
+  outline: 2px solid var(--commerce-accent-line);
+  outline-offset: 0;
+  border-color: transparent;
+}
+
+/* 自定义方向：在“更多”弹层底部 */
+.detail-custom {
+  display: grid;
+  gap: 5px;
+}
+
+.detail-custom .workbench-picks__label small {
+  margin-left: 4px;
+  font-weight: 600;
+}
+
+.detail-custom__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.detail-custom__row input {
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 9px;
+  color: var(--commerce-ink);
+  background: var(--commerce-settings-control);
+  border: 1px solid var(--commerce-settings-line);
+  border-radius: 9px;
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.detail-custom__row input:focus-visible {
+  outline: 2px solid var(--commerce-accent-line);
+  outline-offset: 0;
+  border-color: transparent;
+}
+
+.detail-custom__row button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 10px;
+  color: #fff;
+  background: var(--commerce-accent);
+  border: 0;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.detail-custom__row button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------- 中央：版块舞台（与商品套图同一套：单张大图 + 侧边缩略图条 + 底部悬浮操作） ---------- */
+
+/* 画框比例跟着当前版块走；特别宽的 A+ 模块（如 970×300）给一个最小高度，避免画框变成一条 */
+.detail-frame {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: min(100cqb, max(360px, 82cqb));
+  background: color-mix(in srgb, var(--commerce-settings-control) 78%, #fff);
+}
+
+.detail-frame.has-image,
+.detail-frame.is-running,
+.detail-frame.is-planned {
+  background: #111118;
+}
+
+.detail-frame.is-planned:not(.has-image):not(.is-running) {
+  border: 1.5px dashed color-mix(in srgb, var(--commerce-accent) 55%, #fff);
+  box-shadow: var(--commerce-shadow-result);
+}
+
+/* 顶栏：左边平台 / 版块数 / 耗时，右边当前版块名与官方尺寸 */
+.detail-frame__head {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px 7px;
+  color: var(--commerce-ink);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--commerce-panel-solid) 88%, transparent),
+    color-mix(in srgb, var(--commerce-panel-solid) 60%, transparent)
+  );
+  border-bottom: 1px solid color-mix(in srgb, var(--commerce-ink) 8%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+.detail-frame.has-image .detail-frame__head,
+.detail-frame.is-running .detail-frame__head,
+.detail-frame.is-planned .detail-frame__head {
+  color: #fff;
+  background: linear-gradient(180deg, rgb(17 17 24 / 92%), rgb(17 17 24 / 72%));
+  border-bottom-color: rgb(255 255 255 / 8%);
+}
+
+.detail-frame__title {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.detail-frame__title em {
+  overflow: hidden;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-frame__title span {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 600;
+  opacity: 0.68;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-frame__title span b {
+  font-weight: 700;
+  opacity: 1;
+}
+
+.detail-frame__module {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  max-width: 52%;
+  height: 24px;
+  padding: 0 8px 0 3px;
+  background: color-mix(in srgb, var(--commerce-ink) 8%, transparent);
+  border-radius: 999px;
+  font-size: 10.5px;
+}
+
+.detail-frame.has-image .detail-frame__module,
+.detail-frame.is-running .detail-frame__module,
+.detail-frame.is-planned .detail-frame__module {
+  background: rgb(255 255 255 / 12%);
+}
+
+.detail-frame__module b {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0 5px;
+  color: #fff;
+  background: var(--commerce-accent);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.detail-frame__module strong {
+  overflow: hidden;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-frame__module small {
+  opacity: 0.7;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 舞台：当前版块单张大图，完整显示不裁切 */
+.detail-frame__stage {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.detail-frame__stage .detail-page__shot {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+  background: #0d0d12;
+  border: 0;
+  cursor: zoom-in;
+}
+
+.detail-frame__stage .detail-page__shot:disabled {
+  cursor: default;
+}
+
+.detail-page__shot .authenticated-image,
+.detail-page__shot .authenticated-image-media,
+.detail-page__shot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
+.detail-frame__stage .handheld-generating {
+  position: absolute;
+  inset: 0;
+}
+
+/* 版块占位：策划文案 / 排队 / 失败 */
+.detail-aplus__slot {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  height: 100%;
+  padding: 24px 28px 64px;
+  color: rgb(255 255 255 / 64%);
+  text-align: center;
+  background:
+    radial-gradient(
+      120% 90% at 50% 110%,
+      color-mix(in srgb, var(--commerce-accent) 22%, transparent),
+      transparent 60%
+    ),
+    #14141c;
+}
+
+.detail-aplus__slot strong {
+  color: #fff;
+  font-size: 16px;
+  line-height: 1.35;
+  text-wrap: balance;
+}
+
+.detail-aplus__slot span {
+  max-width: 40ch;
+  font-size: 12px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-aplus__slot.is-queued {
+  background: #14141c;
+}
+
+.detail-aplus__slot.is-queued strong {
+  color: rgb(255 255 255 / 70%);
+}
+
+.detail-aplus__slot.is-failed {
+  background:
+    radial-gradient(120% 90% at 50% 110%, rgb(194 65 12 / 26%), transparent 60%),
+    #14141c;
+}
+
+.detail-aplus__slot.is-failed strong {
+  color: #fdba74;
+}
+
+/* 进行中的角标：顶栏下方右侧 */
+.detail-frame .detail-frame__progress {
+  top: 50px;
+  right: 10px;
+}
+
+/* 空状态：案例长图作底 + 三步引导 */
+.detail-empty {
+  overflow: hidden;
+}
+
+.detail-frame__demo {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+  opacity: 0.12;
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 45%, transparent 96%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 45%, transparent 96%);
+  pointer-events: none;
+}
+
+.detail-frame .workbench-empty > strong {
+  font-size: 15px;
+}
+
+.detail-frame .handheld-frame__status.workbench-empty {
+  isolation: isolate;
+  max-width: none;
+  padding: 24px 24px 72px;
+}
+
+.detail-frame .workbench-empty > strong,
+.detail-frame .workbench-empty > span,
+.detail-frame .workbench-empty > .workbench-empty__steps {
+  position: relative;
+  z-index: 1;
+}
+
+.detail-frame .workbench-empty__steps {
+  width: min(100%, 300px);
+}
+
+/* 底部悬浮操作：与商品套图一致（生成按钮 + 结果操作一行），底下垫渐变防止压花图 */
+.detail-frame .handheld-actions {
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 18px 8px 8px;
+  background: linear-gradient(180deg, transparent, rgb(17 17 24 / 72%) 55%);
+  border-radius: 0 0 16px 16px;
+}
+
+.detail-frame:not(.has-image):not(.is-running):not(.is-planned) .handheld-actions {
+  padding-top: 8px;
+  background: none;
+}
+
+.detail-frame .handheld-actions .workbench-frame__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+
+.detail-frame .handheld-actions .handheld-submit--frame.is-planning {
+  background: color-mix(in srgb, var(--commerce-accent) 72%, #fff);
+}
+
+/* 侧边缩略图条：每个版块一格，固定 4:3 不跟画框比例变；生成中显示秒数，排队显示序号 */
+.detail-frame__thumbs .handheld-frame__thumb {
+  aspect-ratio: 4 / 3;
+}
+
+.detail-frame__thumbs .handheld-frame__thumb.is-running::after {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--commerce-accent) 80%, #fff);
+}
+
+.detail-frame__thumbs .handheld-frame__thumb-pending {
+  gap: 3px;
+  align-content: center;
+}
+
+.detail-frame__thumbs .handheld-frame__thumb-pending small,
+.detail-frame__thumbs .handheld-frame__thumb-empty small {
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.detail-frame__thumbs .handheld-frame__thumb-empty.is-queued {
+  gap: 1px;
+  align-content: center;
+}
+
+/* ---------- 右侧：Amazon 卡 + 策划卡 ---------- */
+
+.detail-stack {
+  gap: 8px;
+}
+
+.handheld-ref-stack.detail-stack > * {
+  max-height: none;
+}
+
+.detail-amazon {
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+.detail-amazon .handheld-ref-card__tag {
+  gap: 5px;
+}
+
+.detail-amazon .handheld-ref-card__tag i {
+  font-size: 11px;
+}
+
+/* 目标站 / 档位、ASIN / 竞品 ASIN 两两一行，把高度留给下方策划卡 */
+.detail-amazon__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.detail-amazon__fields label {
+  display: grid;
+  gap: 3px;
+}
+
+.detail-amazon__fields label > span {
+  color: var(--commerce-muted);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.detail-amazon__fields input {
+  width: 100%;
+  min-height: 26px;
+  padding: 3px 8px;
+  color: var(--commerce-ink);
+  background: var(--commerce-settings-control);
+  border: 1px solid var(--commerce-settings-line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 11px;
+}
+
+.detail-amazon__fields input:focus-visible {
+  outline: 2px solid var(--commerce-accent-line);
+  outline-offset: 0;
+  border-color: transparent;
+}
+
+.detail-amazon__fields .commerce-select-trigger {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.detail-amazon__batch summary {
+  color: var(--commerce-muted);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.detail-amazon__batch textarea {
+  width: 100%;
+  margin-top: 5px;
+  padding: 5px 8px;
+  color: var(--commerce-ink);
+  background: var(--commerce-settings-control);
+  border: 1px solid var(--commerce-settings-line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 10.5px;
+  resize: vertical;
+}
+
+.detail-amazon > small {
+  text-align: left;
+  line-height: 1.35;
+}
+
+/* 复选：Disclosure / 自动直出 */
+.detail-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--commerce-ink);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.detail-check input {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin: 1px 0 0;
+  accent-color: var(--commerce-accent);
+}
+
+/* 策划卡：紧跟 Amazon 卡往下排（不再上下撑开留缝），内容多时在卡内滚动 */
+.detail-plan {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.detail-stack {
+  justify-content: flex-start;
+}
+
+.detail-plan__run {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 10px;
+  color: #fff;
+  background: var(--commerce-accent);
+  border: 0;
+  border-radius: 10px;
+  box-shadow: 0 6px 16px rgb(69 52 205 / 22%);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.detail-plan__run:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgb(69 52 205 / 28%);
+}
+
+.detail-plan__run:disabled {
+  box-shadow: none;
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.detail-plan__run.is-done {
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+  border: 1px solid var(--commerce-accent-line);
+  box-shadow: none;
+}
+
+.detail-plan__run .handheld-submit__spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+
+.detail-plan__result {
+  display: grid;
+  gap: 8px;
+}
+
+.detail-plan__pains {
+  display: grid;
+  gap: 4px;
+}
+
+.detail-plan__pains ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.detail-plan__pains li {
+  padding: 2px 7px;
+  white-space: nowrap;
+  color: #b42318;
+  background: color-mix(in srgb, #fee4e2 70%, transparent);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* ---------- 深色 ---------- */
+
+html.color-scheme-dark .detail-frame:not(.has-image):not(.is-running):not(.is-planned) {
+  background: color-mix(in srgb, var(--commerce-settings-control) 84%, #000);
+}
+
+html.color-scheme-dark .detail-official {
+  background: rgb(255 255 255 / 4%);
+}
+
+html.color-scheme-dark .detail-plan__pains li {
+  color: #fda29b;
+  background: rgb(180 35 24 / 18%);
+}
+
+html.color-scheme-dark .detail-frame__demo {
+  opacity: 0.15;
+}
+
+/* ---------- 窄屏 ---------- */
+
+@media (max-width: 1024px) {
+  .detail-output .workbench-angles {
+    grid-column: 1 / -1;
+  }
+
+  .detail-stack {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detail-plan {
+    max-height: 360px;
+  }
+
+  .detail-frame .workbench-empty__steps {
+    width: min(100%, 320px);
+  }
+}

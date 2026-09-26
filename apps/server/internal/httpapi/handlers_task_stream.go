@@ -93,7 +93,7 @@ func (s *Server) taskStream(c *gin.Context) {
 
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
-	terminalCheck := time.NewTicker(3 * time.Second)
+	terminalCheck := time.NewTicker(time.Second)
 	defer terminalCheck.Stop()
 	events := pubsub.Channel()
 
@@ -163,14 +163,42 @@ func (s *Server) userTaskStream(c *gin.Context) {
 	header.Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeader(http.StatusOK)
 	c.Writer.Flush()
-	if pubsub == nil {
+
+	// 通知未读数走同一条 SSE，替代前端对 unread-count 的轮询。
+	// 契约：event: notifications / data: {"unreadCount": <int>}。
+	writeUnreadCount := func() bool {
+		count, cerr := store.CountUnreadNotifications(ctx, s.St.Pool, user.ID)
+		if cerr != nil {
+			return true // 查询瞬时失败不断流，等下一次时机再推
+		}
+		payload, merr := json.Marshal(gin.H{"unreadCount": count})
+		if merr != nil {
+			return true
+		}
+		if _, werr := fmt.Fprintf(c.Writer, "event: notifications\ndata: %s\n\n", payload); werr != nil {
+			return false
+		}
+		c.Writer.Flush()
+		return true
+	}
+	// (a) 连接建立时立即推一次。
+	if !writeUnreadCount() {
 		return
 	}
-	defer pubsub.Close()
+
+	// pubsub 不可用（如本地无 Redis）时仍保持连接：nil channel 永远阻塞，
+	// 心跳与通知定时推送照常工作。
+	var events <-chan *redis.Message
+	if pubsub != nil {
+		defer pubsub.Close()
+		events = pubsub.Channel()
+	}
 
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
-	events := pubsub.Channel()
+	// (c) 每 60 秒随心跳推一次未读数。
+	notifyTicker := time.NewTicker(60 * time.Second)
+	defer notifyTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -194,11 +222,19 @@ func (s *Server) userTaskStream(c *gin.Context) {
 			if !s.writeTaskStreamSnapshot(c, task, event) {
 				return
 			}
+			// (b) 任务事件（完成/失败）正是产生通知的时机，转发后立即刷新未读数。
+			if !writeUnreadCount() {
+				return
+			}
 		case <-heartbeat.C:
 			if _, err := fmt.Fprint(c.Writer, ": ping\n\n"); err != nil {
 				return
 			}
 			c.Writer.Flush()
+		case <-notifyTicker.C:
+			if !writeUnreadCount() {
+				return
+			}
 		}
 	}
 }

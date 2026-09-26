@@ -8,9 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,23 +16,27 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 )
 
-const (
-	crunPublicCatalogURL = "https://crun.ai/models"
-	maxCatalogBodyBytes  = 8 << 20
-)
-
-var (
-	crunScriptPattern        = regexp.MustCompile(`/static/[A-Za-z0-9_-]+\.js`)
-	crunRegistryEntryPattern = regexp.MustCompile(`(?:^|[,{])([A-Za-z0-9_]+):("(?:\\.|[^"\\])*")`)
-	crunModelIDPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{1,127}$`)
-)
-
 type CatalogResult struct {
 	Models          []string
+	Entries         []CatalogEntry
 	CompatibleCount int
 	TaskModelCount  int
 	Source          string
 	Warning         string
+}
+
+type CatalogEntry struct {
+	ID                  string         `json:"id"`
+	Kind                string         `json:"kind"`
+	ModelType           string         `json:"modelType,omitempty"`
+	Modality            string         `json:"modality,omitempty"`
+	Operations          []string       `json:"operations,omitempty"`
+	InputFields         []string       `json:"inputFields,omitempty"`
+	RequiredInputFields []string       `json:"requiredInputFields,omitempty"`
+	InputSchema         map[string]any `json:"inputSchema,omitempty"`
+	SupportsReference   bool           `json:"supportsReference,omitempty"`
+	Compatible          bool           `json:"compatible"`
+	Incompatibility     string         `json:"incompatibility,omitempty"`
 }
 
 func ListModels(ctx context.Context, provider modelconfig.Provider, allowPrivate bool) ([]string, error) {
@@ -45,6 +47,9 @@ func ListModels(ctx context.Context, provider modelconfig.Provider, allowPrivate
 func DiscoverModels(ctx context.Context, provider modelconfig.Provider, allowPrivate bool) (CatalogResult, error) {
 	if strings.TrimSpace(provider.APIKey) == "" {
 		return CatalogResult{}, errors.New("API Key 未配置")
+	}
+	if provider.Adapter == modelconfig.AdapterCRUN {
+		return discoverCRUNModels(ctx, provider, allowPrivate)
 	}
 	endpoint, err := providerModelsEndpoint(provider)
 	if err != nil {
@@ -109,154 +114,213 @@ func DiscoverModels(ctx context.Context, provider modelconfig.Provider, allowPri
 		}
 	}
 	compatibleCount := len(models)
-	result := CatalogResult{Models: models, CompatibleCount: compatibleCount, Source: "compatible"}
-	if provider.Adapter == modelconfig.AdapterCRUN {
-		taskModels, catalogErr := listCRUNTaskModels(ctx, client)
-		if catalogErr != nil {
-			result.Warning = "CRUN 全量任务模型目录读取失败，当前仅显示兼容模型：" + catalogErr.Error()
-		} else {
-			result.TaskModelCount = len(taskModels)
-			result.Source = "crun_full"
-			for _, modelID := range taskModels {
-				if seen[modelID] {
-					continue
-				}
-				seen[modelID] = true
-				result.Models = append(result.Models, modelID)
-			}
-		}
+	entries := make([]CatalogEntry, 0, len(models))
+	for _, id := range models {
+		entries = append(entries, CatalogEntry{ID: id, Compatible: true})
 	}
+	result := CatalogResult{Models: models, Entries: entries, CompatibleCount: compatibleCount, Source: "compatible"}
 	sort.Strings(result.Models)
 	return result, nil
 }
 
-func listCRUNTaskModels(ctx context.Context, client *http.Client) ([]string, error) {
-	page, err := fetchCatalogBody(ctx, client, crunPublicCatalogURL)
-	if err != nil {
-		return nil, fmt.Errorf("读取 CRUN 模型页：%w", err)
-	}
-	scriptPaths := crunScriptPattern.FindAllString(string(page), -1)
-	seenScripts := map[string]bool{}
-	var parseErr error
-	for _, scriptPath := range scriptPaths {
-		if seenScripts[scriptPath] {
-			continue
-		}
-		seenScripts[scriptPath] = true
-		scriptURL, err := url.Parse(scriptPath)
-		if err != nil {
-			continue
-		}
-		base, _ := url.Parse(crunPublicCatalogURL)
-		script, err := fetchCatalogBody(ctx, client, base.ResolveReference(scriptURL).String())
-		if err != nil {
-			parseErr = err
-			continue
-		}
-		models, err := parseCRUNTaskModelRegistry(string(script))
-		if err == nil {
-			return models, nil
-		}
-		parseErr = err
-	}
-	if parseErr != nil {
-		return nil, parseErr
-	}
-	return nil, errors.New("CRUN 模型页未包含任务模型注册表")
+type crunCatalogEntry struct {
+	Model               string         `json:"model"`
+	ModelType           string         `json:"model_type"`
+	Modality            string         `json:"modality"`
+	Operations          []string       `json:"operations"`
+	InputFields         []string       `json:"input_fields"`
+	RequiredInputFields []string       `json:"required_input_fields"`
+	SupportsReference   bool           `json:"supports_reference"`
+	InputSchema         map[string]any `json:"input_schema"`
 }
 
-func fetchCatalogBody(ctx context.Context, client *http.Client, endpoint string) ([]byte, error) {
+func discoverCRUNModels(ctx context.Context, provider modelconfig.Provider, allowPrivate bool) (CatalogResult, error) {
+	mediaEndpoint, err := crunTaskModelsEndpoint(provider.BaseURL)
+	if err != nil {
+		return CatalogResult{}, err
+	}
+	mediaBody, err := fetchCatalog(ctx, mediaEndpoint, provider.APIKey, true, provider.TimeoutSecs, allowPrivate)
+	if err != nil {
+		return CatalogResult{}, fmt.Errorf("读取 CRUN 媒体模型失败：%w", err)
+	}
+	var mediaPayload struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    struct {
+			Models []crunCatalogEntry `json:"models"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(mediaBody, &mediaPayload); err != nil {
+		return CatalogResult{}, fmt.Errorf("CRUN 媒体模型响应不是有效 JSON：%w", err)
+	}
+	if mediaPayload.Code != http.StatusOK {
+		return CatalogResult{}, fmt.Errorf("CRUN 媒体模型响应失败（code=%d）：%s", mediaPayload.Code, mediaPayload.Message)
+	}
+
+	llmEndpoint, err := crunModelsEndpoint(provider.BaseURL)
+	if err != nil {
+		return CatalogResult{}, err
+	}
+	llmBody, err := fetchCatalog(ctx, llmEndpoint, provider.APIKey, false, provider.TimeoutSecs, allowPrivate)
+	if err != nil {
+		return CatalogResult{}, fmt.Errorf("读取 CRUN 对话模型失败：%w", err)
+	}
+	var llmPayload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(llmBody, &llmPayload); err != nil {
+		return CatalogResult{}, fmt.Errorf("CRUN 对话模型响应不是有效 JSON：%w", err)
+	}
+
+	entriesByID := make(map[string]CatalogEntry, len(mediaPayload.Data.Models)+len(llmPayload.Data))
+	for _, raw := range mediaPayload.Data.Models {
+		entry := catalogEntryFromCRUN(raw)
+		if entry.ID != "" {
+			entriesByID[entry.ID] = entry
+		}
+	}
+	for _, raw := range llmPayload.Data {
+		id := strings.TrimSpace(raw.ID)
+		if id == "" {
+			continue
+		}
+		if _, exists := entriesByID[id]; exists {
+			continue
+		}
+		entriesByID[id] = CatalogEntry{
+			ID: id, Kind: modelconfig.ModelKindChat, ModelType: "llm", Modality: "text", Compatible: true,
+		}
+	}
+
+	entries := make([]CatalogEntry, 0, len(entriesByID))
+	models := make([]string, 0, len(entriesByID))
+	for _, entry := range entriesByID {
+		entries = append(entries, entry)
+		if entry.Compatible {
+			models = append(models, entry.ID)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	sort.Strings(models)
+	warning := ""
+	if len(mediaPayload.Data.Models) > 0 && len(models) < len(entries) {
+		warning = fmt.Sprintf(
+			"CRUN 返回 %d 个媒体任务模型和 %d 个对话模型；当前业务可配置 %d 个。普通视频/音频生成模型仍保持隔离，媒体工具按实时 schema 接入。",
+			len(mediaPayload.Data.Models), len(llmPayload.Data), len(models),
+		)
+	}
+	return CatalogResult{
+		Models: models, Entries: entries, CompatibleCount: len(models),
+		TaskModelCount: len(mediaPayload.Data.Models), Source: "crun-live-catalog", Warning: warning,
+	}, nil
+}
+
+func catalogEntryFromCRUN(raw crunCatalogEntry) CatalogEntry {
+	entry := CatalogEntry{
+		ID: strings.TrimSpace(raw.Model), ModelType: strings.TrimSpace(raw.ModelType),
+		Modality: strings.TrimSpace(raw.Modality), Operations: cleanCatalogStrings(raw.Operations),
+		InputFields: cleanCatalogStrings(raw.InputFields), RequiredInputFields: cleanCatalogStrings(raw.RequiredInputFields),
+		InputSchema: raw.InputSchema, SupportsReference: raw.SupportsReference,
+	}
+	operations := make(map[string]bool, len(entry.Operations))
+	for _, operation := range entry.Operations {
+		operations[operation] = true
+	}
+	switch {
+	case entry.ModelType == "tools" && len(entry.Operations) > 0 && len(entry.InputFields) > 0:
+		entry.Kind, entry.Compatible = modelconfig.ModelKindImageTool, true
+	case entry.Modality == "image" && entry.ModelType == "image" && (operations["text-to-image"] || operations["image-edit"]):
+		entry.Kind, entry.Compatible = modelconfig.ModelKindImage, true
+	default:
+		entry.Incompatibility = "当前业务工作流尚未接入该模型能力"
+	}
+	return entry
+}
+
+func DescribeCRUNModel(ctx context.Context, provider modelconfig.Provider, model string, allowPrivate bool) (CatalogEntry, error) {
+	if provider.Adapter != modelconfig.AdapterCRUN {
+		return CatalogEntry{}, errors.New("模型参数读取仅适用于 CRUN 服务商")
+	}
+	if strings.TrimSpace(provider.APIKey) == "" {
+		return CatalogEntry{}, errors.New("API Key 未配置")
+	}
+	endpoint, err := crunTaskModelEndpoint(provider.BaseURL, model)
+	if err != nil {
+		return CatalogEntry{}, err
+	}
+	body, err := fetchCatalog(ctx, endpoint, provider.APIKey, true, provider.TimeoutSecs, allowPrivate)
+	if err != nil {
+		return CatalogEntry{}, err
+	}
+	var payload struct {
+		Code    int              `json:"code"`
+		Message string           `json:"message"`
+		Data    crunCatalogEntry `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return CatalogEntry{}, fmt.Errorf("CRUN 模型参数响应不是有效 JSON：%w", err)
+	}
+	if payload.Code != http.StatusOK {
+		return CatalogEntry{}, fmt.Errorf("CRUN 模型参数响应失败（code=%d）：%s", payload.Code, payload.Message)
+	}
+	entry := catalogEntryFromCRUN(payload.Data)
+	if entry.ID == "" {
+		return CatalogEntry{}, errors.New("CRUN 模型参数响应缺少模型 ID")
+	}
+	return entry, nil
+}
+
+func fetchCatalog(ctx context.Context, endpoint, apiKey string, xAPIKey bool, timeoutSecs int, allowPrivate bool) ([]byte, error) {
+	timeout := 20 * time.Second
+	if timeoutSecs > 0 && timeoutSecs < 20 {
+		timeout = time.Duration(timeoutSecs) * time.Second
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "text/html,application/javascript")
-	resp, err := client.Do(req)
+	req.Header.Set("Accept", "application/json")
+	if xAPIKey {
+		req.Header.Set("x-api-key", apiKey)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := netguard.NewHTTPClient(timeout, allowPrivate, false).Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCatalogBodyBytes+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return nil, err
 	}
-	if len(body) > maxCatalogBodyBytes {
-		return nil, errors.New("响应体过大")
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message := strings.TrimSpace(string(body))
+		if runes := []rune(message); len(runes) > 500 {
+			message = string(runes[:500])
+		}
+		if message == "" {
+			message = http.StatusText(resp.StatusCode)
+		}
+		return nil, fmt.Errorf("HTTP %d：%s", resp.StatusCode, message)
 	}
 	return body, nil
 }
 
-func parseCRUNTaskModelRegistry(source string) ([]string, error) {
-	anchor := -1
-	for _, marker := range []string{
-		`nano_banana:"google/nano-banana"`,
-		`gpt_image_2:"openai/gpt-image-2"`,
-	} {
-		if anchor = strings.Index(source, marker); anchor >= 0 {
-			break
-		}
-	}
-	if anchor < 0 {
-		return nil, errors.New("未找到 CRUN 任务模型注册表标记")
-	}
-	start := strings.LastIndex(source[:anchor], "={")
-	if start < 0 {
-		return nil, errors.New("CRUN 任务模型注册表格式无效")
-	}
-	start++
-	end := matchingObjectEnd(source, start)
-	if end <= start {
-		return nil, errors.New("CRUN 任务模型注册表未闭合")
-	}
+func cleanCatalogStrings(values []string) []string {
 	seen := map[string]bool{}
-	models := make([]string, 0, 200)
-	for _, match := range crunRegistryEntryPattern.FindAllStringSubmatch(source[start:end], -1) {
-		modelID, err := strconv.Unquote(match[2])
-		if err != nil || !crunModelIDPattern.MatchString(modelID) || seen[modelID] {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
 			continue
 		}
-		seen[modelID] = true
-		models = append(models, modelID)
+		seen[value] = true
+		out = append(out, value)
 	}
-	if len(models) < 50 {
-		return nil, fmt.Errorf("CRUN 任务模型注册表数量异常：%d", len(models))
-	}
-	sort.Strings(models)
-	return models, nil
-}
-
-func matchingObjectEnd(source string, start int) int {
-	depth := 0
-	inString := false
-	escaped := false
-	for index := start; index < len(source); index++ {
-		char := source[index]
-		if inString {
-			if escaped {
-				escaped = false
-			} else if char == '\\' {
-				escaped = true
-			} else if char == '"' {
-				inString = false
-			}
-			continue
-		}
-		switch char {
-		case '"':
-			inString = true
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return index + 1
-			}
-		}
-	}
-	return -1
+	return out
 }
 
 func providerModelsEndpoint(provider modelconfig.Provider) (string, error) {
@@ -281,6 +345,34 @@ func crunModelsEndpoint(baseURL string) (string, error) {
 		base.Path = path + "/api/v1/models"
 	}
 	return cleanURL(base), nil
+}
+
+func crunTaskModelsEndpoint(baseURL string) (string, error) {
+	base, err := parseBaseURL(baseURL)
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimRight(base.Path, "/")
+	path = strings.TrimSuffix(path, "/api/v1/models")
+	path = strings.TrimSuffix(path, "/api/v1")
+	base.Path = strings.TrimRight(path, "/") + "/api/v1/client/job/Models"
+	return cleanURL(base), nil
+}
+
+func crunTaskModelEndpoint(baseURL, model string) (string, error) {
+	model = strings.Trim(strings.TrimSpace(model), "/")
+	if model == "" {
+		return "", errors.New("CRUN 模型 ID 不能为空")
+	}
+	endpoint, err := crunTaskModelsEndpoint(baseURL)
+	if err != nil {
+		return "", err
+	}
+	parts := strings.Split(model, "/")
+	for index := range parts {
+		parts[index] = url.PathEscape(parts[index])
+	}
+	return endpoint + "/" + strings.Join(parts, "/"), nil
 }
 
 func modelsEndpoint(baseURL string) (string, error) {

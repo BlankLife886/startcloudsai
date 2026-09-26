@@ -1,0 +1,119 @@
+.coloring-react-model-price {
+  color: #fbbf24;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.coloring-toolbar-library {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+  margin-right: 2px;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.coloring-studio-page.is-light .coloring-toolbar-library {
+  border-right-color: rgba(43, 45, 60, 0.1);
+}
+
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn {
+  border: 1px solid rgba(53, 48, 68, 0.1) !important;
+  color: #2f2b3c !important;
+  background: #ffffff !important;
+  box-shadow:
+    0 1px 2px rgba(43, 38, 58, 0.04),
+    0 5px 14px rgba(68, 55, 92, 0.05);
+}
+
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn i {
+  color: #a92f70 !important;
+}
+
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn span {
+  color: inherit !important;
+  opacity: 1 !important;
+}
+
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn:hover,
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn:focus-visible,
+.coloring-studio-page.is-light .coloring-toolbar-library .coloring-tool-btn.active {
+  border-color: rgba(221, 72, 145, 0.28) !important;
+  color: #8f2f64;
+  background: rgba(250, 224, 239, 0.92) !important;
+  box-shadow: 0 5px 16px rgba(190, 66, 126, 0.1);
+}
+
+.coloring-studio-page.is-light .coloring-board-empty strong {
+  color: #2d2938 !important;
+}
+
+.coloring-studio-page.is-light .coloring-board-empty p {
+  color: #686274 !important;
+}
+
+.coloring-studio-page.is-light .coloring-empty-upload {
+  color: #ffffff !important;
+}
+
+.coloring-studio-page .authenticated-image,
+.coloring-studio-page .authenticated-image-media {
+  width: 100%;
+  height: 100%;
+}
+
+.coloring-studio-page .authenticated-image-media {
+  display: block;
+  object-fit: inherit;
+}
+
+.coloring-frame-matte .authenticated-image {
+  width: inherit;
+  height: inherit;
+  max-width: inherit;
+  max-height: inherit;
+}
+
+.coloring-frame-matte .authenticated-image-media {
+  object-fit: inherit;
+}
+
+.coloring-result-stage > .coloring-frame-body {
+  width: 100%;
+  height: 100%;
+}
+
+.ratio-select__menu .coloring-react-model-price {
+  justify-self: end;
+}
+
+.coloring-studio-page.is-light .ratio-select__chevron {
+  color: rgba(43, 45, 60, 0.52);
+}
+
+.coloring-library-backdrop.is-light .coloring-library-drawer {
+  color: #24212c;
+  background: rgba(252, 251, 254, 0.98);
+  border-color: rgba(50, 43, 66, 0.12);
+}
+
+.coloring-library-backdrop.is-light .coloring-library-head small,
+.coloring-library-backdrop.is-light .coloring-library-card small,
+.coloring-library-backdrop.is-light .coloring-library-list small,
+.coloring-library-backdrop.is-light .coloring-prompt-list small {
+  color: rgba(45, 41, 57, 0.58);
+}
+
+.coloring-library-backdrop.is-light .coloring-library-head button,
+.coloring-library-backdrop.is-light .coloring-library-tabs button,
+.coloring-library-backdrop.is-light .coloring-library-card,
+.coloring-library-backdrop.is-light .coloring-library-list button,
+.coloring-library-backdrop.is-light .coloring-prompt-list button {
+  color: #2d2938;
+}
+
+@media (max-width: 960px) {
+  .coloring-studio-page {
+    overflow-y: auto;
+  }
+}

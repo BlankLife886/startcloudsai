@@ -87,6 +87,25 @@ func TestTaskPricesFiltersRetiredTaskTypes(t *testing.T) {
 	}
 }
 
+func TestPuzzlePriceIsAlwaysFree(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	if err := Set(ctx, st.Pool, "task_prices", json.RawMessage(`{"puzzle":999}`)); err != nil {
+		t.Fatal(err)
+	}
+	prices, _, err := TaskPrices(ctx, st.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prices["puzzle"] != 0 {
+		t.Fatalf("puzzle price = %d, want free", prices["puzzle"])
+	}
+	price, err := TaskPriceCents(ctx, st.Pool, "puzzle")
+	if err != nil || price != 0 {
+		t.Fatalf("TaskPriceCents(puzzle) = %d, err=%v", price, err)
+	}
+}
+
 func TestImageServiceProviderDefaultsAndOverrides(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()

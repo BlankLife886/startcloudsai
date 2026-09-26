@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { request } from '@/request'
+import { ApiError, request } from '@/request'
 
 export interface AdminAccount {
   id: string
@@ -8,6 +8,13 @@ export interface AdminAccount {
   avatarUrl: string | null
   role: string
   createdAt: string
+}
+
+function isMalformedSuccess(error: unknown) {
+  return (
+    error instanceof ApiError &&
+    (error.code === 'response_malformed' || (error.status >= 200 && error.status < 300))
+  )
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -22,7 +29,10 @@ export const useAuthStore = defineStore('auth', {
   actions: {
     async fetchMe() {
       try {
-        const data = await request<{ admin: AdminAccount | null }>('/api/v1/admin/auth/session', { silent: true })
+        const data = await request<{ admin: AdminAccount | null }>('/api/v1/admin/auth/session', {
+          silent: true,
+          scope: 'persistent',
+        })
         this.user = data.admin
       } catch {
         this.user = null
@@ -31,14 +41,22 @@ export const useAuthStore = defineStore('auth', {
       }
     },
     async login(email: string, password: string, options: { silent?: boolean } = {}) {
-      const data = await request<{ admin: AdminAccount }>('/api/v1/admin/auth/session', {
-        method: 'POST',
-        body: { email, password },
-        silent: options.silent,
-      })
-      this.user = data.admin
-      this.loaded = true
-      return data.admin
+      try {
+        const data = await request<{ admin: AdminAccount }>('/api/v1/admin/auth/session', {
+          method: 'POST',
+          body: { email, password },
+          silent: options.silent,
+        })
+        this.user = data.admin
+        this.loaded = true
+        return data.admin
+      } catch (error) {
+        // Cookie 可能已下发但 JSON body 被截断；回查会话避免误报登录失败。
+        if (!isMalformedSuccess(error)) throw error
+        await this.fetchMe()
+        if (!this.user) throw error
+        return this.user
+      }
     },
     async logout() {
       try {

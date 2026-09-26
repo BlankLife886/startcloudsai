@@ -1,0 +1,7 @@
+.auth-referral { margin-bottom:14px; font-size:12px; color:var(--text-secondary,#6a7280); }
+.auth-referral summary { cursor:pointer; padding:8px 0; }
+.auth-referral .auth-field { margin:8px 0; }
+.auth-referral .auth-notice { margin:8px 0 0; line-height:1.5; }
+.auth-referral-actions { display:flex; flex-wrap:wrap; gap:12px; }
+.auth-referral-actions button { background:transparent; border:0; padding:4px 0; font:inherit; color:inherit; text-decoration:underline; cursor:pointer; }
+.auth-referral-actions button:disabled { cursor:default; opacity:.5; }

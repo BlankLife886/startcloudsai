@@ -1,0 +1,109 @@
+.legal-page {
+  min-height: 100vh;
+  background: #ffffff;
+  color: #202124;
+  letter-spacing: 0;
+}
+
+.legal-page__header,
+.legal-page__body,
+.legal-page__footer {
+  width: min(760px, calc(100% - 40px));
+  margin: 0 auto;
+}
+
+.legal-page__header {
+  padding: 48px 0 30px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.legal-page__brand {
+  display: inline-flex;
+  margin-bottom: 36px;
+  color: #202124;
+  font-size: 15px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.legal-page h1 {
+  margin: 0;
+  font-size: 44px;
+  line-height: 1.15;
+  font-weight: 850;
+}
+
+.legal-page__header p {
+  margin: 14px 0 8px;
+  color: #5f6368;
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.legal-page__header span {
+  color: #80868b;
+  font-size: 13px;
+}
+
+.legal-page__body {
+  padding: 18px 0 44px;
+}
+
+.legal-page__body section {
+  padding: 22px 0;
+  border-bottom: 1px solid #eef0f2;
+}
+
+.legal-page__body h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  line-height: 1.4;
+  font-weight: 800;
+}
+
+.legal-page__body p {
+  margin: 0;
+  color: #4f555b;
+  font-size: 15px;
+  line-height: 1.85;
+}
+
+.legal-page__action {
+  display: inline-flex;
+  margin-top: 18px;
+  color: #087f8c;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.legal-page__footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 24px 0 40px;
+  color: #5f6368;
+  font-size: 13px;
+}
+
+.legal-page__footer a {
+  color: inherit;
+  text-decoration: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .legal-page { background: #141516; color: #f1f3f4; }
+  .legal-page__header { border-color: #34363a; }
+  .legal-page__brand { color: #f1f3f4; }
+  .legal-page__header p,
+  .legal-page__body p { color: #bdc1c6; }
+  .legal-page__header span,
+  .legal-page__footer { color: #9aa0a6; }
+  .legal-page__body section { border-color: #2b2d30; }
+  .legal-page__action { color: #4dd0e1; }
+}
+
+@media (max-width: 560px) {
+  .legal-page h1 { font-size: 30px; }
+  .legal-page__header { padding-top: 32px; }
+  .legal-page__brand { margin-bottom: 26px; }
+}

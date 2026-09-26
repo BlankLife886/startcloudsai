@@ -10,13 +10,13 @@ import (
 )
 
 const promptCols = `id, title, prompt, task_type, category, tags, cover_key, cover_width, cover_height, gallery_submission_id,
-	sort, like_count, favorite_count, use_count, active, created_at`
+	sort, like_count, favorite_count, use_count, active, asset_origin, asset_verified, asset_verified_at, asset_note, created_at`
 
 func scanPromptEntry(row pgx.Row) (*PromptEntry, error) {
 	var p PromptEntry
 	err := row.Scan(&p.ID, &p.Title, &p.Prompt, &p.TaskType, &p.Category, &p.Tags,
 		&p.CoverKey, &p.CoverWidth, &p.CoverHeight, &p.GallerySubmissionID, &p.Sort, &p.LikeCount, &p.FavoriteCount,
-		&p.UseCount, &p.Active, &p.CreatedAt)
+		&p.UseCount, &p.Active, &p.AssetOrigin, &p.AssetVerified, &p.AssetVerifiedAt, &p.AssetNote, &p.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -32,10 +32,11 @@ func InsertPromptEntry(ctx context.Context, q Q, p *PromptEntry) (*PromptEntry, 
 	}
 	return scanPromptEntry(q.QueryRow(ctx,
 		`INSERT INTO prompt_library (id, title, prompt, task_type, category, tags, gallery_submission_id,
-			sort, like_count, favorite_count, use_count, active)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING `+promptCols,
+			sort, like_count, favorite_count, use_count, active, new_until, content_fingerprint)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+			now() + interval '24 hours', $13) RETURNING `+promptCols,
 		p.ID, p.Title, p.Prompt, p.TaskType, p.Category, p.Tags, p.GallerySubmissionID,
-		p.Sort, p.LikeCount, p.FavoriteCount, p.UseCount, p.Active))
+		p.Sort, p.LikeCount, p.FavoriteCount, p.UseCount, p.Active, PromptContentFingerprint(p.Prompt)))
 }
 
 func GetPromptEntry(ctx context.Context, q Q, id uuid.UUID) (*PromptEntry, error) {
@@ -50,21 +51,49 @@ func GetPromptEntryByGallerySubmission(ctx context.Context, q Q, submissionID uu
 	return nilOnNoRows(p, err)
 }
 
+// GetPromptEntriesByGallerySubmissions 批量读取投稿对应的提示词（一次查询），键为投稿 ID。
+func GetPromptEntriesByGallerySubmissions(ctx context.Context, q Q, submissionIDs []uuid.UUID) (map[uuid.UUID]*PromptEntry, error) {
+	out := make(map[uuid.UUID]*PromptEntry, len(submissionIDs))
+	if len(submissionIDs) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `SELECT `+promptCols+` FROM prompt_library WHERE gallery_submission_id = ANY($1)`, submissionIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		p, err := scanPromptEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		if p.GallerySubmissionID != nil {
+			out[*p.GallerySubmissionID] = p
+		}
+	}
+	return out, rows.Err()
+}
+
 // PromptFilter 提示词库列表筛选；ActiveOnly 用于公开接口。
 type PromptFilter struct {
 	TaskType      string
 	Category      string
 	Search        string
+	Tags          []string
 	Status        string
+	Source        string // synced | local
 	Order         string
 	ActiveOnly    bool
 	FavoritedBy   uuid.UUID
+	NewOnly       bool
 	CreatedFrom   *time.Time
 	CreatedBefore *time.Time
 }
 
 func appendPromptFilter(sql string, args []any, f PromptFilter) (string, []any) {
-	if f.ActiveOnly || f.Status == "enabled" {
+	if f.ActiveOnly {
+		sql += ` AND active`
+	} else if f.Status == "enabled" {
 		sql += ` AND active`
 	} else if f.Status == "disabled" {
 		sql += ` AND NOT active`
@@ -81,7 +110,16 @@ func appendPromptFilter(sql string, args []any, f PromptFilter) (string, []any) 
 	}
 	if f.Search != "" {
 		args = append(args, "%"+f.Search+"%")
-		sql += fmt.Sprintf(` AND (title ILIKE $%d OR prompt ILIKE $%d)`, len(args), len(args))
+		sql += fmt.Sprintf(` AND (title ILIKE $%d OR prompt ILIKE $%d OR category ILIKE $%d OR tags::text ILIKE $%d)`, len(args), len(args), len(args), len(args))
+	}
+	if len(f.Tags) > 0 {
+		args = append(args, f.Tags)
+		sql += fmt.Sprintf(` AND tags ?| $%d::text[]`, len(args))
+	}
+	if f.Source == "synced" {
+		sql += ` AND source_id <> ''`
+	} else if f.Source == "local" {
+		sql += ` AND source_id = ''`
 	}
 	if f.FavoritedBy != uuid.Nil {
 		args = append(args, f.FavoritedBy)
@@ -89,6 +127,9 @@ func appendPromptFilter(sql string, args []any, f PromptFilter) (string, []any) 
 			SELECT 1 FROM prompt_user_engagement pue
 			WHERE pue.prompt_id = prompt_library.id AND pue.user_id = $%d AND pue.favorited
 		)`, len(args))
+	}
+	if f.NewOnly {
+		sql += ` AND new_until > now()`
 	}
 	if f.CreatedFrom != nil {
 		args = append(args, *f.CreatedFrom)
@@ -101,46 +142,85 @@ func appendPromptFilter(sql string, args []any, f PromptFilter) (string, []any) 
 	return sql, args
 }
 
+// ListPromptTags returns all tags in the filtered public scope, independent of
+// the current category so clients can keep a stable filter navigation.
+func ListPromptTags(ctx context.Context, q Q, f PromptFilter) ([]string, error) {
+	f.Category = ""
+	sql, args := appendPromptFilter(`SELECT DISTINCT tag
+		FROM prompt_library CROSS JOIN LATERAL jsonb_array_elements_text(tags) AS tag WHERE true`, nil, f)
+	sql += ` ORDER BY tag ASC`
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tags := make([]string, 0)
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, err
+		}
+		if tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags, rows.Err()
+}
+
 // ListPromptEntries 提示词分页（limit+1 行）。
+// 非 latest 排序的游标带有游标行的排序值（Cursor.Value），直接按 (排序值, created_at, id)
+// 行值比较：游标行之后被删除或计数变化都不会让后续页变空或错位。旧游标没有排序值时
+// 回退到按游标行当前值比较。Cursor.Offset > 0 时为页码跳转。
 func ListPromptEntries(ctx context.Context, q Q, f PromptFilter, limit int, cursor *Cursor) ([]*PromptEntry, error) {
-	sql := `SELECT ` + promptCols + ` FROM prompt_library WHERE true`
-	args := []any{}
-	sql, args = appendPromptFilter(sql, args, f)
 	order := f.Order
 	if order == "" {
 		order = "manual"
 	}
-	if cursor != nil {
+	value := promptOrderValue(order)
+	sql := `SELECT ` + promptCols + `, ` + value + ` AS cursor_order_value FROM prompt_library WHERE true`
+	args := []any{}
+	sql, args = appendPromptFilter(sql, args, f)
+	if cursor != nil && cursor.Offset == 0 {
 		args = append(args, cursor.ID)
 		idPos := len(args)
 		args = append(args, cursor.CreatedAt)
 		timePos := len(args)
-		switch order {
-		case "latest":
-			sql += fmt.Sprintf(` AND (created_at < $%d OR (created_at = $%d AND id < $%d))`, timePos, timePos, idPos)
-		case "favorites", "likes", "usage", "recommended":
+		switch {
+		case order == "latest":
+			sql += fmt.Sprintf(` AND (created_at, id) < ($%d, $%d)`, timePos, idPos)
+		case cursor.Value != nil && order == "manual":
+			args = append(args, *cursor.Value)
+			sql += fmt.Sprintf(` AND (sort > $%d OR (sort = $%d AND (created_at, id) < ($%d, $%d)))`,
+				len(args), len(args), timePos, idPos)
+		case cursor.Value != nil:
+			args = append(args, *cursor.Value)
+			sql += fmt.Sprintf(` AND (%s, created_at, id) < ($%d, $%d, $%d)`, value, len(args), timePos, idPos)
+		case order == "manual":
+			sql += fmt.Sprintf(` AND (
+				sort > (SELECT sort FROM prompt_library WHERE id = $%d)
+				OR (sort = (SELECT sort FROM prompt_library WHERE id = $%d)
+					AND (created_at < $%d OR (created_at = $%d AND id < $%d)))
+			)`, idPos, idPos, timePos, timePos, idPos)
+		default:
 			metric := promptOrderMetric(order)
 			sql += fmt.Sprintf(` AND (
 				%s < (SELECT %s FROM prompt_library WHERE id = $%d)
 				OR (%s = (SELECT %s FROM prompt_library WHERE id = $%d)
 					AND (created_at < $%d OR (created_at = $%d AND id < $%d)))
 			)`, metric, metric, idPos, metric, metric, idPos, timePos, timePos, idPos)
-		default:
-			sql += fmt.Sprintf(` AND (
-				sort > (SELECT sort FROM prompt_library WHERE id = $%d)
-				OR (sort = (SELECT sort FROM prompt_library WHERE id = $%d)
-					AND (created_at < $%d OR (created_at = $%d AND id < $%d)))
-			)`, idPos, idPos, timePos, timePos, idPos)
 		}
 	}
 	args = append(args, limit+1)
 	switch order {
 	case "latest":
 		sql += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
-	case "favorites", "likes", "usage", "recommended":
-		sql += fmt.Sprintf(` ORDER BY %s DESC, created_at DESC, id DESC LIMIT $%d`, promptOrderMetric(order), len(args))
-	default:
+	case "manual":
 		sql += fmt.Sprintf(` ORDER BY sort ASC, created_at DESC, id DESC LIMIT $%d`, len(args))
+	default:
+		sql += fmt.Sprintf(` ORDER BY %s DESC, created_at DESC, id DESC LIMIT $%d`, value, len(args))
+	}
+	if cursor != nil && cursor.Offset > 0 {
+		sql += fmt.Sprintf(` OFFSET %d`, cursor.Offset)
 	}
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
@@ -149,13 +229,31 @@ func ListPromptEntries(ctx context.Context, q Q, f PromptFilter, limit int, curs
 	defer rows.Close()
 	var out []*PromptEntry
 	for rows.Next() {
-		p, err := scanPromptEntry(rows)
-		if err != nil {
+		var p PromptEntry
+		var orderValue int64
+		if err := rows.Scan(&p.ID, &p.Title, &p.Prompt, &p.TaskType, &p.Category, &p.Tags,
+			&p.CoverKey, &p.CoverWidth, &p.CoverHeight, &p.GallerySubmissionID, &p.Sort, &p.LikeCount, &p.FavoriteCount,
+			&p.UseCount, &p.Active, &p.AssetOrigin, &p.AssetVerified, &p.AssetVerifiedAt, &p.AssetNote, &p.CreatedAt, &orderValue); err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		if order != "latest" {
+			p.OrderValue = &orderValue
+		}
+		out = append(out, &p)
 	}
 	return out, rows.Err()
+}
+
+// promptOrderValue 为游标记录的排序值（bigint）；latest 只按时间排序，返回常量占位。
+func promptOrderValue(order string) string {
+	switch order {
+	case "latest":
+		return `0::bigint`
+	case "manual":
+		return `sort::bigint`
+	default:
+		return `(` + promptOrderMetric(order) + `)::bigint`
+	}
 }
 
 func promptOrderMetric(order string) string {
@@ -199,7 +297,9 @@ func CountPromptEntriesByCategory(ctx context.Context, q Q, f PromptFilter) (map
 	sql := `SELECT COALESCE(NULLIF(category, ''), 'other'), count(*)
 		FROM prompt_library WHERE true`
 	args := []any{}
-	if f.ActiveOnly || f.Status == "enabled" {
+	if f.ActiveOnly {
+		sql += ` AND active`
+	} else if f.Status == "enabled" {
 		sql += ` AND active`
 	} else if f.Status == "disabled" {
 		sql += ` AND NOT active`
@@ -212,7 +312,16 @@ func CountPromptEntriesByCategory(ctx context.Context, q Q, f PromptFilter) (map
 	}
 	if f.Search != "" {
 		args = append(args, "%"+f.Search+"%")
-		sql += fmt.Sprintf(` AND (title ILIKE $%d OR prompt ILIKE $%d)`, len(args), len(args))
+		sql += fmt.Sprintf(` AND (title ILIKE $%d OR prompt ILIKE $%d OR category ILIKE $%d OR tags::text ILIKE $%d)`, len(args), len(args), len(args), len(args))
+	}
+	if len(f.Tags) > 0 {
+		args = append(args, f.Tags)
+		sql += fmt.Sprintf(` AND tags ?| $%d::text[]`, len(args))
+	}
+	if f.Source == "synced" {
+		sql += ` AND source_id <> ''`
+	} else if f.Source == "local" {
+		sql += ` AND source_id = ''`
 	}
 	if f.FavoritedBy != uuid.Nil {
 		args = append(args, f.FavoritedBy)
@@ -220,6 +329,9 @@ func CountPromptEntriesByCategory(ctx context.Context, q Q, f PromptFilter) (map
 			SELECT 1 FROM prompt_user_engagement pue
 			WHERE pue.prompt_id = prompt_library.id AND pue.user_id = $%d AND pue.favorited
 		)`, len(args))
+	}
+	if f.NewOnly {
+		sql += ` AND new_until > now()`
 	}
 	if f.CreatedFrom != nil {
 		args = append(args, *f.CreatedFrom)
@@ -256,9 +368,9 @@ func UpdatePromptEntry(ctx context.Context, q Q, p *PromptEntry) error {
 	_, err := q.Exec(ctx,
 		`UPDATE prompt_library SET title = $2, prompt = $3, task_type = $4, category = $5,
 			tags = $6, sort = $7, like_count = $8, favorite_count = $9, use_count = $10,
-			active = $11 WHERE id = $1`,
+			active = $11, content_fingerprint = $12 WHERE id = $1`,
 		p.ID, p.Title, p.Prompt, p.TaskType, p.Category, p.Tags, p.Sort,
-		p.LikeCount, p.FavoriteCount, p.UseCount, p.Active)
+		p.LikeCount, p.FavoriteCount, p.UseCount, p.Active, PromptContentFingerprint(p.Prompt))
 	return err
 }
 
@@ -367,7 +479,9 @@ func MovePromptEntry(ctx context.Context, q Q, id uuid.UUID, position int, f Pro
 func UpdatePromptCover(ctx context.Context, q Q, id uuid.UUID, coverKey string, width, height int) error {
 	_, err := q.Exec(ctx, `UPDATE prompt_library
 		SET cover_key = $2, cover_width = NULLIF($3, 0), cover_height = NULLIF($4, 0),
-			cover_metadata_checked_at = now()
+			cover_metadata_checked_at = now(), asset_origin = 'owned_storage',
+			asset_verified = true, asset_verified_at = now(),
+			asset_note = '本站后台上传文件，系统自动验证存储来源'
 		WHERE id = $1`, id, coverKey, width, height)
 	return err
 }
@@ -375,6 +489,38 @@ func UpdatePromptCover(ctx context.Context, q Q, id uuid.UUID, coverKey string, 
 type PromptCoverDimensionCandidate struct {
 	ID       uuid.UUID
 	CoverURL string
+}
+
+type ExternalPromptCoverCandidate struct {
+	ID       uuid.UUID
+	CoverURL string
+}
+
+func ListExternalPromptCoverCandidates(ctx context.Context, q Q, limit int) ([]ExternalPromptCoverCandidate, error) {
+	rows, err := q.Query(ctx, `SELECT id, cover_key
+		FROM prompt_library
+		WHERE cover_key ~* '^https?://'
+		ORDER BY created_at ASC, id ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]ExternalPromptCoverCandidate, 0, limit)
+	for rows.Next() {
+		var item ExternalPromptCoverCandidate
+		if err := rows.Scan(&item.ID, &item.CoverURL); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func CountExternalPromptCovers(ctx context.Context, q Q) (int, error) {
+	var count int
+	err := q.QueryRow(ctx, `SELECT count(*) FROM prompt_library WHERE cover_key ~* '^https?://'`).Scan(&count)
+	return count, err
 }
 
 func ListPromptCoverDimensionCandidates(ctx context.Context, q Q, limit int) ([]PromptCoverDimensionCandidate, error) {

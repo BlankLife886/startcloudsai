@@ -1,0 +1,60 @@
+.t2i-state-visual {
+  --state-accent: #aaa6ed;
+  --state-paper: #181b28;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--state-accent);
+  background: radial-gradient(ellipse at 50% 40%, #202334 0%, #151824 53%, #11141e 100%);
+}
+.t2i-page.is-light .t2i-state-visual {
+  --state-accent: #7874b2;
+  --state-paper: #fafaff;
+  background: radial-gradient(ellipse at 50% 42%, #ffffff 0%, #f4f5fa 64%, #eef0f5 100%);
+}
+.t2i-state-visual.style-scan { --state-accent: #96baf1; }
+.t2i-page.is-light .t2i-state-visual.style-scan { --state-accent: #5c83bc; }
+.t2i-state-visual.style-gather { --state-accent: #b6a7e5; }
+.t2i-page.is-light .t2i-state-visual.style-gather { --state-accent: #9077b5; }
+.t2i-state-visual.phase-waiting { --state-accent: #9299ac; }
+.t2i-page.is-light .t2i-state-visual.phase-waiting { --state-accent: #8d95a8; }
+.t2i-state-visual.phase-saving { --state-accent: #8bbfb1; }
+.t2i-page.is-light .t2i-state-visual.phase-saving { --state-accent: #608f84; }
+.state-workspace-grid {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(currentColor 1px, transparent 1px), linear-gradient(90deg, currentColor 1px, transparent 1px);
+  background-size: 24px 24px;
+  opacity: 0.055;
+  mask-image: radial-gradient(ellipse at 50% 45%, #000 0%, transparent 62%);
+}
+.state-visual-art {
+  position: absolute;
+  left: 50%;
+  top: 44%;
+  width: min(104cqw, 80cqh, 440px);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  overflow: visible;
+}
+.state-frame-paper { fill: var(--state-paper); stroke: currentColor; stroke-opacity: 0.32; stroke-width: 1; }
+.state-frame-back { fill: var(--state-paper); stroke: currentColor; stroke-opacity: 0.18; stroke-width: 1; }
+.state-wait-dot { fill: currentColor; opacity: 0.24; }
+.state-corners { stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0.68; }
+.state-guide { stroke: currentColor; opacity: 0.2; }
+.state-prepare-dot { fill: currentColor; opacity: 0.25; }
+.state-image-highlight { stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; opacity: 0.25; }
+.state-image-highlight > path:not(.state-image-floor) { fill: currentColor; fill-opacity: 0.09; }
+.state-image-floor { opacity: 0.3; }
+.phase-saving .state-image-highlight { opacity: 0.7; }
+.state-tray { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; opacity: 0.5; }
+.state-save-trace { stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; opacity: 0.6; }
+.state-pixel-frame { stroke: currentColor; stroke-opacity: 0.16; fill: currentColor; fill-opacity: 0.025; }
+.state-pixel { opacity: 0.8; }
+.state-particle { opacity: 0.72; }
+.state-particle-path { stroke: currentColor; stroke-width: 0.7; stroke-dasharray: 2 6; opacity: 0.16; }
+.state-gather-outline { stroke: currentColor; stroke-width: 1; opacity: 0.2; fill: currentColor; fill-opacity: 0.02; }
+@container (max-height: 170px) {
+  .state-visual-art { top: 38%; width: min(90cqw, 84cqh, 280px); }
+}

@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
 
 func TestRequestMetricsRollingSnapshot(t *testing.T) {
@@ -25,6 +28,17 @@ func TestRequestMetricsRollingSnapshot(t *testing.T) {
 	}
 	if snapshot.AverageMs != 46.5 || snapshot.P95Ms != 100 {
 		t.Fatalf("latencies = avg %.2f p95 %.2f, want 46.5 and 100", snapshot.AverageMs, snapshot.P95Ms)
+	}
+}
+
+func TestImageFetchForecastSnapshot(t *testing.T) {
+	snapshot := imageFetchForecastSnapshot(
+		taskflow.ImageFetchMetrics{Available: true, Active: 3, EffectiveLimit: 8, ConfiguredCeiling: 12},
+		store.TaskExecutionPressure{ActiveUsers: 4, WaitingOtherUsers: 2, ForecastUnitsNear: 64},
+		nil,
+	)
+	if snapshot["forecastCapacity"] != int64(64) || snapshot["forecastPressure"] != true {
+		t.Fatalf("forecast snapshot = %#v", snapshot)
 	}
 }
 

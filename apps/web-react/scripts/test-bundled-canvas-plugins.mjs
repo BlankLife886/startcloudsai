@@ -1,0 +1,194 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "../src/canvas/components/canvas/nodes/bundled/contracts.ts";
+import { applyHtmlPatches, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
+import { htmlImageTokens, isHtmlFrameMessage, withHtmlBridge } from "../src/canvas/components/canvas/nodes/bundled/html-node-runtime.ts";
+
+const canvasSource = new URL("../src/canvas/", import.meta.url);
+const readCanvasSource = async (path) => readFile(new URL(path, canvasSource), "utf8");
+
+test("developer manifest preserves all supported plugin and node identifiers", () => {
+    assert.deepEqual(Object.values(BUNDLED_CANVAS_PLUGIN_IDS), ["markdown", "svg", "html", "panorama", "sticky-note"]);
+    assert.deepEqual(Object.values(BUNDLED_CANVAS_NODE_TYPES), ["markdown:doc", "svg:vector", "html:render", "panorama:viewer", "sticky-note:note"]);
+});
+
+test("bundled plugins are registered under their original storage namespaces", async () => {
+    const [manifest, builtinNodes] = await Promise.all([
+        readCanvasSource("components/canvas/nodes/bundled/index.ts"),
+        readCanvasSource("components/canvas/nodes/builtin-nodes.tsx"),
+    ]);
+    for (const plugin of ["markdownCanvasPlugin", "svgCanvasPlugin", "htmlCanvasPlugin", "panoramaCanvasPlugin", "stickyNoteCanvasPlugin"]) {
+        assert.match(manifest, new RegExp(`\\b${plugin}\\b`));
+    }
+    assert.match(builtinNodes, /BUNDLED_CANVAS_PLUGINS\.forEach\(\(plugin\) => registerNodeDefinitions\(plugin\.nodes, plugin\.id\)\)/);
+});
+
+test("top toolbar labels common tools and groups advanced operations without dropping them", async () => {
+    const toolbar = await readCanvasSource("components/canvas/canvas-toolbar.tsx");
+    assert.match(toolbar, /creatableDefinitions\.filter\(\(def\) => isCanvasOperationNodeType\(def\.type\)\)/);
+    // Both groups must still reach the more-tools panel, now each under its own section header.
+    assert.match(toolbar, /definitions: operationDefs/);
+    assert.match(toolbar, /definitions: extensionDefs/);
+    assert.match(toolbar, /data-canvas-more-tools/);
+    assert.match(toolbar, /id="tool-text" showLabel/);
+    assert.match(toolbar, /getNodePluginId\(def\.type\) !== "builtin"/);
+    assert.match(toolbar, /id="tool-extensions"/);
+});
+
+test("workflow controls live with the right-side canvas actions", async () => {
+    const topBar = await readCanvasSource("components/canvas/canvas-top-bar.tsx");
+    assert.match(topBar, /data-canvas-topbar-actions/);
+    assert.match(topBar, /canvas-workflow-control-slot/);
+    assert.match(topBar, /data-canvas-topbar-actions[^>]*>[\s\S]*canvas-workflow-control-slot[\s\S]*canvas-chrome-cluster/);
+});
+
+test("text node keeps font controls in its dedicated bottom action row", async () => {
+    const [canvasNode, hoverToolbar] = await Promise.all([
+        readCanvasSource("components/canvas/canvas-node.tsx"),
+        readCanvasSource("components/canvas/canvas-node-hover-toolbar.tsx"),
+    ]);
+    assert.match(canvasNode, /flex h-10 shrink-0 items-center gap-2 border-t pl-4 pr-2/);
+    assert.match(canvasNode, /onDecreaseFont\?\.\(node\)/);
+    assert.match(canvasNode, /onIncreaseFont\?\.\(node\)/);
+    // Editing and generation moved to the hover toolbar, so the row stays font-only.
+    assert.doesNotMatch(canvasNode, /onTogglePanel/);
+    assert.match(hoverToolbar, /isText \? \[\{ id: "editText"/);
+    assert.match(hoverToolbar, /isText \? \[\{ id: "generateImage"/);
+    assert.match(canvasNode, /containerClassName="min-h-0 flex-1"/);
+    assert.match(canvasNode, /className="thin-scrollbar m-0 block h-full w-full resize-none/);
+    assert.doesNotMatch(hoverToolbar, /id: "decreaseFont"|id: "increaseFont"/);
+    assert.match(hoverToolbar, /!isText \? \[\{ id: "rename"/);
+    assert.doesNotMatch(hoverToolbar, /\bonInfo\b|id: "duplicate"|<InfoRow label="ID"|copyText\(node\.id\)/);
+    assert.match(hoverToolbar, /showLabel=\{showImageToolLabels && index < labelledCount\}/);
+    assert.match(hoverToolbar, /const hasText = showLabel && Boolean\(label\)/);
+});
+
+test("node context menu stays focused and rename uses one dialog flow", async () => {
+    const [contextMenu, canvasNode, project] = await Promise.all([
+        readCanvasSource("components/canvas/canvas-context-menu.tsx"),
+        readCanvasSource("components/canvas/canvas-node.tsx"),
+        readCanvasSource("pages/canvas/project.tsx"),
+    ]);
+    assert.match(contextMenu, /onRename/);
+    assert.match(contextMenu, /onEdit/);
+    assert.doesNotMatch(contextMenu, /onDuplicate|onFocus|onInfo/);
+    assert.match(canvasNode, /onRenameRequest\(data\)/);
+    assert.doesNotMatch(canvasNode, /isEditingTitle|titleDraft|renameRequestNonce/);
+    assert.match(project, /open=\{Boolean\(renameDialog\)\}/);
+    assert.match(project, /setRenameDialog\(\{ nodeId: node\.id, title: node\.title \|\| "" \}\)/);
+});
+
+test("side panel node actions omit duplicate while retaining node information", async () => {
+    const sidePanel = await readCanvasSource("components/canvas/canvas-side-panel.tsx");
+    assert.doesNotMatch(sidePanel, /onDuplicateNode|<Copy\b/);
+    assert.match(sidePanel, /onInfo=\{\(\) => setInfoNodeId\(node\.id\)\}/);
+    assert.match(sidePanel, /label=\{t\("canvas\.nodeToolbar\.nodeInfo"\)\}/);
+    assert.doesNotMatch(sidePanel, /label="ID"|JSON\.stringify\(\s*node/);
+    assert.match(sidePanel, /function NodeRowActionsMenu/);
+    assert.match(sidePanel, /useAnchorPopover\(onOpenChange, open\)/);
+    assert.doesNotMatch(sidePanel, /if \(open !== popoverOpen\) updateOpen\(open\)/);
+    assert.match(sidePanel, /<AnchorPopoverPanel/);
+    assert.match(sidePanel, /open=\{openActionsNodeId === node\.id\}/);
+    assert.match(sidePanel, /current === node\.id \? null : current/);
+    assert.match(sidePanel, /<Ellipsis className="size-4"/);
+    assert.match(sidePanel, /canvas-node-actions-trigger/);
+    assert.doesNotMatch(sidePanel, /nodePreviewText|metadata\?\.content \|\| node\.metadata\?\.prompt/);
+    assert.doesNotMatch(sidePanel, /workflowGroup.*workflowIndex/);
+    assert.match(sidePanel, /max-w-\[180px\]/);
+    assert.match(sidePanel, /max-w-\[160px\]/);
+    assert.match(sidePanel, /aria-label=\{t\("canvas\.exportSelected"\)\}/);
+    assert.doesNotMatch(sidePanel, /<Download className="size-3\.5" \/>\s*\{t\("canvas\.exportSelected"\)\}/);
+});
+
+test("production canvas has no user plugin management or remote startup loader", async () => {
+    const [project, topBar, statusActions, pluginHost] = await Promise.all([
+        readCanvasSource("pages/canvas/project.tsx"),
+        readCanvasSource("components/canvas/canvas-top-bar.tsx"),
+        readCanvasSource("components/layout/user-status-actions.tsx"),
+        readCanvasSource("pages/canvas/hooks/use-plugin-host.tsx"),
+    ]);
+    const productionEntrySources = [project, topBar, statusActions, pluginHost].join("\n");
+    assert.doesNotMatch(productionEntrySources, /CanvasPluginManagerModal|onOpenPlugins|ensurePluginsLoaded|installPluginFromUrl/);
+});
+
+test("image uploads render a pending node before waiting for cloud storage", async () => {
+    const [project, canvasNode] = await Promise.all([
+        readCanvasSource("pages/canvas/project.tsx"),
+        readCanvasSource("components/canvas/canvas-node.tsx"),
+    ]);
+    const createUploadStart = project.indexOf("setNodes((prev) => [...prev, pendingNode])");
+    const waitForUpload = project.indexOf("const image = await uploadImage(file)", createUploadStart);
+    assert.ok(createUploadStart >= 0, "image upload must insert a visible pending node");
+    assert.ok(waitForUpload > createUploadStart, "pending node must render before the cloud upload resolves");
+    assert.match(project, /metadata: \{ status: NODE_STATUS_LOADING, uploading: true \}/);
+    assert.match(canvasNode, /data\.metadata\?\.uploading\s*\? t\("canvas\.node\.uploading"\)/);
+    assert.match(canvasNode, /node\.metadata\?\.uploading\s*\? t\("canvas\.node\.uploading"\)\s*: canvasGenerationStageLabel/);
+});
+
+test("HTML node edits apply SEARCH/REPLACE patches all-or-nothing", () => {
+    const page = "<!doctype html>\n<html>\n<head>\n  <style>:root{--brand:#6d4aff}</style>\n</head>\n<body>\n  <h1>Hello</h1>\n  <p>World</p>\n</body>\n</html>";
+    const reply = [
+        "好的",
+        "<<<<<<< SEARCH",
+        ":root{--brand:#6d4aff}",
+        "=======",
+        ":root{--brand:#ff4f8b}",
+        ">>>>>>> REPLACE",
+        "<<<<<<< SEARCH",
+        "<h1>Hello</h1>",
+        "  <p>World</p>",
+        "=======",
+        "<h1>你好</h1>",
+        ">>>>>>> REPLACE",
+    ].join("\n");
+    const patches = parseHtmlPatches(reply);
+    assert.equal(patches.length, 2);
+    const applied = applyHtmlPatches(page, patches);
+    assert.equal(applied.ok, true);
+    assert.match(applied.html, /--brand:#ff4f8b/);
+    assert.match(applied.html, /<h1>你好<\/h1>/);
+    assert.doesNotMatch(applied.html, /World/);
+
+    // One patch that does not line up rejects the whole reply and leaves the page as it was.
+    const broken = applyHtmlPatches(page, [...patches, { search: "<footer>missing</footer>", replace: "" }]);
+    assert.deepEqual(broken, { ok: false, failed: [3] });
+    // Ambiguous anchors are rejected rather than guessed.
+    assert.equal(applyHtmlPatches("<p>a</p><p>a</p>", [{ search: "<p>a</p>", replace: "<p>b</p>" }]).ok, false);
+});
+
+test("HTML node edits keep embedded images out of the request and restore them afterwards", () => {
+    const image = `data:image/png;base64,${"A".repeat(400)}`;
+    const page = `<html><body><img src="${image}"><p>x</p></body></html>`;
+    const stash = stashHtmlAssets(page);
+    assert.equal(stash.count, 1);
+    assert.ok(!stash.text.includes("AAAA"));
+    assert.equal(stash.restore(stash.text), page);
+});
+
+test("HTML node continues pages cut off by the output cap and stitches the parts", () => {
+    const first = "<!doctype html>\n<html><head><style>body{margin:0}</style></head><body>\n<section class=\"hero\"><h1>Nimbus</h1>";
+    assert.equal(isTruncatedHtml(first), true);
+    // The continuation repeats the tail of the first part and is wrapped in a code fence.
+    const continuation = "```html\n<section class=\"hero\"><h1>Nimbus</h1>\n<p>hi</p></section></body></html>\n```";
+    const merged = mergeHtmlContinuation(first, continuation);
+    assert.equal(merged.split("<h1>Nimbus</h1>").length, 2, "repeated text is not duplicated");
+    assert.match(merged, /<p>hi<\/p><\/section><\/body><\/html>$/);
+    assert.equal(isTruncatedHtml(merged), false);
+    assert.equal(isTruncatedHtml("好的，已经为你生成"), false, "a non-page reply is not treated as a truncated page");
+});
+
+test("HTML node bridge sits on the <head> line so reported error lines match the source", () => {
+    const page = "<!doctype html><html><head><title>x</title></head>\n<body><p>hi</p></body></html>";
+    const bridged = withHtmlBridge(page);
+    assert.equal(bridged.split("\n").length, page.split("\n").length, "the bridge adds no lines");
+    assert.match(bridged, /<head><script>.*__htmlNode.*<\/script><title>/s);
+    assert.ok(isHtmlFrameMessage({ __htmlNode: 1, type: "error", message: "x" }));
+    assert.ok(!isHtmlFrameMessage({ type: "error" }), "messages without the marker are ignored");
+});
+
+test("HTML node pages reference canvas images by token", () => {
+    const page = `<img src="sc-file:uploads/u1/original/a.png"><div style="background:url(sc-node:image-123)"></div><img src="sc-file:uploads/u1/original/a.png">`;
+    assert.deepEqual(htmlImageTokens(page), ["sc-file:uploads/u1/original/a.png", "sc-node:image-123"]);
+});

@@ -134,7 +134,9 @@ func (s *Server) adminLogin(c *gin.Context) {
 		return
 	}
 	s.setAdminSessionCookie(c, token, int(adminSessionTTL/time.Second))
-	respondCreated(c, gin.H{"admin": adminAccountDict(admin)})
+	c.Set(ctxAdminUserKey, adminAccountAsUser(admin))
+	// Admin login is a session handshake, not a Location-bearing resource create.
+	ok(c, gin.H{"admin": adminAccountDict(admin)})
 }
 
 func truncateRunes(value string, max int) string {

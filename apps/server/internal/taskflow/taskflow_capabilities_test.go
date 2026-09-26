@@ -18,6 +18,7 @@ func TestValidateModelImageCapabilities(t *testing.T) {
 		references int
 	}{
 		{name: "aspect", params: map[string]any{"aspectRatio": "9:16"}},
+		{name: "resolution", params: map[string]any{"resolutionScale": "1K"}},
 		{name: "quality", params: map[string]any{"quality": "low"}},
 		{name: "transparent", params: map[string]any{"transparentBackground": true}},
 		{name: "format", params: map[string]any{"outputFormat": "webp"}},
@@ -35,6 +36,32 @@ func TestValidateModelImageCapabilities(t *testing.T) {
 		"aspectRatio": "16:9", "quality": "standard", "outputFormat": "png", "moderationLevel": "auto",
 	}, 2); err != nil {
 		t.Fatalf("supported capabilities rejected: %v", err)
+	}
+}
+
+func TestNormalizeCanvasImageOutputFormat(t *testing.T) {
+	model := modelconfig.Model{OutputFormats: []string{"jpeg"}}
+	canvasParams := map[string]any{"_source": "react_canvas", "outputFormat": "png"}
+	normalizeCanvasImageOutputFormat(model, canvasParams)
+	if _, exists := canvasParams["outputFormat"]; exists {
+		t.Fatal("canvas implicit unsupported output format was not removed")
+	}
+	if err := validateModelImageCapabilities(model, canvasParams, 0); err != nil {
+		t.Fatalf("canvas model-native output format fallback rejected: %v", err)
+	}
+	supportedCanvasParams := map[string]any{"_source": "react_canvas", "outputFormat": "jpeg"}
+	normalizeCanvasImageOutputFormat(model, supportedCanvasParams)
+	if supportedCanvasParams["outputFormat"] != "jpeg" {
+		t.Fatal("canvas explicitly supported output format should remain unchanged")
+	}
+
+	explicitParams := map[string]any{"_source": "text_to_image", "outputFormat": "png"}
+	normalizeCanvasImageOutputFormat(model, explicitParams)
+	if explicitParams["outputFormat"] != "png" {
+		t.Fatal("non-canvas explicit output format should remain unchanged")
+	}
+	if err := validateModelImageCapabilities(model, explicitParams, 0); err == nil {
+		t.Fatal("non-canvas unsupported output format should still be rejected")
 	}
 }
 
@@ -57,5 +84,28 @@ func TestValidateModelImageCapabilitiesByResolution(t *testing.T) {
 		"resolutionScale": "4K", "aspectRatio": "1:1", "quality": "high",
 	}, 0); err != nil {
 		t.Fatalf("4K configured ratio rejected: %v", err)
+	}
+}
+
+func TestRequestedImageCountUsesSplitBatchSize(t *testing.T) {
+	cases := []struct {
+		name     string
+		taskType string
+		params   map[string]any
+		count    int
+		want     int
+	}{
+		{"t2i batch", "t2i", map[string]any{"batchSize": float64(4)}, 1, 4},
+		{"coloring variants", "coloring", map[string]any{"variantCount": float64(3)}, 1, 3},
+		{"game art batch", "game_art", map[string]any{"batchSize": 2}, 1, 2},
+		{"single task", "t2i", map[string]any{}, 2, 2},
+		{"canvas uses count", "t2i", map[string]any{"_source": "react_canvas", "batchSize": float64(8)}, 3, 3},
+		{"ecommerce spec batch", "ecommerce_design", map[string]any{"batchSize": float64(6)}, 1, 1},
+		{"model sheet views", "model_sheet", map[string]any{"batchSize": float64(6)}, 1, 1},
+	}
+	for _, tc := range cases {
+		if got := requestedImageCount(tc.taskType, tc.params, tc.count); got != tc.want {
+			t.Errorf("%s: requestedImageCount = %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }

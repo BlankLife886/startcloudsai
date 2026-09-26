@@ -1,7 +1,0 @@
-node_modules
-dist
-.eslintcache
-tests
-playwright-report
-test-results
-*.log

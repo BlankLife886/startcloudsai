@@ -32,7 +32,8 @@ func newUser(t *testing.T, st *store.Store) *store.User {
 func newSubPlan(t *testing.T, st *store.Store, days int, daily int64) *store.Plan {
 	t.Helper()
 	plan, err := store.InsertPlan(context.Background(), st.Pool, &store.Plan{
-		Code: "sub-" + uuid.NewString()[:6], Name: "月度订阅", Kind: "subscription",
+		SubscriptionPolicy: store.SubscriptionPolicy{Version: 1},
+		Code:               "sub-" + uuid.NewString()[:6], Name: "月度订阅", Kind: "subscription",
 		PriceCents: 2900, DurationDays: days, DailyGrantCents: daily, Active: true,
 	})
 	if err != nil {
@@ -162,7 +163,7 @@ func TestTickExpiresEndedSubscriptions(t *testing.T) {
 	now := time.Now().UTC()
 	sub := applyOrder(t, st, newOrder(t, st, user.ID, plan), plan, now)
 
-	// 30 天后 +1h：订阅到期 → expired，且不再发放
+	// Recovery after expiry fills the 30 purchased daily grants, not a 31st expiry-day grant.
 	after := now.Add(30*24*time.Hour + time.Hour)
 	if err := subscription.Tick(ctx, st, after); err != nil {
 		t.Fatalf("tick after expiry: %v", err)
@@ -174,8 +175,8 @@ func TestTickExpiresEndedSubscriptions(t *testing.T) {
 	if fresh.Status != "expired" {
 		t.Fatalf("status = %s, want expired", fresh.Status)
 	}
-	if balance(t, st, user.ID) != 100 {
-		t.Fatalf("balance = %d, want 100 (only first-day grant)", balance(t, st, user.ID))
+	if balance(t, st, user.ID) != 3000 {
+		t.Fatalf("balance = %d, want 3000 (30 purchased grants)", balance(t, st, user.ID))
 	}
 	// 过期后当前订阅查询返回空
 	current, err := store.GetCurrentSubscription(ctx, st.Pool, user.ID, after)

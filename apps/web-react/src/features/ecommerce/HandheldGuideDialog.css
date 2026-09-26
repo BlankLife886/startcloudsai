@@ -1,0 +1,265 @@
+.handheld-guide-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: grid;
+  place-items: center;
+  padding: 20px 16px;
+  background: rgba(18, 16, 28, 0.48);
+  backdrop-filter: blur(12px) saturate(0.95);
+}
+
+.handheld-guide-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(860px, calc(100vw - 32px));
+  height: min(720px, calc(100vh - 40px));
+  overflow: hidden;
+  color: #17131f;
+  background: #fbfaff;
+  border: 1px solid rgb(40 32 72 / 10%);
+  border-radius: 20px;
+  box-shadow: 0 28px 80px rgb(20 16 40 / 28%);
+  outline: none;
+}
+
+.handheld-guide__head {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 20px 56px 16px 22px;
+  border-bottom: 1px solid rgb(40 32 72 / 8%);
+}
+
+.handheld-guide__head em {
+  color: #6d5cff;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.handheld-guide__head h2 {
+  margin: 2px 0 0;
+  color: #17131f;
+  font-size: 20px;
+  font-weight: 760;
+  line-height: 1.2;
+}
+
+.handheld-guide__head p {
+  margin: 0;
+  max-width: 58ch;
+  color: #6f6880;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.handheld-guide__close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: #6f6880;
+  background: #f3f1f8;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.handheld-guide__close:hover {
+  color: #17131f;
+  background: #ebe7f8;
+}
+
+.handheld-guide__layout {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: 148px minmax(0, 1fr);
+}
+
+.handheld-guide__nav {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+  padding: 12px 10px;
+  background: #f6f4fb;
+  border-right: 1px solid rgb(40 32 72 / 8%);
+}
+
+.handheld-guide__nav button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  color: #6f6880;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.handheld-guide__nav button:hover {
+  color: #17131f;
+  background: rgb(255 255 255 / 80%);
+}
+
+.handheld-guide__nav button.is-active {
+  color: #5340d8;
+  background: rgb(109 92 255 / 12%);
+}
+
+.handheld-guide__body {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 22px 28px;
+  scroll-behavior: smooth;
+}
+
+.handheld-guide__body section {
+  padding: 16px 0 8px;
+  scroll-margin-top: 8px;
+}
+
+.handheld-guide__body section + section {
+  border-top: 1px solid rgb(40 32 72 / 7%);
+}
+
+.handheld-guide__body h3 {
+  margin: 0 0 8px;
+  color: #17131f;
+  font-size: 15px;
+  font-weight: 760;
+}
+
+.handheld-guide__body p,
+.handheld-guide__body li,
+.handheld-guide__body dd {
+  color: #3d3750;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.handheld-guide__body p {
+  margin: 0 0 10px;
+}
+
+.handheld-guide__body ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.handheld-guide__body ul > li + li {
+  margin-top: 6px;
+}
+
+.handheld-guide__body strong {
+  color: #17131f;
+  font-weight: 750;
+}
+
+.handheld-guide__body ol.handheld-guide__steps {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: handheld-guide-step;
+}
+
+.handheld-guide__steps > li {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px 12px;
+  align-items: start;
+  margin: 0;
+  counter-increment: handheld-guide-step;
+}
+
+.handheld-guide__steps > li::before {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: #5340d8;
+  background: rgb(109 92 255 / 12%);
+  border-radius: 50%;
+  content: counter(handheld-guide-step);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.handheld-guide__steps > li > div {
+  min-width: 0;
+}
+
+.handheld-guide__steps strong {
+  display: block;
+  margin: 3px 0 4px;
+  font-size: 13px;
+}
+
+.handheld-guide__steps span {
+  display: block;
+  color: #6f6880;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.handheld-guide__body dl {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.handheld-guide__body dl > div {
+  min-width: 0;
+}
+
+.handheld-guide__body dt {
+  color: #17131f;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.handheld-guide__body dd {
+  margin: 2px 0 0;
+}
+
+@media (max-width: 720px) {
+  .handheld-guide-panel {
+    height: min(100vh - 24px, 100%);
+    border-radius: 16px;
+  }
+
+  .handheld-guide__layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .handheld-guide__nav {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    overflow: auto;
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid rgb(40 32 72 / 8%);
+  }
+
+  .handheld-guide__nav button {
+    flex: 0 0 auto;
+    width: auto;
+    white-space: nowrap;
+  }
+
+  .handheld-guide__body {
+    padding: 4px 16px 24px;
+  }
+}

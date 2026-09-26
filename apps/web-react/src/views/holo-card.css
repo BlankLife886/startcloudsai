@@ -1,0 +1,249 @@
+.main-content.main--holo-card { padding:0;min-height:100svh;background:#080a13; }
+.app-container > .main-content.main--holo-card > .holo-workspace { padding-top:0; }
+.holo-workspace {
+  --hc-bg:#080a13;--hc-panel:#141625;--hc-field:rgba(255,255,255,.05);--hc-line:transparent;
+  --hc-ink:#f0edf9;--hc-muted:#a3a1b7;--hc-accent:#c9b4ff;--hc-soft:rgba(179,146,255,.12);
+  position:relative;isolation:isolate;height:100svh;min-height:680px;overflow:hidden;
+  background:var(--hc-bg);color:var(--hc-ink);font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:13px;line-height:1.5;letter-spacing:0;box-sizing:border-box;
+}
+.holo-workspace * { box-sizing:border-box;letter-spacing:0; }
+.holo-workspace button,.holo-workspace input,.holo-workspace select,.holo-workspace textarea { font:inherit; }
+.holo-workspace button { display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:36px;padding:8px 12px;border:0;border-radius:12px;background:transparent;color:inherit;cursor:pointer;transition:background-color .18s,color .18s,box-shadow .18s; }
+.holo-workspace button:hover:not(:disabled) { color:#fff;background:rgba(255,255,255,.08); }
+.holo-workspace button:disabled { opacity:.35;cursor:not-allowed; }
+.holo-workspace :focus-visible { outline:2px solid #c9b4ff;outline-offset:4px; }
+.holo-workspace button.holo-primary { min-height:42px;padding:10px 18px;border-radius:24px;background:linear-gradient(115deg,#e1d6ff,#b6caff);color:#17152b;font-weight:600;box-shadow:0 5px 24px #9879ec20; }
+.holo-workspace button.holo-primary:hover:not(:disabled) { color:#17152b;background:linear-gradient(115deg,#f0eaff,#ccd9ff);box-shadow:0 6px 30px #a991ff40; }
+.holo-workspace button.holo-secondary { background:rgba(255,255,255,.07);min-height:40px; }
+.holo-workspace button.holo-text-button { color:var(--hc-muted);font-size:12px; }
+.holo-workspace button.holo-tool-button { min-height:34px;padding:7px;flex-shrink:0; }
+.holo-full { width:100%; }
+.holo-toolbar { position:absolute;top:0;left:0;right:0;height:84px;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:0 36px;z-index:12;pointer-events:none; }
+.holo-toolbar > * { pointer-events:auto; }
+.holo-heading,.holo-header-actions { display:flex;align-items:center;gap:12px;min-width:0; }
+.holo-back { display:grid;place-items:center;width:30px;height:34px;color:#afacc5;margin-right:4px;text-decoration:none; }
+.holo-back:hover { color:#fff; }
+.holo-brand-mark { display:grid;place-items:center;color:#d6c5ff;width:27px; }
+.holo-heading h1 { font-size:17px;font-weight:550;margin:0;white-space:nowrap; }
+.holo-status { display:inline-flex;align-items:center;gap:6px;margin-left:10px;font-size:10px;color:#9390a9; }
+.holo-status > i { width:4px;height:4px;background:#bfade4;border-radius:50%; }
+.holo-status > svg + i { display:none; }
+.holo-header-actions { gap:17px; }
+.holo-sample-link { display:flex;align-items:center;gap:7px;font-size:11px;color:#aaa6bf;text-decoration:none; }
+.holo-sample-link:hover { color:#e5d9ff; }
+.holo-export-hint { font-size:10px;color:#7f7b99; }
+.holo-body { position:absolute;inset:0;z-index:1; }
+.holo-center { position:absolute;inset:0;display:flex;flex-direction:column;padding:80px 160px 160px;min-width:0;min-height:0; }
+.holo-stage-toolbar { position:absolute;top:97px;left:36px;right:36px;display:flex;align-items:center;justify-content:space-between;gap:12px;z-index:2;pointer-events:none; }
+.holo-stage-toolbar > * { pointer-events:auto; }
+.holo-tabs { display:flex;gap:4px; }
+.holo-tabs button { min-height:29px;padding:5px 10px;font-size:11px;color:#9290a8; }
+.holo-tabs button[aria-selected=true] { color:#e4dcf7;background:rgba(255,255,255,.06); }
+.holo-tabs i,.holo-editor-tabs i { width:4px;height:4px;border-radius:50%;background:#d5b6ff; }
+.holo-stage-meta { color:#706d86;font-size:10px;padding-right:2px; }
+.holo-preview-area { position:relative;flex:1;min-height:0; }
+.holo-scene { position:absolute;inset:0;filter:drop-shadow(0 32px 35px #0008); }
+.holo-scene[hidden],.holo-panel-scroll[hidden],.holo-editor[hidden] { display:none; }
+.holo-scene > .holo-card-stage,.holo-scene > .sample-relief-stage { width:100%;height:100%;min-height:0!important; }
+.holo-card-stage,.sample-relief-stage { cursor:grab; }
+.holo-card-stage[data-holo-dragging=true],.sample-relief-stage[data-sample-dragging=true] { cursor:grabbing; }
+.holo-art-caption { position:absolute;left:44px;bottom:170px;max-width:300px;pointer-events:none; }
+.holo-art-caption > span { color:#807995;font-size:9px;letter-spacing:2.2px; }
+.holo-art-caption h2 { margin:15px 0 10px;font-family:"Songti SC","Noto Serif SC",serif;font-size:clamp(27px,3vw,42px);font-weight:400;letter-spacing:3px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
+.holo-art-caption p { color:#7f7992;font-size:11px;margin:0;max-width:270px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis; }
+.holo-preview-footer { position:absolute;left:0;right:0;bottom:28px;display:grid;grid-template-columns:auto auto;gap:11px 14px;align-items:center;justify-content:center;z-index:11;pointer-events:none; }
+.holo-preview-footer > * { pointer-events:auto; }
+.holo-material-dock { grid-column:1/-1;justify-self:center;padding:7px 8px;border-radius:32px;background:rgba(31,32,52,.65);backdrop-filter:blur(20px);box-shadow:0 12px 40px #0004; }
+.holo-foil-swatches { display:flex;align-items:center;gap:3px; }
+.holo-foil-swatches button { gap:8px;padding:7px 12px;min-width:75px;min-height:37px;border-radius:22px;color:#8f8ba7; }
+.holo-foil-swatches small { font-size:11px; }
+.holo-foil-swatches button[aria-pressed=true] { background:rgba(205,183,255,.12);color:#f0e8ff; }
+.holo-foil-swatches .holo-foil-more { color:#b9a4d5;background:#b496dd08;min-width:68px; }
+.holo-foil { display:block;width:22px;height:22px;flex-shrink:0;border-radius:50%;box-shadow:inset 0 1px 3px #fff6,inset 0 -3px 6px #0006; }
+.holo-foil.is-spectrum { background:conic-gradient(from 35deg,#ecc9f3,#8de2d0,#ffe3a7,#aaa3eb,#ecc9f3); }
+.holo-foil.is-pearl { background:linear-gradient(135deg,#f4e9e2,#b8dcdb,#dec4e5); }
+.holo-foil.is-silver { background:linear-gradient(135deg,#fff,#abb3c1,#717a8f); }
+.holo-foil.is-gold { background:linear-gradient(135deg,#fff1b1,#cbab66,#88703b); }
+.holo-foil.is-original { background:linear-gradient(135deg,#acb9be,#455461); }
+.holo-view-controls { display:flex;align-items:center;justify-content:center;gap:5px; }
+.holo-view-controls .holo-tool-button { padding:6px 10px;font-size:11px;color:#a09ab7;gap:6px; }
+.holo-workspace .holo-start-button { min-height:36px;padding:8px 15px;border-radius:20px;font-size:11px;color:#d5c3fa;background:rgba(186,149,255,.12); }
+.holo-start-button > svg:last-child { display:none; }
+.holo-gesture-hint { display:flex;align-items:center;gap:6px;font-size:10px;color:#7f7893; }
+.holo-review-link { color:#dac5ff!important;font-size:11px!important;padding:6px 10px!important; }
+.holo-quick-tools { position:absolute;right:25px;top:50%;transform:translateY(-50%);z-index:22;display:flex;flex-direction:column;gap:7px;padding:10px 5px;border-radius:25px;background:rgba(30,31,49,.42);backdrop-filter:blur(18px); }
+.holo-quick-tools button { position:relative;display:flex;flex-direction:column;gap:5px;min-width:54px;height:54px;padding:6px;color:#a49abb;border-radius:19px; }
+.holo-quick-tools button span { font-size:9px; }
+.holo-quick-tools button[aria-expanded=true] { color:#f3e6ff;background:rgba(192,154,255,.15); }
+.holo-quick-tools i { position:absolute;right:9px;top:7px;width:5px;height:5px;border-radius:50%;background:#d5b3ff; }
+.holo-editor { position:absolute;top:94px;right:100px;bottom:150px;width:334px;z-index:21;display:flex;flex-direction:column;min-height:0;padding:8px;background:rgba(20,20,34,.94);backdrop-filter:blur(26px);border-radius:22px;box-shadow:0 24px 90px #0008,0 0 60px #8973bb0a;opacity:0;visibility:hidden; }
+.holo-editor-heading { display:flex;align-items:center;justify-content:space-between;padding:6px 12px 0;flex-shrink:0;color:#827990;font-size:10px; }
+.holo-editor-heading .holo-tool-button { color:#9e93b3; }
+.holo-editor-tabs { display:grid;grid-template-columns:repeat(4,1fr);gap:3px;padding:7px 8px 9px;flex-shrink:0; }
+.holo-editor-tabs button { padding-inline:6px; }
+.holo-editor-tabs button { border-radius:12px;color:#9489a7;font-size:12px;gap:6px; }
+.holo-editor-tabs button[aria-selected=true] { background:rgba(193,154,255,.1);color:#e3ceff; }
+.holo-panel-scroll { flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 16px 15px;scrollbar-width:thin;scrollbar-color:#544261 transparent; }
+.holo-section { padding:16px 0; }
+.holo-section h2 { font-size:12px;font-weight:550;margin:0 0 12px;color:#cec3df; }
+.holo-section-heading { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px; }
+.holo-section-heading h2 { margin:0; }
+.holo-section-heading > span { color:#85778f;font-size:10px; }
+.holo-asset-row { display:flex;align-items:center;min-width:0;gap:2px;background:rgba(255,255,255,.025);border-radius:11px; }
+.holo-workspace button.holo-asset-main { flex:1;display:flex;justify-content:flex-start;min-width:0;padding:9px;gap:10px;border-radius:11px; }
+.holo-asset-thumb { display:grid;place-items:center;flex-shrink:0;width:36px;height:44px;border-radius:5px;overflow:hidden;background:#342b42;color:#a58bbf; }
+.holo-asset-thumb img { width:100%;height:100%;object-fit:contain; }
+.holo-asset-copy { flex:1;min-width:0;text-align:left; }
+.holo-asset-copy strong { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:500;color:#c7bcd4; }
+.holo-asset-copy small { display:block;font-size:9px;line-height:1.5;color:#82758d;margin-top:4px; }
+.holo-asset-action { font-size:10px;color:#9b85ad;flex-shrink:0; }
+.holo-segments { display:flex;gap:4px;margin-top:10px; }
+.holo-segments button { flex:1;font-size:11px;color:#8c7b9b;min-height:30px;padding:6px; }
+.holo-segments button[aria-pressed=true] { color:#dcc4f4;background:rgba(204,156,255,.08); }
+.holo-range { display:block;margin:0 0 18px; }
+.holo-range:last-child { margin-bottom:0; }
+.holo-range > span { display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#9c8aaa;gap:10px;margin-bottom:12px; }
+.holo-range output { font-size:11px;color:#cfb6e5;font-variant-numeric:tabular-nums; }
+.holo-range output small { font-size:9px;color:#877591;margin-left:3px; }
+.holo-range input { display:block;appearance:none;width:100%;height:3px;accent-color:#c2a2e4;background:linear-gradient(to right,#ae8fce var(--range-fill),#42344e var(--range-fill));border-radius:4px;cursor:pointer; }
+.holo-range input::-webkit-slider-thumb { appearance:none;width:10px;height:10px;border-radius:50%;border:0;background:#e1caf7;box-shadow:0 0 9px #b391d578; }
+.holo-range input::-moz-range-thumb { width:10px;height:10px;border:0;border-radius:50%;background:#e1caf7; }
+.holo-range.is-disabled { opacity:.35; }
+.holo-field { display:flex;flex-direction:column;gap:6px;font-size:10px;color:#9785a4;position:relative;margin:0 0 12px;min-width:0; }
+.holo-field:last-child { margin-bottom:0; }
+.holo-workspace input:not([type=range]):not([type=color]),.holo-workspace textarea,.holo-workspace select { width:100%;min-width:0;background:#ffffff05;color:#d8c7e5;border:0;border-radius:8px;padding:9px 10px;font-size:12px;line-height:1.6;color-scheme:dark; }
+.holo-workspace textarea { resize:vertical;min-height:76px;max-height:155px; }
+.holo-workspace input::placeholder,.holo-workspace textarea::placeholder { color:#6c5f78; }
+.holo-color-swatches { display:flex;align-items:center;gap:12px;padding:3px; }
+.holo-workspace .holo-color-swatches > button { width:25px;height:25px;min-height:25px;border-radius:50%;padding:0;box-shadow:inset 0 1px 3px #fff4; }
+.holo-color-swatches button[aria-pressed=true] { box-shadow:0 0 12px #c7a3ed33,inset 0 1px 3px #fff6; }
+.holo-color-swatches button:nth-child(3) { color:#34303a; }
+.holo-color-swatches label { display:block;width:25px;height:25px;border-radius:50%;overflow:hidden;box-shadow:inset 0 0 0 1px #ffffff12; }
+.holo-color-swatches input { width:37px;height:37px;margin:-6px;padding:0;border:0;cursor:pointer; }
+.holo-details { margin:0; }
+.holo-details > summary { display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 0;font-size:11px;color:#93809f;list-style:none;cursor:pointer; }
+.holo-details > summary::-webkit-details-marker { display:none; }
+.holo-details[open] > summary { color:#cab1df; }
+.holo-details[open] > summary > svg { transform:rotate(180deg); }
+.holo-details > div { padding:2px 0 10px; }
+.holo-details .holo-asset-row + .holo-range { margin-top:16px; }
+.holo-depth-entry { display:flex!important;justify-content:flex-start!important;width:100%;gap:10px!important;margin-top:12px;padding:13px 9px!important;text-align:left;background:rgba(175,121,215,.07)!important; }
+.holo-depth-icon { color:#b996d4; }
+.holo-depth-entry > span:nth-child(2) { flex:1;min-width:0; }
+.holo-depth-entry strong { display:block;font-size:11px;font-weight:500; }
+.holo-depth-entry small { display:block;font-size:9px;color:#9075a0;margin-top:4px; }
+.holo-layer-placeholder { padding:10px 0 18px;text-align:center;color:#9279a4; }
+.holo-layer-placeholder > svg { margin:0 0 8px; }
+.holo-layer-placeholder strong { display:block;font-size:12px;color:#cbb1dd;font-weight:500; }
+.holo-layer-placeholder p { font-size:10px;line-height:1.7;margin:7px auto 0;max-width:245px; }
+.holo-candidate { border-radius:12px;background:rgba(204,154,255,.06);margin:9px 0; }
+.holo-section .holo-asset-row + .holo-full { margin-top:10px; }
+.holo-request-field { margin-top:8px; }
+.holo-optional { position:absolute;right:0;font-size:9px;color:#6f5b81; }
+.holo-quality-tag { color:#a888bf!important;font-size:9px!important; }
+.holo-caption { color:#786384;font-size:9px;line-height:1.7;text-align:center;margin:8px 0 0; }
+.holo-service-notice { display:flex;align-items:center;gap:6px;padding:7px 0;margin:0 0 9px;color:#97819e;font-size:10px;line-height:1.6; }
+.holo-service-notice > span { flex:1;overflow-wrap:anywhere; }
+.holo-inline-upload { width:100%;justify-content:flex-start!important;padding:10px!important;background:rgba(255,255,255,.025)!important;color:#a388b4!important;font-size:11px!important; }
+.holo-inline-upload > svg:last-child { margin-left:auto; }
+.holo-notifications { position:absolute;top:148px;left:36px;width:310px;z-index:25; }
+.holo-error { display:flex;align-items:flex-start;gap:6px;padding:13px 14px;background:rgba(50,27,46,.95);backdrop-filter:blur(20px);color:#e6b4d3;border-radius:13px;font-size:11px;line-height:1.7;margin-bottom:8px;box-shadow:0 15px 35px #0004; }
+.holo-error > span { flex:1;min-width:0;overflow-wrap:anywhere; }
+.holo-error .holo-tool-button { min-height:25px;padding:4px; }
+.holo-source-warning { color:#a887a5;font-size:10px;line-height:1.7;margin:10px 0; }
+.holo-taskbar { display:flex;align-items:center;gap:7px;padding:10px 12px;background:#271d36d9;backdrop-filter:blur(18px);color:#c5a3e0;font-size:11px;border-radius:12px; }
+.holo-taskbar > span { flex:1; }
+.holo-taskbar button { min-height:25px;padding:3px 6px;font-size:10px; }
+.holo-history-description { text-align:left;margin:0 0 14px; }
+.holo-history-empty { display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:35px 4px;text-align:center;color:#927397;font-size:11px; }
+.holo-history-empty > svg { color:#886293;margin-bottom:5px; }
+.holo-history-empty > strong { color:#c7a8d0;font-weight:500; }
+.holo-history-empty > span { font-size:10px; }
+.holo-history-item { display:flex!important;justify-content:flex-start!important;gap:10px;width:100%;padding:12px 4px!important;text-align:left!important; }
+.holo-history-item > span:nth-child(2) { flex:1;min-width:0; }
+.holo-history-item strong { display:block;font-size:11px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.holo-history-item small { display:block;color:#8e6d97;font-size:9px;margin-top:4px; }
+.holo-history-icon { color:#98729f;width:30px;flex-shrink:0; }
+.holo-history-item.is-selected { color:#d5b0e1;background:#ac70d00c; }
+.holo-stats { display:grid;grid-template-columns:1fr 1fr;gap:11px;font-size:10px;margin:0; }
+.holo-stats dt { color:#927399;font-weight:400; }
+.holo-stats dd { text-align:right;margin:0;color:#c29bce; }
+.holo-inspection { position:absolute;inset:0;overflow:auto;text-align:center;border-radius:14px; }
+.holo-inspection img { display:block;max-width:100%;max-height:100%;object-fit:contain;margin:auto; }
+.holo-inspection.is-checker,.holo-inspection-swatches .is-checker { background:conic-gradient(#292530 25%,#3b3544 0 50%,#292530 0 75%,#3b3544 0) 0 0/20px 20px; }
+.holo-inspection.is-white,.holo-inspection-swatches .is-white { background:#fff; }
+.holo-inspection.is-black,.holo-inspection-swatches .is-black { background:#111; }
+.is-inspecting .holo-center { padding:136px 150px 156px; }
+.is-inspecting .holo-quick-tools { opacity:.6; }
+.holo-inspection-controls { position:absolute;left:150px;right:150px;bottom:100px;display:flex;align-items:center;justify-content:center;gap:18px;height:44px; }
+.holo-inspection-controls > .holo-text-button { margin-right:auto; }
+.holo-inspection-controls select { width:105px!important; }
+.holo-inspection-swatches { display:flex;gap:9px; }
+.holo-workspace .holo-inspection-swatches button { width:23px;height:23px;min-height:23px;padding:0;border-radius:50%;box-shadow:0 0 0 1px #a78aae35; }
+.holo-inspection-swatches button[aria-pressed=true] { box-shadow:0 0 0 2px #d5b2eb; }
+.holo-approval { position:absolute;bottom:24px;left:50%;transform:translateX(-50%);width:min(850px,calc(100% - 150px));display:flex;align-items:center;gap:12px;padding:12px 18px;border-radius:17px;background:rgba(36,25,48,.95);backdrop-filter:blur(20px);box-shadow:0 12px 35px #0005; }
+.holo-approval > div { flex:1;min-width:0; }
+.holo-approval strong { display:block;font-size:12px;font-weight:550; }
+.holo-approval span { display:block;font-size:10px;color:#a586ad;margin-top:4px; }
+.holo-approval .holo-primary { white-space:nowrap; }
+.is-clean .holo-toolbar,.is-clean .holo-stage-toolbar,.is-clean .holo-art-caption,.is-clean .holo-preview-footer,.is-clean .holo-quick-tools { visibility:hidden!important;pointer-events:none!important; }
+.holo-workspace.is-clean > .holo-body > .holo-center { padding:75px 32px 36px; }
+.holo-workspace .holo-clean-exit { position:absolute;right:30px;top:24px;z-index:35;font-size:11px;color:#aaa0bc;background:#1817249c;backdrop-filter:blur(16px); }
+.holo-spin { animation:holo-spin 1s linear infinite; }
+@keyframes holo-spin { to { transform:rotate(360deg); } }
+.holo-status-copy { animation:holo-status-reveal .24s ease-out; }
+.holo-drop-state { position:absolute;inset:95px 120px 145px;z-index:15;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;border-radius:35px;background:radial-gradient(ellipse,#725d992e,#171623ba);backdrop-filter:blur(8px);color:#e3d1ff;pointer-events:none;animation:holo-status-reveal .2s ease-out; }
+.holo-drop-state strong { font-size:16px;font-weight:500; }
+.holo-drop-state > span { font-size:10px;color:#aa8cc5;letter-spacing:2px; }
+@keyframes holo-status-reveal { from { opacity:0;transform:translateY(3px); } to { opacity:1;transform:translateY(0); } }
+.is-drag-over .holo-art-caption,.is-drag-over .holo-preview-footer { opacity:.25!important; }
+@media(prefers-reduced-motion:reduce) { .holo-status-copy,.holo-drop-state { animation:none; } }
+@media(max-width:1050px) { .holo-center { padding-left:100px;padding-right:100px; }.holo-art-caption { max-width:225px;left:30px; }.holo-art-caption h2 { font-size:28px; }.holo-art-caption p { font-size:10px; }.holo-editor { right:88px;width:305px; }.holo-quick-tools { right:18px; }.holo-toolbar { padding:0 25px; } }
+@media(max-width:720px) {
+  .holo-workspace { min-height:660px; }
+  .holo-toolbar { height:68px;padding:0 18px;gap:10px; }
+  .holo-heading,.holo-header-actions { gap:9px; }
+  .holo-heading h1 { font-size:15px; }
+  .holo-brand-mark,.holo-status,.holo-export-hint { display:none; }
+  .holo-header-actions .holo-primary { min-height:36px;padding:8px 12px;font-size:11px; }
+  .holo-sample-link { font-size:10px; }
+  .holo-sample-link > svg { display:none; }
+  .holo-center { padding:107px 14px 212px; }
+  .holo-stage-toolbar { top:75px;left:18px;right:18px; }
+  .holo-art-caption { left:22px;bottom:177px;max-width:240px; }
+  .holo-art-caption > span { font-size:7px; }
+  .holo-art-caption h2 { font-size:22px;margin:6px 0;letter-spacing:2px; }
+  .holo-art-caption p { font-size:9px; }
+  .holo-preview-footer { bottom:18px;gap:9px 6px; }
+  .holo-material-dock { padding:5px;max-width:calc(100vw - 24px);border-radius:23px; }
+  .holo-foil-swatches { gap:0; }
+  .holo-foil-swatches button { flex-direction:column;min-width:0;width:calc((100vw - 34px)/6);max-width:58px;gap:5px;padding:7px 3px;border-radius:17px; }
+  .holo-foil-swatches .holo-foil-more { min-width:0; }
+  .holo-foil-swatches small { font-size:9px; }
+  .holo-foil { width:21px;height:21px; }
+  .holo-view-controls { gap:1px; }
+  .holo-view-controls .holo-tool-button { padding:5px 8px;font-size:10px; }
+  .holo-gesture-hint { max-width:155px;font-size:9px;line-height:1.5; }
+  .holo-workspace .holo-start-button { padding:7px 10px;font-size:10px; }
+  .holo-quick-tools { right:9px;padding:7px 3px;gap:2px; }
+  .holo-quick-tools button { min-width:40px;height:43px;border-radius:14px; }
+  .holo-quick-tools button > svg { width:16px;height:16px; }
+  .holo-quick-tools button > span { font-size:8px; }
+  .holo-editor { z-index:25;top:94px;right:14px;left:14px;bottom:158px;width:auto; }
+  .holo-editor-tabs { padding-bottom:5px; }
+  .holo-editor .holo-section { padding:15px 13px; }
+  .holo-workspace.is-clean > .holo-body > .holo-center { padding:72px 14px 32px; }
+  .holo-workspace.is-inspecting > .holo-body > .holo-center { padding:135px 14px 220px; }
+  .holo-inspection-controls { left:14px;right:14px;bottom:153px;gap:8px;height:38px; }
+  .holo-inspection-controls .holo-text-button { padding:5px 6px;font-size:10px; }
+  .holo-inspection-controls select { min-width:70px;max-width:96px;font-size:10px;padding:5px; }
+  .holo-inspection-swatches { gap:5px; }
+  .holo-inspection-swatches button { width:24px;height:24px;min-height:24px;padding:0; }
+  .holo-approval { left:14px;right:14px;bottom:max(14px,env(safe-area-inset-bottom));display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px; }
+  .holo-approval > div { grid-column:1/-1; }
+  .holo-approval strong { font-size:12px; }
+  .holo-approval span { font-size:9px;line-height:1.6; }
+  .holo-approval button { min-height:38px;font-size:11px; }
+}
+@media(prefers-reduced-motion:reduce) { .holo-workspace button { transition:none; }.holo-spin { animation:none; } }

@@ -1,0 +1,121 @@
+/* Generated from apps/web/src/components/wallpaper/fullscreen-preview/features/toolbar/PreviewToolbarActions.vue. */
+
+.preview-controls {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  gap: 10px;
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: all 0.25s ease;
+  z-index: 20;
+}
+.preview-controls.controls-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.preview-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    transform 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease;
+  backdrop-filter: blur(4px);
+}
+.preview-btn:hover {
+  background: rgba(25, 25, 25, 0.8);
+  transform: scale(1.06);
+}
+.preview-btn:active {
+  transform: scale(0.96);
+}
+.preview-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.preview-btn.active {
+  background: rgba(76, 175, 80, 0.75);
+  box-shadow: 0 0 10px rgba(76, 175, 80, 0.35);
+}
+.preview-favorite-btn .bi-heart-fill {
+  color: #ff5e5e;
+}
+.preview-favorite-btn:hover .bi-heart {
+  color: #ff5e5e;
+}
+.preview-download-btn {
+  position: relative;
+  overflow: hidden;
+}
+.preview-download-btn::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 2px solid transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.2s ease;
+}
+.preview-download-btn.download-status-preparing,
+.preview-download-btn.download-status-downloading {
+  background: rgba(37, 99, 235, 0.82);
+  box-shadow: 0 0 18px rgba(59, 130, 246, 0.36);
+  cursor: wait;
+  opacity: 1;
+}
+.preview-download-btn.download-status-preparing::after,
+.preview-download-btn.download-status-downloading::after {
+  border-color: rgba(147, 197, 253, 0.76);
+  opacity: 1;
+  animation: downloadPulse 1.15s ease-in-out infinite;
+}
+.preview-download-btn.download-status-downloading .bi {
+  animation: downloadSpin 0.88s linear infinite;
+}
+.preview-download-btn.download-status-success {
+  background: rgba(34, 197, 94, 0.86);
+  box-shadow: 0 0 18px rgba(34, 197, 94, 0.38);
+}
+.preview-download-btn.download-status-success::after {
+  border-color: rgba(187, 247, 208, 0.8);
+  opacity: 1;
+  transform: scale(1.08);
+}
+.preview-download-btn.download-status-failed {
+  background: rgba(239, 68, 68, 0.86);
+  box-shadow: 0 0 18px rgba(239, 68, 68, 0.36);
+}
+.preview-download-btn.download-status-failed::after {
+  border-color: rgba(254, 202, 202, 0.86);
+  opacity: 1;
+}
+@keyframes downloadSpin {
+to {
+    transform: rotate(360deg);
+}
+}
+@keyframes downloadPulse {
+0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.55;
+}
+50% {
+    transform: scale(1.12);
+    opacity: 1;
+}
+}

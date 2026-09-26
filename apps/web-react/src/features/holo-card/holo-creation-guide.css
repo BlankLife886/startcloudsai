@@ -1,0 +1,73 @@
+.holo-creation-guide { position:absolute;z-index:5;left:36px;bottom:190px;width:260px;color:#c4bdd5; }
+.holo-creation-steps { display:flex;list-style:none;margin:0 0 25px;padding:0;gap:14px;font-size:10px;color:#6f6783; }
+.holo-creation-steps li { display:flex;align-items:center;gap:6px; }
+.holo-creation-steps li > span,.holo-creation-steps li > svg { display:grid;place-items:center;width:17px;height:17px;border-radius:50%;background:#bca0ec0c;font-size:9px; }
+.holo-creation-steps .is-current { color:#d8c6f3; }.holo-creation-steps .is-done { color:#9dbab5; }
+.holo-creation-kicker { color:#91849f;font-size:10px; }
+.holo-creation-guide h2 { margin:13px 0 12px;max-width:250px;font-family:"Songti SC",serif;font-size:29px;font-weight:400;line-height:1.45;letter-spacing:1px; }
+.holo-creation-guide > p { color:#9589a6;font-size:11px;line-height:1.9;margin:0 0 19px; }
+.holo-creation-actions { display:flex;flex-wrap:wrap;gap:8px;align-items:center; }
+.holo-creation-guide .holo-primary { min-height:39px;padding:9px 14px;font-size:11px; }
+.holo-creation-guide .holo-creation-secondary { font-size:10px;color:#aa9bc0;padding:7px 4px; }
+.holo-creation-guide .holo-creation-depth { margin-top:13px;padding:7px 0;gap:7px;font-size:11px;color:#b8a3d1; }
+.holo-creation-depth > span { color:#746786;font-size:9px; }
+.holo-creation-fast-note { display:block;margin-top:15px;color:#92859f;font-size:10px;line-height:1.7; }
+.holo-template-layers { display:flex;flex-wrap:wrap;gap:7px 11px;margin:13px 0 15px;color:#b8a2ce;font-size:10px; }
+.holo-template-layers > span { display:inline-flex;gap:4px;align-items:center; }
+.holo-header-actions .holo-help-trigger { padding:6px 8px;gap:6px;color:#b6a7c8;font-size:11px; }
+.is-clean .holo-creation-guide { visibility:hidden!important;pointer-events:none!important; }
+.holo-create-path { padding:15px;border-radius:16px;background:linear-gradient(125deg,#8e74b719,#618b9710);margin-bottom:16px; }
+.holo-create-path > strong { display:block;font-size:13px;color:#e2d5f1;font-weight:500; }
+.holo-create-path > p { font-size:11px;line-height:1.8;color:#a194b2;margin:8px 0 12px; }
+.holo-create-path > button { width:100%;font-size:11px;color:#ddc7f1;background:#a885d318; }
+.holo-create-path > small { display:block;margin-top:10px;color:#8d809d;font-size:10px;line-height:1.7; }
+.holo-generation-summary { margin:12px 0 14px;padding:12px 13px;border-radius:12px;background:#a994d90a;color:#cabbdb;font-size:11px;line-height:1.8; }
+.holo-generation-summary strong { display:block;font-weight:500; }
+.holo-generation-summary span { display:block;font-size:10px;color:#8f819e;margin-top:3px; }
+.holo-generation-unavailable { padding:14px;border-radius:14px;background:#c1906410;color:#cbb6a8;margin:13px 0;font-size:11px;line-height:1.8; }
+.holo-generation-unavailable > strong { display:block;font-size:12px;font-weight:500;color:#e4cebc; }
+.holo-generation-unavailable p { margin:7px 0 10px; }
+.holo-generation-unavailable button { font-size:10px!important;color:#d9c4b3!important;min-height:30px!important;padding:5px 0!important; }
+.holo-inline-error { margin:12px 0;padding:13px;border-radius:13px;background:#ac678110;font-size:11px;line-height:1.8;color:#dec1ca;overflow-wrap:anywhere; }
+.holo-inline-error > p { margin:0; }
+.holo-inline-error-actions { display:flex;gap:8px;flex-wrap:wrap;margin-top:7px; }
+.holo-inline-error-actions button { font-size:10px!important;min-height:31px!important;padding:5px 9px!important;background:#d6b0e210!important; }
+.holo-inline-error details { margin-top:8px;font-size:10px;color:#a98d9c; }
+.holo-inline-error details p { margin:7px 0 0;overflow-wrap:anywhere; }
+.holo-inspection-guide { position:absolute;z-index:4;top:138px;left:50%;transform:translateX(-50%);max-width:calc(100% - 50px);padding:8px 15px;border-radius:12px;background:#201c30e6;color:#d6c6e6;font-size:11px;line-height:1.7;text-align:center;pointer-events:none; }
+.holo-help-layer { position:fixed;inset:0;z-index:2200;display:grid;place-items:center;padding:22px;background:#04060ec2;backdrop-filter:blur(10px); }
+.holo-help-panel { width:min(510px,100%);max-height:calc(100svh - 44px);overflow:auto;overscroll-behavior:contain;padding:26px;border-radius:23px;box-sizing:border-box;background:linear-gradient(140deg,#242036,#121624);color:#d9cde7;box-shadow:0 30px 100px #0007;font-family:Inter,"PingFang SC",sans-serif;outline:none; }
+.holo-help-panel * { box-sizing:border-box; }
+.holo-help-panel header { display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#9988ac; }
+.holo-help-panel button { display:inline-flex;justify-content:center;align-items:center;gap:8px;border:0;border-radius:12px;min-height:35px;padding:8px 12px;cursor:pointer;background:#bca6e20b;color:#ccb5e0;font:inherit;font-size:12px; }
+.holo-help-panel button:focus-visible { outline:2px solid #d9bafa;outline-offset:3px; }
+.holo-help-panel header button { width:32px;padding:6px;background:transparent; }
+.holo-help-panel h2 { margin:20px 0 10px;font-size:24px;font-weight:500;color:#f0e5fc; }
+.holo-help-intro { color:#a797b6;font-size:12px;line-height:1.8; }
+.holo-help-steps { padding:0;margin:25px 0;list-style:none;display:flex;flex-direction:column;gap:20px; }
+.holo-help-steps li { display:flex;gap:15px; }
+.holo-help-steps li > span { padding-top:2px;color:#9480b3;font-size:11px;letter-spacing:1px; }
+.holo-help-steps strong { font-size:13px;font-weight:500; }
+.holo-help-steps p { font-size:11px;line-height:1.8;color:#9e8eae;margin:7px 0 0; }
+.holo-help-depth { display:flex;gap:11px;padding:16px;border-radius:15px;background:#a386c310;color:#bda3d8; }
+.holo-help-depth > svg { flex-shrink:0; }.holo-help-depth strong { font-size:12px;font-weight:500; }
+.holo-help-depth p { font-size:11px;line-height:1.8;margin:8px 0 0;color:#a08caf; }
+.holo-help-panel footer { display:flex;justify-content:flex-end;gap:10px;margin-top:24px; }
+.holo-help-panel .holo-help-start { color:#231d32;background:linear-gradient(115deg,#ddc9f6,#bfcbf3); }
+@media(max-width:1180px) and (min-width:721px) { .holo-creation-guide { left:26px;width:210px;bottom:185px; }.holo-creation-guide h2 { font-size:25px; }.holo-creation-steps { gap:8px; }.holo-creation-guide .holo-creation-secondary { display:none; } }
+@media(max-width:720px) {
+  .holo-creation-guide { left:22px;bottom:178px;width:calc(100% - 80px); }
+  .holo-creation-steps { margin-bottom:8px;gap:14px; }
+  .holo-creation-kicker { font-size:9px; }.holo-creation-guide h2 { margin:5px 0;font-size:20px;max-width:none; }
+  .holo-creation-steps { gap:10px;font-size:9px; }.holo-creation-fast-note { margin-top:5px;font-size:9px; }
+  .holo-creation-guide > p { font-size:10px;margin:0;line-height:1.6;max-width:290px; }
+  .holo-creation-actions { display:none; }.holo-creation-guide .holo-creation-depth { margin-top:4px;min-height:26px;font-size:10px; }
+  .holo-workspace .holo-center { padding-bottom:292px; }
+  .holo-workspace.has-finished-card .holo-center { padding-bottom:190px; }
+  .holo-creation-guide.is-complete { bottom:158px; }
+  .holo-creation-guide.is-complete .holo-creation-steps,.holo-creation-guide.is-complete > p,.holo-creation-guide.is-complete .holo-creation-kicker { display:none; }
+  .holo-creation-guide.is-complete h2 { margin:0;font:500 13px/1.6 Inter,"PingFang SC",sans-serif;color:#c8b8df;letter-spacing:.5px; }
+  .holo-header-actions .holo-help-trigger { font-size:10px;padding:5px 2px;gap:4px; }
+  .holo-inspection-guide { top:113px;font-size:10px; }
+  .holo-help-panel { padding:20px;border-radius:19px; }.holo-help-panel h2 { font-size:22px; }
+}

@@ -52,6 +52,26 @@ func GetSubmissionByTaskID(ctx context.Context, q Q, taskID uuid.UUID) (*Gallery
 	return nilOnNoRows(s, err)
 }
 
+func GetSubmissionsByTaskIDs(ctx context.Context, q Q, taskIDs []uuid.UUID) (map[uuid.UUID]*GallerySubmission, error) {
+	out := make(map[uuid.UUID]*GallerySubmission, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `SELECT `+submissionCols+` FROM gallery_submissions WHERE task_id = ANY($1)`, taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		submission, err := scanSubmission(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[submission.TaskID] = submission
+	}
+	return out, rows.Err()
+}
+
 func DeleteSubmission(ctx context.Context, q Q, id uuid.UUID) error {
 	_, err := q.Exec(ctx, `DELETE FROM gallery_submissions WHERE id = $1`, id)
 	return err
@@ -67,6 +87,28 @@ func CountSubmissionsByUser(ctx context.Context, q Q, userID uuid.UUID) (int64, 
 	var n int64
 	err := q.QueryRow(ctx, `SELECT count(*) FROM gallery_submissions WHERE user_id = $1`, userID).Scan(&n)
 	return n, err
+}
+
+// SubmissionCountsByStatus aggregates all of a user's submissions, independent
+// of the paginated list used by the profile detail tab.
+func SubmissionCountsByStatus(ctx context.Context, q Q, userID uuid.UUID) (map[string]int64, error) {
+	rows, err := q.Query(ctx,
+		`SELECT status, count(*) FROM gallery_submissions WHERE user_id = $1 GROUP BY status`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int64)
+	for rows.Next() {
+		var status string
+		var count int64
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		counts[status] = count
+	}
+	return counts, rows.Err()
 }
 
 // CountSubmissionsByUserSince 用户自 since 起创建的投稿数（每日限额用）。
@@ -109,25 +151,24 @@ func MarkSubmissionRemoved(ctx context.Context, q Q, id uuid.UUID, rejectReason 
 
 // ListGalleryAuthors 创作者聚合（limit+1 行，游标按用户 created_at/id 倒序）。
 func ListGalleryAuthors(ctx context.Context, q Q, search string, limit int, cursor *Cursor) ([]*GalleryAuthor, error) {
+	// 先按用户游标取一页有投稿的用户，再逐个统计投稿数；旧写法先聚合全部投稿再分页，
+	// 成本随投稿总量增长。
 	sql := `SELECT u.id, u.email, u.username, u.avatar_url, u.submission_banned_until, u.created_at,
-			count(*) AS submissions,
-			count(*) FILTER (WHERE s.status = 'approved') AS approved,
-			count(*) FILTER (WHERE s.status = 'removed') AS removed
-		FROM gallery_submissions s
-		JOIN users u ON u.id = s.user_id
-		WHERE true`
+			counts.submissions, counts.approved, counts.removed
+		FROM users u
+		CROSS JOIN LATERAL (
+			SELECT count(*) AS submissions,
+				count(*) FILTER (WHERE s.status = 'approved') AS approved,
+				count(*) FILTER (WHERE s.status = 'removed') AS removed
+			FROM gallery_submissions s WHERE s.user_id = u.id
+		) counts
+		WHERE EXISTS (SELECT 1 FROM gallery_submissions s WHERE s.user_id = u.id)`
 	args := []any{}
 	if search != "" {
-		args = append(args, "%"+search+"%")
-		sql += fmt.Sprintf(` AND (u.email ILIKE $%d OR u.username ILIKE $%d)`, len(args), len(args))
+		args = append(args, literalSearch(search))
+		sql += fmt.Sprintf(` AND (u.email::text ILIKE $%d OR u.username ILIKE $%d)`, len(args), len(args))
 	}
-	if cursor != nil {
-		args = append(args, cursor.CreatedAt, cursor.ID)
-		sql += fmt.Sprintf(` AND (u.created_at < $%d OR (u.created_at = $%d AND u.id < $%d))`, len(args)-1, len(args)-1, len(args))
-	}
-	sql += ` GROUP BY u.id, u.email, u.username, u.avatar_url, u.submission_banned_until, u.created_at`
-	args = append(args, limit+1)
-	sql += fmt.Sprintf(` ORDER BY u.created_at DESC, u.id DESC LIMIT $%d`, len(args))
+	sql, args = appendKeyset(sql, args, "u.created_at", "u.id", cursor, limit)
 
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
@@ -157,6 +198,7 @@ func ReviewSubmission(ctx context.Context, q Q, id uuid.UUID, status string, rej
 // SubmissionFilter 投稿列表可选筛选。
 type SubmissionFilter struct {
 	UserID     *uuid.UUID
+	ViewerID   *uuid.UUID
 	Status     string
 	Featured   *bool
 	CategoryID *uuid.UUID
@@ -169,6 +211,13 @@ func ListSubmissions(ctx context.Context, q Q, f SubmissionFilter, limit int, cu
 	if f.UserID != nil {
 		args = append(args, *f.UserID)
 		sql += fmt.Sprintf(` AND user_id = $%d`, len(args))
+	}
+	if f.ViewerID != nil {
+		args = append(args, *f.ViewerID)
+		sql += fmt.Sprintf(` AND NOT EXISTS (
+			SELECT 1 FROM user_blocks block
+			WHERE block.blocker_user_id = $%d AND block.blocked_user_id = gallery_submissions.user_id
+		)`, len(args))
 	}
 	if f.Status != "" {
 		args = append(args, f.Status)
