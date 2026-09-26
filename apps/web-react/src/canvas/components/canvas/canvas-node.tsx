@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, Minus, Music2, Plus, Puzzle, RefreshCw, Star, Trash2, Video, X } from "lucide-react";
+import { Ban, ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, Minus, Music2, Plus, Puzzle, RefreshCw, Star, Trash2, TriangleAlert, Video, Wallet, X } from "lucide-react";
 import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { RegenerateIcon } from "@react/components/common/RegenerateIcon.jsx";
 
@@ -853,50 +853,70 @@ function isCreditInsufficientError(details?: string) {
 
 function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "node" | "theme" | "onRetry">) {
     const { t } = useTranslation();
-    const errorDetails = node.metadata?.errorDetails || t("canvas.node.failed");
-    const needsRecharge = isCreditInsufficientError(node.metadata?.errorDetails);
+    const rawDetails = String(node.metadata?.errorDetails || "").trim();
+    const needsRecharge = isCreditInsufficientError(rawDetails);
+    const canceled = rawDetails === t("canvas.generation.canceled");
+    const interrupted = rawDetails === t("canvas.generation.interrupted");
+    const stopped = canceled || interrupted;
     const dark = theme.scheme === "dark";
-    const errorText = dark ? "#ff8a8e" : "#b42318";
-    const errorBorder = dark ? "rgba(229,72,77,.38)" : "#f5d0d0";
-    const actionClassName = "inline-flex h-7 items-center gap-1.5 rounded-[8px] border px-3 text-[11px] font-semibold transition-colors";
+    // Stopped runs are neutral, credit problems are amber, real failures are red.
+    const tone = stopped
+        ? { fg: theme.node.muted, well: dark ? "rgba(255,255,255,.06)" : "#f3f1f8", glow: dark ? "rgba(255,255,255,.03)" : "rgba(120,110,160,.07)" }
+        : needsRecharge
+          ? { fg: dark ? "#f5b651" : "#b45309", well: dark ? "rgba(245,165,36,.14)" : "#fff4e6", glow: dark ? "rgba(245,165,36,.08)" : "rgba(245,165,36,.1)" }
+          : { fg: dark ? "#ff8a8e" : "#d92d20", well: dark ? "rgba(229,72,77,.14)" : "#fff1f1", glow: dark ? "rgba(229,72,77,.08)" : "rgba(229,72,77,.08)" };
+    const title = canceled ? t("canvas.node.canceledTitle") : interrupted ? t("canvas.node.interruptedTitle") : needsRecharge ? t("canvas.node.creditTitle") : t("canvas.node.failed");
+    const detail = stopped || rawDetails === title ? "" : rawDetails;
+    const StatusIcon = stopped ? Ban : needsRecharge ? Wallet : TriangleAlert;
+    const primaryClass = "inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-[12px] font-semibold transition hover:brightness-105 active:scale-[.98]";
+    const retryButton = (
+        <button
+            type="button"
+            className={primaryClass}
+            style={
+                needsRecharge
+                    ? { background: theme.node.panel, color: theme.node.text, boxShadow: `inset 0 0 0 1px ${theme.node.stroke}` }
+                    : { background: `linear-gradient(135deg, #9b7bff, ${theme.node.activeStroke})`, color: "#fff", boxShadow: "0 6px 16px rgba(109,92,255,.28)" }
+            }
+            onClick={(event) => {
+                event.stopPropagation();
+                onRetry?.(node);
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+        >
+            <RegenerateIcon className="size-3.5" />
+            {t("canvas.node.regenerate")}
+        </button>
+    );
 
     return (
-        <div className="w-full max-w-[320px] px-3">
-            <div className="rounded-[12px] border p-3 text-left" style={{ background: dark ? "rgba(229,72,77,.1)" : "#fff6f6", borderColor: errorBorder }}>
-                <div className="flex items-start gap-2">
-                    <span className="mt-px grid size-[18px] shrink-0 place-items-center rounded-full text-[11px] font-extrabold text-white" style={{ background: "#e5484d" }}>
-                        !
+        <div className="relative flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center" style={{ background: `radial-gradient(120% 80% at 50% 38%, ${tone.glow}, transparent 70%)` }}>
+            <span className="grid size-11 place-items-center rounded-full" style={{ background: tone.well, color: tone.fg, boxShadow: `0 0 0 6px ${tone.glow}` }}>
+                <StatusIcon className="size-5" strokeWidth={2} />
+            </span>
+            <div className="flex max-w-[260px] flex-col gap-1">
+                <span className="text-[14px] font-semibold" style={{ color: theme.node.text }}>
+                    {title}
+                </span>
+                {detail ? (
+                    <span className="line-clamp-3 text-[12px] leading-5" style={{ color: theme.node.muted }} title={rawDetails}>
+                        {detail}
                     </span>
-                    <span className="line-clamp-4 min-w-0 text-[12px] leading-5" style={{ color: errorText }}>
-                        {errorDetails}
-                    </span>
-                </div>
-                <div className="mt-2.5 flex flex-wrap items-center gap-1.5 pl-[26px]">
-                    {needsRecharge ? (
-                        <a
-                            href="/pricing?plan=topup"
-                            className={actionClassName}
-                            style={{ background: theme.node.activeStroke, borderColor: theme.node.activeStroke, color: "#fff" }}
-                            onClick={(event) => event.stopPropagation()}
-                            onMouseDown={(event) => event.stopPropagation()}
-                        >
-                            {t("canvas.costConfirm.recharge")}
-                        </a>
-                    ) : null}
-                    <button
-                        type="button"
-                        className={actionClassName}
-                        style={{ background: theme.node.panel, borderColor: errorBorder, color: errorText }}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            onRetry?.(node);
-                        }}
+                ) : null}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+                {needsRecharge ? (
+                    <a
+                        href="/pricing?plan=topup"
+                        className={primaryClass}
+                        style={{ background: `linear-gradient(135deg, #9b7bff, ${theme.node.activeStroke})`, color: "#fff", boxShadow: "0 6px 16px rgba(109,92,255,.28)" }}
+                        onClick={(event) => event.stopPropagation()}
                         onMouseDown={(event) => event.stopPropagation()}
                     >
-                        <RegenerateIcon className="size-3.5" />
-                        {t("canvas.node.retry")}
-                    </button>
-                </div>
+                        {t("canvas.costConfirm.recharge")}
+                    </a>
+                ) : null}
+                {retryButton}
             </div>
         </div>
     );
