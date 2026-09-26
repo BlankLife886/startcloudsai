@@ -32,6 +32,7 @@ type CanvasNodeProps = {
     isSelected: boolean;
     isRelated: boolean;
     isFocusRelated: boolean;
+    isDimmed?: boolean;
     isConnectionTarget: boolean;
     isConnecting: boolean;
     isDragging?: boolean;
@@ -127,6 +128,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     isSelected,
     isRelated,
     isFocusRelated,
+    isDimmed = false,
     isConnectionTarget,
     isConnecting,
     isDragging = false,
@@ -367,7 +369,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 width: data.width,
                 height: data.height,
                 overflow: "visible",
-                transition: isDragging ? "none" : "box-shadow 200ms ease",
+                transition: isDragging ? "none" : "box-shadow 200ms ease, opacity 250ms ease",
+                opacity: isDimmed && !hovered ? 0.5 : 1,
                 willChange: isTransient || isDragging ? "transform" : undefined,
             }}
             onMouseEnter={() => {
@@ -400,34 +403,50 @@ export const CanvasNode = React.memo(function CanvasNode({
 
             <div
                 data-canvas-node-shell={data.type}
-                className={isGroup ? "relative h-full w-full overflow-visible rounded-[18px] border-[1.5px] border-dashed" : data.type === CanvasNodeType.Image ? "relative h-full w-full overflow-visible rounded-[18px]" : "relative h-full w-full overflow-visible rounded-[18px] border"}
+                className={isGroup ? "relative h-full w-full overflow-visible rounded-[18px] border-[1.5px] border-dashed" : data.type === CanvasNodeType.Image ? "relative h-full w-full overflow-visible rounded-[16px]" : "relative h-full w-full overflow-visible rounded-[16px] border"}
                 style={{
-                    // Selection decoration must not shrink the image's aspect-correct content box.
+                    // Selection lives in an offset outline so it never shrinks the image's aspect-correct content box.
                     borderWidth: data.type === CanvasNodeType.Image ? 0 : undefined,
-                    outline: data.type === CanvasNodeType.Image ? `1px solid ${isActive ? theme.node.activeStroke : isRelated ? theme.node.muted : hovered ? theme.node.strokeHover : theme.node.stroke}` : undefined,
-                    outlineOffset: data.type === CanvasNodeType.Image ? -1 : undefined,
-                    background: isGroup ? (theme.scheme === "dark" ? "rgba(255,255,255,.025)" : "rgba(255,255,255,.55)") : transparentBg ? "transparent" : theme.node.fill,
-                    borderColor: isConfigCard
-                        ? isSelected || isConnectionTarget ? theme.node.activeStroke : hovered ? theme.node.strokeHover : theme.node.stroke
-                        : isGroup
-                        ? isGroupDropTarget || isActive
-                            ? theme.node.activeStroke
-                            : theme.node.stroke
-                        : isActive
-                          ? theme.node.activeStroke
-                          : isRelated
-                            ? theme.node.muted
-                            : transparentBg
-                              ? "transparent"
-                              : hovered
-                                ? theme.node.strokeHover
-                                : theme.node.stroke,
+                    outline: isGroup
+                        ? undefined
+                        : isConnectionTarget
+                          ? `2px dashed ${CONNECT_TARGET_BLUE}`
+                          : isSelected
+                            ? `2px solid ${theme.node.activeStroke}`
+                            : data.type === CanvasNodeType.Image
+                              ? `1px solid ${hovered ? theme.node.strokeHover : theme.node.stroke}`
+                              : "2px solid transparent",
+                    outlineOffset: isGroup ? undefined : isConnectionTarget ? 4 : isSelected ? 3 : data.type === CanvasNodeType.Image ? -1 : 3,
+                    background: isGroup
+                        ? theme.scheme === "dark"
+                            ? "rgba(255,255,255,.025)"
+                            : "rgba(255,255,255,.55)"
+                        : transparentBg
+                          ? "transparent"
+                          : data.type === CanvasNodeType.Image
+                            ? theme.scheme === "dark"
+                                ? "#24212e"
+                                : "#eeebf5"
+                            : theme.node.fill,
+                    borderColor: isGroup ? (isGroupDropTarget || isSelected ? theme.node.activeStroke : theme.node.stroke) : transparentBg && !hovered ? "transparent" : hovered ? theme.node.strokeHover : theme.node.stroke,
                     borderStyle: isGroup ? "dashed" : "solid",
-                    boxShadow: isGroup && !isActive && !isGroupDropTarget
+                    boxShadow: isDragging
                         ? "none"
-                        : isDragging
-                          ? "none"
-                          : canvasNodeShadow(theme, isGroupDropTarget || isConnectionTarget ? "drop" : isConfigCard ? (isSelected ? "active" : hovered ? "hover" : "idle") : isActive ? "active" : isRelated ? "related" : hovered ? "hover" : "idle"),
+                        : isGroup
+                          ? isGroupDropTarget
+                              ? `0 0 0 4px ${theme.node.activeRing}`
+                              : "none"
+                          : isConnectionTarget
+                            ? "0 0 0 10px rgba(61,123,255,.1), 0 14px 34px rgba(61,123,255,.2)"
+                            : isSelected
+                              ? `0 0 0 8px ${theme.node.activeRing}, 0 14px 34px rgba(109,74,255,.22)`
+                              : hovered
+                                ? theme.scheme === "dark"
+                                    ? "0 18px 40px rgba(0,0,0,.45)"
+                                    : "0 2px 4px rgba(30,20,80,.06), 0 14px 32px rgba(30,20,80,.13)"
+                                : theme.scheme === "dark"
+                                  ? "0 10px 26px rgba(0,0,0,.3)"
+                                  : "0 1px 2px rgba(30,20,80,.05), 0 8px 22px rgba(30,20,80,.08)",
                     transition: isDragging ? "none" : "box-shadow 200ms ease, border-color 200ms ease, outline-color 200ms ease",
                 }}
                 onMouseDown={(event) => onMouseDown(event, data.id)}
@@ -1388,6 +1407,8 @@ function ResizeHandle({ corner, onPointerDown }: { corner: ResizeCorner; onPoint
 
     return <div className={`absolute z-50 size-7 ${positionClass}`} onPointerDown={(event) => onPointerDown(event, corner)} />;
 }
+
+const CONNECT_TARGET_BLUE = "#3d7bff";
 
 function ConnectionHandleDot({ side, visible, active = false, highlight = false, scale = 1, onMouseDown }: { side: "left" | "right"; visible: boolean; active?: boolean; highlight?: boolean; scale?: number; onMouseDown: (event: React.MouseEvent) => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];

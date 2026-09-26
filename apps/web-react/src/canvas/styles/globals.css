@@ -2479,25 +2479,17 @@ body.canvas-tool-dragging * {
 .canvas-edge .canvas-edge__line {
     transition: stroke 0.18s ease, stroke-width 0.18s ease;
 }
-.canvas-edge:not(.is-active):hover .canvas-edge__line {
+.canvas-edge:not(.is-hot):hover .canvas-edge__line {
     stroke: var(--canvas-edge-hover);
     stroke-width: 2px;
 }
-.canvas-edge__flow {
-    animation: canvas-edge-flow 1.1s linear infinite;
-}
-@keyframes canvas-edge-flow {
-    to {
-        stroke-dashoffset: -18.1;
-    }
-}
 @media (prefers-reduced-motion: reduce) {
     .canvas-edge__flow {
-        animation: none;
+        display: none;
     }
 }
 .settings-no-animations .canvas-edge__flow {
-    animation: none !important;
+    display: none !important;
 }
 
 /* Node generation state: a soft shimmer sweep plus an indeterminate progress bar. */

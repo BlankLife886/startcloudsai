@@ -616,6 +616,7 @@ function InfiniteCanvasPage() {
     const selectionBoxRef = useRef(selectionBox);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const connectStartPointRef = useRef<{ x: number; y: number } | null>(null);
+    const connectionFanOutRef = useRef(new Map<string, number>());
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const workflowRunRef = useRef<{ cancelQueued: boolean; lockLost?: boolean; executing?: boolean; stopped?: boolean; currentNodeId?: string; canceledNodeIds: Set<string> }>({ cancelQueued: false, canceledNodeIds: new Set() });
     const workflowExecutionTokenRef = useRef(0);
@@ -1733,6 +1734,17 @@ function InfiniteCanvasPage() {
 
         return { nodeIds, connectionIds };
     }, [activeNodeId, connections]);
+    // Selecting a single node dims everything it is not wired to, so its neighbourhood stands out.
+    const selectionFocusNodeIds = useMemo(() => {
+        if (selectedNodeIds.size !== 1) return null;
+        const focusId = selectedNodeIds.values().next().value as string;
+        const ids = new Set<string>([focusId]);
+        connections.forEach((connection) => {
+            if (connection.fromNodeId === focusId) ids.add(connection.toNodeId);
+            if (connection.toNodeId === focusId) ids.add(connection.fromNodeId);
+        });
+        return ids.size > 1 ? ids : null;
+    }, [connections, selectedNodeIds]);
     const renderedNodes = useMemo(() => {
         const retainedNodeIds = new Set<string>([
             ...viewportNodeIds,
@@ -2440,7 +2452,7 @@ function InfiniteCanvasPage() {
                 const from = nodesByIdRef.current.get(connection.fromNodeId);
                 const to = nodesByIdRef.current.get(connection.toNodeId);
                 if (!from || !to) return;
-                const pathD = canvasConnectionPathD(from, to);
+                const pathD = canvasConnectionPathD(from, to, connectionFanOutRef.current.get(connection.fromNodeId));
                 paths.forEach((path) => path.setAttribute("d", pathD));
             });
         }
@@ -2505,7 +2517,7 @@ function InfiniteCanvasPage() {
                         const from = nodeAtLivePosition(connection.fromNodeId);
                         const to = nodeAtLivePosition(connection.toNodeId);
                         if (!from || !to) return;
-                        const pathD = canvasConnectionPathD(from, to);
+                        const pathD = canvasConnectionPathD(from, to, connectionFanOutRef.current.get(connection.fromNodeId));
                         paths.forEach((path) => path.setAttribute("d", pathD));
                     });
 
@@ -2958,7 +2970,7 @@ function InfiniteCanvasPage() {
                 if (connection.fromNodeId !== node.id && connection.toNodeId !== node.id) continue;
                 const from = connection.fromNodeId === node.id ? resized : nodesByIdRef.current.get(connection.fromNodeId);
                 const to = connection.toNodeId === node.id ? resized : nodesByIdRef.current.get(connection.toNodeId);
-                if (from && to) paths.set(connection.id, canvasConnectionPathD(from, to));
+                if (from && to) paths.set(connection.id, canvasConnectionPathD(from, to, connectionFanOutRef.current.get(connection.fromNodeId)));
             }
             containerRef.current?.querySelectorAll<SVGPathElement>("[data-connection-path]").forEach((path) => {
                 const d = paths.get(path.dataset.connectionPath || "");
@@ -7595,6 +7607,12 @@ function InfiniteCanvasPage() {
         setSelectedNodeIds(new Set());
         setContextMenu({ type: "connection", x: event.clientX, y: event.clientY, connectionId });
     }, []);
+    const connectionFanOut = useMemo(() => {
+        const counts = new Map<string, number>();
+        displayConnections.forEach((connection) => counts.set(connection.fromNodeId, (counts.get(connection.fromNodeId) || 0) + 1));
+        return counts;
+    }, [displayConnections]);
+    connectionFanOutRef.current = connectionFanOut;
     const connectionPathElements = useMemo(
         () =>
             renderedConnections.map((connection) => {
@@ -7609,12 +7627,15 @@ function InfiniteCanvasPage() {
                         to={to}
                         active={selectedConnectionIds.has(connection.id) || relatedHighlight.connectionIds.has(connection.id)}
                         selected={selectedConnectionIds.has(connection.id)}
+                        dimmed={Boolean(selectionFocusNodeIds) && !(selectedNodeIds.has(connection.fromNodeId) || selectedNodeIds.has(connection.toNodeId))}
+                        flowing={runningNodeIds.has(connection.toNodeId)}
+                        fanOut={connectionFanOut.get(connection.fromNodeId) || 1}
                         onSelect={handleConnectionSelect}
                         onContextMenu={handleConnectionContextMenu}
                     />
                 );
             }),
-        [renderedConnections, displayNodeById, handleConnectionContextMenu, handleConnectionSelect, relatedHighlight.connectionIds, selectedConnectionIds],
+        [renderedConnections, displayNodeById, handleConnectionContextMenu, handleConnectionSelect, relatedHighlight.connectionIds, selectedConnectionIds, runningNodeIds, connectionFanOut, selectionFocusNodeIds, selectedNodeIds],
     );
 
     const renderNodePanel = useCallback(
@@ -7801,6 +7822,7 @@ function InfiniteCanvasPage() {
                             isSelected={selectedNodeIds.has(node.id)}
                             isRelated={relatedHighlight.nodeIds.has(node.id)}
                             isFocusRelated={activeNodeId === node.id}
+                            isDimmed={Boolean(selectionFocusNodeIds && !selectionFocusNodeIds.has(node.id) && node.type !== CanvasNodeType.Group)}
                             isConnectionTarget={connectionTargetNodeId === node.id}
                             isConnecting={Boolean(connectingParams)}
                             isDragging={isNodeDragging && dragRef.current.initialPositionsById.has(node.id)}

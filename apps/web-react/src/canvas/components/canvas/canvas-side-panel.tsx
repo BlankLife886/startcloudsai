@@ -61,7 +61,7 @@ const STATUS_COLOR: Record<string, string> = {
     success: "#22c55e",
     loading: "#f59e0b",
     error: "#ef4444",
-    idle: "transparent",
+    idle: "#c7c3d4",
 };
 
 export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes, connections, selectedNodeIds, onFocusNode, onPreviewNode, onRenameNode, onDeleteNodes, onInsertAsset }: Props) {
@@ -139,36 +139,44 @@ export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes,
                 animate={{
                     height: panelOpen ? Math.max(hostHeight, CAPSULE_HEIGHT) : CAPSULE_HEIGHT,
                     width: panelOpen ? width : CAPSULE_WIDTH,
-                    borderRadius: panelOpen ? 22 : 999,
+                    borderRadius: panelOpen ? 20 : 999,
                 }}
                 transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: PANEL_EASE }}
-                style={{ background: theme.toolbar.panel, color: theme.node.text, boxShadow: theme.toolbar.shadow, border: `1px solid ${theme.toolbar.border}`, overflow: "hidden" }}
+                style={{
+                    background: theme.scheme === "dark" ? "rgba(24,22,31,.94)" : "rgba(255,255,255,.9)",
+                    color: theme.node.text,
+                    boxShadow: theme.scheme === "dark" ? "0 16px 40px rgba(0,0,0,.4)" : "0 12px 34px rgba(30,20,80,.08)",
+                    border: `1px solid ${theme.scheme === "dark" ? "rgba(255,255,255,.08)" : "#ebe8f2"}`,
+                    overflow: "hidden",
+                }}
                 data-canvas-no-zoom
                 data-guide="canvas-side-panel"
             >
-                <div className="flex h-11 shrink-0 items-center gap-0.5 px-1.5" style={panelOpen ? { boxShadow: `inset 0 -1px 0 ${theme.toolbar.border}` } : undefined}>
-                    {tabs.map((item) => {
-                        const active = tab === item.id;
-                        return (
-                            <button
-                                key={item.id}
-                                type="button"
-                                className="relative h-8 min-w-0 flex-1 rounded-full px-1 text-xs font-semibold transition-colors duration-200"
-                                style={{ color: active ? theme.toolbar.activeText : theme.toolbar.item }}
-                                onClick={() => openTab(item.id)}
-                            >
-                                {active ? (
-                                    <motion.span
-                                        layoutId="sidePanelTabPill"
-                                        className="absolute inset-0 rounded-full"
-                                        style={{ background: theme.toolbar.activeBg }}
-                                        transition={{ type: "spring", stiffness: 520, damping: 38 }}
-                                    />
-                                ) : null}
-                                <span className="relative z-10 block truncate">{item.label}</span>
-                            </button>
-                        );
-                    })}
+                <div className={cn("flex shrink-0 items-center gap-1", panelOpen ? "pb-1 pl-2.5 pr-1.5 pt-2.5" : "h-11 px-1.5")}>
+                    <div className={cn("flex min-w-0 flex-1 items-center", panelOpen && "rounded-[11px] p-[3px]")} style={panelOpen ? { background: theme.scheme === "dark" ? "rgba(255,255,255,.05)" : "#f3f1f8" } : undefined}>
+                        {tabs.map((item) => {
+                            const active = tab === item.id;
+                            return (
+                                <button
+                                    key={item.id}
+                                    type="button"
+                                    className={cn("relative min-w-0 flex-1 whitespace-nowrap transition-colors duration-200", panelOpen ? "h-7 rounded-[8px] px-0 text-[11.5px]" : "h-8 rounded-full px-1 text-xs")}
+                                    style={{ color: active ? theme.node.text : theme.node.muted, fontWeight: active ? 700 : 500 }}
+                                    onClick={() => openTab(item.id)}
+                                >
+                                    {active ? (
+                                        <motion.span
+                                            layoutId="sidePanelTabPill"
+                                            className={cn("absolute inset-0", panelOpen ? "rounded-[8px]" : "rounded-full")}
+                                            style={{ background: panelOpen ? (theme.scheme === "dark" ? "rgba(255,255,255,.1)" : "#ffffff") : theme.toolbar.activeBg, boxShadow: panelOpen && theme.scheme !== "dark" ? "0 1px 3px rgba(20,16,40,.12)" : undefined }}
+                                            transition={{ type: "spring", stiffness: 520, damping: 38 }}
+                                        />
+                                    ) : null}
+                                    <span className="relative z-10 block truncate">{item.label}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
                     <PanelToggle
                         theme={theme}
                         open={panelOpen}
@@ -368,7 +376,7 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
                                 <div key={group.id}>
                                     <button
                                         type="button"
-                                        className="flex h-8 w-full items-center gap-1.5 rounded-lg px-2 text-left text-[11px] font-semibold transition-colors hover:bg-black/[.04] disabled:cursor-default dark:hover:bg-white/[.05]"
+                                        className="flex h-8 w-full items-center gap-1.5 rounded-[8px] px-2 text-left text-[11px] font-medium transition-colors hover:bg-black/[.03] disabled:cursor-default dark:hover:bg-white/[.05]"
                                         style={{ color: theme.node.muted }}
                                         onClick={() => toggleGroup(group.id)}
                                         disabled={Boolean(keyword.trim())}
@@ -397,14 +405,17 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
                                                         const isChecked = checked.has(node.id);
                                                         const active = selectMode ? isChecked : selectedNodeIds.has(node.id);
                                                         return (
-                                                            <div key={node.id} className="group flex w-full items-center rounded-lg transition-colors duration-150 hover:bg-black/[.04] dark:hover:bg-white/[.05]" style={active ? { ...VIRTUAL_NODE_ROW_STYLE, background: theme.toolbar.activeBg } : VIRTUAL_NODE_ROW_STYLE}>
-                                                                <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
+                                                            <div key={node.id} className="group flex w-full items-center rounded-[10px] transition-colors duration-150 hover:bg-[#f5f3fa] dark:hover:bg-white/[.05]" style={active ? { ...VIRTUAL_NODE_ROW_STYLE, background: theme.scheme === "dark" ? "rgba(139,124,255,.18)" : "#efebff", color: theme.scheme === "dark" ? "#e6e0ff" : "#3b2a9e" } : VIRTUAL_NODE_ROW_STYLE}>
+                                                                <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-1.5 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
                                                                     {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
-                                                                    <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-lg" style={isImage ? { background: theme.node.fill } : CanvasIconWellStyle(nodeTypeColor(node.type))}>
+                                                                    <span className="grid size-[30px] shrink-0 place-items-center overflow-hidden rounded-[8px]" style={isImage ? { background: theme.scheme === "dark" ? "#2a2735" : "#eeebf5" } : CanvasIconWellStyle(nodeTypeColor(node.type))}>
                                                                         {isImage ? <CanvasPreviewImage storageKey={node.metadata?.storageKey} thumbnailUrl={node.metadata?.thumbnailUrl} alt={node.title} maxEdge={160} allowOriginalFallback={false} className="size-full object-cover" /> : Icon ? <Icon className="size-4" /> : registeredIcon || <FileText className="size-4" />}
                                                                     </span>
-                                                                    <span className="min-w-0 max-w-[160px] flex-1 truncate text-[12px] font-medium leading-5">{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
-                                                                    {node.metadata?.status && node.metadata.status !== "idle" ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: STATUS_COLOR[node.metadata.status] || "transparent" }} /> : null}
+                                                                    <span className={cn("min-w-0 max-w-[160px] flex-1 truncate text-[12px] leading-5", active ? "font-semibold" : "font-medium")}>{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
+                                                                    {(() => {
+                                                                        const color = STATUS_COLOR[node.metadata?.status || "idle"] || STATUS_COLOR.idle;
+                                                                        return <span className={cn("size-[7px] shrink-0 rounded-full", node.metadata?.status === "loading" && "animate-pulse")} style={{ background: color, boxShadow: `0 0 0 3px ${color}26` }} />;
+                                                                    })()}
                                                                 </button>
                                                                 {selectMode ? null : (
                                                                     <NodeRowActionsMenu
@@ -434,6 +445,11 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
                     <CanvasEmptyState icon={<Square className="size-5" />} title={t("canvas.sidePanel.noNodes")} hint={t("canvas.sidePanel.noNodesHint")} color={theme.node.muted} />
                 )}
             </div>
+            {!selectMode ? (
+                <div className="mx-3 mb-3 shrink-0 rounded-[12px] px-3 py-2.5 text-[11px] leading-[1.7]" style={{ background: theme.scheme === "dark" ? "rgba(255,255,255,.04)" : "#f6f5fa", color: theme.node.muted }}>
+                    {t("canvas.sidePanel.tips")}
+                </div>
+            ) : null}
             {selectMode ? (
                 <div className="flex items-center gap-2 px-3 py-2.5" style={{ boxShadow: `inset 0 1px 0 ${theme.toolbar.border}` }}>
                     <button type="button" onClick={toggleAll} className="rounded-full px-2.5 py-1 text-[11px] font-medium" style={{ color: theme.node.muted }}>
@@ -721,7 +737,7 @@ function PanelFilterMenu({
 
 function PanelSearch({ value, onChange, placeholder, theme }: { value: string; onChange: (value: string) => void; placeholder: string; theme: CanvasTheme }) {
     return (
-        <label className="flex h-9 items-center gap-2 rounded-xl px-3" style={{ background: theme.toolbar.itemHover }}>
+        <label className="flex h-9 items-center gap-2 rounded-[10px] px-3 transition-shadow focus-within:shadow-[0_0_0_2px_rgba(109,92,255,.25)]" style={{ background: theme.scheme === "dark" ? "rgba(255,255,255,.05)" : "#f6f5fa" }}>
             <Search className="size-3.5 shrink-0" style={{ color: theme.node.faint }} />
             <input
                 value={value}

@@ -12,7 +12,7 @@ export const canvasThemes = {
             line: "rgba(23,21,31,.08)",
             selectionStroke: accent,
             selectionFill: "rgba(109,92,255,.08)",
-            connection: "rgba(137,128,172,.78)",
+            connection: "#9d95b8",
             connectionActive: accent,
         },
         node: {
@@ -53,7 +53,7 @@ export const canvasThemes = {
             line: "rgba(255,255,255,.05)",
             selectionStroke: "#8b7cff",
             selectionFill: "rgba(139,124,255,.16)",
-            connection: "rgba(170,160,215,.55)",
+            connection: "#a99fd0",
             connectionActive: "#a394ff",
         },
         node: {
