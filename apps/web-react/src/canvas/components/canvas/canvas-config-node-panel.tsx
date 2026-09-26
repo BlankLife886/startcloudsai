@@ -2308,3 +2308,234 @@ function audioConfigPatch(key: CanvasAudioSettingKey, value: string) {
   if (key === "audioSpeed") return { audioSpeed: value };
   return { audioInstructions: value };
 }
+
+type CanvasConfigNodeCardProps = Pick<
+  CanvasConfigNodePanelProps,
+  "node" | "isRunning" | "inputs" | "inputSummary" | "onGenerate" | "onStopGeneration" | "onCancelQueued"
+>;
+
+/**
+ * Read-only summary of an executable node shown on the canvas. All editing
+ * happens in the inspector; the card keeps the graph tidy and scannable.
+ */
+export function CanvasConfigNodeCard({
+  node,
+  isRunning,
+  inputs,
+  inputSummary,
+  onGenerate,
+  onStopGeneration,
+  onCancelQueued,
+}: CanvasConfigNodeCardProps) {
+  const { t } = useTranslation();
+  const globalConfig = useEffectiveConfig();
+  const theme = canvasThemes[useThemeStore((state) => state.theme)];
+  const dark = theme.scheme === "dark";
+  const metadata = node.metadata;
+  const isBatch = Boolean(metadata?.storyboardConfig);
+  const localOperation = isCanvasLocalImageOperation(metadata?.localImageOperation) ? metadata?.localImageOperation : undefined;
+  const isAngle = node.type === CanvasOperationNodeType.Angle;
+  const isReverse = node.type === CanvasOperationNodeType.ReversePrompt;
+  const isOperation = Boolean(localOperation) || isAngle || isReverse;
+  const requestedMode = metadata?.generationMode || "image";
+  const mode: CanvasGenerationMode = isReverse ? "text" : isOperation || isBatch ? "image" : isCanvasGenerationModeEnabled(requestedMode) ? requestedMode : "image";
+  const config = buildNodeConfig(globalConfig, node, mode);
+  const modelLabel = localOperation ? "" : config.model ? modelOptionLabel(config, config.model) : t("canvas.configNode.model");
+
+  const queued = isUnsubmittedCanvasGeneration(node);
+  const executionStatus = metadata?.executionStatus;
+  const stage = metadata?.generationStage;
+  const running = !queued && (isRunning || executionStatus === "running" || (isBatch && (stage === "formatting" || stage === "analyzing" || stage === "generating")));
+  const failed = !running && (executionStatus === "failed" || (isBatch && stage === "failed"));
+  const done = !running && !failed && (executionStatus === "succeeded" || (isBatch && stage === "completed"));
+  const elapsedMs = useGenerationElapsed(metadata?.generationStartedAt, metadata?.generationDurationMs, running);
+
+  const typeLabel = isBatch
+    ? t("canvas.storyboard.title")
+    : localOperation
+      ? t(`canvas.imageTools.${localOperation}`)
+      : isAngle
+        ? t("canvas.operationNodes.angle")
+        : isReverse
+          ? t("canvas.operationNodes.reversePrompt")
+          : t("canvas.configNode.title");
+  const Icon = isBatch ? ListOrdered : localOperation === "crop" ? Crop : localOperation === "split" ? Grid2x2 : localOperation ? Maximize2 : isAngle ? SlidersHorizontal : isReverse ? MessageSquare : mode === "video" ? Video : mode === "audio" ? Music2 : mode === "text" ? MessageSquare : ImageIcon;
+
+  const imageCount = mode === "image" && !isOperation && !isBatch ? Math.max(1, Number(metadata?.count) || Number(config.count) || 1) : 0;
+  const paramsLabel = localOperation
+    ? localOperationSummary(localOperation, metadata?.localImageOperationParams, t)
+    : isAngle
+      ? buildAngleLabel(normalizeAngleParams(metadata?.imageAngleParams))
+      : mode === "image"
+        ? [config.size ? imageSizeLabel(config.size, config.resolution) : "", config.quality ? imageQualityLabel(config.quality) : "", imageCount ? t("canvas.configNode.images", { count: imageCount }) : ""].filter(Boolean).join(" · ")
+        : mode === "text"
+          ? ""
+          : settingsSummary(mode, config);
+
+  const prompt = (isBatch ? metadata?.storyboardScript || metadata?.composerContent || metadata?.prompt : metadata?.composerContent ?? metadata?.prompt) || "";
+  const referenceImages = inputs.filter((input) => Boolean(input.image));
+  const inputImage = referenceImages[0]?.image;
+  const batchModeLabel = isBatch
+    ? t(metadata?.batchMode === "variants" ? "canvas.storyboard.batchModeVariants" : metadata?.batchMode === "refs" ? "canvas.storyboard.batchModeRefs" : "canvas.storyboard.batchModeSplit")
+    : "";
+
+  const statusTone = failed
+    ? { bg: dark ? "rgba(229,72,77,.12)" : "#fff1f1", fg: dark ? "#ff8a8e" : "#b42318", dot: "#e5484d", label: t("canvas.node.failed") }
+    : running
+      ? { bg: dark ? "rgba(245,165,36,.14)" : "#fff4e6", fg: dark ? "#f5b651" : "#b45309", dot: "#f5a524", label: canvasGenerationStageLabel(stage, t("canvas.node.generating")) }
+      : queued
+        ? { bg: dark ? "rgba(245,165,36,.14)" : "#fff4e6", fg: dark ? "#f5b651" : "#b45309", dot: "#f5a524", label: t("canvas.configNode.queued") }
+        : done
+          ? { bg: dark ? "rgba(34,197,94,.14)" : "#e9f9ef", fg: dark ? "#4ade80" : "#15803d", dot: "#22c55e", label: t("canvas.storyboard.statusSucceeded") }
+          : { bg: theme.toolbar.itemHover, fg: theme.node.muted, dot: theme.node.faint, label: "" };
+  const idle = !failed && !running && !queued && !done;
+
+  const statusLine = queued
+    ? t("canvas.configNode.queued")
+    : running
+      ? `${canvasGenerationStageLabel(stage, t("canvas.node.generating"))} · ${formatGenerationDuration(elapsedMs)}`
+      : done && metadata?.generationCompletedAt
+        ? t("canvas.configNode.generatedAt", { time: formatGenerationTime(metadata.generationCompletedAt) })
+        : failed
+          ? metadata?.errorDetails || t("canvas.node.failed")
+          : localOperation
+            ? t("canvas.configNode.operationReadyLocal", { operation: typeLabel })
+            : "";
+
+  const cost = !isOperation && !isBatch ? estimateCanvasGenerationCost({ config, kind: mode === "text" ? "text" : "image" }) : null;
+  const canRun = isOperation ? inputSummary.imageCount === 1 : isBatch ? Boolean(prompt.trim() || referenceImages.length) : Boolean(prompt.trim() || inputSummary.textCount || inputSummary.imageCount);
+  const hasPreviousOutput = Boolean(metadata?.workflowOutputNodeIds?.length) || done;
+  const runLabel = localOperation || isAngle || isReverse
+    ? t(hasPreviousOutput ? "canvas.configNode.rerunOperation" : "canvas.configNode.runOperation", { operation: typeLabel })
+    : t(hasPreviousOutput ? "canvas.configNode.regenerate" : "canvas.configNode.generate");
+  const gradient = `linear-gradient(135deg, #9b7bff 0%, ${theme.node.activeStroke} 60%, #3d7bff 100%)`;
+  const soft = dark ? "rgba(255,255,255,.04)" : "#f8f7fb";
+
+  const stop = (event: React.SyntheticEvent) => event.stopPropagation();
+
+  return (
+    <div className="canvas-config-card flex h-full w-full cursor-move flex-col" style={{ color: theme.node.text, background: dark ? theme.node.fill : "#ffffff" }} onWheel={(event) => event.stopPropagation()}>
+      <div className="flex shrink-0 items-center gap-2.5 border-b px-3.5 py-3" style={{ borderColor: dark ? "rgba(255,255,255,.07)" : "#f0eef5" }}>
+        <span
+          className="grid size-8 shrink-0 place-items-center rounded-[10px]"
+          style={localOperation ? { background: theme.toolbar.itemHover, color: theme.node.text } : { background: gradient, color: "#fff", boxShadow: "0 4px 10px rgba(109,92,255,.25)" }}
+        >
+          <Icon className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[13px] font-semibold">{typeLabel}</div>
+          <div className="truncate text-[11px]" style={{ color: theme.node.muted }}>
+            {[modelLabel, isBatch ? batchModeLabel : paramsLabel].filter(Boolean).join(" · ")}
+          </div>
+        </div>
+        {!idle ? (
+          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: statusTone.bg, color: statusTone.fg }}>
+            <span className={`size-1.5 rounded-full ${running || queued ? "animate-pulse" : ""}`} style={{ background: statusTone.dot }} />
+            {statusTone.label}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 px-3.5 py-3">
+        {isOperation && !isReverse ? (
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-[12px]" style={{ background: soft }}>
+            {inputImage ? (
+              <CanvasPreviewImage src={inputImage.dataUrl} storageKey={inputImage.storageKey} alt={typeLabel} maxEdge={480} className="absolute inset-0 size-full object-cover" />
+            ) : (
+              <span className="absolute inset-2 flex flex-col items-center justify-center gap-1 rounded-[10px] border-[1.5px] border-dashed text-[12px] font-medium" style={{ borderColor: dark ? "#3a3647" : "#dcd7e7", color: theme.node.muted }}>
+                <ImageIcon className="size-4 opacity-70" />
+                {t("canvas.configNode.operationInput")}
+              </span>
+            )}
+            {inputImage && paramsLabel ? (
+              <span className="absolute bottom-2 left-2 max-w-[calc(100%-16px)] truncate rounded-[8px] px-2 py-1 text-[11px] font-semibold" style={{ background: "rgba(255,255,255,.92)", color: "#17151f" }}>
+                {paramsLabel}
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            <div className="min-h-0 flex-1 overflow-hidden rounded-[12px] px-3 py-2.5 text-[12px] leading-[1.7]" style={{ background: soft }}>
+              {batchModeLabel ? (
+                <span className="mb-1.5 inline-flex rounded-[6px] px-1.5 py-0.5 text-[10px] font-semibold" style={{ background: dark ? "rgba(255,255,255,.08)" : "#ffffff", color: theme.node.muted, boxShadow: dark ? "none" : "0 0 0 1px #ebe8f2" }}>
+                  {batchModeLabel}
+                </span>
+              ) : null}
+              {prompt.trim() ? (
+                <p className="m-0 line-clamp-[8] whitespace-pre-wrap break-words" style={{ color: theme.node.text }}>
+                  {prompt.trim()}
+                </p>
+              ) : (
+                <p className="m-0" style={{ color: theme.node.faint }}>
+                  {inputSummary.textCount ? t("canvas.configNode.composed") : t("canvas.configNode.emptyInputs")}
+                </p>
+              )}
+            </div>
+            {referenceImages.length || inputSummary.textCount ? (
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="flex -space-x-1.5">
+                  {referenceImages.slice(0, 5).map((input, index) => (
+                    <span key={`${input.nodeId}:${index}`} className="relative grid size-7 overflow-hidden rounded-[8px] border-2" style={{ borderColor: dark ? theme.node.fill : "#ffffff", zIndex: 5 - index }}>
+                      <CanvasPreviewImage src={input.image?.dataUrl} storageKey={input.image?.storageKey} alt={input.title} maxEdge={96} className="size-full object-cover" />
+                    </span>
+                  ))}
+                </span>
+                <span className="truncate text-[11px] tabular-nums" style={{ color: theme.node.muted }}>
+                  {[inputSummary.textCount ? `${inputSummary.textCount} ${t("canvas.configNode.prompt")}` : "", referenceImages.length ? `${referenceImages.length} ${t("canvas.configNode.references")}` : ""].filter(Boolean).join(" · ")}
+                </span>
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
+
+      <div className="shrink-0 px-3.5 pb-3.5">
+        {statusLine ? (
+          <div className="mb-2 truncate text-[11px] tabular-nums" style={{ color: failed ? statusTone.fg : running || queued ? statusTone.fg : theme.node.muted }} title={statusLine}>
+            {statusLine}
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-[11px] text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-45"
+          style={
+            queued
+              ? { background: "#d97706", color: "#fff" }
+              : running
+                ? { background: theme.node.text, color: theme.node.panel }
+                : localOperation
+                  ? { background: theme.toolbar.itemHover, color: theme.node.text, boxShadow: `inset 0 0 0 1px ${theme.node.stroke}` }
+                  : { background: gradient, color: "#fff", boxShadow: canRun ? "0 8px 18px rgba(109,92,255,.26)" : "none" }
+          }
+          disabled={!queued && !running && !canRun}
+          onMouseDown={stop}
+          onPointerDown={stop}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (queued) onCancelQueued(node.id);
+            else if (running) onStopGeneration(node.id);
+            else onGenerate(node.id);
+          }}
+        >
+          {queued ? (
+            <>
+              <X className="size-4" />
+              {t("canvas.configNode.cancelQueued")}
+            </>
+          ) : running ? (
+            <>
+              <Square className="size-3 fill-current" />
+              {t("canvas.configNode.stopWithDuration", { duration: formatGenerationDuration(elapsedMs) })}
+            </>
+          ) : (
+            <>
+              <Play className="size-3.5 fill-current" />
+              {runLabel}
+              {cost && cost.total > 0 ? <span className="font-medium opacity-80">· {cost.total.toLocaleString()} 积分</span> : null}
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}

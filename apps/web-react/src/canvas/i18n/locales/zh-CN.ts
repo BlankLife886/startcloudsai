@@ -400,6 +400,7 @@ export default {
             sectionMedia: "媒体", sectionGenerate: "生成", sectionProcess: "图像处理", sectionOrganize: "组织",
             groupDescription: "把多个节点收进一组",
         },
+        inspector: { text: "文本节点", image: "图片节点", video: "视频节点", audio: "音频节点", config: "生成配置", batch: "批量配置", operation: "图像操作", plugin: "插件节点", node: "节点" },
         node: {
             node: "节点",
             untitled: "未命名节点", renameHint: "双击修改节点名称", group: "组", nodeCount: "{{count}} 个节点", uploading: "正在上传", generating: "生成中", regenerating: "正在重新生成", regeneratingProgress: "正在重新生成 {{completed}}/{{total}}", failed: "生成失败", retry: "重试", missingPlugin: "缺少插件", missingPluginDescription: "节点类型“{{type}}”的插件未安装或未启用", generateImage: "用文本生图", generate: "生图", editText: "双击编辑文字", emptyImage: "空图片节点", emptyVideo: "空视频节点", emptyAudio: "空音频节点", emptyImageHint: "上传图片，或连接生成配置", emptyVideoHint: "上传视频，或连接生成配置", emptyAudioHint: "上传音频，或连接生成配置", audio: "音频", batchExpanded: "图片组已展开", batchCollapsed: "图片组已收起", createCopy: "创建副本", setPrimary: "设为主图",

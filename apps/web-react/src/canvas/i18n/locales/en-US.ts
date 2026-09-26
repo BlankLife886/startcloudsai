@@ -400,6 +400,7 @@ export default {
             sectionMedia: "Media", sectionGenerate: "Generate", sectionProcess: "Image tools", sectionOrganize: "Organize",
             groupDescription: "Group nodes together",
         },
+        inspector: { text: "Text node", image: "Image node", video: "Video node", audio: "Audio node", config: "Generation config", batch: "Batch config", operation: "Image operation", plugin: "Plugin node", node: "Node" },
         node: {
             node: "Node",
             untitled: "Untitled node", renameHint: "Double-click to rename the node", group: "Group", nodeCount: "{{count}} nodes", uploading: "Uploading", generating: "Generating", regenerating: "Regenerating", regeneratingProgress: "Regenerating {{completed}}/{{total}}", failed: "Generation failed", retry: "Retry", missingPlugin: "Plugin missing", missingPluginDescription: "The plugin for node type “{{type}}” is not installed or enabled", generateImage: "Generate image from text", generate: "Generate", editText: "Double-click to edit text", emptyImage: "Empty image node", emptyVideo: "Empty video node", emptyAudio: "Empty audio node", emptyImageHint: "Upload an image or connect a generator", emptyVideoHint: "Upload a video or connect a generator", emptyAudioHint: "Upload audio or connect a generator", audio: "Audio", batchExpanded: "Image group expanded", batchCollapsed: "Image group collapsed", createCopy: "Create copy", setPrimary: "Set as primary",
