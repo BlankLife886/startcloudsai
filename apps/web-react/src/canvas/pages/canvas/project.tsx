@@ -4132,45 +4132,66 @@ function InfiniteCanvasPage() {
                     const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : isImageNode ? CanvasNodeType.Image : CanvasNodeType.Text];
                     const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
                     const parentPosition = sourceNode?.position || { x: 0, y: 0 };
-                    const reusableRoot = isConfigNode ? findWorkflowOutputNodes(nodeId, CanvasNodeType.Image, nodesRef.current, connectionsRef.current)[0] : undefined;
-                    const rootId = isEmptyImageNode ? nodeId : reusableRoot?.id || nanoid();
-                    const isNewRoot = !isEmptyImageNode && !reusableRoot;
+                    // Every generated image gets its own node in a column beside the producer instead of a stacked batch,
+                    // so each result can be moved, downloaded and wired downstream on its own. Filling an existing empty
+                    // image node keeps all results inside that node.
+                    const reusableRoots = isConfigNode ? findWorkflowOutputNodes(nodeId, CanvasNodeType.Image, nodesRef.current, connectionsRef.current) : [];
                     const imageIds = Array.from({ length: count }, () => nanoid());
-                    pendingChildIds = [rootId];
-                    const rootNode: CanvasNodeData = {
-                        id: rootId,
-                        type: CanvasNodeType.Image,
-                        title: reusableRoot?.title || effectivePrompt.slice(0, 32) || "Generated Image",
-                        position: reusableRoot?.position || {
-                            x: isEmptyImageNode ? parentPosition.x : parentPosition.x + parentConfig.width + 96,
-                            y: parentPosition.y + parentConfig.height / 2 - imageConfig.height / 2,
-                        },
-                        width: reusableRoot?.width || (isEmptyImageNode ? sourceNode?.width || imageConfig.width : imageConfig.width),
-                        height: reusableRoot?.height || (isEmptyImageNode ? sourceNode?.height || imageConfig.height : imageConfig.height),
-                        metadata: {
-                            prompt: effectivePrompt,
-                            status: NODE_STATUS_LOADING,
-                            images: imageIds.map((id) => ({ id, status: NODE_STATUS_LOADING, content: "", storageKey: "", naturalWidth: 0, naturalHeight: 0, bytes: 0, mimeType: "" })),
-                            ...(isConfigNode ? { workflowProducerNodeId: nodeId } : {}),
-                            ...generationMetadata,
-                            generationStartedAt: nodesRef.current.find((item) => item.id === nodeId)?.metadata?.generationStartedAt || new Date().toISOString(),
-                            generationCompletedAt: undefined,
-                            generationDurationMs: undefined,
-                            taskId: undefined,
-                            taskKind: undefined,
-                            generationStage: "preparing",
-                            cancelPolicy: undefined,
-                        },
-                    };
+                    const outputs = isEmptyImageNode
+                        ? [{ id: nodeId, imageIds, reusable: undefined as CanvasNodeData | undefined }]
+                        : imageIds.map((imageId, index) => ({ id: reusableRoots[index]?.id || nanoid(), imageIds: [imageId], reusable: reusableRoots[index] as CanvasNodeData | undefined }));
+                    const outputIds = outputs.map((output) => output.id);
+                    const outputIdByImageId = new Map(outputs.flatMap((output) => output.imageIds.map((imageId) => [imageId, output.id] as const)));
+                    const freshOutputIds = outputs.filter((output) => !output.reusable && output.id !== nodeId).map((output) => output.id);
+                    pendingChildIds = outputIds;
+                    const OUTPUT_GAP = 40;
+                    const outputSize = nodeSizeFromRatio(generationConfig.size, imageConfig.width, imageConfig.height) || imageConfig;
+                    const parentWidth = sourceNode?.width || parentConfig.width;
+                    const parentCenterY = parentPosition.y + (sourceNode?.height || parentConfig.height) / 2;
+                    const columnX = parentPosition.x + parentWidth + 96;
+                    const columnCenterX = columnX + outputSize.width / 2;
+                    const columnHeight = count * outputSize.height + (count - 1) * OUTPUT_GAP;
+                    const startedAt = nodesRef.current.find((item) => item.id === nodeId)?.metadata?.generationStartedAt || new Date().toISOString();
+                    const outputNodes: CanvasNodeData[] = [];
+                    outputs.forEach((output, index) => {
+                        const previous = outputNodes[index - 1];
+                        const baseTitle = effectivePrompt.slice(0, 32) || "Generated Image";
+                        outputNodes.push({
+                            id: output.id,
+                            type: CanvasNodeType.Image,
+                            title: output.reusable?.title || (outputs.length > 1 ? `${baseTitle} · ${index + 1}` : baseTitle),
+                            position: output.reusable?.position || (isEmptyImageNode ? parentPosition : previous ? { x: previous.position.x, y: previous.position.y + previous.height + OUTPUT_GAP } : { x: columnX, y: parentCenterY - columnHeight / 2 }),
+                            width: output.reusable?.width || (isEmptyImageNode ? sourceNode?.width || imageConfig.width : outputSize.width),
+                            height: output.reusable?.height || (isEmptyImageNode ? sourceNode?.height || imageConfig.height : outputSize.height),
+                            metadata: {
+                                prompt: effectivePrompt,
+                                status: NODE_STATUS_LOADING,
+                                images: output.imageIds.map((id) => ({ id, status: NODE_STATUS_LOADING, content: "", storageKey: "", naturalWidth: 0, naturalHeight: 0, bytes: 0, mimeType: "" })),
+                                ...(isConfigNode ? { workflowProducerNodeId: nodeId } : {}),
+                                ...generationMetadata,
+                                ...(output.imageIds.length === 1 ? { primaryImageId: output.imageIds[0] } : {}),
+                                generationStartedAt: startedAt,
+                                generationCompletedAt: undefined,
+                                generationDurationMs: undefined,
+                                taskId: undefined,
+                                taskKind: undefined,
+                                generationStage: "preparing",
+                                cancelPolicy: undefined,
+                            },
+                        });
+                    });
+                    const outputNodeById = new Map(outputNodes.map((node) => [node.id, node]));
+                    const rootNode = outputNodes[0];
 
                     setNodes((prev) => {
                         const next = prev.map((node) => {
-                            if (node.id === rootId && reusableRoot) return { ...node, ...rootNode, metadata: { ...node.metadata, ...rootNode.metadata, errorDetails: undefined } };
+                            const reused = outputNodeById.get(node.id);
+                            if (reused && node.id !== nodeId) return { ...node, ...reused, metadata: { ...node.metadata, ...reused.metadata, errorDetails: undefined } };
                             if (node.id !== nodeId) return node;
                             if (isConfigNode)
                                 return {
                                     ...node,
-                                    metadata: { ...node.metadata, workflowOutputNodeIds: [rootId], status: NODE_STATUS_LOADING, errorDetails: undefined },
+                                    metadata: { ...node.metadata, workflowOutputNodeIds: outputIds, status: NODE_STATUS_LOADING, errorDetails: undefined },
                                 };
                             if (isEmptyImageNode)
                                 return {
@@ -4191,72 +4212,102 @@ function InfiniteCanvasPage() {
                                 metadata: { ...node.metadata, content: prompt, prompt, status: NODE_STATUS_SUCCESS, fontSize: 14, errorDetails: undefined },
                             };
                         });
-                        return isNewRoot ? [...next, rootNode] : next;
+                        return [...next, ...outputNodes.filter((node) => freshOutputIds.includes(node.id))];
                     });
                     if (!isEmptyImageNode)
-                        setConnections((prev) =>
-                            prev.some((connection) => connection.fromNodeId === nodeId && connection.toNodeId === rootId) ? prev : [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: rootId }],
-                        );
+                        setConnections((prev) => {
+                            const missing = outputIds.filter((id) => !prev.some((connection) => connection.fromNodeId === nodeId && connection.toNodeId === id));
+                            return missing.length ? [...prev, ...missing.map((id) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: id }))] : prev;
+                        });
                     setSelectedNodeIds(new Set([nodeId]));
                     setSelectedConnectionId(null);
                     setDialogNodeId(nodeId);
 
-                    const controller = rootId === nodeId ? runController : startGenerationRequest(rootId, nodeId, nodeId, runController);
+                    // Loaded images can change a node's height; keep a freshly created column evenly spaced around the
+                    // producer as long as the user has not dragged its nodes elsewhere.
+                    const restackFreshOutputs = () => {
+                        if (freshOutputIds.length < 2 || freshOutputIds.length !== outputIds.length) return;
+                        setNodes((prev) => {
+                            const column = freshOutputIds.map((id) => prev.find((node) => node.id === id));
+                            if (column.some((node) => !node || Math.abs(node.position.x + node.width / 2 - columnCenterX) > 1)) return prev;
+                            let y = parentCenterY - (column.reduce((sum, node) => sum + node!.height, 0) + (column.length - 1) * OUTPUT_GAP) / 2;
+                            const nextY = new Map<string, number>();
+                            column.forEach((node) => {
+                                nextY.set(node!.id, y);
+                                y += node!.height + OUTPUT_GAP;
+                            });
+                            if (column.every((node) => Math.abs(node!.position.y - nextY.get(node!.id)!) < 0.5)) return prev;
+                            return prev.map((node) => (nextY.has(node.id) ? { ...node, position: { ...node.position, y: nextY.get(node.id)! } } : node));
+                        });
+                    };
+
+                    const controllers = new Map(outputIds.map((id) => [id, id === nodeId ? runController : startGenerationRequest(id, nodeId, nodeId, runController)]));
+                    const controller = runController;
+                    const succeededOutputIds = new Set<string>();
+                    const outputErrors = new Map<string, string>();
                     let hasSuccess = false;
                     let hasFailure = false;
                     let firstError = "";
                     const applyPreview = async (imageId: string, image: { dataUrl: string; storageKey?: string }) => {
                         const uploaded = await adoptGeneratedImage(image);
                         if (controller.signal.aborted) return uploaded;
-                        setNodes((prev) => prev.map((node) => (node.id === rootId ? applyUploadedImageToNode(node, uploaded, imageId) : node)));
+                        const outputId = outputIdByImageId.get(imageId);
+                        setNodes((prev) => prev.map((node) => (node.id === outputId ? applyUploadedImageToNode(node, uploaded, imageId) : node)));
+                        restackFreshOutputs();
                         return uploaded;
                     };
                     await Promise.all(
                         imageIds.map(async (imageId, imageIndex) => {
+                            const outputId = outputIdByImageId.get(imageId)!;
                             try {
                                 const requestOptions = {
-                                    signal: controller.signal,
-                                    onCreated: (taskId: string) => persistCanvasTaskId(rootId, taskId, imageId, "image", { workflowRunId }),
+                                    signal: controllers.get(outputId)!.signal,
+                                    onCreated: (taskId: string) => persistCanvasTaskId(outputId, taskId, imageId, "image", { workflowRunId }),
                                     onResolved: async (items: Array<{ dataUrl: string; storageKey?: string }>) => {
                                         if (items[0]?.dataUrl || items[0]?.storageKey) await applyPreview(imageId, items[0]);
                                     },
                                     idempotencyKey: taskIdempotencyKey(imageIndex),
-                                    onBeforeCreate: guardSubmit(rootId),
+                                    onBeforeCreate: guardSubmit(outputId),
                                 };
                                 const image = referenceImages.length
                                     ? await requestEdit({ ...generationConfig, count: "1" }, effectivePrompt, referenceImages, undefined, requestOptions).then((items) => items[0])
                                     : await requestGeneration({ ...generationConfig, count: "1" }, effectivePrompt, requestOptions).then((items) => items[0]);
                                 await applyPreview(imageId, image);
                                 hasSuccess = true;
+                                succeededOutputIds.add(outputId);
                                 if (isConfigNode) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)));
                                 return true;
                             } catch (error) {
                                 if (isGenerationCanceled(error)) return false;
                                 const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
                                 if (!firstError) firstError = errorDetails;
+                                if (!outputErrors.has(outputId)) outputErrors.set(outputId, errorDetails);
                                 hasFailure = true;
-                                setNodes((prev) => prev.map((node) => (node.id === rootId ? { ...node, metadata: { ...node.metadata, images: node.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails } : image)) } } : node)));
+                                setNodes((prev) => prev.map((node) => (node.id === outputId ? { ...node, metadata: { ...node.metadata, images: node.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails } : image)) } } : node)));
                             }
                             return false;
                         }),
                     );
-                    if (rootId !== nodeId) finishGenerationRequest(rootId, controller);
+                    controllers.forEach((outputController, id) => {
+                        if (id !== nodeId) finishGenerationRequest(id, outputController);
+                    });
                     if (controller.signal.aborted) {
-                        if (!leavingCanvasPageRef.current) finalizeCanceledGenerationNodes(new Set([rootId, nodeId]));
+                        if (!leavingCanvasPageRef.current) finalizeCanceledGenerationNodes(new Set([...outputIds, nodeId]));
                         return false;
                     }
                     if (hasFailure && hasSuccess) {
                         message.error(t("canvas.projectPage.partialFailed"));
                     }
                     setNodes((prev) =>
-                        prev.map((node) =>
-                            node.id === nodeId && isConfigNode
-                                ? { ...node, metadata: { ...node.metadata, status: hasSuccess ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: hasSuccess ? undefined : firstError || t("canvas.projectPage.generationFailed") } }
-                                : node.id === rootId
-                                  ? { ...node, metadata: { ...node.metadata, status: hasSuccess ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: hasSuccess ? undefined : firstError || t("canvas.projectPage.allFailed") } }
-                                    : node,
-                        ),
+                        prev.map((node) => {
+                            if (node.id === nodeId && isConfigNode)
+                                return { ...node, metadata: { ...node.metadata, status: hasSuccess ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: hasSuccess ? undefined : firstError || t("canvas.projectPage.generationFailed") } };
+                            if (!outputNodeById.has(node.id)) return node;
+                            const ok = succeededOutputIds.has(node.id);
+                            return { ...node, metadata: { ...node.metadata, status: ok ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: ok ? undefined : outputErrors.get(node.id) || firstError || t("canvas.projectPage.allFailed") } };
+                        }),
                     );
+                    restackFreshOutputs();
                     return hasSuccess;
                 }
 
