@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Code2, ExternalLink, Eye, FilePenLine, LayoutTemplate, Maximize2, Monitor, RefreshCw, RotateCw, Smartphone, Sparkles, Square, Tablet, X } from "lucide-react";
+import { Code2, ExternalLink, Eye, FilePenLine, LayoutTemplate, Maximize2, Monitor, RefreshCw, RotateCw, Smartphone, Sparkles, Square, Tablet, Undo2, X } from "lucide-react";
 
 import { CanvasTextModelTools, useCanvasTextModelSelection } from "@/components/canvas/canvas-node-prompt-panel";
 import { getCanvasPortalRoot } from "@/lib/canvas-portal";
@@ -425,6 +425,16 @@ function extractHtml(text: string) {
     return start > 0 ? source.slice(start) : source;
 }
 
+/** Only a whole document counts: a refusal or explanation that merely mentions tags must never replace the page. */
+function isCompleteHtml(html: string) {
+    return /^\s*(<!doctype html|<html)/i.test(html) && /<\/html>\s*$/i.test(html) && /<body[\s>]/i.test(html);
+}
+
+/** Drops comments and indentation so larger pages still fit in one request. */
+function compactHtml(html: string) {
+    return html.replace(/<!--[\s\S]*?-->/g, "").replace(/\n[ \t]+/g, "\n").replace(/[ \t]{2,}/g, " ").trim();
+}
+
 function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => void }) {
     const hasSite = Boolean(ctx.node.metadata?.content);
     const [prompt, setPrompt] = useState("");
@@ -438,25 +448,36 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
         const request = prompt.trim();
         if (!request || running) return;
         setError("");
-        const controller = new AbortController();
-        controllerRef.current = controller;
-        const current = ctx.node.metadata?.content || "";
+        const current = compactHtml(ctx.node.metadata?.content || "");
         const upstream = ctx
             .getUpstream()
             .map((node) => node.metadata?.content)
             .filter((content): content is string => typeof content === "string" && Boolean(content.trim()) && !content.startsWith("data:"))
             .join("\n\n");
-        const message = [
-            hasSite ? `这是当前网站的完整源码：\n${current}\n\n请在此基础上修改，并输出修改后的完整 HTML：${request}` : `请制作这个网站：${request}`,
-            upstream ? `\n参考资料（来自上游节点）：\n${upstream}` : "",
-            `\n用户当前主要在「${DEVICES[device].label}」尺寸上预览。`,
-        ].join("");
+        const task = hasSite ? `这是当前网站的完整源码：\n${current}\n\n请在此基础上修改，并输出修改后的完整 HTML：${request}` : `请制作这个网站：${request}`;
+        const device_hint = `\n用户当前主要在「${DEVICES[device].label}」尺寸上预览。`;
+        // The whole request must fit in one message; the page source is never cut, reference text gives way first.
+        const limit = await ctx.ai.textInputLimit();
+        const overhead = SITE_SYSTEM_PROMPT.length + task.length + device_hint.length + 64;
+        if (overhead > limit) {
+            setError(`当前网站源码约 ${current.length.toLocaleString()} 字，加上指令超过了 AI 单次可处理的 ${limit.toLocaleString()} 字上限，无法整体修改。可以让管理员在后台调高「助手消息长度上限」（最高 100,000），或清空后重新生成一个更精简的网站。`);
+            return;
+        }
+        const room = limit - overhead - 20;
+        const reference = upstream && room > 200 ? `\n参考资料（来自上游节点）：\n${upstream.length > room ? `${upstream.slice(0, room)}…` : upstream}` : "";
+        const message = `${task}${reference}${device_hint}`;
+
+        const controller = new AbortController();
+        controllerRef.current = controller;
         ctx.updateMetadata({ status: "loading", editing: false });
         try {
             const result = await ctx.ai.generateText(message, { system: SITE_SYSTEM_PROMPT, model, reasoningEffort, signal: controller.signal });
             const html = extractHtml(result.text);
-            if (!/<(html|body|div|section|main)[\s>]/i.test(html)) throw new Error("模型没有返回有效的 HTML，请换个描述或模型再试");
-            ctx.updateMetadata({ content: html, status: "success", interactive: true, htmlPrompt: request });
+            if (!isCompleteHtml(html)) {
+                const said = result.text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 140);
+                throw new Error(`模型没有返回完整的网页，原网页未改动。${said ? `模型回复：「${said}${result.text.length > 140 ? "…" : ""}」` : ""}`);
+            }
+            ctx.updateMetadata({ content: html, status: "success", interactive: true, htmlPrompt: request, ...(hasSite ? { htmlPreviousContent: ctx.node.metadata?.content } : {}) });
             setPrompt("");
         } catch (cause) {
             ctx.updateMetadata({ status: hasSite ? "success" : undefined });
@@ -594,6 +615,9 @@ export const htmlCanvasPlugin: CanvasPlugin = {
                         active: editing,
                         onClick: () => ctx.updateMetadata({ editing: !editing }),
                     },
+                    ...(ctx.node.metadata?.htmlPreviousContent
+                        ? [{ id: "html-previous", title: "切换到 AI 修改前的版本（再点一次切回）", label: "上一版", icon: <Undo2 className="size-4" />, onClick: () => ctx.updateMetadata({ content: ctx.node.metadata?.htmlPreviousContent, htmlPreviousContent: ctx.node.metadata?.content }) }]
+                        : []),
                     ...(hasContent ? [{ id: "html-open", title: "在新标签页打开", label: "新窗口", icon: <ExternalLink className="size-4" />, onClick: () => openInNewTab(renderHtml(ctx)) }] : []),
                 ];
             },

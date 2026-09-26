@@ -108,6 +108,7 @@ export type CanvasNodeMetadata = {
     htmlDevice?: "desktop" | "tablet" | "phone"; // HTML plugin: device frame the page is previewed in.
     htmlLandscape?: boolean;
     htmlPrompt?: string; // HTML plugin: last AI request that produced the page.
+    htmlPreviousContent?: string; // HTML plugin: the page before the last AI edit, for one-step rollback.
     pluginColor?: string;
     taskId?: string;
     taskKind?: "image" | "assistant";

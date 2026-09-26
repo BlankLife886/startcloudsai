@@ -456,6 +456,32 @@ export async function requestCanvasImages(config: AiConfig, prompt: string, refe
     return images;
 }
 
+const DEFAULT_ASSISTANT_PROMPT_LIMIT = 12_000;
+
+/** Per-message character limit the server enforces on assistant runs (admin setting "assistant_message_max_chars"). */
+export async function canvasAssistantPromptLimit() {
+    try {
+        const { fetchRuntimeConfig } = await import("@react/legacy-modules/services/runtimeConfig.js");
+        const limit = Number((await fetchRuntimeConfig())?.promptInputLimits?.assistantMessageMaxChars);
+        return Number.isFinite(limit) && limit >= 100 ? limit : DEFAULT_ASSISTANT_PROMPT_LIMIT;
+    } catch {
+        return DEFAULT_ASSISTANT_PROMPT_LIMIT;
+    }
+}
+
+// Over-long conversations keep their most recent text, but a leading system message is always kept whole: cutting from
+// the front used to drop the instructions and the start of long inputs (e.g. a page's source) without any warning.
+function fitAssistantPrompt(messages: Array<{ role: string; content: unknown }>, limit: number) {
+    const full = flattenMessages(messages);
+    if (full.length <= limit) return full;
+    if (messages[0]?.role === "system") {
+        const head = flattenMessages(messages.slice(0, 1));
+        const room = limit - head.length - 2;
+        if (room > 200) return `${head}\n\n${flattenMessages(messages.slice(1)).slice(-room)}`;
+    }
+    return full.slice(-limit);
+}
+
 function flattenMessages(messages: Array<{ role: string; content: unknown }>) {
     return messages
         .map((message) => {
@@ -526,7 +552,7 @@ export async function waitForCanvasAssistantRun(runId: string, onDelta: (text: s
 }
 
 export async function requestCanvasAssistant(messages: Array<{ role: string; content: unknown }>, onDelta: (text: string) => void, options?: CanvasAssistantTaskOptions, model = "", reasoningEffort = "") {
-    const prompt = flattenMessages(messages).slice(-12_000);
+    const prompt = fitAssistantPrompt(messages, await canvasAssistantPromptLimit());
     const referenceImages = collectMessageReferenceImages(messages);
     const idempotencyKey = options?.idempotencyKey || crypto.randomUUID();
     const conversationKey = options?.idempotencyKey ? `startclouds:canvas-assistant-request:${encodeURIComponent(idempotencyKey)}` : "";
