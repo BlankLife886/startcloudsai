@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "../src/canvas/components/canvas/nodes/bundled/contracts.ts";
 import { applyHtmlPatches, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
+import { htmlImageTokens, isHtmlFrameMessage, withHtmlBridge } from "../src/canvas/components/canvas/nodes/bundled/html-node-runtime.ts";
 
 const canvasSource = new URL("../src/canvas/", import.meta.url);
 const readCanvasSource = async (path) => readFile(new URL(path, canvasSource), "utf8");
@@ -176,4 +177,18 @@ test("HTML node continues pages cut off by the output cap and stitches the parts
     assert.match(merged, /<p>hi<\/p><\/section><\/body><\/html>$/);
     assert.equal(isTruncatedHtml(merged), false);
     assert.equal(isTruncatedHtml("好的，已经为你生成"), false, "a non-page reply is not treated as a truncated page");
+});
+
+test("HTML node bridge sits on the <head> line so reported error lines match the source", () => {
+    const page = "<!doctype html><html><head><title>x</title></head>\n<body><p>hi</p></body></html>";
+    const bridged = withHtmlBridge(page);
+    assert.equal(bridged.split("\n").length, page.split("\n").length, "the bridge adds no lines");
+    assert.match(bridged, /<head><script>.*__htmlNode.*<\/script><title>/s);
+    assert.ok(isHtmlFrameMessage({ __htmlNode: 1, type: "error", message: "x" }));
+    assert.ok(!isHtmlFrameMessage({ type: "error" }), "messages without the marker are ignored");
+});
+
+test("HTML node pages reference canvas images by token", () => {
+    const page = `<img src="sc-file:uploads/u1/original/a.png"><div style="background:url(sc-node:image-123)"></div><img src="sc-file:uploads/u1/original/a.png">`;
+    assert.deepEqual(htmlImageTokens(page), ["sc-file:uploads/u1/original/a.png", "sc-node:image-123"]);
 });

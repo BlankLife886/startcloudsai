@@ -22,6 +22,8 @@ export type GenerateTextOptions = {
     onDelta?: (text: string) => void;
     /** Called with the whole answer so far while the model is still writing. */
     onPartial?: (textSoFar: string) => void;
+    /** Images the model should look at (data: URLs or canvas image URLs), at most four. */
+    images?: string[];
 };
 export type GenerateTextResult = { text: string };
 export type PluginModelCapability = "image" | "video" | "text" | "audio";

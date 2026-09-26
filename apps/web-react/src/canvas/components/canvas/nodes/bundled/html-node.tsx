@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Code2, ExternalLink, Eye, FilePenLine, LayoutTemplate, Maximize2, Monitor, RefreshCw, RotateCw, Smartphone, Sparkles, Square, Tablet, Undo2, X } from "lucide-react";
+import { Camera, Code2, Columns3, Download, ExternalLink, Eye, FilePenLine, History, LayoutTemplate, Maximize2, Monitor, MousePointerClick, RefreshCw, RotateCw, Share2, Smartphone, Sparkles, Square, Tablet, TriangleAlert, X } from "lucide-react";
 
 import { CanvasTextModelTools, useCanvasTextModelSelection } from "@/components/canvas/canvas-node-prompt-panel";
 import { getCanvasPortalRoot } from "@/lib/canvas-portal";
@@ -8,6 +8,7 @@ import type { CanvasNodeContext, CanvasPlugin } from "@/types/canvas-plugin";
 
 import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "./contracts";
 import { applyHtmlPatches, HTML_CONTINUE_SYSTEM_PROMPT, HTML_EDIT_SYSTEM_PROMPT, htmlContinuationPrompt, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "./html-node-edit";
+import { canvasImageToken, isHtmlFrameMessage, postToHtmlFrame, resolveHtmlImages, withHtmlBridge, type HtmlFrameError, type HtmlFramePick, type HtmlFrameMessage } from "./html-node-runtime";
 import { HTML_DEMO_SITE } from "./html-node-template";
 
 const EDITOR_FONT_SIZE = 12;
@@ -83,30 +84,28 @@ function renderHtml(ctx: CanvasNodeContext) {
 // Frames
 // ---------------------------------------------------------------------------------------------------------------
 
-// Keeps links and forms inside the frame: anything aimed at the top/parent window opens in a new tab instead of
-// navigating the canvas away.
-const FRAME_GUARD = `<script>(()=>{const fix=(el)=>{const t=(el.getAttribute("target")||"").toLowerCase();if(t==="_top"||t==="_parent")el.setAttribute("target","_blank")};document.addEventListener("click",(e)=>{const a=e.target&&e.target.closest&&e.target.closest("a[target]");if(a)fix(a)},true);document.addEventListener("submit",(e)=>{if(e.target&&e.target.getAttribute)fix(e.target)},true)})()<\/script>`;
-const DATA_URL_LIMIT = 1_500_000;
-
-function withFrameGuard(html: string) {
-    return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (head) => `${head}${FRAME_GUARD}`) : `${FRAME_GUARD}${html}`;
-}
+// Chrome's navigation URL cap is 2 MB; larger pages (e.g. many inlined images) fall back to a sandboxed srcdoc.
+const DATA_URL_LIMIT = 1_900_000;
+type FrameRef = (frame: HTMLIFrameElement | null) => void;
 
 // The page loads from a data: URL without a sandbox attribute. It still gets an opaque origin (no access to the canvas's
 // DOM, cookies or storage), but unlike a sandboxed srcdoc it stays in the canvas's renderer process: Chrome isolates
 // sandboxed frames into their own process, and such a frame under a CSS scale stops repainting after its content changes,
-// so clicking around inside the preview left it blank. Very large pages fall back to the sandboxed srcdoc.
-function PageFrame({ html, viewport, scale, interactive, reloadKey, title }: { html: string; viewport: { width: number; height: number }; scale: number; interactive: boolean; reloadKey: number; title: string }) {
+// so clicking around inside the preview left it blank. The injected bridge (html-node-runtime) guards links and talks to
+// the canvas through postMessage.
+function PageFrame({ html, viewport, scale, interactive, reloadKey, title, frameRef, onLoad }: { html: string; viewport: { width: number; height: number }; scale: number; interactive: boolean; reloadKey: number; title: string; frameRef?: FrameRef; onLoad?: () => void }) {
     const source = useMemo(() => {
-        const guarded = withFrameGuard(html);
-        const url = `data:text/html;charset=utf-8,${encodeURIComponent(guarded)}`;
-        return url.length <= DATA_URL_LIMIT ? { src: url } : { srcDoc: guarded, sandbox: "allow-scripts allow-forms allow-modals allow-popups" };
+        const bridged = withHtmlBridge(html);
+        const url = `data:text/html;charset=utf-8,${encodeURIComponent(bridged)}`;
+        return url.length <= DATA_URL_LIMIT ? { src: url } : { srcDoc: bridged, sandbox: "allow-scripts allow-forms allow-modals allow-popups" };
     }, [html]);
     return (
         <iframe
             key={reloadKey}
+            ref={frameRef}
             title={title}
             {...source}
+            onLoad={onLoad}
             className="absolute left-0 top-0 block border-0 bg-white"
             style={{ width: viewport.width, height: viewport.height, transform: `scale(${scale})`, transformOrigin: "0 0", pointerEvents: interactive ? "auto" : "none" }}
         />
@@ -129,7 +128,7 @@ function StatusBar({ device, scale, dark }: { device: HtmlDevice; scale: number;
 }
 
 /** Draws one device (browser window, iPad or iPhone) at an exact outer size, with the page scaled inside. */
-function DeviceFrame({ device, landscape, width, height, html, address, interactive, reloadKey, dark, children }: { device: HtmlDevice; landscape: boolean; width: number; height: number; html: string; address: string; interactive: boolean; reloadKey: number; dark: boolean; children?: ReactNode }) {
+function DeviceFrame({ device, landscape, width, height, html, address, interactive, reloadKey, dark, children, frameRef, onFrameLoad }: { device: HtmlDevice; landscape: boolean; width: number; height: number; html: string; address: string; interactive: boolean; reloadKey: number; dark: boolean; children?: ReactNode; frameRef?: FrameRef; onFrameLoad?: () => void }) {
     const spec = DEVICES[device];
     const viewport = deviceViewport(device, landscape);
 
@@ -150,7 +149,7 @@ function DeviceFrame({ device, landscape, width, height, html, address, interact
                     </div>
                 </div>
                 <div className="relative min-h-0 flex-1 overflow-hidden" style={{ background: "#fff" }}>
-                    {children ?? <PageFrame html={html} viewport={{ width: viewport.width, height: bodyHeight / scale }} scale={scale} interactive={interactive} reloadKey={reloadKey} title={address} />}
+                    {children ?? <PageFrame html={html} viewport={{ width: viewport.width, height: bodyHeight / scale }} scale={scale} interactive={interactive} reloadKey={reloadKey} title={address} frameRef={frameRef} onLoad={onFrameLoad} />}
                 </div>
             </div>
         );
@@ -180,7 +179,7 @@ function DeviceFrame({ device, landscape, width, height, html, address, interact
                     <>
                         <StatusBar device={device} scale={scale} />
                         <div className="absolute inset-x-0 bottom-0 overflow-hidden" style={{ top: statusHeight }}>
-                            <PageFrame html={html} viewport={{ width: viewport.width, height: (screenHeight - statusHeight) / scale }} scale={scale} interactive={interactive} reloadKey={reloadKey} title={address} />
+                            <PageFrame html={html} viewport={{ width: viewport.width, height: (screenHeight - statusHeight) / scale }} scale={scale} interactive={interactive} reloadKey={reloadKey} title={address} frameRef={frameRef} onLoad={onFrameLoad} />
                         </div>
                     </>
                 )}
@@ -226,7 +225,71 @@ function HtmlEditor({ ctx, value }: { ctx: CanvasNodeContext; value: string }) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Full-screen preview: the page at real size on a chosen device, fully interactive.
+// Per-node runtime state that is not saved with the canvas: errors reported by the page, elements picked for the next
+// AI edit, and a prefilled request. Shared between the node and its AI panel through the canvas event bus.
+// ---------------------------------------------------------------------------------------------------------------
+
+const RUNTIME_EVENT = "html:runtime";
+type NodeRuntime = { errors: HtmlFrameError[]; picks: HtmlFramePick[]; prefill: string };
+const runtimes = new Map<string, NodeRuntime>();
+
+function runtimeOf(nodeId: string) {
+    let runtime = runtimes.get(nodeId);
+    if (!runtime) {
+        runtime = { errors: [], picks: [], prefill: "" };
+        runtimes.set(nodeId, runtime);
+    }
+    return runtime;
+}
+
+function updateRuntime(ctx: CanvasNodeContext, nodeId: string, change: (runtime: NodeRuntime) => void) {
+    change(runtimeOf(nodeId));
+    ctx.emit(RUNTIME_EVENT, nodeId);
+}
+
+function useNodeRuntime(ctx: CanvasNodeContext) {
+    const [, rerender] = useReducer((value: number) => value + 1, 0);
+    const nodeId = ctx.node.id;
+    const onRef = useRef(ctx.on);
+    onRef.current = ctx.on;
+    useEffect(() => onRef.current(RUNTIME_EVENT, (payload) => payload === nodeId && rerender()), [nodeId]);
+    return runtimeOf(nodeId);
+}
+
+/** The page with canvas images inlined (they cannot be loaded from inside the sandboxed page). */
+function useResolvedHtml(html: string, ctx: CanvasNodeContext) {
+    const hasImages = /sc-(file|node):/.test(html);
+    const [resolved, setResolved] = useState<{ source: string; html: string } | null>(null);
+    const getNodeRef = useRef(ctx.getNode);
+    getNodeRef.current = ctx.getNode;
+    useEffect(() => {
+        if (!hasImages) return;
+        let alive = true;
+        void resolveHtmlImages(html, (id) => getNodeRef.current(id)).then((value) => alive && setResolved({ source: html, html: value }));
+        return () => {
+            alive = false;
+        };
+    }, [html, hasImages]);
+    if (!hasImages) return html;
+    return resolved?.source === html ? resolved.html : resolved?.html || html;
+}
+
+function htmlFileName(address: string) {
+    const base = address.replace(/\.html?$/i, "").replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "") || "index";
+    return `${base}.html`;
+}
+
+function downloadHtml(html: string, address: string) {
+    const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = htmlFileName(address);
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Full-screen preview: the page at real size on a chosen device (or all three side by side), fully interactive.
 // ---------------------------------------------------------------------------------------------------------------
 
 function useWindowSize() {
@@ -250,8 +313,22 @@ function openInNewTab(html: string) {
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
+type PreviewMode = HtmlDevice | "compare";
+
+/** Largest frame of a device that fits the given box (never above real size for tablets and phones). */
+function fitDevice(device: HtmlDevice, landscape: boolean, maxWidth: number, maxHeight: number) {
+    if (device === "desktop") {
+        const width = Math.min(1440, maxWidth);
+        return { width, height: Math.min(maxHeight, frameSizeForWidth("desktop", false, width).height + 200) };
+    }
+    const viewport = deviceViewport(device, landscape);
+    const natural = frameSizeForWidth(device, landscape, viewport.width / (1 - DEVICES[device].bezel * 2));
+    const fit = Math.min(1, maxWidth / natural.width, maxHeight / natural.height);
+    return frameSizeForWidth(device, landscape, natural.width * fit);
+}
+
 function HtmlPreviewOverlay({ ctx, html, address, onClose }: { ctx: CanvasNodeContext; html: string; address: string; onClose: () => void }) {
-    const [device, setDevice] = useState<HtmlDevice>(readDevice(ctx));
+    const [mode, setMode] = useState<PreviewMode>(readDevice(ctx));
     const [landscape, setLandscape] = useState(Boolean(ctx.node.metadata?.htmlLandscape));
     const [reloadKey, setReloadKey] = useState(0);
     const windowSize = useWindowSize();
@@ -267,16 +344,17 @@ function HtmlPreviewOverlay({ ctx, html, address, onClose }: { ctx: CanvasNodeCo
 
     const availableWidth = windowSize.width - 64;
     const availableHeight = windowSize.height - 120;
-    const frame = (() => {
-        if (device === "desktop") return { width: Math.min(1440, availableWidth), height: availableHeight };
-        const viewport = deviceViewport(device, landscape);
-        // Real device size (1 CSS px = 1 screen px) when it fits, otherwise scaled down to fit.
-        const natural = frameSizeForWidth(device, landscape, viewport.width / (1 - DEVICES[device].bezel * 2));
-        const fit = Math.min(1, availableWidth / natural.width, availableHeight / natural.height);
-        return frameSizeForWidth(device, landscape, natural.width * fit);
-    })();
+    const barButton = (active: boolean): CSSProperties => ({ display: "inline-flex", alignItems: "center", gap: 6, height: 32, padding: "0 12px", borderRadius: 9, fontSize: 13, fontWeight: 600, color: active ? "#17151f" : "rgba(255,255,255,.78)", background: active ? "#fff" : "transparent", transition: "background .15s,color .15s", whiteSpace: "nowrap" });
 
-    const barButton = (active: boolean): CSSProperties => ({ display: "inline-flex", alignItems: "center", gap: 6, height: 32, padding: "0 12px", borderRadius: 9, fontSize: 13, fontWeight: 600, color: active ? "#17151f" : "rgba(255,255,255,.78)", background: active ? "#fff" : "transparent", transition: "background .15s,color .15s" });
+    // Compare: the three devices side by side at one shared scale, so their real proportions stay comparable.
+    const compare = (() => {
+        if (mode !== "compare") return null;
+        const gap = 36;
+        const naturals = DEVICE_ORDER.map((device) => (device === "desktop" ? { width: 1280, height: 800 + BROWSER_CHROME } : frameSizeForWidth(device, false, DEVICES[device].viewport.width / (1 - DEVICES[device].bezel * 2))));
+        const scale = Math.min(1, (availableWidth - gap * 2) / naturals.reduce((sum, size) => sum + size.width, 0), availableHeight / Math.max(...naturals.map((size) => size.height)));
+        return naturals.map((size) => ({ width: Math.round(size.width * scale), height: Math.round(size.height * scale) }));
+    })();
+    const single = mode !== "compare" ? fitDevice(mode, landscape, availableWidth, availableHeight) : null;
 
     return createPortal(
         <div data-canvas-shortcuts-ignore="true" data-canvas-no-zoom="true" className="fixed inset-0 flex flex-col items-center" style={{ zIndex: 5000, pointerEvents: "auto", background: "rgba(14,11,26,.72)", backdropFilter: "blur(14px)" }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
@@ -284,14 +362,18 @@ function HtmlPreviewOverlay({ ctx, html, address, onClose }: { ctx: CanvasNodeCo
                 <div className="min-w-0 flex-1 truncate text-[14px] font-semibold text-white/90">{address}</div>
                 <div className="flex items-center gap-1 rounded-xl p-1" style={{ background: "rgba(255,255,255,.1)" }}>
                     {DEVICE_ORDER.map((item) => (
-                        <button key={item} type="button" style={barButton(device === item)} onClick={() => setDevice(item)}>
+                        <button key={item} type="button" style={barButton(mode === item)} onClick={() => setMode(item)}>
                             {DEVICES[item].icon("size-4")}
                             {DEVICES[item].label}
                         </button>
                     ))}
+                    <button type="button" title="三种设备并排对比" style={barButton(mode === "compare")} onClick={() => setMode("compare")}>
+                        <Columns3 className="size-4" />
+                        对比
+                    </button>
                 </div>
                 <div className="flex flex-1 items-center justify-end gap-1">
-                    {device !== "desktop" ? (
+                    {mode === "tablet" || mode === "phone" ? (
                         <button type="button" title="横竖屏" style={barButton(false)} onClick={() => setLandscape((value) => !value)}>
                             <RotateCw className="size-4" />
                             旋转
@@ -299,22 +381,98 @@ function HtmlPreviewOverlay({ ctx, html, address, onClose }: { ctx: CanvasNodeCo
                     ) : null}
                     <button type="button" title="重新加载页面" style={barButton(false)} onClick={() => setReloadKey((value) => value + 1)}>
                         <RefreshCw className="size-4" />
-                        刷新
+                    </button>
+                    <button type="button" title="下载 .html 文件（图片已内嵌，可离线打开）" style={barButton(false)} onClick={() => downloadHtml(html, address)}>
+                        <Download className="size-4" />
+                        下载
                     </button>
                     <button type="button" title="在新标签页打开" style={barButton(false)} onClick={() => openInNewTab(html)}>
                         <ExternalLink className="size-4" />
-                        新窗口
                     </button>
+                    <HtmlShareButton ctx={ctx} html={html} address={address} style={barButton(false)} />
                     <button type="button" title="关闭 (Esc)" className="ml-1 grid size-8 place-items-center rounded-full" style={{ background: "rgba(255,255,255,.14)", color: "#fff" }} onClick={onClose}>
                         <X className="size-4" />
                     </button>
                 </div>
             </div>
-            <div className="flex min-h-0 w-full flex-1 items-center justify-center pb-8" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-                <DeviceFrame device={device} landscape={landscape} width={frame.width} height={frame.height} html={html} address={address} interactive reloadKey={reloadKey} dark={dark} />
+            <div className="flex min-h-0 w-full flex-1 items-center justify-center gap-9 pb-8" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+                {compare
+                    ? DEVICE_ORDER.map((device, index) => (
+                          <div key={device} className="flex flex-col items-center gap-3">
+                              <DeviceFrame device={device} landscape={false} width={compare[index].width} height={compare[index].height} html={html} address={address} interactive reloadKey={reloadKey} dark={dark} />
+                              <span className="text-[12px] font-medium text-white/70">
+                                  {DEVICES[device].label} · {DEVICES[device].viewport.width}px
+                              </span>
+                          </div>
+                      ))
+                    : single && mode !== "compare" ? <DeviceFrame device={mode} landscape={landscape} width={single.width} height={single.height} html={html} address={address} interactive reloadKey={reloadKey} dark={dark} /> : null}
             </div>
         </div>,
         getCanvasPortalRoot(),
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Share link: publishes the page (images inlined) to a public, read-only URL that anyone can open.
+// ---------------------------------------------------------------------------------------------------------------
+
+function HtmlShareButton({ ctx, html, address, style }: { ctx: CanvasNodeContext; html: string; address: string; style: CSSProperties }) {
+    const [state, setState] = useState<{ status: "idle" | "busy" | "done" | "error"; url?: string; message?: string }>({ status: "idle" });
+    const shared = ctx.node.metadata?.htmlShare;
+    const share = async () => {
+        setState({ status: "busy" });
+        try {
+            const { publishHtmlShare } = await import("@/services/html-share-api");
+            const result = await publishHtmlShare({ html, title: address, shareId: shared?.id });
+            ctx.updateMetadata({ htmlShare: { id: result.id, url: result.url, at: new Date().toISOString() } });
+            await navigator.clipboard?.writeText(result.url).catch(() => undefined);
+            setState({ status: "done", url: result.url });
+        } catch (error) {
+            setState({ status: "error", message: error instanceof Error ? error.message : "发布失败" });
+        }
+    };
+    const revoke = async () => {
+        if (!shared) return;
+        try {
+            const { revokeHtmlShare } = await import("@/services/html-share-api");
+            await revokeHtmlShare(shared.id);
+        } catch {
+            // Already gone on the server: forget it locally anyway.
+        }
+        ctx.updateMetadata({ htmlShare: undefined });
+        setState({ status: "idle" });
+    };
+    return (
+        <div className="relative">
+            <button type="button" title={shared ? "更新分享链接的内容" : "发布为公开链接，任何人都能打开"} style={style} disabled={state.status === "busy"} onClick={() => void share()}>
+                <Share2 className="size-4" />
+                {state.status === "busy" ? "发布中…" : shared ? "更新分享" : "分享"}
+            </button>
+            {state.status === "done" || state.status === "error" ? (
+                <div className="absolute right-0 top-10 w-[320px] rounded-xl p-3 text-[12px] shadow-2xl" style={{ background: "#fff", color: "#17151f" }}>
+                    {state.status === "done" ? (
+                        <>
+                            <div className="mb-1.5 font-semibold">链接已复制，任何人都可以打开</div>
+                            <a href={state.url} target="_blank" rel="noreferrer" className="block truncate text-[#6d4aff] underline">
+                                {state.url}
+                            </a>
+                        </>
+                    ) : (
+                        <div className="text-[#e5484d]">{state.message}</div>
+                    )}
+                    <div className="mt-2 flex items-center gap-3">
+                        <button type="button" className="text-[#8a8599]" onClick={() => setState({ status: "idle" })}>
+                            关闭
+                        </button>
+                        {state.status === "done" && ctx.node.metadata?.htmlShare ? (
+                            <button type="button" className="text-[#e5484d]" onClick={() => void revoke()}>
+                                撤销链接
+                            </button>
+                        ) : null}
+                    </div>
+                </div>
+            ) : null}
+        </div>
     );
 }
 
@@ -323,7 +481,8 @@ function HtmlPreviewOverlay({ ctx, html, address, onClose }: { ctx: CanvasNodeCo
 // ---------------------------------------------------------------------------------------------------------------
 
 const PREVIEW_EVENT = "html:preview";
-const RELOAD_EVENT = "html:reload";
+const PICK_EVENT = "html:pick";
+const CAPTURE_EVENT = "html:capture";
 /** Live answer text from the AI panel to the node while it is being written (kept out of node metadata/autosave). */
 const PARTIAL_EVENT = "html:partial";
 type HtmlPartial = { nodeId: string; text: string; phase: string };
@@ -348,35 +507,40 @@ function HtmlGenerating({ ctx, partial }: { ctx: CanvasNodeContext; partial: Htm
                 <div className="h-[34%] min-h-8 rounded-xl" style={{ background: "linear-gradient(120deg, #9b7bff, #3d7bff)", opacity: 0.35 }} />
                 <div className="h-2.5 w-[70%] rounded-full" style={{ background: ctx.theme.node.stroke }} />
                 <div className="h-2.5 w-[46%] rounded-full" style={{ background: ctx.theme.node.stroke }} />
-                <div className="mt-auto flex items-center gap-2 text-[12px] font-medium" style={{ color: ctx.theme.node.activeStroke }}>
-                    <Sparkles className="size-3.5 animate-pulse" />
-                    {partial?.phase || "AI 正在构思网站…"}
-                </div>
             </div>
         );
     }
     // Code as it is being written, until there is enough of a page to render.
     return (
-        <div ref={scrollRef} className="h-full w-full overflow-hidden px-4 pb-10 pt-3" style={{ background: "#16141f", color: "#c9c3e6", fontFamily: "monospace", fontSize: 11, lineHeight: "17px", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+        <div ref={scrollRef} className="h-full w-full overflow-hidden px-4 pb-12 pt-3" style={{ background: "#16141f", color: "#c9c3e6", fontFamily: "monospace", fontSize: 11, lineHeight: "17px", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
             {partial.text.slice(-6000)}
             <span className="inline-block h-3 w-1.5 animate-pulse align-middle" style={{ background: "#8b6cff" }} />
         </div>
     );
 }
 
-function HtmlProgressBar({ ctx, partial }: { ctx: CanvasNodeContext; partial: HtmlPartial | null }) {
+function StatusPill({ ctx, children, tone = "neutral", onClick, className = "" }: { ctx: CanvasNodeContext; children: ReactNode; tone?: "neutral" | "danger" | "accent"; onClick?: () => void; className?: string }) {
+    const dark = ctx.theme.scheme === "dark";
+    const color = tone === "danger" ? "#e5484d" : tone === "accent" ? ctx.theme.node.activeStroke : ctx.theme.node.text;
+    const Tag = onClick ? "button" : "div";
     return (
-        <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] font-medium shadow-lg" style={{ background: ctx.theme.scheme === "dark" ? "rgba(28,26,36,.94)" : "rgba(255,255,255,.95)", color: ctx.theme.node.text, border: `1px solid ${ctx.theme.node.stroke}` }}>
-            <Sparkles className="size-3.5 shrink-0 animate-pulse" style={{ color: ctx.theme.node.activeStroke }} />
-            <span className="min-w-0 flex-1 truncate">{partial?.phase || "AI 正在搭建网站…"}</span>
-            {partial?.text ? <span className="shrink-0 tabular-nums" style={{ color: ctx.theme.node.placeholder }}>{partial.text.length.toLocaleString()} 字</span> : null}
-        </div>
+        <Tag
+            type={onClick ? "button" : undefined}
+            className={`absolute z-10 flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] font-medium shadow-lg ${onClick ? "pointer-events-auto transition hover:brightness-95" : "pointer-events-none"} ${className}`}
+            style={{ background: dark ? "rgba(28,26,36,.94)" : "rgba(255,255,255,.96)", color, border: `1px solid ${tone === "danger" ? "rgba(229,72,77,.35)" : ctx.theme.node.stroke}` }}
+            onMouseDown={onClick ? (event: React.MouseEvent) => event.stopPropagation() : undefined}
+            onPointerDown={onClick ? (event: React.PointerEvent) => event.stopPropagation() : undefined}
+            onClick={onClick}
+        >
+            {children}
+        </Tag>
     );
 }
 
 function HtmlEmpty({ ctx }: { ctx: CanvasNodeContext }) {
     const line = ctx.theme.scheme === "dark" ? "rgba(255,255,255,.08)" : "#eeecf4";
     const action = "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-semibold transition hover:opacity-90";
+    const images = ctx.getUpstream().filter((node) => node.type === "image" && (node.metadata?.content || node.metadata?.storageKey)).length;
     return (
         <div className="flex h-full w-full flex-col gap-3 p-5" style={{ background: ctx.theme.node.fill }}>
             <div className="h-[34%] min-h-8 rounded-xl" style={{ background: "linear-gradient(120deg, #9b7bff, #3d7bff)", opacity: 0.9 }} />
@@ -385,7 +549,7 @@ function HtmlEmpty({ ctx }: { ctx: CanvasNodeContext }) {
             <div className="mt-auto flex flex-wrap items-center gap-2" data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
                 <button type="button" className={action} style={{ background: "linear-gradient(135deg,#8b6cff,#3d7bff)", color: "#fff" }} onClick={() => ctx.openPanel()}>
                     <Sparkles className="size-3.5" />
-                    AI 生成网站
+                    {images ? `用 ${images} 张图生成网站` : "AI 生成网站"}
                 </button>
                 <button type="button" className={action} style={{ background: ctx.theme.toolbar.activeBg, color: ctx.theme.toolbar.activeText }} onClick={() => ctx.updateMetadata({ content: HTML_DEMO_SITE, interactive: true })}>
                     <LayoutTemplate className="size-3.5" />
@@ -402,7 +566,7 @@ function HtmlEmpty({ ctx }: { ctx: CanvasNodeContext }) {
 
 function HtmlContent({ ctx }: { ctx: CanvasNodeContext }) {
     const value = ctx.node.metadata?.content || "";
-    const html = renderHtml(ctx);
+    const html = useResolvedHtml(renderHtml(ctx), ctx);
     const editing = Boolean(ctx.node.metadata?.editing);
     const generating = ctx.node.metadata?.status === "loading";
     const device = readDevice(ctx);
@@ -410,20 +574,114 @@ function HtmlContent({ ctx }: { ctx: CanvasNodeContext }) {
     const address = useMemo(() => htmlAddress(value, ctx.node.title), [value, ctx.node.title]);
     const [previewOpen, setPreviewOpen] = useState(false);
     const [reloadKey, setReloadKey] = useState(0);
+    const [picking, setPicking] = useState(false);
+    const [notice, setNotice] = useState<{ text: string; tone: "neutral" | "danger" | "accent" } | null>(null);
     const dark = ctx.theme.scheme === "dark";
     const nodeId = ctx.node.id;
-    const onRef = useRef(ctx.on);
-    onRef.current = ctx.on;
+    const runtime = useNodeRuntime(ctx);
+    const ctxRef = useRef(ctx);
+    ctxRef.current = ctx;
+    const frameRef = useRef<HTMLIFrameElement | null>(null);
+    const pickingRef = useRef(picking);
+    pickingRef.current = picking;
+    const captures = useRef(new Map<string, (message: Extract<HtmlFrameMessage, { type: "capture" }>) => void>());
 
     const [partial, setPartial] = useState<HtmlPartial | null>(null);
     // The live page is re-rendered at most about once a second; every render reloads the frame.
     const [livePage, setLivePage] = useState("");
     const liveAtRef = useRef(0);
 
+    const flash = (text: string, tone: "neutral" | "danger" | "accent" = "neutral", ms = 2600) => {
+        setNotice({ text, tone });
+        if (ms) window.setTimeout(() => setNotice((current) => (current?.text === text ? null : current)), ms);
+    };
+
+    // Messages from this node's page only (each node checks the sender is its own frame).
     useEffect(() => {
-        const offPreview = onRef.current(PREVIEW_EVENT, (payload) => payload === nodeId && setPreviewOpen(true));
-        const offReload = onRef.current(RELOAD_EVENT, (payload) => payload === nodeId && setReloadKey((key) => key + 1));
-        const offPartial = onRef.current(PARTIAL_EVENT, (payload) => {
+        const onMessage = (event: MessageEvent) => {
+            if (!isHtmlFrameMessage(event.data) || !frameRef.current || event.source !== frameRef.current.contentWindow) return;
+            const message = event.data;
+            const current = ctxRef.current;
+            if (message.type === "error") {
+                updateRuntime(current, nodeId, (state) => {
+                    if (state.errors.some((item) => item.message === message.message) || state.errors.length >= 20) return;
+                    state.errors = [...state.errors, { message: message.message, line: message.line }];
+                });
+            } else if (message.type === "pick") {
+                setPicking(false);
+                updateRuntime(current, nodeId, (state) => {
+                    state.picks = [...state.picks.filter((item) => item.html !== message.pick.html), message.pick].slice(-3);
+                });
+                current.openPanel();
+            } else if (message.type === "pick-cancel") {
+                setPicking(false);
+            } else if (message.type === "capture") {
+                captures.current.get(message.id)?.(message);
+            }
+        };
+        window.addEventListener("message", onMessage);
+        return () => window.removeEventListener("message", onMessage);
+    }, [nodeId]);
+
+    // A new page (or a reload) starts with a clean error list.
+    useEffect(() => {
+        if (runtimeOf(nodeId).errors.length) updateRuntime(ctxRef.current, nodeId, (state) => (state.errors = []));
+    }, [html, reloadKey, nodeId]);
+
+    useEffect(() => {
+        postToHtmlFrame(frameRef.current, { type: "pick-mode", on: picking });
+    }, [picking]);
+
+    const capture = async () => {
+        const frame = frameRef.current;
+        if (!frame || !value) return;
+        flash("正在截图…", "accent", 0);
+        try {
+            const id = Math.random().toString(36).slice(2);
+            const shot = await new Promise<Extract<HtmlFrameMessage, { type: "capture" }>>((resolve, reject) => {
+                const timer = window.setTimeout(() => reject(new Error("截图超时")), 25_000);
+                captures.current.set(id, (message) => {
+                    window.clearTimeout(timer);
+                    resolve(message);
+                });
+                postToHtmlFrame(frame, { type: "capture", id });
+            }).finally(() => undefined);
+            if (!shot.dataUrl) throw new Error(shot.error || "截图失败");
+            const { uploadImage } = await import("@/services/image-storage");
+            const uploaded = await uploadImage(shot.dataUrl);
+            const current = ctxRef.current;
+            const width = 360;
+            const height = Math.round((width * (shot.height || 1)) / (shot.width || 1));
+            const imageId = `html-shot-${Math.random().toString(36).slice(2, 10)}`;
+            current.applyOps([
+                {
+                    type: "add_node",
+                    id: imageId,
+                    nodeType: "image",
+                    title: `${address.replace(/\.html?$/i, "")} · ${DEVICES[device].label}截图`,
+                    x: current.node.position.x + current.node.width + 96,
+                    y: current.node.position.y,
+                    width,
+                    height,
+                    metadata: { content: uploaded.url, storageKey: uploaded.storageKey, thumbnailUrl: uploaded.thumbnailUrl, thumbnailKey: uploaded.thumbnailKey, naturalWidth: uploaded.width, naturalHeight: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType, status: "success" },
+                },
+                { type: "connect_nodes", fromNodeId: current.node.id, toNodeId: imageId },
+            ]);
+            flash("截图已放到右侧的图片节点", "accent");
+        } catch (error) {
+            flash(error instanceof Error ? error.message : "截图失败", "danger", 4000);
+        } finally {
+            captures.current.clear();
+        }
+    };
+    const captureRef = useRef(capture);
+    captureRef.current = capture;
+
+    useEffect(() => {
+        const offPreview = ctxRef.current.on(PREVIEW_EVENT, (payload) => payload === nodeId && setPreviewOpen(true));
+        const offPick = ctxRef.current.on(PICK_EVENT, (payload) => payload === nodeId && setPicking((value) => !value));
+        const offCapture = ctxRef.current.on(CAPTURE_EVENT, (payload) => payload === nodeId && void captureRef.current());
+        const offPartial = ctxRef.current.on(PARTIAL_EVENT, (payload) => {
             const next = payload as HtmlPartial;
             if (next?.nodeId !== nodeId) return;
             setPartial(next);
@@ -436,7 +694,8 @@ function HtmlContent({ ctx }: { ctx: CanvasNodeContext }) {
         });
         return () => {
             offPreview();
-            offReload();
+            offPick();
+            offCapture();
             offPartial();
         };
     }, [nodeId]);
@@ -448,30 +707,74 @@ function HtmlContent({ ctx }: { ctx: CanvasNodeContext }) {
         liveAtRef.current = 0;
     }, [generating]);
 
-    // Content interaction is owned by the host toggle (metadata.interactive); the empty state and editor are always live.
-    const interactive = Boolean(ctx.node.metadata?.interactive);
+    const fixErrors = () => {
+        const list = runtime.errors.map((item, index) => `${index + 1}. ${item.message}${item.line ? `（第 ${item.line} 行附近）` : ""}`).join("\n");
+        updateRuntime(ctx, nodeId, (state) => (state.prefill = `修复页面运行时的这些报错，并保持现有功能不变：\n${list}`));
+        ctx.openPanel();
+    };
+
+    // Content interaction is owned by the host toggle (metadata.interactive); picking needs the page live as well.
+    const interactive = (Boolean(ctx.node.metadata?.interactive) || picking) && !generating;
     const showLive = generating && Boolean(livePage);
     const body = editing ? <HtmlEditor ctx={ctx} value={value} /> : generating ? (showLive ? null : <HtmlGenerating ctx={ctx} partial={partial} />) : !value ? <HtmlEmpty ctx={ctx} /> : null;
+    const errorCount = runtime.errors.length;
 
     return (
         <div className="relative h-full w-full" style={{ borderRadius: "inherit" }}>
-            <DeviceFrame device={device} landscape={landscape} width={ctx.node.width} height={ctx.node.height} html={showLive ? livePage : html} address={editing ? `${address} · 源码` : address} interactive={interactive && !generating} reloadKey={reloadKey} dark={dark}>
+            <DeviceFrame
+                device={device}
+                landscape={landscape}
+                width={ctx.node.width}
+                height={ctx.node.height}
+                html={showLive ? livePage : html}
+                address={editing ? `${address} · 源码` : address}
+                interactive={interactive}
+                reloadKey={reloadKey}
+                dark={dark}
+                frameRef={(frame) => (frameRef.current = frame)}
+                onFrameLoad={() => pickingRef.current && postToHtmlFrame(frameRef.current, { type: "pick-mode", on: true })}
+            >
                 {body ?? undefined}
             </DeviceFrame>
-            {generating ? <HtmlProgressBar ctx={ctx} partial={partial} /> : null}
+            {generating ? (
+                <StatusPill ctx={ctx} tone="accent" className="inset-x-3 bottom-3">
+                    <Sparkles className="size-3.5 shrink-0 animate-pulse" />
+                    <span className="min-w-0 flex-1 truncate" style={{ color: ctx.theme.node.text }}>
+                        {partial?.phase || "AI 正在搭建网站…"}
+                    </span>
+                    {partial?.text ? <span className="shrink-0 tabular-nums" style={{ color: ctx.theme.node.placeholder }}>{partial.text.length.toLocaleString()} 字</span> : null}
+                </StatusPill>
+            ) : null}
+            {picking ? (
+                <StatusPill ctx={ctx} tone="accent" className="left-1/2 top-3 -translate-x-1/2" onClick={() => setPicking(false)}>
+                    <MousePointerClick className="size-3.5" />
+                    点击页面里要修改的元素 · 点这里取消
+                </StatusPill>
+            ) : null}
+            {!generating && !editing && errorCount ? (
+                <StatusPill ctx={ctx} tone="danger" className="bottom-3 left-3" onClick={fixErrors}>
+                    <TriangleAlert className="size-3.5" />
+                    {errorCount} 个页面错误 · 让 AI 修复
+                </StatusPill>
+            ) : null}
+            {notice ? (
+                <StatusPill ctx={ctx} tone={notice.tone} className="bottom-3 right-3">
+                    {notice.text}
+                </StatusPill>
+            ) : null}
             {previewOpen && value ? <HtmlPreviewOverlay ctx={ctx} html={html} address={address} onClose={() => setPreviewOpen(false)} /> : null}
         </div>
     );
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// AI panel: describe a site (or a change to the current one) and let the text model write the whole page.
+// AI panel: create a site (optionally from connected images) or change the current one with patches.
 // ---------------------------------------------------------------------------------------------------------------
 
-const SITE_SYSTEM_PROMPT = `你是一名资深前端工程师兼网页设计师。根据用户需求输出一个完整、可直接运行的单文件 HTML 网站。
+const SITE_SYSTEM_PROMPT = `你是一名资深前端工程师兼网页设计师。根据用户需求写出一个完整、可直接运行的单页 HTML 网站。
 要求：
-- 只输出 HTML 源码本身（从 <!doctype html> 开始），不要解释，不要 Markdown 代码块。
-- 所有 CSS 写在 <style>、所有 JS 写在 <script>，不要引用本地文件；图片用 CSS 渐变、SVG 或 emoji 代替。
+- 只回复 HTML 源码本身（从 <!doctype html> 开始，到 </html> 结束），不要解释，不要使用代码块标记。
+- 所有 CSS 写在 <style>、所有 JS 写在 <script>，不引用任何本地资源；没有提供图片时，用 CSS 渐变、SVG 或 emoji 代替图片。
 - 必须响应式：同时适配桌面（1280px）、平板（820px）和手机（390px），手机端导航折叠为菜单按钮。
 - 做成真实可交互的网站：用 hash 路由实现多个页面（如 #/、#/about），并包含合适的交互，例如导航高亮、弹窗、标签页、轮播、折叠面板、表单校验与提示、深色模式切换、滚动动效等。
 - 视觉精致现代：统一的配色变量、圆角、阴影、留白与层级，中文排版清晰。
@@ -479,6 +782,7 @@ const SITE_SYSTEM_PROMPT = `你是一名资深前端工程师兼网页设计师�
 - 代码精炼：复用 CSS 变量和类名，避免重复样式，整页源码尽量控制在 15000 字以内。`;
 
 const SITE_PRESETS = ["SaaS 产品落地页", "个人作品集", "电商商品详情页", "餐厅官网（含菜单与预订）", "App 下载页", "活动报名页"];
+const MAX_VERSIONS = 8;
 
 function extractHtml(text: string) {
     const fenced = text.match(/```(?:html)?\s*([\s\S]*?)```/i)?.[1];
@@ -497,32 +801,89 @@ function compactHtml(html: string) {
     return html.replace(/<!--[\s\S]*?-->/g, "").replace(/\n[ \t]+/g, "\n").replace(/[ \t]{2,}/g, " ").trim();
 }
 
+/** Connected image nodes: shown to the model (design mock-ups are rebuilt, photos can be used in the page). */
+function upstreamImages(ctx: CanvasNodeContext) {
+    return ctx.getUpstream().filter((node) => node.type === "image" && (node.metadata?.content || node.metadata?.storageKey)).slice(0, 4);
+}
+
+function imageBrief(ctx: CanvasNodeContext) {
+    const images = upstreamImages(ctx);
+    if (!images.length) return "";
+    const lines = images.map((node, index) => `图${index + 1}（${node.title || "图片"}）：${canvasImageToken(node)}`).join("\n");
+    return `\n\n附带了 ${images.length} 张来自画布的图片，按顺序为图1…图${images.length}：
+- 如果图片是网页 / App 的设计稿或界面截图：按它还原页面的布局、配色、字体层级和文案，不要把设计稿本身当作图片放进页面。
+- 如果是照片、插画、产品图或 Logo：可以直接用在页面里，把下面对应的地址原样写进 <img src> 或 CSS url()，不要改写地址：
+${lines}`;
+}
+
+async function imagesForModel(ctx: CanvasNodeContext) {
+    const { imageToDataUrl } = await import("@/services/image-storage");
+    const shrink = async (dataUrl: string) => {
+        if (!dataUrl.startsWith("data:image/")) return dataUrl;
+        const image = new Image();
+        image.src = dataUrl;
+        await image.decode();
+        const scale = Math.min(1, 1600 / Math.max(image.naturalWidth, image.naturalHeight));
+        if (scale === 1) return dataUrl;
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(image.naturalWidth * scale);
+        canvas.height = Math.round(image.naturalHeight * scale);
+        canvas.getContext("2d")?.drawImage(image, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/jpeg", 0.88);
+    };
+    const results = await Promise.all(upstreamImages(ctx).map((node) => imageToDataUrl({ url: node.metadata?.content, storageKey: node.metadata?.storageKey }).then(shrink).catch(() => "")));
+    return results.filter(Boolean);
+}
+
+function formatTime(iso: string) {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? "" : `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => void }) {
     const hasSite = Boolean(ctx.node.metadata?.content);
+    const runtime = useNodeRuntime(ctx);
     const [prompt, setPrompt] = useState("");
     const { model, reasoningEffort } = useCanvasTextModelSelection(ctx.node);
     const [error, setError] = useState("");
+    const [showVersions, setShowVersions] = useState(false);
     const controllerRef = useRef<AbortController | null>(null);
     const running = ctx.node.metadata?.status === "loading";
     const device = readDevice(ctx);
+    const images = upstreamImages(ctx);
+    const versions = ctx.node.metadata?.htmlVersions || [];
+    const picks = hasSite ? runtime.picks : [];
+
+    // A request prepared elsewhere (e.g. "fix these errors") lands in the input once.
+    useEffect(() => {
+        if (!runtime.prefill) return;
+        setPrompt(runtime.prefill);
+        updateRuntime(ctx, ctx.node.id, (state) => (state.prefill = ""));
+    }, [runtime.prefill]);
+
+    const canRun = Boolean(prompt.trim() || (!hasSite && images.length));
 
     const run = async () => {
-        const request = prompt.trim();
-        if (!request || running) return;
+        if (!canRun || running) return;
+        const request = prompt.trim() || "按附带的图片做成网页";
         setError("");
         const original = ctx.node.metadata?.content || "";
         const upstream = ctx
             .getUpstream()
+            .filter((node) => node.type !== "image")
             .map((node) => node.metadata?.content)
             .filter((content): content is string => typeof content === "string" && Boolean(content.trim()) && !content.startsWith("data:"))
             .join("\n\n");
-        const deviceHint = `\n用户当前主要在「${DEVICES[device].label}」尺寸上预览。`;
+        const targets = picks.length
+            ? `\n\n用户在页面上点选了要修改的元素（渲染后的 HTML 片段，源码里对应的写法可能略有不同）：\n${picks.map((pick, index) => `目标${index + 1}（${pick.selector}）：\n${pick.html}`).join("\n\n")}`
+            : "";
+        const deviceHint = `\n用户当前主要在「${DEVICES[device].label}」尺寸上预览。${imageBrief(ctx)}`;
         const system = hasSite ? HTML_EDIT_SYSTEM_PROMPT : SITE_SYSTEM_PROMPT;
         const limit = await ctx.ai.textInputLimit();
         // Embedded images are swapped for placeholders; the page is sent as-is when it fits, compacted when it does not,
         // and patches are applied to exactly the text the model saw.
         const assets = stashHtmlAssets(original);
-        const taskFor = (source: string) => (hasSite ? `原网页源码：\n${source}\n\n修改要求：${request}` : `请制作这个网站：${request}`);
+        const taskFor = (source: string) => (hasSite ? `原网页源码：\n${source}\n\n修改要求：${request}${targets}` : `请制作这个网站：${request}`);
         const overheadFor = (source: string) => system.length + taskFor(source).length + deviceHint.length + 64;
         const base = !hasSite || overheadFor(assets.text) <= limit ? assets.text : compactHtml(assets.text);
         if (overheadFor(base) > limit) {
@@ -539,9 +900,10 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
         const report = (text: string, phase: string) => ctx.emit(PARTIAL_EVENT, { nodeId, text, phase } satisfies HtmlPartial);
         const writing = hasSite ? "AI 正在修改网站" : "AI 正在写网站";
         ctx.updateMetadata({ status: "loading", editing: false });
-        report("", hasSite ? "AI 正在理解修改要求…" : "AI 正在构思网站…");
+        report("", images.length ? "AI 正在看图…" : hasSite ? "AI 正在理解修改要求…" : "AI 正在构思网站…");
         try {
-            const first = await ctx.ai.generateText(message, { system, model, reasoningEffort, signal: controller.signal, onPartial: (text) => report(text, writing) });
+            const attached = images.length ? await imagesForModel(ctx) : [];
+            const first = await ctx.ai.generateText(message, { system, model, reasoningEffort, images: attached, signal: controller.signal, onPartial: (text) => report(text, writing) });
             const said = first.text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
             const quote = said ? `模型回复：「${said.slice(0, 140)}${said.length > 140 ? "…" : ""}」` : "";
             let html = extractHtml(first.text);
@@ -568,7 +930,14 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
             }
             html = assets.restore(html);
             if (!isCompleteHtml(html)) throw new Error(isTruncatedHtml(html) ? "网页太长，续写 5 段后仍未写完，原网页未改动。可以把需求拆小一些再试。" : `模型没有返回完整的网页，原网页未改动。${quote}`);
-            ctx.updateMetadata({ content: html, status: "success", interactive: true, htmlPrompt: request, ...(hasSite ? { htmlPreviousContent: original } : {}) });
+            const now = new Date().toISOString();
+            const history = versions.length || !original ? versions : [{ id: `v-${Date.now() - 1}`, at: now, prompt: "初始版本", content: original }];
+            const nextVersions = [...history, { id: `v-${Date.now()}`, at: now, prompt: request, content: html }].slice(-MAX_VERSIONS);
+            ctx.updateMetadata({ content: html, status: "success", interactive: true, htmlPrompt: request, htmlVersions: nextVersions, htmlPreviousContent: undefined });
+            updateRuntime(ctx, nodeId, (state) => {
+                state.picks = [];
+                state.errors = [];
+            });
             setPrompt("");
         } catch (cause) {
             ctx.updateMetadata({ status: hasSite ? "success" : undefined });
@@ -583,6 +952,8 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
         ctx.updateMetadata({ status: hasSite ? "success" : undefined });
     };
 
+    const chip = ctx.theme.scheme === "dark" ? "rgba(255,255,255,.06)" : "#f3f1f9";
+
     return (
         <div className="flex flex-col gap-3 p-4" style={{ background: ctx.theme.node.panel, borderRadius: 22 }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <div className="flex items-center gap-2">
@@ -593,15 +964,85 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
                     {hasSite ? "用一句话修改网站" : "AI 生成网站"}
                 </span>
                 <span className="flex-1" />
+                {hasSite ? (
+                    <button type="button" className="inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium" style={{ background: chip, color: ctx.theme.node.text }} title="在页面上点选要修改的元素" onClick={() => ctx.emit(PICK_EVENT, ctx.node.id)}>
+                        <MousePointerClick className="size-3.5" />
+                        点选元素
+                    </button>
+                ) : null}
+                {versions.length ? (
+                    <button type="button" className="inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium" style={{ background: showVersions ? ctx.theme.toolbar.activeBg : chip, color: showVersions ? ctx.theme.toolbar.activeText : ctx.theme.node.text }} onClick={() => setShowVersions((value) => !value)}>
+                        <History className="size-3.5" />
+                        版本 {versions.length}
+                    </button>
+                ) : null}
                 <button type="button" className="grid size-7 place-items-center rounded-full" style={{ color: ctx.theme.node.placeholder }} title="关闭" onClick={onClose}>
                     <X className="size-4" />
                 </button>
             </div>
+            {showVersions ? (
+                <div className="flex max-h-[200px] flex-col gap-1 overflow-auto rounded-xl p-1.5" style={{ background: chip }} onWheel={(event) => event.stopPropagation()}>
+                    {[...versions].reverse().map((version, index) => {
+                        const current = version.content === ctx.node.metadata?.content;
+                        return (
+                            <div key={version.id} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px]" style={{ background: current ? ctx.theme.node.panel : "transparent" }}>
+                                <span className="w-7 shrink-0 font-semibold tabular-nums" style={{ color: ctx.theme.node.activeStroke }}>
+                                    v{versions.length - index}
+                                </span>
+                                <span className="min-w-0 flex-1 truncate" style={{ color: ctx.theme.node.text }} title={version.prompt}>
+                                    {version.prompt}
+                                </span>
+                                <span className="shrink-0 tabular-nums" style={{ color: ctx.theme.node.placeholder }}>
+                                    {formatTime(version.at)}
+                                </span>
+                                {current ? (
+                                    <span className="shrink-0 text-[11px]" style={{ color: ctx.theme.node.placeholder }}>
+                                        当前
+                                    </span>
+                                ) : (
+                                    <button type="button" className="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-semibold" style={{ background: ctx.theme.toolbar.activeBg, color: ctx.theme.toolbar.activeText }} onClick={() => ctx.updateMetadata({ content: version.content })}>
+                                        恢复
+                                    </button>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            ) : null}
+            {images.length ? (
+                <div className="flex items-center gap-2 rounded-xl px-2.5 py-2" style={{ background: chip }}>
+                    <div className="flex -space-x-2">
+                        {images.map((node) => (
+                            <span key={node.id} className="size-8 overflow-hidden rounded-lg border-2" style={{ borderColor: ctx.theme.node.panel, background: ctx.theme.node.stroke }}>
+                                {node.metadata?.thumbnailUrl || node.metadata?.content ? <img src={node.metadata?.thumbnailUrl || node.metadata?.content} alt="" className="h-full w-full object-cover" /> : null}
+                            </span>
+                        ))}
+                    </div>
+                    <span className="min-w-0 flex-1 text-[12px] leading-5" style={{ color: ctx.theme.node.placeholder }}>
+                        已连接 {images.length} 张图片：设计稿会被还原成网页，照片和产品图可直接用在页面里
+                    </span>
+                </div>
+            ) : null}
+            {picks.length ? (
+                <div className="flex flex-wrap gap-1.5">
+                    {picks.map((pick) => (
+                        <span key={pick.html} className="inline-flex max-w-full items-center gap-1.5 rounded-full py-1 pl-2.5 pr-1 text-[12px]" style={{ background: ctx.theme.toolbar.activeBg, color: ctx.theme.toolbar.activeText }} title={pick.selector}>
+                            <MousePointerClick className="size-3 shrink-0" />
+                            <span className="truncate">
+                                &lt;{pick.tag}&gt; {pick.text || pick.selector}
+                            </span>
+                            <button type="button" className="grid size-4 shrink-0 place-items-center rounded-full hover:bg-black/10" onClick={() => updateRuntime(ctx, ctx.node.id, (state) => (state.picks = state.picks.filter((item) => item !== pick)))}>
+                                <X className="size-3" />
+                            </button>
+                        </span>
+                    ))}
+                </div>
+            ) : null}
             <textarea
                 autoFocus
                 value={prompt}
                 rows={3}
-                placeholder={hasSite ? "例如：把主色换成墨绿色，定价页加一个企业版，首页加客户 logo 墙" : "描述你想要的网站：用途、页面、风格、配色、需要哪些交互…"}
+                placeholder={picks.length ? "想把选中的元素改成什么样？例如：换成渐变色大按钮，文案改为「立即体验」" : hasSite ? "例如：把主色换成墨绿色，定价页加一个企业版，首页加客户 logo 墙" : images.length ? "可选：补充说明，例如「按设计稿还原，并加上登录弹窗」" : "描述你想要的网站：用途、页面、风格、配色、需要哪些交互…"}
                 onChange={(event) => setPrompt(event.target.value)}
                 onKeyDown={(event) => {
                     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void run();
@@ -610,7 +1051,7 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
                 className="w-full resize-none rounded-xl p-3 text-[13px] leading-6 outline-none"
                 style={{ background: ctx.theme.scheme === "dark" ? "rgba(255,255,255,.04)" : "#f6f5fa", color: ctx.theme.node.text, border: `1px solid ${ctx.theme.node.stroke}` }}
             />
-            {!hasSite ? (
+            {!hasSite && !images.length ? (
                 <div className="flex flex-wrap gap-1.5">
                     {SITE_PRESETS.map((preset) => (
                         <button key={preset} type="button" className="rounded-full px-2.5 py-1 text-[12px] transition hover:opacity-80" style={{ background: ctx.theme.toolbar.activeBg, color: ctx.theme.toolbar.activeText }} onClick={() => setPrompt(preset)}>
@@ -633,9 +1074,9 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
                         停止
                     </button>
                 ) : (
-                    <button type="button" disabled={!prompt.trim()} className="inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-[13px] font-semibold text-white transition disabled:opacity-40" style={{ background: "linear-gradient(135deg,#8b6cff,#3d7bff)" }} onClick={() => void run()}>
+                    <button type="button" disabled={!canRun} className="inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-[13px] font-semibold text-white transition disabled:opacity-40" style={{ background: "linear-gradient(135deg,#8b6cff,#3d7bff)" }} onClick={() => void run()}>
                         <Sparkles className="size-3.5" />
-                        {hasSite ? "修改" : "生成网站"}
+                        {hasSite ? "修改" : images.length ? "按图生成" : "生成网站"}
                     </button>
                 )}
             </div>
@@ -657,8 +1098,8 @@ function switchDevice(ctx: CanvasNodeContext, device: HtmlDevice, landscape = fa
 export const htmlCanvasPlugin: CanvasPlugin = {
     id: BUNDLED_CANVAS_PLUGIN_IDS.html,
     name: "HTML 节点",
-    version: "2.0.0",
-    description: "在网站、平板、手机设备框中渲染可交互的 HTML，支持 AI 生成网站与全屏预览",
+    version: "2.1.0",
+    description: "在网站、平板、手机设备框中渲染可交互的 HTML；AI 生成与修改网站、设计稿转网页、点选修改、报错修复、截图、版本历史与分享",
     nodes: [
         {
             type: BUNDLED_CANVAS_NODE_TYPES.html,
@@ -681,23 +1122,16 @@ export const htmlCanvasPlugin: CanvasPlugin = {
                 const next = DEVICE_ORDER[(DEVICE_ORDER.indexOf(device) + 1) % DEVICE_ORDER.length];
                 const landscape = Boolean(ctx.node.metadata?.htmlLandscape);
                 return [
-                    {
-                        id: "html-device",
-                        title: `切换到${DEVICES[next].label}`,
-                        label: DEVICES[device].label,
-                        icon: DEVICES[device].icon("size-4"),
-                        onClick: () => switchDevice(ctx, next),
-                    },
-                    ...(device !== "desktop"
-                        ? [{ id: "html-rotate", title: landscape ? "切换为竖屏" : "切换为横屏", label: "旋转", icon: <RotateCw className="size-4" />, onClick: () => switchDevice(ctx, device, !landscape) }]
-                        : []),
+                    { id: "html-device", title: `切换到${DEVICES[next].label}`, label: DEVICES[device].label, icon: DEVICES[device].icon("size-4"), onClick: () => switchDevice(ctx, next) },
+                    ...(device !== "desktop" ? [{ id: "html-rotate", title: landscape ? "切换为竖屏" : "切换为横屏", label: "旋转", icon: <RotateCw className="size-4" />, onClick: () => switchDevice(ctx, device, !landscape) }] : []),
+                    ...(hasContent ? [{ id: "html-pick", title: "点选页面元素，让 AI 只改这里", label: "点选", icon: <MousePointerClick className="size-4" />, onClick: () => ctx.emit(PICK_EVENT, ctx.node.id) }] : []),
+                    { id: "html-ai", title: hasContent ? "用 AI 修改网站" : "用 AI 生成网站", label: "AI", icon: <Sparkles className="size-4" />, onClick: () => ctx.openPanel() },
                     ...(hasContent
                         ? [
-                              { id: "html-preview", title: "全屏预览（可交互）", label: "预览", icon: <Maximize2 className="size-4" />, onClick: () => ctx.emit(PREVIEW_EVENT, ctx.node.id) },
-                              { id: "html-reload", title: "重新加载页面", label: "刷新", icon: <RefreshCw className="size-4" />, onClick: () => ctx.emit(RELOAD_EVENT, ctx.node.id) },
+                              { id: "html-preview", title: "全屏预览：多设备对比、下载、分享", label: "预览", icon: <Maximize2 className="size-4" />, onClick: () => ctx.emit(PREVIEW_EVENT, ctx.node.id) },
+                              { id: "html-capture", title: "截取当前画面，生成一个图片节点", label: "截图", icon: <Camera className="size-4" />, onClick: () => ctx.emit(CAPTURE_EVENT, ctx.node.id) },
                           ]
                         : []),
-                    { id: "html-ai", title: hasContent ? "用 AI 修改网站" : "用 AI 生成网站", label: "AI", icon: <Sparkles className="size-4" />, onClick: () => ctx.openPanel() },
                     {
                         id: "html-toggle-edit",
                         title: editing ? "预览渲染结果" : "编辑 HTML 源码",
@@ -706,10 +1140,6 @@ export const htmlCanvasPlugin: CanvasPlugin = {
                         active: editing,
                         onClick: () => ctx.updateMetadata({ editing: !editing }),
                     },
-                    ...(ctx.node.metadata?.htmlPreviousContent
-                        ? [{ id: "html-previous", title: "切换到 AI 修改前的版本（再点一次切回）", label: "上一版", icon: <Undo2 className="size-4" />, onClick: () => ctx.updateMetadata({ content: ctx.node.metadata?.htmlPreviousContent, htmlPreviousContent: ctx.node.metadata?.content }) }]
-                        : []),
-                    ...(hasContent ? [{ id: "html-open", title: "在新标签页打开", label: "新窗口", icon: <ExternalLink className="size-4" />, onClick: () => openInNewTab(renderHtml(ctx)) }] : []),
                 ];
             },
         },

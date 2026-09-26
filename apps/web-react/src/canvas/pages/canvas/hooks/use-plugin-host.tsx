@@ -81,7 +81,9 @@ export function usePluginHost(params: PluginHostParams) {
             generateText: async (prompt, options) => {
                 const config = { ...buildGenerationConfig(effectiveConfig, undefined, "text"), ...(options?.model ? { model: options.model } : {}), ...(options?.reasoningEffort ? { reasoningEffort: options.reasoningEffort as AiConfig["reasoningEffort"] } : {}) };
                 ensureReady(config);
-                const messages: AiTextMessage[] = [...(options?.system ? [{ role: "system" as const, content: options.system }] : []), { role: "user" as const, content: prompt }];
+                const images = (options?.images || []).filter(Boolean).slice(0, 4);
+                const userContent: AiTextMessage["content"] = images.length ? [{ type: "text", text: prompt }, ...images.map((url) => ({ type: "image_url" as const, image_url: { url } }))] : prompt;
+                const messages: AiTextMessage[] = [...(options?.system ? [{ role: "system" as const, content: options.system }] : []), { role: "user" as const, content: userContent }];
                 // Plugins parse the answer themselves, so it must come back as text rather than as a downloadable file.
                 const text = await requestImageQuestion(config, messages, (delta) => options?.onDelta?.(delta), { signal: options?.signal, inlineText: true, onPartial: options?.onPartial });
                 return { text };
