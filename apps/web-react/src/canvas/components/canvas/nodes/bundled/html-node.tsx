@@ -14,7 +14,7 @@ function HtmlEditor({ ctx, value }: { ctx: CanvasNodeContext; value: string }) {
     const codeStyle = { fontFamily: "monospace", fontSize: EDITOR_FONT_SIZE, lineHeight: `${EDITOR_LINE_HEIGHT}px`, boxSizing: "border-box" } as const;
 
     return (
-        <div data-canvas-no-zoom className="flex h-full w-full overflow-hidden rounded-2xl" style={{ background: ctx.theme.node.fill }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+        <div data-canvas-no-zoom className="flex h-full w-full overflow-hidden" style={{ background: ctx.theme.node.fill }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <div
                 aria-hidden
                 style={{ ...codeStyle, flex: "0 0 auto", padding: "16px 8px 16px 12px", textAlign: "right", color: ctx.theme.node.placeholder, background: `${ctx.theme.toolbar.panel}66`, borderRight: `1px solid ${ctx.theme.node.stroke}`, overflow: "hidden", userSelect: "none", whiteSpace: "pre" }}
@@ -47,20 +47,49 @@ function HtmlContent({ ctx }: { ctx: CanvasNodeContext }) {
         .join("\n");
     const html = value.replace(/\{\{\s*input\s*\}\}/g, upstreamText);
 
-    if (ctx.node.metadata?.editing) return <HtmlEditor ctx={ctx} value={value} />;
+    const editing = Boolean(ctx.node.metadata?.editing);
+    const dark = ctx.theme.scheme === "dark";
+    const address = useMemo(() => {
+        const title = value.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim();
+        if (title) return title;
+        const name = ctx.node.title?.trim();
+        return name && name !== "HTML" ? (/\.html?$/i.test(name) ? name : `${name}.html`) : "index.html";
+    }, [value, ctx.node.title]);
+    const chromeLine = dark ? "rgba(255,255,255,.08)" : "#eeecf4";
 
-    if (!value) {
-        return (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: ctx.theme.node.placeholder }}>
-                <Code2 className="size-7" />
-                <span className="text-[13px]">选择节点后，通过上方工具栏编辑 HTML</span>
-            </div>
-        );
-    }
-
+    // A browser-window frame: traffic lights and an address pill on top, the sandboxed page (or its source) below.
     return (
-        <div data-canvas-no-zoom className="relative h-full w-full">
-            <iframe title="HTML 预览" sandbox="allow-scripts allow-forms" srcDoc={html} className="block h-full w-full rounded-2xl border-0 bg-white" />
+        <div className="flex h-full w-full flex-col overflow-hidden rounded-[inherit]" style={{ background: dark ? "#1d1b26" : "#ffffff" }}>
+            <div className="flex h-11 shrink-0 items-center gap-3 px-3.5" style={{ borderBottom: `1px solid ${chromeLine}` }}>
+                <div className="flex shrink-0 items-center gap-1.5" aria-hidden>
+                    <span className="size-2.5 rounded-full" style={{ background: "#ff5f57" }} />
+                    <span className="size-2.5 rounded-full" style={{ background: "#febc2e" }} />
+                    <span className="size-2.5 rounded-full" style={{ background: "#28c840" }} />
+                </div>
+                <div className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 text-[12px]" style={{ background: dark ? "rgba(255,255,255,.06)" : "#f3f1f9", color: ctx.theme.node.placeholder }}>
+                    {editing ? <FilePenLine className="size-3 shrink-0" /> : null}
+                    <span className="truncate">{editing ? `${address} · 源码` : address}</span>
+                </div>
+            </div>
+            <div className="relative min-h-0 flex-1">
+                {editing ? (
+                    <HtmlEditor ctx={ctx} value={value} />
+                ) : value ? (
+                    <div data-canvas-no-zoom className="h-full w-full">
+                        <iframe title="HTML 预览" sandbox="allow-scripts allow-forms" srcDoc={html} className="block h-full w-full border-0 bg-white" />
+                    </div>
+                ) : (
+                    <div className="flex h-full w-full flex-col gap-3 p-5">
+                        <div className="h-[38%] min-h-10 rounded-xl" style={{ background: "linear-gradient(120deg, #9b7bff, #3d7bff)", opacity: 0.9 }} />
+                        <div className="h-2.5 w-[72%] rounded-full" style={{ background: chromeLine }} />
+                        <div className="h-2.5 w-[48%] rounded-full" style={{ background: chromeLine }} />
+                        <div className="mt-auto flex items-center gap-1.5 text-[12px]" style={{ color: ctx.theme.node.placeholder }}>
+                            <Code2 className="size-3.5" />
+                            选中后点上方「编辑」写入 HTML
+                        </div>
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

@@ -19,6 +19,16 @@ function SvgContent({ ctx }: { ctx: CanvasNodeContext }) {
         if (stored === undefined && upstream) ctx.updateMetadata({ content: upstream });
     }, [stored, upstream]);
 
+    const dark = ctx.theme.scheme === "dark";
+    const cell = dark ? "rgba(255,255,255,.05)" : "#f1eff8";
+    // Transparency checkerboard, like an image editor, so the vector's own background (or lack of one) is visible.
+    const checker = {
+        backgroundColor: dark ? "#1d1b26" : "#ffffff",
+        backgroundImage: `linear-gradient(45deg, ${cell} 25%, transparent 25%, transparent 75%, ${cell} 75%), linear-gradient(45deg, ${cell} 25%, transparent 25%, transparent 75%, ${cell} 75%)`,
+        backgroundSize: "24px 24px",
+        backgroundPosition: "0 0, 12px 12px",
+    } as const;
+
     if (ctx.node.metadata?.editing) {
         return (
             <textarea
@@ -33,16 +43,25 @@ function SvgContent({ ctx }: { ctx: CanvasNodeContext }) {
                 onPointerDown={(event) => event.stopPropagation()}
                 onWheel={(event) => event.stopPropagation()}
                 className="thin-scrollbar"
-                style={{ height: "100%", width: "100%", resize: "none", background: ctx.theme.node.fill, borderRadius: 16, padding: 16, boxSizing: "border-box", fontFamily: "monospace", fontSize: 12, outline: "none", border: `1px solid ${ctx.theme.node.stroke}`, color: ctx.theme.node.text }}
+                style={{ height: "100%", width: "100%", resize: "none", background: ctx.theme.node.fill, borderRadius: "inherit", padding: 16, boxSizing: "border-box", fontFamily: "monospace", fontSize: 12, lineHeight: "20px", outline: "none", border: "none", color: ctx.theme.node.text }}
             />
         );
     }
 
     if (!sanitizedSvg) {
-        return <div className="flex h-full w-full items-center justify-center p-4 text-center text-[13px]" style={{ color: ctx.theme.node.placeholder }}>选择节点后，通过上方工具栏粘贴 SVG 源码</div>;
+        return (
+            <div className="flex h-full w-full flex-col items-center justify-center gap-4 overflow-hidden rounded-[inherit] p-4 text-center" style={checker}>
+                <svg viewBox="0 0 150 120" className="w-[46%] max-w-[150px]" aria-hidden>
+                    <circle cx="48" cy="54" r="42" fill="#8b6cff" fillOpacity=".78" />
+                    <rect x="84" y="10" width="58" height="84" rx="12" fill="#3dd5f3" fillOpacity=".78" />
+                    <path d="M 75 38 L 120 116 L 30 116 Z" fill="#ff6fa5" fillOpacity=".82" />
+                </svg>
+                <span className="text-[12px]" style={{ color: ctx.theme.node.placeholder }}>选中后点上方「编辑」粘贴 SVG 源码</span>
+            </div>
+        );
     }
 
-    return <div className="pointer-events-none flex h-full w-full items-center justify-center p-3 [&>svg]:max-h-full [&>svg]:max-w-full" dangerouslySetInnerHTML={{ __html: sanitizedSvg }} />;
+    return <div className="pointer-events-none flex h-full w-full items-center justify-center overflow-hidden rounded-[inherit] p-4 [&>svg]:max-h-full [&>svg]:max-w-full" style={checker} dangerouslySetInnerHTML={{ __html: sanitizedSvg }} />;
 }
 
 export const svgCanvasPlugin: CanvasPlugin = {
@@ -59,7 +78,6 @@ export const svgCanvasPlugin: CanvasPlugin = {
             defaultSize: { width: 320, height: 320 },
             defaultMetadata: {},
             minimapColor: "#14b8a6",
-            transparentBackground: true,
             hidePanel: true,
             interactionToggle: true,
             forceInteractive: (node) => Boolean(node.metadata?.editing),
