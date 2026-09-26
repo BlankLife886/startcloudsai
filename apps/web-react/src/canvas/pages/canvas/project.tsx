@@ -7792,6 +7792,14 @@ function InfiniteCanvasPage() {
                 }}
                 onDeleteNodes={deleteNodes}
                 onInsertAsset={handleAssetInsert}
+                onRetryNode={(nodeId) => {
+                    const node = nodesRef.current.find((item) => item.id === nodeId);
+                    if (node) void handleNodeRetry(node);
+                }}
+                onRunWorkflow={(workflowId) => void runWorkflow({ workflowId })}
+                onRenameWorkflow={(configNodeId, name) =>
+                    setNodes((prev) => prev.map((node) => (node.id === configNodeId ? { ...node, metadata: { ...node.metadata, workflowName: name || undefined } } : node)))
+                }
             />
             {agentPanelOpen || agentPanelClosing ? <AgentPanel /> : null}
             <section className="relative min-w-0 flex-1 overflow-hidden">

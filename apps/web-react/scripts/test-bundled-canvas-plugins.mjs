@@ -5,6 +5,7 @@ import test from "node:test";
 import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "../src/canvas/components/canvas/nodes/bundled/contracts.ts";
 import { applyHtmlPatches, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
 import { htmlImageTokens, isHtmlFrameMessage, withHtmlBridge } from "../src/canvas/components/canvas/nodes/bundled/html-node-runtime.ts";
+import { buildCanvasSidePanelWorkflowGroups, canvasWorkflowDisplayName, orderCanvasWorkflowNodes } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 
 const canvasSource = new URL("../src/canvas/", import.meta.url);
 const readCanvasSource = async (path) => readFile(new URL(path, canvasSource), "utf8");
@@ -96,8 +97,9 @@ test("side panel node actions omit duplicate while retaining node information", 
     assert.match(sidePanel, /canvas-node-actions-trigger/);
     assert.doesNotMatch(sidePanel, /nodePreviewText|metadata\?\.content \|\| node\.metadata\?\.prompt/);
     assert.doesNotMatch(sidePanel, /workflowGroup.*workflowIndex/);
-    assert.match(sidePanel, /max-w-\[180px\]/);
-    assert.match(sidePanel, /max-w-\[160px\]/);
+    // Names use the full row width and truncate; rows add a one-line summary (failure reason, excerpt, settings).
+    assert.match(sidePanel, /block truncate text-\[12px\]/);
+    assert.match(sidePanel, /function nodeSummary/);
     assert.match(sidePanel, /aria-label=\{t\("canvas\.exportSelected"\)\}/);
     assert.doesNotMatch(sidePanel, /<Download className="size-3\.5" \/>\s*\{t\("canvas\.exportSelected"\)\}/);
 });
@@ -191,4 +193,23 @@ test("HTML node bridge sits on the <head> line so reported error lines match the
 test("HTML node pages reference canvas images by token", () => {
     const page = `<img src="sc-file:uploads/u1/original/a.png"><div style="background:url(sc-node:image-123)"></div><img src="sc-file:uploads/u1/original/a.png">`;
     assert.deepEqual(htmlImageTokens(page), ["sc-file:uploads/u1/original/a.png", "sc-node:image-123"]);
+});
+
+test("side panel lists a workflow in connection order and names it by its content", () => {
+    const node = (id, type, title, metadata = {}) => ({ id, type, title, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
+    const output = node("out", "image", "蓝天白云，棉花糖般的云朵 · 1");
+    const config = node("cfg", "config", "生成配置", { composerContent: "一张海报" });
+    const input = node("in", "text", "文本", { content: "蓝天白云" });
+    const connections = [
+        { id: "c1", fromNodeId: "cfg", toNodeId: "out" },
+        { id: "c2", fromNodeId: "in", toNodeId: "cfg" },
+    ];
+    const [group] = buildCanvasSidePanelWorkflowGroups([output, config, input], connections);
+    assert.deepEqual(orderCanvasWorkflowNodes(group.nodes, connections).map((item) => item.id), ["in", "cfg", "out"]);
+    assert.equal(canvasWorkflowDisplayName(group, connections), "蓝天白云，棉花糖般的云朵");
+    // Generic output titles fall back to the prompt; a user-chosen name wins over everything.
+    const generic = buildCanvasSidePanelWorkflowGroups([{ ...output, title: "Generated Image" }, config, input], connections)[0];
+    assert.equal(canvasWorkflowDisplayName(generic, connections), "一张海报");
+    const named = buildCanvasSidePanelWorkflowGroups([output, { ...config, metadata: { ...config.metadata, workflowName: "春季海报" } }, input], connections)[0];
+    assert.equal(canvasWorkflowDisplayName(named, connections), "春季海报");
 });

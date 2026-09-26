@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { App, Modal, Popconfirm, Spin, Tag } from "antd";
 import { useQuery } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronRight, Ellipsis, Eye, FileClock, FileText, Image as ImageIcon, Info, ListChecks, Music2, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
+import { Check, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleHelp, Ellipsis, LocateFixed, Play, RotateCw, X, Eye, FileClock, FileText, Image as ImageIcon, Info, ListChecks, Music2, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
 import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { AnimatePresence, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
@@ -10,8 +10,8 @@ import { useNavigate } from "react-router";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
 import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
-import { buildCanvasSidePanelWorkflowGroups } from "@/lib/canvas/canvas-workflow-groups";
-import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
+import { buildCanvasSidePanelWorkflowGroups, canvasWorkflowDisplayName, orderCanvasWorkflowNodes } from "@/lib/canvas/canvas-workflow-groups";
+import { isCanvasExecutableNode, isCanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
 import { PromptDetailDialog } from "@/pages/prompts/components/prompt-detail-dialog";
@@ -48,6 +48,9 @@ type Props = {
     onRenameNode: (nodeId: string) => void;
     onDeleteNodes: (nodeIds: Set<string>) => void;
     onInsertAsset: (payload: InsertAssetPayload) => void;
+    onRetryNode?: (nodeId: string) => void;
+    onRunWorkflow?: (workflowId: string) => void;
+    onRenameWorkflow?: (configNodeId: string, name: string) => void;
 };
 
 const NODE_TYPE_ICON: Record<string, typeof Square> = {
@@ -66,7 +69,7 @@ const STATUS_COLOR: Record<string, string> = {
     idle: "#c7c3d4",
 };
 
-export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes, connections, selectedNodeIds, onFocusNode, onHoverNode, hoveredNodeId, onPreviewNode, onRenameNode, onDeleteNodes, onInsertAsset }: Props) {
+export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes, connections, selectedNodeIds, onFocusNode, onHoverNode, hoveredNodeId, onPreviewNode, onRenameNode, onDeleteNodes, onInsertAsset, onRetryNode, onRunWorkflow, onRenameWorkflow }: Props) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [tab, setTab] = useState<PanelTab>("canvas");
@@ -205,7 +208,7 @@ export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes,
                                 transition={{ duration: 0.24, ease: PANEL_EASE }}
                             >
                                 {tab === "canvas" ? (
-                                    <CanvasNodesTab nodes={nodes} connections={connections} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} onHoverNode={onHoverNode} hoveredNodeId={hoveredNodeId} onPreviewNode={onPreviewNode} onRenameNode={onRenameNode} onDeleteNodes={onDeleteNodes} theme={theme} />
+                                    <CanvasNodesTab nodes={nodes} connections={connections} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} onHoverNode={onHoverNode} hoveredNodeId={hoveredNodeId} onPreviewNode={onPreviewNode} onRenameNode={onRenameNode} onDeleteNodes={onDeleteNodes} onRetryNode={onRetryNode} onRunWorkflow={onRunWorkflow} onRenameWorkflow={onRenameWorkflow} theme={theme} />
                                 ) : tab === "assets" ? (
                                     <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />
                                 ) : tab === "prompts" ? (
@@ -255,32 +258,146 @@ function PanelToggle({
 // Canvas tab: list nodes and center, zoom, and select the clicked node.
 // ---------------------------------------------------------------------------
 
-const NODE_FILTER_VALUES = ["all", CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Text, CanvasNodeType.Audio, CanvasNodeType.Config, CanvasNodeType.Group];
+type ListFilter = "all" | "failed" | "running" | "image" | "text" | "video" | "audio" | "config";
 
-function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onHoverNode, hoveredNodeId, onPreviewNode, onRenameNode, onDeleteNodes, theme }: { nodes: CanvasNodeData[]; connections: CanvasConnection[]; selectedNodeIds: Set<string>; onFocusNode: (nodeId: string) => void; onHoverNode?: (nodeId: string | null) => void; hoveredNodeId?: string | null; onPreviewNode: (nodeId: string) => void; onRenameNode: (nodeId: string) => void; onDeleteNodes: (nodeIds: Set<string>) => void; theme: CanvasTheme }) {
+function nodeRunState(node: CanvasNodeData): "failed" | "running" | "done" | "idle" {
+    const execution = node.metadata?.executionStatus;
+    if (node.metadata?.status === "error" || execution === "failed") return "failed";
+    if (node.metadata?.status === "loading" || execution === "running" || execution === "queued") return "running";
+    if (node.metadata?.status === "success" || execution === "succeeded") return "done";
+    return "idle";
+}
+
+function matchesListFilter(node: CanvasNodeData, filter: ListFilter) {
+    if (filter === "all") return true;
+    if (filter === "failed") return nodeRunState(node) === "failed";
+    if (filter === "running") return nodeRunState(node) === "running";
+    if (filter === "config") return isCanvasExecutableNode(node);
+    return node.type === filter;
+}
+
+/** First sentence of an error, short enough for one row. */
+function shortError(details?: string) {
+    const text = (details || "").replace(/\s+/g, " ").trim();
+    if (!text) return "";
+    const first = text.split(/[。.!！？?\n]/)[0] || text;
+    return first.length > 30 ? `${first.slice(0, 30)}…` : first;
+}
+
+/** One line under a node's name: why it failed, or what it holds (text excerpt, generation settings, image size). */
+function nodeSummary(node: CanvasNodeData, t: (key: string, options?: Record<string, unknown>) => string) {
+    const metadata = node.metadata;
+    if (nodeRunState(node) === "failed") return { text: shortError(metadata?.errorDetails) || t("agent.message.failed"), danger: true };
+    if (node.type === CanvasNodeType.Text) {
+        const excerpt = (metadata?.content || "").replace(/\s+/g, " ").trim();
+        return excerpt ? { text: excerpt.slice(0, 40), danger: false } : null;
+    }
+    // Operation nodes (crop, upscale…) are named after what they do already; only generation configs get a summary.
+    if (isCanvasExecutableNode(node) && !isCanvasOperationNodeType(node.type)) {
+        const mode = metadata?.generationMode || "image";
+        const label = t(mode === "text" ? "canvas.sidePanel.list.generateText" : mode === "video" ? "canvas.sidePanel.list.generateVideo" : mode === "audio" ? "canvas.sidePanel.list.generateAudio" : "canvas.sidePanel.list.generate");
+        const count = Number(metadata?.count) || 0;
+        return { text: mode === "image" && count > 1 ? `${label} · ${t("canvas.sidePanel.list.images", { count })}` : label, danger: false };
+    }
+    if (metadata?.naturalWidth && metadata?.naturalHeight) return { text: `${metadata.naturalWidth} × ${metadata.naturalHeight}`, danger: false };
+    return null;
+}
+
+function isTypingTarget(target: EventTarget | null) {
+    const element = target as HTMLElement | null;
+    return Boolean(element && (element.isContentEditable || /^(input|textarea|select)$/i.test(element.tagName)));
+}
+
+function CanvasNodesTab({
+    nodes,
+    connections,
+    selectedNodeIds,
+    onFocusNode,
+    onHoverNode,
+    hoveredNodeId,
+    onPreviewNode,
+    onRenameNode,
+    onDeleteNodes,
+    onRetryNode,
+    onRunWorkflow,
+    onRenameWorkflow,
+    theme,
+}: {
+    nodes: CanvasNodeData[];
+    connections: CanvasConnection[];
+    selectedNodeIds: Set<string>;
+    onFocusNode: (nodeId: string) => void;
+    onHoverNode?: (nodeId: string | null) => void;
+    hoveredNodeId?: string | null;
+    onPreviewNode: (nodeId: string) => void;
+    onRenameNode: (nodeId: string) => void;
+    onDeleteNodes: (nodeIds: Set<string>) => void;
+    onRetryNode?: (nodeId: string) => void;
+    onRunWorkflow?: (workflowId: string) => void;
+    onRenameWorkflow?: (configNodeId: string, name: string) => void;
+    theme: CanvasTheme;
+}) {
     const { message } = App.useApp();
     const { t } = useTranslation();
     const [keyword, setKeyword] = useState("");
-    const [typeFilter, setTypeFilter] = useState<string>("all");
+    const [filter, setFilter] = useState<ListFilter>("all");
     const [selectMode, setSelectMode] = useState(false);
     const [checked, setChecked] = useState<Set<string>>(new Set());
     const [exporting, setExporting] = useState(false);
     const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
     const [openActionsNodeId, setOpenActionsNodeId] = useState<string | null>(null);
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
+    const [showTips, setShowTips] = useState(false);
+    const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
+    const searchRef = useRef<HTMLInputElement>(null);
+    const dark = theme.scheme === "dark";
 
-    const workflowGroups = useMemo(() => buildCanvasSidePanelWorkflowGroups(nodes, connections), [connections, nodes]);
-    const grouped = useMemo(() => {
-        const query = keyword.trim().toLowerCase();
-        return workflowGroups
-            .map((group, index) => ({
+    // "/" jumps to the search box, like most list UIs.
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target)) return;
+            event.preventDefault();
+            searchRef.current?.focus();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, []);
+
+    const workflowGroups = useMemo(
+        () =>
+            buildCanvasSidePanelWorkflowGroups(nodes, connections).map((group) => ({
                 ...group,
-                workflowIndex: index + 1,
-                nodes: group.nodes.filter((node) => (typeFilter === "all" || node.type === typeFilter || (typeFilter === CanvasNodeType.Config && isCanvasExecutableNode(node))) && (!query || [node.title, node.metadata?.content, node.metadata?.prompt].filter(Boolean).join(" ").toLowerCase().includes(query))),
-            }))
-            .filter((group) => group.nodes.length);
-    }, [keyword, typeFilter, workflowGroups]);
-    const filtered = useMemo(() => grouped.flatMap((group) => group.nodes), [grouped]);
+                nodes: orderCanvasWorkflowNodes(group.nodes, connections),
+                name: group.firstConfig ? canvasWorkflowDisplayName(group, connections) : "",
+            })),
+        [connections, nodes],
+    );
+    const counts = useMemo(() => {
+        const result: Record<ListFilter, number> = { all: nodes.length, failed: 0, running: 0, image: 0, text: 0, video: 0, audio: 0, config: 0 };
+        nodes.forEach((node) => {
+            (["failed", "running", "image", "text", "video", "audio", "config"] as const).forEach((key) => {
+                if (matchesListFilter(node, key)) result[key] += 1;
+            });
+        });
+        return result;
+    }, [nodes]);
+    const query = keyword.trim().toLowerCase();
+    const narrowing = Boolean(query) || filter !== "all";
+    const grouped = useMemo(
+        () =>
+            workflowGroups
+                .map((group) => ({
+                    ...group,
+                    visible: group.nodes.filter(
+                        (node) =>
+                            matchesListFilter(node, filter) &&
+                            (!query || [node.title, node.metadata?.content, node.metadata?.prompt, node.metadata?.composerContent, group.name].filter(Boolean).join(" ").toLowerCase().includes(query)),
+                    ),
+                }))
+                .filter((group) => group.visible.length),
+        [filter, query, workflowGroups],
+    );
+    const filtered = useMemo(() => grouped.flatMap((group) => group.visible), [grouped]);
     const infoNode = infoNodeId ? nodes.find((node) => node.id === infoNodeId) || null : null;
     useEffect(() => {
         if (openActionsNodeId && !filtered.some((node) => node.id === openActionsNodeId)) setOpenActionsNodeId(null);
@@ -288,12 +405,19 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onHo
     useEffect(() => {
         if (infoNodeId && !nodes.some((node) => node.id === infoNodeId)) setInfoNodeId(null);
     }, [infoNodeId, nodes]);
+    // Nothing to filter by any more (e.g. the last failure was retried): fall back to everything.
+    useEffect(() => {
+        if (filter !== "all" && counts[filter] === 0) setFilter("all");
+    }, [counts, filter]);
+
     const toggleGroup = (groupId: string) =>
         setCollapsedGroups((current) => {
             const next = new Set(current);
             next.has(groupId) ? next.delete(groupId) : next.add(groupId);
             return next;
         });
+    const allCollapsed = workflowGroups.length > 0 && workflowGroups.every((group) => collapsedGroups.has(group.id));
+    const toggleAllGroups = () => setCollapsedGroups(allCollapsed ? new Set() : new Set(workflowGroups.map((group) => group.id)));
 
     const exitSelect = () => {
         setSelectMode(false);
@@ -327,13 +451,40 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onHo
         }
     };
 
+    const chips: Array<{ value: ListFilter; tone: "neutral" | "danger" | "accent" }> = [
+        { value: "all", tone: "neutral" },
+        { value: "failed", tone: "danger" },
+        { value: "running", tone: "accent" },
+        { value: "image", tone: "neutral" },
+        { value: "text", tone: "neutral" },
+        { value: "video", tone: "neutral" },
+        { value: "audio", tone: "neutral" },
+        { value: "config", tone: "neutral" },
+    ];
+    const chipStyle = (tone: "neutral" | "danger" | "accent", active: boolean): CSSProperties => {
+        if (tone === "danger") return { background: active ? "#e5484d" : dark ? "rgba(229,72,77,.16)" : "#fdecec", color: active ? "#fff" : "#d93036" };
+        if (tone === "accent") return { background: active ? theme.node.activeStroke : dark ? "rgba(139,124,255,.18)" : "#efebff", color: active ? "#fff" : dark ? "#cfc6ff" : "#5b45d6" };
+        return { background: active ? theme.node.text : dark ? "rgba(255,255,255,.06)" : "#f3f1f8", color: active ? theme.node.panel : theme.node.muted };
+    };
+    const iconButton = "grid size-7 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/[.05] dark:hover:bg-white/[.08]";
+
     return (
         <div className="flex h-full flex-col">
-            <div className="relative z-20 flex items-center gap-2 px-3 pb-2 pt-3">
-                <span className="text-[12px] font-medium" style={{ color: theme.node.muted }}>
+            <div className="relative z-20 flex items-center gap-1 px-3 pb-2 pt-3">
+                <span className="mr-auto text-[12px] font-medium" style={{ color: theme.node.muted }}>
                     {t("canvas.sidePanel.elements")}
-                    {filtered.length ? <span className="ml-1 opacity-60">{filtered.length}</span> : null}
+                    <span className="ml-1 tabular-nums opacity-60">{narrowing ? `${filtered.length}/${nodes.length}` : nodes.length}</span>
                 </span>
+                {!selectMode && workflowGroups.length > 1 ? (
+                    <button type="button" className={iconButton} style={{ color: theme.node.muted }} onClick={toggleAllGroups} title={allCollapsed ? t("canvas.sidePanel.list.expandAll") : t("canvas.sidePanel.list.collapseAll")} aria-label={allCollapsed ? t("canvas.sidePanel.list.expandAll") : t("canvas.sidePanel.list.collapseAll")}>
+                        {allCollapsed ? <ChevronsUpDown className="size-3.5" /> : <ChevronsDownUp className="size-3.5" />}
+                    </button>
+                ) : null}
+                {!selectMode ? (
+                    <button type="button" className={iconButton} style={{ color: showTips ? theme.toolbar.activeText : theme.node.muted, background: showTips ? theme.toolbar.activeBg : undefined }} onClick={() => setShowTips((value) => !value)} title={t("canvas.sidePanel.list.shortcuts")} aria-label={t("canvas.sidePanel.list.shortcuts")} aria-expanded={showTips}>
+                        <CircleHelp className="size-3.5" />
+                    </button>
+                ) : null}
                 <button
                     type="button"
                     onClick={() => {
@@ -343,82 +494,157 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onHo
                             setSelectMode(true);
                         }
                     }}
-                    className="canvas-side-panel-select ml-auto flex h-7 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition-[background-color,color,transform] duration-200 ease-out hover:scale-[1.03]"
+                    className="canvas-side-panel-select flex h-7 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition-[background-color,color,transform] duration-200 ease-out hover:scale-[1.03]"
                     style={selectMode ? { background: theme.toolbar.activeBg, color: theme.toolbar.activeText } : { background: theme.node.fill, color: theme.node.muted }}
                 >
                     <ListChecks className="size-3.5" />
                     {selectMode ? t("common.cancel") : t("canvas.sidePanel.select")}
                 </button>
-                {selectMode ? null : (
-                    <PanelFilterMenu
-                        value={typeFilter}
-                        onChange={setTypeFilter}
-                        theme={theme}
-                        options={NODE_FILTER_VALUES.map((value) => ({
-                            value,
-                            label: value === "all" ? t("common.all") : t(`canvas.sidePanel.filter.${value}`),
-                            icon: value === "all" ? ListChecks : NODE_TYPE_ICON[value] || FileText,
-                        }))}
-                    />
-                )}
             </div>
-            <div className="px-3 pb-3">
-                <PanelSearch value={keyword} onChange={setKeyword} placeholder={t("canvas.sidePanel.searchNodes")} theme={theme} />
+            {showTips ? (
+                <div className="mx-3 mb-2 rounded-[10px] px-3 py-2 text-[11px] leading-[1.7]" style={{ background: dark ? "rgba(255,255,255,.04)" : "#f6f5fa", color: theme.node.muted }}>
+                    {t("canvas.sidePanel.tips")}
+                </div>
+            ) : null}
+            <div className="px-3 pb-2">
+                <PanelSearch value={keyword} onChange={setKeyword} placeholder={t("canvas.sidePanel.searchNodes")} theme={theme} inputRef={searchRef} hint="/" />
+            </div>
+            <div className="flex flex-wrap gap-1.5 px-3 pb-2.5">
+                {chips
+                    .filter((chip) => chip.value === "all" || counts[chip.value] > 0)
+                    .map((chip) => {
+                        const active = filter === chip.value;
+                        return (
+                            <button key={chip.value} type="button" className="inline-flex h-6 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition-colors" style={chipStyle(chip.tone, active)} aria-pressed={active} onClick={() => setFilter(active && chip.value !== "all" ? "all" : chip.value)}>
+                                {chip.value === "running" ? <span className="size-1.5 animate-pulse rounded-full bg-current" /> : null}
+                                {t(`canvas.sidePanel.list.${chip.value}`)}
+                                <span className="tabular-nums opacity-70">{counts[chip.value]}</span>
+                            </button>
+                        );
+                    })}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
                 {filtered.length ? (
-                    <motion.div key={typeFilter} className="space-y-1" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: PANEL_EASE }}>
+                    <motion.div key={filter} className="space-y-1.5" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, ease: PANEL_EASE }}>
                         {grouped.map((group) => {
-                            const collapsed = collapsedGroups.has(group.id) && !keyword.trim();
-                            const workflowName = group.firstConfig?.title.replace(/^\d+\s*[|｜]\s*/, "") || "";
-                            const groupLabel = group.firstConfig
-                                ? [t("canvas.sidePanel.workflow"), workflowName].filter(Boolean).join(" · ")
-                                : t("canvas.sidePanel.standaloneNodes");
+                            const collapsed = collapsedGroups.has(group.id) && !narrowing;
+                            const isWorkflow = Boolean(group.firstConfig);
+                            const label = isWorkflow ? group.name || t("canvas.sidePanel.workflow") : t("canvas.sidePanel.standaloneNodes");
+                            const states = group.nodes.map(nodeRunState);
+                            const failed = states.filter((state) => state === "failed").length;
+                            const running = states.filter((state) => state === "running").length;
+                            const done = states.filter((state) => state === "done").length;
+                            const thumbs = group.nodes.filter((node) => node.type === CanvasNodeType.Image && (node.metadata?.thumbnailUrl || node.metadata?.storageKey || node.metadata?.content)).slice(0, 3);
+                            const modeTitle = group.firstConfig ? getNodeDefinition(group.firstConfig.type)?.title || group.firstConfig.title?.replace(/^\d+\s*[|｜]\s*/, "") || t("canvas.sidePanel.workflow") : "";
                             return (
-                                <div key={group.id}>
-                                    <button
-                                        type="button"
-                                        className="flex h-8 w-full items-center gap-1.5 rounded-[8px] px-2 text-left text-[11px] font-medium transition-colors hover:bg-black/[.03] disabled:cursor-default dark:hover:bg-white/[.05]"
-                                        style={{ color: theme.node.muted }}
-                                        onClick={() => toggleGroup(group.id)}
-                                        disabled={Boolean(keyword.trim())}
-                                        aria-expanded={!collapsed}
-                                    >
-                                        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", !collapsed && "rotate-90")} />
-                                        {group.firstConfig ? <Settings2 className="size-3.5 shrink-0" /> : <Square className="size-3.5 shrink-0" />}
-                                        <span className="min-w-0 max-w-[180px] flex-1 truncate" title={groupLabel}>{groupLabel}</span>
-                                        <span className="tabular-nums opacity-50">{group.nodes.length}</span>
-                                    </button>
+                                <div key={group.id} className="rounded-[12px] border transition-colors" style={{ borderColor: failed ? (dark ? "rgba(229,72,77,.28)" : "#f6d4d5") : dark ? "rgba(255,255,255,.07)" : "#eeecf4" }}>
+                                    <div className="group/workflow flex items-center gap-1.5 py-2 pl-2 pr-1.5">
+                                        <button type="button" className="grid size-6 shrink-0 place-items-center rounded-md transition-colors hover:bg-black/[.04] disabled:opacity-40 dark:hover:bg-white/[.06]" style={{ color: theme.node.muted }} onClick={() => toggleGroup(group.id)} disabled={narrowing} aria-expanded={!collapsed} aria-label={label}>
+                                            <ChevronRight className={cn("size-3.5 transition-transform", !collapsed && "rotate-90")} />
+                                        </button>
+                                        <div className="min-w-0 flex-1 cursor-pointer" onClick={() => toggleGroup(group.id)} onDoubleClick={() => isWorkflow && onRenameWorkflow && setRenamingGroupId(group.id)} title={isWorkflow && onRenameWorkflow ? t("canvas.sidePanel.list.renameWorkflow") : undefined}>
+                                            {renamingGroupId === group.id && group.firstConfig ? (
+                                                <input
+                                                    autoFocus
+                                                    defaultValue={group.name}
+                                                    placeholder={t("canvas.sidePanel.list.workflowNamePlaceholder")}
+                                                    className="h-6 w-full rounded-md px-1.5 text-[12.5px] font-semibold outline-none"
+                                                    style={{ background: dark ? "rgba(255,255,255,.06)" : "#f3f1f8", color: theme.node.text, boxShadow: `0 0 0 1.5px ${theme.node.activeStroke}` }}
+                                                    onClick={(event) => event.stopPropagation()}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === "Enter") event.currentTarget.blur();
+                                                        if (event.key === "Escape") setRenamingGroupId(null);
+                                                    }}
+                                                    onBlur={(event) => {
+                                                        const value = event.currentTarget.value.trim();
+                                                        if (renamingGroupId === group.id && group.firstConfig && value !== group.name) onRenameWorkflow?.(group.firstConfig.id, value);
+                                                        setRenamingGroupId(null);
+                                                    }}
+                                                />
+                                            ) : (
+                                                <div className="truncate text-[12.5px] font-semibold leading-5" style={{ color: theme.node.text }}>
+                                                    {label}
+                                                </div>
+                                            )}
+                                            <div className="flex items-center gap-1 truncate text-[11px] leading-4" style={{ color: theme.node.faint }}>
+                                                {isWorkflow ? (
+                                                    <>
+                                                        <span className="truncate">{modeTitle}</span>
+                                                        <span>·</span>
+                                                        <span className="shrink-0">{t("canvas.sidePanel.list.nodes", { count: group.nodes.length })}</span>
+                                                        {failed ? <span className="shrink-0 font-medium text-[#e5484d]">· {t("canvas.sidePanel.list.failedCount", { count: failed })}</span> : null}
+                                                        {running ? <span className="shrink-0 font-medium" style={{ color: theme.node.activeStroke }}>· {t("canvas.sidePanel.list.runningCount", { count: running })}</span> : null}
+                                                        {!failed && !running && done ? <span className="shrink-0">· {t("canvas.sidePanel.list.doneCount", { count: done })}</span> : null}
+                                                    </>
+                                                ) : (
+                                                    <span>{t("canvas.sidePanel.list.unlinked", { count: group.nodes.length })}</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        {thumbs.length ? (
+                                            <span className="flex shrink-0 pr-0.5 group-hover/workflow:hidden">
+                                                {thumbs.map((node, index) => (
+                                                    <span key={node.id} className="size-[22px] overflow-hidden rounded-[6px] border-[1.5px]" style={{ marginLeft: index ? -8 : 0, borderColor: theme.node.panel, background: dark ? "#2a2735" : "#eeebf5" }}>
+                                                        <CanvasPreviewImage src={node.metadata?.content} storageKey={node.metadata?.storageKey} thumbnailUrl={node.metadata?.thumbnailUrl} alt="" maxEdge={96} className="size-full object-cover" />
+                                                    </span>
+                                                ))}
+                                            </span>
+                                        ) : null}
+                                        {!selectMode ? (
+                                            <span className={cn("shrink-0 items-center gap-0.5", thumbs.length ? "hidden group-hover/workflow:flex" : "flex opacity-60 group-hover/workflow:opacity-100")}>
+                                                {isWorkflow && onRunWorkflow ? (
+                                                    <button type="button" className={iconButton} style={{ color: theme.node.muted }} onClick={() => onRunWorkflow(group.id)} title={t("canvas.sidePanel.list.run")} aria-label={t("canvas.sidePanel.list.run")}>
+                                                        <Play className="size-3.5" />
+                                                    </button>
+                                                ) : null}
+                                                <button type="button" className={iconButton} style={{ color: theme.node.muted }} onClick={() => onFocusNode((group.firstConfig || group.nodes[0]).id)} title={t("canvas.sidePanel.list.locate")} aria-label={t("canvas.sidePanel.list.locate")}>
+                                                    <LocateFixed className="size-3.5" />
+                                                </button>
+                                            </span>
+                                        ) : null}
+                                    </div>
                                     <AnimatePresence initial={false}>
                                         {!collapsed ? (
-                                            <motion.div
-                                                key="nodes"
-                                                initial={{ height: 0, opacity: 0 }}
-                                                animate={{ height: "auto", opacity: 1 }}
-                                                exit={{ height: 0, opacity: 0 }}
-                                                transition={{ duration: 0.2, ease: PANEL_EASE }}
-                                                className="overflow-hidden"
-                                            >
-                                                <div className="space-y-1">
-                                                    {group.nodes.map((node) => {
+                                            <motion.div key="nodes" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2, ease: PANEL_EASE }} className="overflow-hidden">
+                                                <div className="mb-1.5 ml-[18px] mr-1 space-y-0.5 border-l pl-1.5" style={{ borderColor: dark ? "rgba(255,255,255,.09)" : "#e7e4ef" }}>
+                                                    {group.visible.map((node) => {
                                                         const Icon = NODE_TYPE_ICON[node.type];
                                                         const registeredIcon = getNodeDefinition(node.type)?.icon;
-                                                        const isImage = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content || node.metadata?.thumbnailUrl);
+                                                        const isImage = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content || node.metadata?.thumbnailUrl || node.metadata?.storageKey);
                                                         const isChecked = checked.has(node.id);
                                                         const active = selectMode ? isChecked : selectedNodeIds.has(node.id);
+                                                        const state = nodeRunState(node);
+                                                        const summary = nodeSummary(node, t);
+                                                        const statusColor = STATUS_COLOR[state === "failed" ? "error" : state === "running" ? "loading" : state === "done" ? "success" : "idle"];
                                                         return (
-                                                            <div key={node.id} className={cn("group flex w-full items-center rounded-[10px] transition-colors duration-150 hover:bg-[#f5f3fa] dark:hover:bg-white/[.05]", !active && hoveredNodeId === node.id && "bg-[#f5f3fa] dark:bg-white/[.05]")} onMouseEnter={() => onHoverNode?.(node.id)} onMouseLeave={() => onHoverNode?.(null)} style={active ? { ...VIRTUAL_NODE_ROW_STYLE, background: theme.scheme === "dark" ? "rgba(139,124,255,.18)" : "#efebff", color: theme.scheme === "dark" ? "#e6e0ff" : "#3b2a9e" } : VIRTUAL_NODE_ROW_STYLE}>
-                                                                <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-1.5 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
+                                                            <div
+                                                                key={node.id}
+                                                                className={cn("group flex w-full items-center rounded-[9px] transition-colors duration-150 hover:bg-[#f5f3fa] dark:hover:bg-white/[.05]", !active && hoveredNodeId === node.id && "bg-[#f5f3fa] dark:bg-white/[.05]")}
+                                                                onMouseEnter={() => onHoverNode?.(node.id)}
+                                                                onMouseLeave={() => onHoverNode?.(null)}
+                                                                style={active ? { ...VIRTUAL_NODE_ROW_STYLE, background: dark ? "rgba(139,124,255,.18)" : "#efebff", color: dark ? "#e6e0ff" : "#3b2a9e" } : VIRTUAL_NODE_ROW_STYLE}
+                                                            >
+                                                                <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className="flex min-w-0 flex-1 items-center gap-2.5 px-1.5 py-1.5 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
                                                                     {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
-                                                                    <span className="grid size-[30px] shrink-0 place-items-center overflow-hidden rounded-[8px]" style={isImage ? { background: theme.scheme === "dark" ? "#2a2735" : "#eeebf5" } : CanvasIconWellStyle(nodeTypeColor(node.type))}>
-                                                                        {isImage ? <CanvasPreviewImage storageKey={node.metadata?.storageKey} thumbnailUrl={node.metadata?.thumbnailUrl} alt={node.title} maxEdge={160} allowOriginalFallback={false} className="size-full object-cover" /> : Icon ? <Icon className="size-4" /> : registeredIcon || <FileText className="size-4" />}
+                                                                    <span className="grid size-[30px] shrink-0 place-items-center overflow-hidden rounded-[8px]" style={isImage ? { background: dark ? "#2a2735" : "#eeebf5" } : CanvasIconWellStyle(nodeTypeColor(node.type))}>
+                                                                        {isImage ? <CanvasPreviewImage src={node.metadata?.content} storageKey={node.metadata?.storageKey} thumbnailUrl={node.metadata?.thumbnailUrl} alt={node.title} maxEdge={160} className="size-full object-cover" /> : Icon ? <Icon className="size-4" /> : registeredIcon || <FileText className="size-4" />}
                                                                     </span>
-                                                                    <span className={cn("min-w-0 max-w-[160px] flex-1 truncate text-[12px] leading-5", active ? "font-semibold" : "font-medium")}>{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
-                                                                    {(() => {
-                                                                        const color = STATUS_COLOR[node.metadata?.status || "idle"] || STATUS_COLOR.idle;
-                                                                        return <span className={cn("size-[7px] shrink-0 rounded-full", node.metadata?.status === "loading" && "animate-pulse")} style={{ background: color, boxShadow: `0 0 0 3px ${color}26` }} />;
-                                                                    })()}
+                                                                    <span className="min-w-0 flex-1">
+                                                                        <span className={cn("block truncate text-[12px] leading-[18px]", active ? "font-semibold" : "font-medium")}>{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
+                                                                        {summary ? (
+                                                                            <span className="block truncate text-[11px] leading-4" style={{ color: summary.danger ? "#e5484d" : theme.node.faint }} title={summary.danger ? node.metadata?.errorDetails : undefined}>
+                                                                                {summary.text}
+                                                                            </span>
+                                                                        ) : null}
+                                                                    </span>
+                                                                    {state === "failed" && onRetryNode && !selectMode ? null : <span className={cn("size-[7px] shrink-0 rounded-full", state === "running" && "animate-pulse")} style={{ background: statusColor, boxShadow: `0 0 0 3px ${statusColor}26` }} />}
                                                                 </button>
+                                                                {state === "failed" && onRetryNode && !selectMode ? (
+                                                                    <button type="button" className="mr-0.5 inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-[11px] font-medium transition-colors hover:bg-[#fdecec] dark:hover:bg-[rgba(229,72,77,.14)]" style={{ borderColor: dark ? "rgba(229,72,77,.4)" : "#f3c1c3", color: "#e5484d" }} onClick={() => onRetryNode(node.id)}>
+                                                                        <RotateCw className="size-3" />
+                                                                        {t("canvas.sidePanel.list.retry")}
+                                                                    </button>
+                                                                ) : null}
                                                                 {selectMode ? null : (
                                                                     <NodeRowActionsMenu
                                                                         node={node}
@@ -443,15 +669,25 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onHo
                             );
                         })}
                     </motion.div>
+                ) : nodes.length ? (
+                    <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-[12px]" style={{ color: theme.node.muted }}>
+                        {t("canvas.sidePanel.list.noMatch")}
+                        <button
+                            type="button"
+                            className="rounded-full px-3 py-1 text-[11px] font-medium"
+                            style={{ background: theme.toolbar.activeBg, color: theme.toolbar.activeText }}
+                            onClick={() => {
+                                setFilter("all");
+                                setKeyword("");
+                            }}
+                        >
+                            {t("canvas.sidePanel.list.clearFilter")}
+                        </button>
+                    </div>
                 ) : (
                     <CanvasEmptyState icon={<Square className="size-5" />} title={t("canvas.sidePanel.noNodes")} hint={t("canvas.sidePanel.noNodesHint")} color={theme.node.muted} />
                 )}
             </div>
-            {!selectMode ? (
-                <div className="mx-3 mb-3 shrink-0 rounded-[12px] px-3 py-2.5 text-[11px] leading-[1.7]" style={{ background: theme.scheme === "dark" ? "rgba(255,255,255,.04)" : "#f6f5fa", color: theme.node.muted }}>
-                    {t("canvas.sidePanel.tips")}
-                </div>
-            ) : null}
             {selectMode ? (
                 <div className="flex items-center gap-2 px-3 py-2.5" style={{ boxShadow: `inset 0 1px 0 ${theme.toolbar.border}` }}>
                     <button type="button" onClick={toggleAll} className="rounded-full px-2.5 py-1 text-[11px] font-medium" style={{ color: theme.node.muted }}>
@@ -648,106 +884,33 @@ function CanvasRecentProjectsTab({ projectId, theme }: { projectId: string; them
     );
 }
 
-function PanelFilterMenu({
-    value,
-    onChange,
-    options,
-    theme,
-}: {
-    value: string;
-    onChange: (next: string) => void;
-    options: { value: string; label: string; icon: typeof Square }[];
-    theme: CanvasTheme;
-}) {
-    const [open, setOpen] = useState(false);
-    const [hovered, setHovered] = useState<string | null>(null);
-    const wrapRef = useRef<HTMLDivElement>(null);
-    const current = options.find((item) => item.value === value) || options[0];
-
-    useEffect(() => {
-        if (!open) return;
-        const close = (event: PointerEvent) => {
-            if (wrapRef.current?.contains(event.target as Node)) return;
-            setOpen(false);
-        };
-        const timer = window.setTimeout(() => document.addEventListener("pointerdown", close), 0);
-        return () => {
-            window.clearTimeout(timer);
-            document.removeEventListener("pointerdown", close);
-        };
-    }, [open]);
-
-    return (
-        <div ref={wrapRef} className="relative">
-            <button
-                type="button"
-                className="flex h-7 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition-[background-color,color,transform] duration-200 ease-out hover:scale-[1.04]"
-                style={{ background: open ? theme.toolbar.activeBg : theme.node.fill, color: open ? theme.toolbar.activeText : theme.node.muted }}
-                aria-expanded={open}
-                onClick={() => setOpen((prev) => !prev)}
-            >
-                {current.label}
-                <ChevronDown className={cn("size-3.5 transition-transform duration-200", open && "rotate-180")} />
-            </button>
-            <AnimatePresence>
-                {open ? (
-                    <motion.div
-                        key="filter-menu"
-                        className="canvas-float-menu absolute right-0 top-[calc(100%+6px)] z-30 w-[168px] origin-top-right overflow-hidden rounded-2xl border p-1"
-                        initial={{ opacity: 0, y: -8, scale: 0.92 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: -6, scale: 0.96 }}
-                        transition={{ duration: 0.2, ease: PANEL_EASE }}
-                        style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text, boxShadow: theme.toolbar.shadow, backdropFilter: "blur(22px)" }}
-                    >
-                        {options.map((item, index) => {
-                            const Icon = item.icon;
-                            const active = item.value === value;
-                            return (
-                                <motion.button
-                                    key={item.value}
-                                    type="button"
-                                    className="relative flex h-8 w-full items-center gap-2 rounded-xl px-2.5 text-left text-[12px] font-medium"
-                                    initial={{ opacity: 0, y: 6 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    transition={{ duration: 0.18, delay: 0.04 + index * 0.02, ease: PANEL_EASE }}
-                                    style={active ? { color: theme.toolbar.activeText } : { color: theme.node.text }}
-                                    onHoverStart={() => setHovered(item.value)}
-                                    onHoverEnd={() => setHovered((currentHover) => (currentHover === item.value ? null : currentHover))}
-                                    onClick={() => {
-                                        onChange(item.value);
-                                        setOpen(false);
-                                    }}
-                                >
-                                    {active ? (
-                                        <span className="absolute inset-0 rounded-xl" style={{ background: theme.toolbar.activeBg }} />
-                                    ) : hovered === item.value ? (
-                                        <motion.span layoutId="sidePanelFilterHover" className="absolute inset-0 rounded-xl" style={{ background: theme.toolbar.itemHover }} transition={{ type: "spring", stiffness: 520, damping: 36 }} />
-                                    ) : null}
-                                    <Icon className="relative z-10 size-3.5 shrink-0 opacity-70" />
-                                    <span className="relative z-10 min-w-0 flex-1">{item.label}</span>
-                                    {active ? <Check className="relative z-10 size-3.5 shrink-0" /> : null}
-                                </motion.button>
-                            );
-                        })}
-                    </motion.div>
-                ) : null}
-            </AnimatePresence>
-        </div>
-    );
-}
-
-function PanelSearch({ value, onChange, placeholder, theme }: { value: string; onChange: (value: string) => void; placeholder: string; theme: CanvasTheme }) {
+function PanelSearch({ value, onChange, placeholder, theme, inputRef, hint }: { value: string; onChange: (value: string) => void; placeholder: string; theme: CanvasTheme; inputRef?: React.Ref<HTMLInputElement>; hint?: string }) {
     return (
         <label className="flex h-9 items-center gap-2 rounded-[10px] px-3 transition-shadow focus-within:shadow-[0_0_0_2px_rgba(109,92,255,.25)]" style={{ background: theme.scheme === "dark" ? "rgba(255,255,255,.05)" : "#f6f5fa" }}>
             <Search className="size-3.5 shrink-0" style={{ color: theme.node.faint }} />
             <input
+                ref={inputRef}
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
+                onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                        onChange("");
+                        event.currentTarget.blur();
+                    }
+                }}
                 placeholder={placeholder}
                 className="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
                 style={{ color: theme.node.text }}
             />
+            {value ? (
+                <button type="button" className="grid size-5 shrink-0 place-items-center rounded-full" style={{ color: theme.node.faint }} onClick={() => onChange("")} aria-label="清空">
+                    <X className="size-3.5" />
+                </button>
+            ) : hint ? (
+                <kbd className="shrink-0 rounded-[5px] border px-1.5 font-sans text-[10px] leading-4 shadow-none" style={{ borderColor: theme.node.stroke, color: theme.node.faint, background: "transparent" }}>
+                    {hint}
+                </kbd>
+            ) : null}
         </label>
     );
 }
