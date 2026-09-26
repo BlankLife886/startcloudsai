@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { App, Modal, Popconfirm, Spin, Tag } from "antd";
 import { useQuery } from "@tanstack/react-query";
@@ -10,6 +11,8 @@ import { useNavigate } from "react-router";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
 import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
+import { canvasMiniMapLayout } from "@/lib/canvas/canvas-mini-map";
+import { getCanvasPortalRoot } from "@/lib/canvas-portal";
 import { buildCanvasSidePanelWorkflowGroups, canvasWorkflowDisplayName, orderCanvasWorkflowNodes } from "@/lib/canvas/canvas-workflow-groups";
 import { isCanvasExecutableNode, isCanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
@@ -21,7 +24,7 @@ import { uploadImage } from "@/services/image-storage";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
 import { CANVAS_SIDE_PANEL_MAX_WIDTH, CANVAS_SIDE_PANEL_MIN_WIDTH, CANVAS_SIDE_PANEL_MOTION_MS, useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { prefetchCanvasProjectDocument, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 import type { InsertAssetPayload } from "./asset-picker-modal";
@@ -840,6 +843,107 @@ function NodeRowMenuItem({ icon, label, onClick, theme, danger = false }: { icon
     );
 }
 
+function formatRecentDate(value: string, language: string) {
+    return new Date(value).toLocaleString(language, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+const PREVIEW_WIDTH = 300;
+const PREVIEW_MAP_WIDTH = 276;
+const PREVIEW_MAP_HEIGHT = 168;
+
+/** Hover card beside the side panel: a small map of the project's nodes and what it contains. */
+function RecentProjectPreview({ project, anchor, theme }: { project: CanvasProject; anchor: { left: number; centerY: number }; theme: CanvasTheme }) {
+    const { t, i18n } = useTranslation();
+    const dark = theme.scheme === "dark";
+    const map = useMemo(() => canvasMiniMapLayout(project.nodes, project.connections, PREVIEW_MAP_WIDTH, PREVIEW_MAP_HEIGHT), [project.nodes, project.connections]);
+    const loading = Boolean(project.documentPending) && !project.nodes.length;
+    const stats = useMemo(() => {
+        const count = (predicate: (node: CanvasNodeData) => boolean) => project.nodes.filter(predicate).length;
+        return [
+            { key: "image", label: t("canvas.sidePanel.list.image"), value: count((node) => node.type === CanvasNodeType.Image) },
+            { key: "text", label: t("canvas.sidePanel.list.text"), value: count((node) => node.type === CanvasNodeType.Text) },
+            { key: "video", label: t("canvas.sidePanel.list.video"), value: count((node) => node.type === CanvasNodeType.Video) },
+            { key: "config", label: t("canvas.sidePanel.list.config"), value: count((node) => isCanvasExecutableNode(node)) },
+            { key: "failed", label: t("canvas.sidePanel.list.failed"), value: count((node) => nodeRunState(node) === "failed"), danger: true },
+        ].filter((item) => item.value > 0);
+    }, [project.nodes, t]);
+    // Real thumbnails only where an image node is big enough on the map to read.
+    let thumbnails = 0;
+    const cardHeight = 290;
+    const top = Math.min(Math.max(12, anchor.centerY - cardHeight / 2), window.innerHeight - cardHeight - 12);
+
+    return createPortal(
+        <motion.div
+            initial={{ opacity: 0, x: -6, scale: 0.98 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            transition={{ duration: 0.16, ease: PANEL_EASE }}
+            className="pointer-events-none fixed rounded-[16px] p-3"
+            style={{ left: anchor.left, top, width: PREVIEW_WIDTH, zIndex: 80, background: dark ? "rgba(28,26,36,.97)" : "rgba(255,255,255,.98)", border: `1px solid ${dark ? "rgba(255,255,255,.08)" : "#ebe8f2"}`, boxShadow: dark ? "0 18px 44px rgba(0,0,0,.45)" : "0 18px 44px rgba(30,20,80,.14)" }}
+        >
+            <div className="mb-2 flex items-baseline gap-2 px-0.5">
+                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold" style={{ color: theme.node.text }}>
+                    {project.title}
+                </span>
+                <span className="shrink-0 text-[11px] tabular-nums" style={{ color: theme.node.faint }}>
+                    {formatRecentDate(project.updatedAt, i18n.language)}
+                </span>
+            </div>
+            <div
+                className="relative overflow-hidden rounded-[12px]"
+                style={{ width: PREVIEW_MAP_WIDTH, height: PREVIEW_MAP_HEIGHT, background: dark ? "#16141d" : "#f6f5fa", backgroundImage: `radial-gradient(${dark ? "rgba(255,255,255,.07)" : "rgba(23,21,31,.09)"} 1px, transparent 1px)`, backgroundSize: "12px 12px" }}
+            >
+                {loading ? (
+                    <div className="canvas-node-shimmer absolute inset-0" />
+                ) : !map.rects.length ? (
+                    <div className="grid h-full place-items-center text-[12px]" style={{ color: theme.node.faint }}>
+                        {t("canvas.sidePanel.list.empty")}
+                    </div>
+                ) : (
+                    <>
+                        <svg className="absolute inset-0" width={PREVIEW_MAP_WIDTH} height={PREVIEW_MAP_HEIGHT} aria-hidden>
+                            {map.paths.map((d, index) => (
+                                <path key={index} d={d} fill="none" stroke={dark ? "rgba(180,170,230,.35)" : "rgba(109,92,255,.35)"} strokeWidth={1} />
+                            ))}
+                        </svg>
+                        {map.rects.map((rect) => {
+                            const color = nodeTypeColor(rect.type, undefined, theme.scheme);
+                            const isGroup = rect.type === CanvasNodeType.Group;
+                            const image = rect.type === CanvasNodeType.Image && rect.width >= 14 && rect.height >= 14 && (rect.node.metadata?.thumbnailUrl || rect.node.metadata?.storageKey) && thumbnails++ < 16;
+                            const failed = nodeRunState(rect.node) === "failed";
+                            return (
+                                <span
+                                    key={rect.id}
+                                    className="absolute overflow-hidden"
+                                    style={{
+                                        left: rect.x,
+                                        top: rect.y,
+                                        width: rect.width,
+                                        height: rect.height,
+                                        borderRadius: Math.min(4, rect.width / 4, rect.height / 4),
+                                        background: isGroup ? "transparent" : image ? (dark ? "#2a2735" : "#e9e6f2") : `${color}${dark ? "55" : "33"}`,
+                                        border: isGroup ? `1px dashed ${color}88` : `1px solid ${failed ? "#e5484d" : `${color}${dark ? "aa" : "99"}`}`,
+                                    }}
+                                >
+                                    {image ? <CanvasPreviewImage storageKey={rect.node.metadata?.storageKey} thumbnailUrl={rect.node.metadata?.thumbnailUrl} alt="" maxEdge={96} allowOriginalFallback={false} className="size-full object-cover" /> : null}
+                                </span>
+                            );
+                        })}
+                    </>
+                )}
+            </div>
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5 px-0.5 text-[11px]">
+                <span style={{ color: theme.node.muted }}>{t("canvas.sidePanel.list.nodes", { count: project.nodes.length })}</span>
+                {stats.map((item) => (
+                    <span key={item.key} className="rounded-full px-2 py-0.5" style={item.danger ? { background: dark ? "rgba(229,72,77,.16)" : "#fdecec", color: "#e5484d" } : { background: dark ? "rgba(255,255,255,.06)" : "#f3f1f8", color: theme.node.muted }}>
+                        {item.label} {item.value}
+                    </span>
+                ))}
+            </div>
+        </motion.div>,
+        getCanvasPortalRoot(),
+    );
+}
+
 function CanvasRecentProjectsTab({ projectId, theme }: { projectId: string; theme: CanvasTheme }) {
     const { t, i18n } = useTranslation();
     const navigate = useNavigate();
@@ -848,6 +952,15 @@ function CanvasRecentProjectsTab({ projectId, theme }: { projectId: string; them
         () => projects.filter((project) => project.id !== projectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 30),
         [projectId, projects],
     );
+    const [hover, setHover] = useState<{ id: string; left: number; centerY: number } | null>(null);
+    const hoverTimer = useRef<number | null>(null);
+    const hovered = hover ? recent.find((project) => project.id === hover.id) : undefined;
+    const clearHover = () => {
+        if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+        hoverTimer.current = null;
+        setHover(null);
+    };
+    useEffect(() => () => clearHover(), []);
 
     return (
         <div className="flex h-full flex-col">
@@ -855,11 +968,25 @@ function CanvasRecentProjectsTab({ projectId, theme }: { projectId: string; them
                 {t("canvas.sidePanel.recentProjects")}
                 <span className="ml-1 opacity-50">{recent.length}</span>
             </div>
-            <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+            <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto px-2 pb-3" onScroll={clearHover}>
                 {recent.length ? (
                     <div className="space-y-1">
                         {recent.map((project) => (
-                            <button key={project.id} type="button" className="group flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-black/[.04] dark:hover:bg-white/[.05]" onClick={() => navigate(`/canvas/${project.id}`)}>
+                            <button
+                                key={project.id}
+                                type="button"
+                                className="group flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-black/[.04] dark:hover:bg-white/[.05]"
+                                onClick={() => navigate(`/canvas/${project.id}`)}
+                                onMouseEnter={(event) => {
+                                    const row = event.currentTarget.getBoundingClientRect();
+                                    const panel = event.currentTarget.closest("aside")?.getBoundingClientRect();
+                                    prefetchCanvasProjectDocument(project.id);
+                                    if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+                                    // A short delay keeps the card from flashing while the pointer sweeps down the list.
+                                    hoverTimer.current = window.setTimeout(() => setHover({ id: project.id, left: (panel?.right ?? row.right) + 12, centerY: row.top + row.height / 2 }), hover ? 40 : 160);
+                                }}
+                                onMouseLeave={clearHover}
+                            >
                                 <span className="grid size-8 shrink-0 place-items-center rounded-lg" style={CanvasIconWellStyle("#64748b", 0.1)}>
                                     <FileClock className="size-3.5" />
                                 </span>
@@ -868,7 +995,7 @@ function CanvasRecentProjectsTab({ projectId, theme }: { projectId: string; them
                                     <span className="mt-0.5 block truncate text-[10px] leading-4" style={{ color: theme.node.muted }}>
                                         {t("canvas.sidePanel.recentMeta", {
                                             count: project.nodes.length,
-                                            date: new Date(project.updatedAt).toLocaleString(i18n.language, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }),
+                                            date: formatRecentDate(project.updatedAt, i18n.language),
                                         })}
                                     </span>
                                 </span>
@@ -880,6 +1007,7 @@ function CanvasRecentProjectsTab({ projectId, theme }: { projectId: string; them
                     <CanvasEmptyState icon={<FileClock className="size-5" />} title={t("canvas.sidePanel.noRecent")} hint={t("canvas.sidePanel.noRecentHint")} color={theme.node.muted} />
                 )}
             </div>
+            <AnimatePresence>{hover && hovered ? <RecentProjectPreview key={hovered.id} project={hovered} anchor={hover} theme={theme} /> : null}</AnimatePresence>
         </div>
     );
 }

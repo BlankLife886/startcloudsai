@@ -5,6 +5,7 @@ import test from "node:test";
 import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "../src/canvas/components/canvas/nodes/bundled/contracts.ts";
 import { applyHtmlPatches, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
 import { htmlImageTokens, isHtmlFrameMessage, withHtmlBridge } from "../src/canvas/components/canvas/nodes/bundled/html-node-runtime.ts";
+import { canvasMiniMapLayout } from "../src/canvas/lib/canvas/canvas-mini-map.ts";
 import { buildCanvasSidePanelWorkflowGroups, canvasWorkflowDisplayName, orderCanvasWorkflowNodes } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 
 const canvasSource = new URL("../src/canvas/", import.meta.url);
@@ -212,4 +213,20 @@ test("side panel lists a workflow in connection order and names it by its conten
     assert.equal(canvasWorkflowDisplayName(generic, connections), "一张海报");
     const named = buildCanvasSidePanelWorkflowGroups([output, { ...config, metadata: { ...config.metadata, workflowName: "春季海报" } }, input], connections)[0];
     assert.equal(canvasWorkflowDisplayName(named, connections), "春季海报");
+});
+
+test("recent project preview fits the canvas into a small map with connection curves", () => {
+    const node = (id, type, x, y, width, height) => ({ id, type, title: id, position: { x, y }, width, height, metadata: {} });
+    const nodes = [node("group", "group", -100, -100, 1200, 700), node("a", "text", 0, 0, 200, 100), node("b", "image", 800, 300, 200, 200)];
+    const map = canvasMiniMapLayout(nodes, [{ id: "c", fromNodeId: "a", toNodeId: "b" }], 276, 168);
+    assert.equal(map.rects[0].id, "group", "group frames are drawn first, behind their members");
+    for (const rect of map.rects) {
+        assert.ok(rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= 276.01 && rect.y + rect.height <= 168.01, `${rect.id} stays inside the box`);
+    }
+    const a = map.rects.find((rect) => rect.id === "a");
+    const b = map.rects.find((rect) => rect.id === "b");
+    assert.ok(b.x > a.x && b.y > a.y, "relative positions are kept");
+    assert.equal(map.paths.length, 1);
+    assert.match(map.paths[0], /^M [\d.]+ [\d.]+ C /);
+    assert.deepEqual(canvasMiniMapLayout([], [], 276, 168).rects, []);
 });
