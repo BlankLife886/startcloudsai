@@ -1414,14 +1414,15 @@ function ConnectionHandleDot({ side, visible, active = false, highlight = false,
                 />
             ) : (
                 <div
-                    className="grid size-[18px] place-items-center rounded-full border-[1.5px] text-[12px] font-bold leading-none transition-all duration-150 group-hover/port:scale-110"
+                    className="grid size-6 place-items-center rounded-full border-[1.5px] transition-all duration-150 group-hover/port:scale-110"
                     style={{
                         background: active ? accent : theme.node.panel,
                         borderColor: active ? accent : theme.node.port,
-                        color: active ? "#fff" : theme.node.muted,
+                        color: active ? "#fff" : theme.node.text,
+                        boxShadow: active ? `0 0 0 4px ${theme.node.activeRing}, 0 4px 10px rgba(109,92,255,.3)` : "0 2px 6px rgba(30,20,80,.12)",
                     }}
                 >
-                    +
+                    <Plus className="size-3.5" strokeWidth={2.5} />
                 </div>
             )}
         </div>
