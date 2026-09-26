@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "../src/canvas/components/canvas/nodes/bundled/contracts.ts";
+import { applyHtmlPatches, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
 
 const canvasSource = new URL("../src/canvas/", import.meta.url);
 const readCanvasSource = async (path) => readFile(new URL(path, canvasSource), "utf8");
@@ -123,4 +124,44 @@ test("image uploads render a pending node before waiting for cloud storage", asy
     assert.match(project, /metadata: \{ status: NODE_STATUS_LOADING, uploading: true \}/);
     assert.match(canvasNode, /data\.metadata\?\.uploading\s*\? t\("canvas\.node\.uploading"\)/);
     assert.match(canvasNode, /node\.metadata\?\.uploading\s*\? t\("canvas\.node\.uploading"\)\s*: canvasGenerationStageLabel/);
+});
+
+test("HTML node edits apply SEARCH/REPLACE patches all-or-nothing", () => {
+    const page = "<!doctype html>\n<html>\n<head>\n  <style>:root{--brand:#6d4aff}</style>\n</head>\n<body>\n  <h1>Hello</h1>\n  <p>World</p>\n</body>\n</html>";
+    const reply = [
+        "好的",
+        "<<<<<<< SEARCH",
+        ":root{--brand:#6d4aff}",
+        "=======",
+        ":root{--brand:#ff4f8b}",
+        ">>>>>>> REPLACE",
+        "<<<<<<< SEARCH",
+        "<h1>Hello</h1>",
+        "  <p>World</p>",
+        "=======",
+        "<h1>你好</h1>",
+        ">>>>>>> REPLACE",
+    ].join("\n");
+    const patches = parseHtmlPatches(reply);
+    assert.equal(patches.length, 2);
+    const applied = applyHtmlPatches(page, patches);
+    assert.equal(applied.ok, true);
+    assert.match(applied.html, /--brand:#ff4f8b/);
+    assert.match(applied.html, /<h1>你好<\/h1>/);
+    assert.doesNotMatch(applied.html, /World/);
+
+    // One patch that does not line up rejects the whole reply and leaves the page as it was.
+    const broken = applyHtmlPatches(page, [...patches, { search: "<footer>missing</footer>", replace: "" }]);
+    assert.deepEqual(broken, { ok: false, failed: [3] });
+    // Ambiguous anchors are rejected rather than guessed.
+    assert.equal(applyHtmlPatches("<p>a</p><p>a</p>", [{ search: "<p>a</p>", replace: "<p>b</p>" }]).ok, false);
+});
+
+test("HTML node edits keep embedded images out of the request and restore them afterwards", () => {
+    const image = `data:image/png;base64,${"A".repeat(400)}`;
+    const page = `<html><body><img src="${image}"><p>x</p></body></html>`;
+    const stash = stashHtmlAssets(page);
+    assert.equal(stash.count, 1);
+    assert.ok(!stash.text.includes("AAAA"));
+    assert.equal(stash.restore(stash.text), page);
 });

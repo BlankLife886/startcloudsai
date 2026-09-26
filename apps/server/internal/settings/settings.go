@@ -27,7 +27,7 @@ var Defaults = map[string]json.RawMessage{
 	"task_retry_backoff_secs":     json.RawMessage(`15`),
 	// 前端输入框字数上限（文生图 / AI 助手 / 创作台）
 	"t2i_prompt_max_chars":        json.RawMessage(`8000`),
-	"assistant_message_max_chars": json.RawMessage(`12000`),
+	"assistant_message_max_chars": json.RawMessage(`60000`),
 	"studio_hub_prompt_max_chars": json.RawMessage(`2000`),
 	// 图片三级图（小图/展示图/原图）中变体的编码配置
 	"image_variant_format":                        json.RawMessage(`"webp"`),
@@ -244,7 +244,7 @@ func ResolveCanvasProjectMaxBytes(ctx context.Context, q store.Q) int64 {
 
 const (
 	DefaultT2IPromptMaxChars        = 8000
-	DefaultAssistantMessageMaxChars = 12000
+	DefaultAssistantMessageMaxChars = 60000
 	DefaultStudioHubPromptMaxChars  = 2000
 	PromptMaxCharsMin               = 100
 	PromptMaxCharsMax               = 100000

@@ -456,7 +456,7 @@ export async function requestCanvasImages(config: AiConfig, prompt: string, refe
     return images;
 }
 
-const DEFAULT_ASSISTANT_PROMPT_LIMIT = 12_000;
+const DEFAULT_ASSISTANT_PROMPT_LIMIT = 60_000;
 
 /** Per-message character limit the server enforces on assistant runs (admin setting "assistant_message_max_chars"). */
 export async function canvasAssistantPromptLimit() {

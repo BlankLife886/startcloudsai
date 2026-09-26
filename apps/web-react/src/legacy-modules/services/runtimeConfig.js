@@ -32,7 +32,7 @@ export function getDefaultRuntimeConfig() {
     pageControls: getDefaultPageControls(),
     promptInputLimits: {
       t2iPromptMaxChars: 8000,
-      assistantMessageMaxChars: 12000,
+      assistantMessageMaxChars: 60000,
       studioHubPromptMaxChars: 2000,
     },
     aiModelCatalog: {

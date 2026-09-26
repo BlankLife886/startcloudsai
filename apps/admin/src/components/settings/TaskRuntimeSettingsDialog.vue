@@ -25,7 +25,7 @@ const form = reactive({
   taskRetryFirstDelaySecs: 3,
   taskRetryBackoffSecs: 15,
   t2iPromptMaxChars: 8000,
-  assistantMessageMaxChars: 12000,
+  assistantMessageMaxChars: 60000,
   studioHubPromptMaxChars: 2000,
   crossProviderSameModelBalancingEnabled: false,
   imageVariantFormat: 'webp',
@@ -50,7 +50,7 @@ function hydrate(settings: AdminSettings) {
   form.taskRetryFirstDelaySecs = settings.taskRetryFirstDelaySecs ?? 3
   form.taskRetryBackoffSecs = settings.taskRetryBackoffSecs ?? 15
   form.t2iPromptMaxChars = settings.t2iPromptMaxChars ?? 8000
-  form.assistantMessageMaxChars = settings.assistantMessageMaxChars ?? 12000
+  form.assistantMessageMaxChars = settings.assistantMessageMaxChars ?? 60000
   form.studioHubPromptMaxChars = settings.studioHubPromptMaxChars ?? 2000
   form.crossProviderSameModelBalancingEnabled =
     settings.crossProviderSameModelBalancingEnabled ?? false

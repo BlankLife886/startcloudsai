@@ -7,6 +7,7 @@ import { getCanvasPortalRoot } from "@/lib/canvas-portal";
 import type { CanvasNodeContext, CanvasPlugin } from "@/types/canvas-plugin";
 
 import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "./contracts";
+import { applyHtmlPatches, HTML_EDIT_SYSTEM_PROMPT, parseHtmlPatches, stashHtmlAssets } from "./html-node-edit";
 import { HTML_DEMO_SITE } from "./html-node-template";
 
 const EDITOR_FONT_SIZE = 12;
@@ -448,36 +449,47 @@ function HtmlAiPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => 
         const request = prompt.trim();
         if (!request || running) return;
         setError("");
-        const current = compactHtml(ctx.node.metadata?.content || "");
+        const original = ctx.node.metadata?.content || "";
         const upstream = ctx
             .getUpstream()
             .map((node) => node.metadata?.content)
             .filter((content): content is string => typeof content === "string" && Boolean(content.trim()) && !content.startsWith("data:"))
             .join("\n\n");
-        const task = hasSite ? `这是当前网站的完整源码：\n${current}\n\n请在此基础上修改，并输出修改后的完整 HTML：${request}` : `请制作这个网站：${request}`;
-        const device_hint = `\n用户当前主要在「${DEVICES[device].label}」尺寸上预览。`;
-        // The whole request must fit in one message; the page source is never cut, reference text gives way first.
+        const deviceHint = `\n用户当前主要在「${DEVICES[device].label}」尺寸上预览。`;
+        const system = hasSite ? HTML_EDIT_SYSTEM_PROMPT : SITE_SYSTEM_PROMPT;
         const limit = await ctx.ai.textInputLimit();
-        const overhead = SITE_SYSTEM_PROMPT.length + task.length + device_hint.length + 64;
-        if (overhead > limit) {
-            setError(`当前网站源码约 ${current.length.toLocaleString()} 字，加上指令超过了 AI 单次可处理的 ${limit.toLocaleString()} 字上限，无法整体修改。可以让管理员在后台调高「助手消息长度上限」（最高 100,000），或清空后重新生成一个更精简的网站。`);
+        // Embedded images are swapped for placeholders; the page is sent as-is when it fits, compacted when it does not,
+        // and patches are applied to exactly the text the model saw.
+        const assets = stashHtmlAssets(original);
+        const taskFor = (source: string) => (hasSite ? `原网页源码：\n${source}\n\n修改要求：${request}` : `请制作这个网站：${request}`);
+        const overheadFor = (source: string) => system.length + taskFor(source).length + deviceHint.length + 64;
+        const base = !hasSite || overheadFor(assets.text) <= limit ? assets.text : compactHtml(assets.text);
+        if (overheadFor(base) > limit) {
+            setError(`当前网站源码约 ${base.length.toLocaleString()} 字，超过了 AI 单次可处理的 ${limit.toLocaleString()} 字上限，无法修改。可以让管理员在后台调高「AI 助手消息」字数上限（最高 100,000）。`);
             return;
         }
-        const room = limit - overhead - 20;
+        const room = limit - overheadFor(base) - 20;
         const reference = upstream && room > 200 ? `\n参考资料（来自上游节点）：\n${upstream.length > room ? `${upstream.slice(0, room)}…` : upstream}` : "";
-        const message = `${task}${reference}${device_hint}`;
+        const message = `${taskFor(base)}${reference}${deviceHint}`;
 
         const controller = new AbortController();
         controllerRef.current = controller;
         ctx.updateMetadata({ status: "loading", editing: false });
         try {
-            const result = await ctx.ai.generateText(message, { system: SITE_SYSTEM_PROMPT, model, reasoningEffort, signal: controller.signal });
-            const html = extractHtml(result.text);
-            if (!isCompleteHtml(html)) {
-                const said = result.text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 140);
-                throw new Error(`模型没有返回完整的网页，原网页未改动。${said ? `模型回复：「${said}${result.text.length > 140 ? "…" : ""}」` : ""}`);
+            const result = await ctx.ai.generateText(message, { system, model, reasoningEffort, signal: controller.signal });
+            const said = result.text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+            const quote = said ? `模型回复：「${said.slice(0, 140)}${said.length > 140 ? "…" : ""}」` : "";
+            let html = extractHtml(result.text);
+            if (hasSite && !isCompleteHtml(html)) {
+                const patches = parseHtmlPatches(result.text);
+                if (!patches.length) throw new Error(`模型没有返回可用的修改，原网页未改动。${quote}`);
+                const applied = applyHtmlPatches(base, patches);
+                if (!applied.ok) throw new Error(`模型给出的 ${patches.length} 处修改里，第 ${applied.failed.join("、")} 处对不上原网页，已整体放弃，原网页未改动。可以换个说法或模型再试。`);
+                html = applied.html;
             }
-            ctx.updateMetadata({ content: html, status: "success", interactive: true, htmlPrompt: request, ...(hasSite ? { htmlPreviousContent: ctx.node.metadata?.content } : {}) });
+            html = assets.restore(html);
+            if (!isCompleteHtml(html)) throw new Error(`模型没有返回完整的网页，原网页未改动。${quote}`);
+            ctx.updateMetadata({ content: html, status: "success", interactive: true, htmlPrompt: request, ...(hasSite ? { htmlPreviousContent: original } : {}) });
             setPrompt("");
         } catch (cause) {
             ctx.updateMetadata({ status: hasSite ? "success" : undefined });
