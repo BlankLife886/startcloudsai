@@ -1,159 +1,180 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { App, Button } from "antd";
-import { gsap } from "gsap";
-import { useGSAP } from "@gsap/react";
-import { FileUp, LayoutTemplate, Plus, Search, Trash2, X } from "lucide-react";
-import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
+import { App } from "antd";
+import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { readZip } from "@/lib/zip";
 import { setMediaBlob } from "@/services/file-storage";
 import { setImageBlob } from "@/services/image-storage";
-import { CanvasProjectCard } from "@/components/canvas/canvas-project-card";
 import type { CanvasExportFile } from "@/types/canvas-export";
-import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { ensureCanvasProjectDocument, pendingCloudProjectDeleteCount, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { useCanvasHost } from "@/components/layout/canvas-host-context";
-import { CanvasWorkflowTemplateDialog } from "@/components/canvas/canvas-workflow-template-dialog";
-import { CanvasWorkflowShelf } from "@/components/canvas/canvas-workflow-shelf";
-import { createCanvasProjectFromUploadedTemplate, getCanvasWorkflowTemplate, type CanvasWorkflowTemplateSummary } from "@/services/canvas-workflow-template-api";
+import { createCanvasProjectFromUploadedTemplate, getCanvasWorkflowTemplate, listCanvasWorkflowTemplates, type CanvasWorkflowTemplateSummary } from "@/services/canvas-workflow-template-api";
 import { canvasProjectOccupancy, checkCanvasProjectCapacity } from "@/lib/canvas/canvas-project-quota";
-import { pendingCloudProjectDeleteCount } from "@/stores/canvas/use-canvas-store";
 import { fetchCanvasProjectQuota, type CanvasProjectQuota } from "@/services/canvas-cloud-repository";
+import { CanvasHomeRail, type CanvasHomeRailTarget } from "@/components/canvas/home/canvas-home-rail";
+import { CanvasHomeHero } from "@/components/canvas/home/canvas-home-hero";
+import { CanvasHomeTemplates, templateCategories } from "@/components/canvas/home/canvas-home-templates";
+import { CanvasHomeLibrary } from "@/components/canvas/home/canvas-home-library";
+import { CanvasHomeRecentCard, type CanvasHomeProjectActions } from "@/components/canvas/home/canvas-home-project-card";
+import { CanvasCommandPalette, CanvasLaunchOverlay, CanvasTemplatePreview } from "@/components/canvas/home/canvas-home-overlays";
+import { CanvasHomePageHead, canvasHomeMotionDisabled, categoryColor, useCanvasHomeColumns } from "@/components/canvas/home/canvas-home-shared";
+import "@/components/canvas/home/canvas-home.css";
 
-gsap.registerPlugin(useGSAP);
+const LAUNCH_DELAY_MS = 420;
 
-function canvasMotionDisabled() {
-    return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || document.documentElement.classList.contains("settings-no-animations");
-}
+type CanvasHomeView = "home" | "library" | "templates";
+
+type LaunchState = { x: number; y: number; title: string } | null;
 
 export default function CanvasPage() {
     const { message } = App.useApp();
     const { t } = useTranslation();
     const navigate = useNavigate();
     const { isAuthenticated, requestAuth } = useCanvasHost();
-    const [searchParams] = useSearchParams();
+    const [searchParams, setSearchParams] = useSearchParams();
     const inputRef = useRef<HTMLInputElement>(null);
-    const pageRef = useRef<HTMLElement>(null);
+    const mainRef = useRef<HTMLElement>(null);
     const autoOpenRef = useRef(false);
-    const [entryState, setEntryState] = useState("waiting");
-    const [cardEntryState, setCardEntryState] = useState("waiting");
-    const [projectQuery, setProjectQuery] = useState("");
-    const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false);
+    const launchTimerRef = useRef(0);
     const [projectQuota, setProjectQuota] = useState<CanvasProjectQuota | null>(null);
+    const [templates, setTemplates] = useState<CanvasWorkflowTemplateSummary[]>([]);
+    const [templatesLoading, setTemplatesLoading] = useState(true);
+    const [templatesError, setTemplatesError] = useState("");
+    const [templateCategory, setTemplateCategory] = useState("all");
+    const [previewTemplate, setPreviewTemplate] = useState<CanvasWorkflowTemplateSummary | null>(null);
+    const [usingTemplate, setUsingTemplate] = useState(false);
+    const [paletteOpen, setPaletteOpen] = useState(false);
+    const [launch, setLaunch] = useState<LaunchState>(null);
+    const recentCount = useCanvasHomeColumns();
     const cloudProjectsVersion = useCanvasStore((state) => state.cloudProjectsVersion);
     const hydrated = useCanvasStore((state) => state.hydrated);
     const projects = useCanvasStore((state) => state.projects);
     const createProject = useCanvasStore((state) => state.createProject);
     const importProject = useCanvasStore((state) => state.importProject);
-    const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
+    const renameProject = useCanvasStore((state) => state.renameProject);
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
+    const startEditing = useCanvasUiStore((state) => state.startEditingProject);
     const visibleProjects = useMemo(() => (isAuthenticated ? projects : []), [isAuthenticated, projects]);
-    const filteredProjects = useMemo(() => {
-        const query = projectQuery.trim().toLowerCase();
-        if (!query) return visibleProjects;
-        return visibleProjects.filter((project) => project.title.toLowerCase().includes(query) || (project.nodes || []).some((node) => (node.title || "").toLowerCase().includes(query)));
-    }, [projectQuery, visibleProjects]);
-    const visibleSelectedIds = useMemo(() => selectedIds.filter((id) => filteredProjects.some((project) => project.id === id)), [filteredProjects, selectedIds]);
+    const recentProjects = useMemo(() => [...visibleProjects].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()), [visibleProjects]);
 
     const mode = searchParams.get("mode");
-    const agentMode = mode === "new" || mode === "recent" || mode === "choose";
-    const agentQuery = agentMode ? `?${searchParams.toString()}` : "";
+    // 不能用 view 参数：CanvasEntryGate 把它当旧版入口链接重定向。
+    const tabParam = searchParams.get("tab");
+    const view: CanvasHomeView = tabParam === "library" || tabParam === "templates" ? tabParam : "home";
+    const agentQuery = useMemo(() => {
+        if (mode !== "new" && mode !== "recent" && mode !== "choose") return "";
+        const params = new URLSearchParams(searchParams);
+        params.delete("tab");
+        return `?${params.toString()}`;
+    }, [mode, searchParams]);
 
-    useGSAP(
-        (context, contextSafe) => {
-            const root = pageRef.current;
-            if (!root) return;
-            const targets = gsap.utils.toArray<HTMLElement>("[data-canvas-entry-item]", root);
-            if (canvasMotionDisabled()) {
-                gsap.set(targets, { clearProps: "opacity,visibility,transform" });
-                setEntryState("entered");
-                return;
-            }
-            setEntryState("entering");
-            const finish = (contextSafe || ((callback) => callback))(() => setEntryState("entered"));
-            gsap.fromTo(
-                targets,
-                { autoAlpha: 0, y: 10 },
-                {
-                    autoAlpha: 1,
-                    y: 0,
-                    duration: 0.32,
-                    stagger: 0.05,
-                    ease: "power2.out",
-                    clearProps: "opacity,visibility,transform",
-                    onComplete: finish,
+    const unsyncedProjectCount = useCanvasStore((state) => state.projects.filter((project) => !project.revision).length);
+    const occupiedProjects = projectQuota ? canvasProjectOccupancy(projectQuota, unsyncedProjectCount, pendingCloudProjectDeleteCount()) : 0;
+    const quota = projectQuota ? { used: occupiedProjects, limit: projectQuota.limit, planBonus: projectQuota.planBonus, base: projectQuota.base } : null;
+    const quotaFull = Boolean(quota && quota.used >= quota.limit);
+    const categoryIds = useMemo(() => templateCategories(templates).map((item) => item.id), [templates]);
+
+    const setView = useCallback(
+        (next: CanvasHomeView) => {
+            setSearchParams(
+                (current) => {
+                    const params = new URLSearchParams(current);
+                    if (next === "home") params.delete("tab");
+                    else params.set("tab", next);
+                    return params;
                 },
+                { replace: false },
             );
+            mainRef.current?.scrollTo({ top: 0 });
         },
-        { scope: pageRef },
+        [setSearchParams],
     );
 
-    useGSAP(
-        (context, contextSafe) => {
-            const root = pageRef.current;
-            if (!root || !hydrated) return;
-            const cards = gsap.utils.toArray<HTMLElement>(".canvas-project-grid > *", root);
-            if (canvasMotionDisabled()) {
-                gsap.set(cards, { clearProps: "opacity,visibility,transform" });
-                setCardEntryState("entered");
+    const enterProject = useCallback((id: string) => navigate(`/canvas/${id}${agentQuery}`), [agentQuery, navigate]);
+
+    // 从点击位置展开的过渡后再进入画布；减少动态效果时直接进入。
+    const launchProject = useCallback(
+        (id: string, title: string, event?: ReactMouseEvent) => {
+            if (canvasHomeMotionDisabled()) {
+                enterProject(id);
                 return;
             }
-            setCardEntryState("entering");
-            const finish = (contextSafe || ((callback) => callback))(() => setCardEntryState("entered"));
-            gsap.fromTo(
-                cards,
-                { autoAlpha: 0, y: 8 },
-                {
-                    autoAlpha: 1,
-                    y: 0,
-                    duration: 0.28,
-                    stagger: { each: 0.04, from: "start" },
-                    ease: "power2.out",
-                    clearProps: "opacity,visibility,transform",
-                    onComplete: finish,
-                },
-            );
+            window.clearTimeout(launchTimerRef.current);
+            setLaunch({ x: event?.clientX ?? window.innerWidth / 2, y: event?.clientY ?? window.innerHeight * 0.55, title });
+            launchTimerRef.current = window.setTimeout(() => enterProject(id), LAUNCH_DELAY_MS);
         },
-        { dependencies: [hydrated, visibleProjects.length], scope: pageRef, revertOnUpdate: true },
+        [enterProject],
     );
-    const enterProject = (id: string) => {
-        navigate(`/canvas/${id}${agentQuery}`);
-    };
-    const createAndEnter = async () => {
+    useEffect(() => () => window.clearTimeout(launchTimerRef.current), []);
+
+    const ensureCapacity = async (count = 1) => {
         if (!isAuthenticated) {
             requestAuth();
-            return;
+            return false;
         }
-        const blocked = await checkCanvasProjectCapacity();
+        const blocked = await checkCanvasProjectCapacity(count);
         if (blocked) {
             message.warning(blocked);
-            return;
+            return false;
         }
-        enterProject(createProject(t("canvas.defaultTitle", { count: visibleProjects.length + 1 })));
+        return true;
     };
-    const useWorkflowTemplate = async (template: CanvasWorkflowTemplateSummary) => {
-        if (!isAuthenticated) {
-            requestAuth();
-            return;
-        }
+
+    const createAndEnter = async (event?: ReactMouseEvent) => {
+        const point = event ? ({ clientX: event.clientX, clientY: event.clientY } as ReactMouseEvent) : undefined;
+        if (!(await ensureCapacity())) return;
+        const title = t("canvas.defaultTitle", { count: visibleProjects.length + 1 });
+        launchProject(createProject(title), title, point);
+    };
+
+    const useWorkflowTemplate = async (template: CanvasWorkflowTemplateSummary, title?: string, event?: ReactMouseEvent) => {
+        if (usingTemplate) return;
+        const point = event ? ({ clientX: event.clientX, clientY: event.clientY } as ReactMouseEvent) : undefined;
+        setUsingTemplate(true);
         try {
-            const blocked = await checkCanvasProjectCapacity();
-            if (blocked) {
-                message.warning(blocked);
-                return;
-            }
+            if (!(await ensureCapacity())) return;
             const detail = await getCanvasWorkflowTemplate(template.id);
             const id = importProject(createCanvasProjectFromUploadedTemplate(detail));
-            setTemplateLibraryOpen(false);
-            message.success(`已创建「${template.title}」`);
-            enterProject(id);
+            const name = (title || "").trim();
+            if (name && name !== detail.title) renameProject(id, name);
+            setPreviewTemplate(null);
+            message.success(t("canvas.homePage.templates.created", { title: name || template.title }));
+            launchProject(id, name || template.title, point);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "模板创建失败");
+            message.error(error instanceof Error ? error.message : t("canvas.homePage.templates.createFailed"));
+        } finally {
+            setUsingTemplate(false);
         }
     };
+
+    const duplicateProjects = async (list: CanvasProject[]) => {
+        if (!list.length || !(await ensureCapacity(list.length))) return;
+        try {
+            const loaded = await Promise.all(list.map((project) => ensureCanvasProjectDocument(project.id)));
+            let created = 0;
+            loaded.forEach((project) => {
+                if (!project) return;
+                importProject({ ...project, title: t("canvas.homePage.library.copySuffix", { title: project.title }), createdAt: undefined });
+                created += 1;
+            });
+            if (created) message.success(created === 1 ? t("canvas.homePage.library.duplicated", { title: t("canvas.homePage.library.copySuffix", { title: list[0].title }) }) : t("canvas.homePage.library.duplicatedMany", { count: created }));
+        } catch {
+            message.error(t("canvas.homePage.library.duplicateFailed"));
+        }
+    };
+
+    const projectActions: CanvasHomeProjectActions = {
+        onOpen: (project, event) => launchProject(project.id, project.title, event),
+        onRename: (project) => startEditing(project.id, project.title),
+        onDuplicate: (project) => void duplicateProjects([project]),
+        onExport: (project) => void exportCanvasProjects([project], project.title || t("canvas.export.defaultProjectName")),
+        onDelete: (project) => setDeleteIds([project.id]),
+    };
+
     const importCanvas = async (file?: File) => {
         if (!file) return;
         if (!isAuthenticated) {
@@ -189,6 +210,47 @@ export default function CanvasPage() {
             if (inputRef.current) inputRef.current.value = "";
         }
     };
+    const openImport = () => (isAuthenticated ? inputRef.current?.click() : requestAuth());
+
+    const navigateRail = (target: CanvasHomeRailTarget) => {
+        if (target === "search") setPaletteOpen(true);
+        else if (target === "library") setView("library");
+        else if (target === "templates") setView("templates");
+        else if (view !== "home") setView("home");
+        else mainRef.current?.scrollTo({ top: 0, behavior: canvasHomeMotionDisabled() ? "auto" : "smooth" });
+    };
+
+    // 模板列表：接口不可用时服务层会回落到内置模板。
+    useEffect(() => {
+        let active = true;
+        setTemplatesLoading(true);
+        listCanvasWorkflowTemplates()
+            .then((items) => {
+                if (active) setTemplates([...items].sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0)));
+            })
+            .catch((error) => {
+                if (active) setTemplatesError(error instanceof Error ? error.message : t("canvas.homePage.templates.loadFailed"));
+            })
+            .finally(() => {
+                if (active) setTemplatesLoading(false);
+            });
+        return () => {
+            active = false;
+        };
+    }, []);
+
+    // ⌘K / Ctrl+K 打开命令面板。
+    useEffect(() => {
+        const handle = (event: KeyboardEvent) => {
+            if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+                event.preventDefault();
+                setPreviewTemplate(null);
+                setPaletteOpen((open) => !open);
+            }
+        };
+        window.addEventListener("keydown", handle);
+        return () => window.removeEventListener("keydown", handle);
+    }, []);
 
     useEffect(() => {
         if (!hydrated || autoOpenRef.current || (mode !== "new" && mode !== "recent")) return;
@@ -211,9 +273,9 @@ export default function CanvasPage() {
             }
             enterProject(createProject(t("canvas.defaultTitle", { count: visibleProjects.length + 1 })));
         });
-    }, [createProject, hydrated, isAuthenticated, message, mode, navigate, requestAuth, t, visibleProjects]);
+    }, [createProject, enterProject, hydrated, isAuthenticated, message, mode, navigate, requestAuth, t, visibleProjects]);
 
-    // 列表页显示「已用 / 上限」；项目增删后刷新。
+    // 配额显示「已用 / 上限」；项目增删后刷新。
     useEffect(() => {
         if (!hydrated || !isAuthenticated) {
             setProjectQuota(null);
@@ -221,166 +283,149 @@ export default function CanvasPage() {
         }
         let active = true;
         fetchCanvasProjectQuota()
-            .then((quota) => { if (active) setProjectQuota(quota); })
-            .catch(() => { if (active) setProjectQuota(null); });
-        return () => { active = false; };
+            .then((value) => {
+                if (active) setProjectQuota(value);
+            })
+            .catch(() => {
+                if (active) setProjectQuota(null);
+            });
+        return () => {
+            active = false;
+        };
     }, [hydrated, isAuthenticated, visibleProjects.length, cloudProjectsVersion]);
-    const unsyncedProjectCount = useCanvasStore((state) => state.projects.filter((project) => !project.revision).length);
-    const occupiedProjects = projectQuota ? canvasProjectOccupancy(projectQuota, unsyncedProjectCount, pendingCloudProjectDeleteCount()) : 0;
 
     if (hydrated && (mode === "new" || mode === "recent")) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">{t("canvas.opening")}</main>;
 
+    const railActive: CanvasHomeRailTarget = paletteOpen ? "search" : view;
+
     return (
-        <main
-            ref={pageRef}
-            className="canvas-home-pattern h-full overflow-auto text-stone-950 dark:text-stone-100"
-            data-canvas-home-motion-state={entryState}
-            data-canvas-card-motion-state={cardEntryState}
-        >
-            <div className="canvas-home-pattern__inner relative z-[2] mx-auto flex h-full w-full max-w-[1560px] flex-col px-6 md:px-8">
-                {/* 1. 工坊级顶部导览 (Studio Header) */}
-                <header data-canvas-entry-item className="canvas-home-toolbar mb-6 pb-2 border-b border-slate-200/60 dark:border-white/5">
-                    <div className="canvas-home-toolbar__copy space-y-1">
-                        <div className="flex items-center gap-3 flex-wrap">
-                            <span
-                                className="w-2.5 h-2.5 rounded-full jewel-dot-pulse inline-block"
-                                style={{ backgroundColor: "#a855f7", color: "#a855f7" }}
-                            />
-                            <h1 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">
-                                {t("canvas.title")}
-                            </h1>
-                            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-500/20">
-                                自由连线工作流 · 多模态生成
-                            </span>
-                        </div>
-                        <p className="text-xs md:text-sm text-slate-500 dark:text-slate-400 pl-5">
-                            {t("canvas.createDescription")}
-                        </p>
+        <div className="ch-theme ch-root">
+            <CanvasHomeRail active={railActive} projectCount={visibleProjects.length} templateCount={templates.length} quota={quota} isAuthenticated={isAuthenticated} onLogin={requestAuth} onNavigate={navigateRail} />
+            <main ref={mainRef} className="ch-main">
+                {view === "library" ? (
+                    <CanvasHomeLibrary
+                        key="library"
+                        projects={visibleProjects}
+                        hydrated={hydrated}
+                        quota={quota}
+                        onCreate={(event) => void createAndEnter(event)}
+                        onExportMany={(list) => void exportCanvasProjects(list, t("canvas.homePage.library.exportName", { count: list.length }))}
+                        onDuplicateMany={(list) => void duplicateProjects(list)}
+                        onDeleteMany={(list) => setDeleteIds(list.map((project) => project.id))}
+                        {...projectActions}
+                    />
+                ) : view === "templates" ? (
+                    <div key="templates" className="ch-view">
+                        <CanvasHomePageHead
+                            title={t("canvas.homePage.templatesPage.title")}
+                            stats={
+                                templates.length ? (
+                                    <>
+                                        <span>
+                                            <b className="ch-num">{templates.length}</b> {t("canvas.homePage.templatesPage.templateUnit")}
+                                        </span>
+                                        <span>
+                                            <b className="ch-num">{categoryIds.length}</b> {t("canvas.homePage.templatesPage.categoryUnit")}
+                                        </span>
+                                    </>
+                                ) : null
+                            }
+                        />
+                        <CanvasHomeTemplates
+                            hideTitle
+                            scrollRef={mainRef}
+                            templates={templates}
+                            loading={templatesLoading}
+                            error={templatesError}
+                            category={templateCategory}
+                            onCategoryChange={setTemplateCategory}
+                            onPreview={setPreviewTemplate}
+                            onUse={(template, event) => void useWorkflowTemplate(template, undefined, event)}
+                        />
                     </div>
-                    <div className="canvas-home-toolbar__actions flex items-center gap-2">
-                        {projectQuota && (
-                            <span
-                                className={`text-xs tabular-nums ${occupiedProjects >= projectQuota.limit ? "text-amber-600 dark:text-amber-400" : "text-slate-500 dark:text-slate-400"}`}
-                                title={projectQuota.planBonus > 0 ? `基础 ${projectQuota.base} + 订阅 ${projectQuota.planBonus}` : undefined}
-                            >
-                                项目 {occupiedProjects} / {projectQuota.limit}
-                            </span>
-                        )}
-                        <Button className="canvas-home-cta" type="primary" disabled={!hydrated} onClick={() => void createAndEnter()} icon={<Plus className="size-4" />}>
-                            {t("canvas.create")}
-                        </Button>
-                        <Button disabled={!hydrated} onClick={() => setTemplateLibraryOpen(true)} icon={<LayoutTemplate className="size-4" />}>
-                            {t("canvas.templateLibrary")} <span className="text-[11px] opacity-70 font-mono ml-0.5">43</span>
-                        </Button>
-                        <Button disabled={!hydrated} onClick={() => (isAuthenticated ? inputRef.current?.click() : requestAuth())} icon={<FileUp className="size-4" />}>
-                            {t("canvas.import")}
-                        </Button>
-                    </div>
-                </header>
+                ) : (
+                    <div key="home" className="ch-view">
+                        <CanvasHomeHero
+                            scrollRef={mainRef}
+                            templates={templates}
+                            disabled={!hydrated}
+                            onCreate={(event) => void createAndEnter(event)}
+                            onImport={openImport}
+                            onPreviewTemplate={setPreviewTemplate}
+                            onUseTemplate={(template, event) => void useWorkflowTemplate(template, undefined, event)}
+                        />
 
-                {/* 2. 精选案例工作流展台 (Featured Templates Shelf) */}
-                <CanvasWorkflowShelf
-                    onUseTemplate={useWorkflowTemplate}
-                    onOpenTemplateDialog={() => setTemplateLibraryOpen(true)}
-                    disabled={!hydrated}
-                />
-
-                {/* 3. 我的画布项目 (My Projects Section) */}
-                <section data-canvas-entry-item className="canvas-home-library mb-12">
-                    <div className="canvas-recent-bar mb-3">
-                        <div className="flex shrink-0 items-center gap-2.5">
-                            <span
-                                className="w-2.5 h-2.5 rounded-full jewel-dot-pulse inline-block"
-                                style={{ backgroundColor: "#10b981", color: "#10b981" }}
-                            />
-                            <h2 className="text-base font-bold tracking-tight text-slate-900 dark:text-slate-100">{t("canvas.recent")}</h2>
-                            <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-500/10 px-2 text-xs font-semibold tabular-nums text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                                {projectQuery.trim() ? `${filteredProjects.length} 个项目` : `${visibleProjects.length} 个项目`}
-                            </span>
-                        </div>
-                        <div className="canvas-recent-bar__tools">
-                            {visibleProjects.length ? (
-                                <label className="canvas-home-search">
-                                    <span className="canvas-home-search__icon">
-                                        <Search className="size-3.5" />
-                                    </span>
-                                    <input
-                                        type="search"
-                                        value={projectQuery}
-                                        onChange={(event) => setProjectQuery(event.target.value)}
-                                        placeholder={t("canvas.searchProjects")}
-                                        aria-label={t("canvas.searchProjects")}
-                                    />
-                                    {projectQuery ? (
-                                        <button type="button" className="canvas-home-search__clear" onClick={() => setProjectQuery("")} aria-label={t("canvas.clearSearch")}>
-                                            <X className="size-3" />
-                                        </button>
+                        <section className="ch-section flex flex-col gap-[18px] pt-2" aria-labelledby="ch-recent-title">
+                            <div className="flex items-center justify-between gap-4">
+                                <div className="flex items-baseline gap-2.5">
+                                    <h2 id="ch-recent-title" className="ch-section-title">
+                                        {t("canvas.homePage.recent.title")}
+                                    </h2>
+                                    {recentProjects.length ? (
+                                        <span className="text-[13px]" style={{ color: "var(--ch-muted)" }}>
+                                            {t("canvas.homePage.recent.latest", { count: Math.min(recentCount, recentProjects.length) })}
+                                        </span>
                                     ) : null}
-                                </label>
-                            ) : null}
-                            {visibleSelectedIds.length ? (
-                                <>
-                                    <span className="text-xs text-stone-500 dark:text-stone-400">{t("canvas.selected", { count: visibleSelectedIds.length })}</span>
-                                    <button
-                                        type="button"
-                                        className="canvas-home-btn"
-                                        disabled={!hydrated}
-                                        onClick={() =>
-                                            void exportCanvasProjects(
-                                                visibleProjects.filter((project) => visibleSelectedIds.includes(project.id)),
-                                                `无限画布-${visibleSelectedIds.length}个项目`,
-                                            )
-                                        }
-                                    >
-                                        <span className="canvas-home-btn__icon">
-                                            <DownloadIcon className="size-3.5" />
-                                        </span>
-                                        {t("canvas.exportSelected")}
-                                    </button>
-                                    <button type="button" className="canvas-home-btn is-danger" disabled={!hydrated} onClick={() => setDeleteIds(visibleSelectedIds)} aria-label={t("canvas.deleteSelected")}>
-                                        <Trash2 className="size-3.5" />
-                                    </button>
-                                </>
-                            ) : visibleProjects.length ? (
-                                <button type="button" className="canvas-home-btn is-danger" disabled={!hydrated} onClick={() => setDeleteIds(visibleProjects.map((project) => project.id))} aria-label={t("canvas.deleteAll")} title={t("canvas.deleteAll")}>
-                                    <Trash2 className="size-3.5" />
+                                </div>
+                                <button type="button" className="ch-ghost h-[34px] rounded-[10px] px-3.5 text-[13px]" onClick={() => setView("library")}>
+                                    {t("canvas.homePage.recent.library")} <span className="ch-num">{visibleProjects.length}</span>
+                                    <ArrowRight className="size-3.5" />
                                 </button>
-                            ) : null}
-                        </div>
-                    </div>
-
-                    {!hydrated ? (
-                        <div className="mt-4 flex min-h-36 items-center justify-center rounded-[18px] border border-dashed border-stone-200 bg-white/70 text-sm text-stone-500 dark:border-white/10 dark:bg-white/[0.03]">{t("canvas.loading")}</div>
-                    ) : projectQuery.trim() && !filteredProjects.length ? (
-                        <div className="mt-4 flex min-h-32 items-center justify-center rounded-[18px] border border-dashed border-stone-200 bg-white/70 text-sm text-stone-500 dark:border-white/10 dark:bg-white/[0.03]">{t("canvas.noMatchingProjects")}</div>
-                    ) : (
-                        <div className="canvas-project-grid mt-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                            {projectQuery.trim() ? null : (
-                                <button type="button" className="canvas-project-tile group text-left" onClick={() => void createAndEnter()}>
-                                    <span className="canvas-project-tile__preview is-create flex items-center justify-center">
-                                        <span className="canvas-project-tile__plus">
-                                            <Plus className="size-4" />
-                                        </span>
-                                    </span>
-                                    <span className="canvas-project-tile__body">
-                                        <span className="block truncate text-[13px] font-semibold leading-4">{t("canvas.create")}</span>
-                                        <span className="canvas-project-tile__pills">
-                                            <span className="canvas-project-tile__pill">{t("canvas.createDescription")}</span>
-                                        </span>
-                                    </span>
-                                </button>
+                            </div>
+                            {!hydrated ? (
+                                <div className="ch-empty" style={{ minHeight: 200 }}>
+                                    {t("canvas.loading")}
+                                </div>
+                            ) : recentProjects.length ? (
+                                <div className="ch-grid-cards">
+                                    {recentProjects.slice(0, recentCount).map((project, index) => (
+                                        <CanvasHomeRecentCard key={project.id} project={project} index={index} onOpen={projectActions.onOpen} />
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="ch-empty" style={{ minHeight: 200 }}>
+                                    <strong>{t("canvas.empty")}</strong>
+                                    <span>{t("canvas.emptyDescription")}</span>
+                                </div>
                             )}
-                            {filteredProjects.map((project) => (
-                                <CanvasProjectCard key={project.id} project={project} />
-                            ))}
-                        </div>
-                    )}
-                </section>
+                        </section>
 
-            </div>
+                        <CanvasHomeTemplates
+                            scrollRef={mainRef}
+                            templates={templates}
+                            loading={templatesLoading}
+                            error={templatesError}
+                            category={templateCategory}
+                            onCategoryChange={setTemplateCategory}
+                            onPreview={setPreviewTemplate}
+                            onUse={(template, event) => void useWorkflowTemplate(template, undefined, event)}
+                        />
+                    </div>
+                )}
+            </main>
 
             <input ref={inputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importCanvas(event.target.files?.[0])} />
-            <CanvasWorkflowTemplateDialog open={templateLibraryOpen} onClose={() => setTemplateLibraryOpen(false)} onUse={useWorkflowTemplate} />
-        </main>
+            <CanvasTemplatePreview
+                template={previewTemplate}
+                color={previewTemplate ? categoryColor(previewTemplate.category, categoryIds) : "#9b7bff"}
+                full={quotaFull}
+                busy={usingTemplate}
+                onClose={() => setPreviewTemplate(null)}
+                onUse={(template, title, event) => void useWorkflowTemplate(template, title, event)}
+            />
+            <CanvasCommandPalette
+                open={paletteOpen}
+                projects={recentProjects}
+                templates={templates}
+                full={quotaFull}
+                onClose={() => setPaletteOpen(false)}
+                onCreate={() => void createAndEnter()}
+                onBrowseTemplates={() => setView("templates")}
+                onOpenLibrary={() => setView("library")}
+                onOpenProject={(project) => launchProject(project.id, project.title)}
+                onPreviewTemplate={setPreviewTemplate}
+            />
+            <CanvasLaunchOverlay launch={launch} />
+        </div>
     );
 }

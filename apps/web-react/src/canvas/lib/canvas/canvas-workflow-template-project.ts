@@ -14,6 +14,8 @@ export type CanvasWorkflowTemplateSummary = {
     accent: string;
     coverUrl?: string | null;
     nodeCount: number;
+    /** 模板文档的字节数；旧接口或内置模板可能没有。 */
+    documentBytes?: number;
     sort: number;
 };
 

@@ -1,16 +1,8 @@
-import { ArrowUpRight, Check, Pencil, Trash2 } from "lucide-react";
-import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
-import { useEffect } from "react";
-import { useNavigate, useSearchParams } from "react-router";
 import { useTranslation } from "react-i18next";
 
-import { prefetchCanvasProjectDocument, type CanvasProject } from "@/stores/canvas/use-canvas-store";
-import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
-import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
+import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
-import { cn } from "@/lib/utils";
 import { useCanvasPreviewSrc, useViewportMedia } from "./canvas-preview-image";
-import { formatCanvasProjectBytes } from "@/lib/canvas/canvas-project-quota-rules";
 
 const PREVIEW_WIDTH = 640;
 const PREVIEW_HEIGHT = 360;
@@ -195,7 +187,7 @@ function PreviewNodeContent({ node, x, y, width, height, palette, enabled }: { n
     );
 }
 
-function CanvasTopologyPreview({ project }: { project: CanvasProject }) {
+export function CanvasTopologyPreview({ project }: { project: CanvasProject }) {
     const { t } = useTranslation();
     const { elementRef, shouldLoad } = useViewportMedia(!project.documentPending && project.nodes.length > 0);
 
@@ -315,108 +307,5 @@ function CanvasTopologyPreview({ project }: { project: CanvasProject }) {
                 );
             })}
         </svg>
-    );
-}
-
-export function CanvasProjectCard({ project }: { project: CanvasProject }) {
-    const { i18n, t } = useTranslation();
-    const navigate = useNavigate();
-    const [searchParams] = useSearchParams();
-    const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
-    const startEditing = useCanvasUiStore((state) => state.startEditingProject);
-    const toggleSelected = useCanvasUiStore((state) => state.toggleSelectedProjectId);
-    const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
-    const selected = selectedIds.includes(project.id);
-    const { elementRef, shouldLoad } = useViewportMedia(Boolean(project.documentPending || project.documentStale));
-    const updatedAt = new Date(project.updatedAt).toLocaleDateString(i18n.language, { month: "2-digit", day: "2-digit" });
-    const open = () => navigate(`/canvas/${project.id}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`);
-
-    useEffect(() => {
-        if (shouldLoad) prefetchCanvasProjectDocument(project.id);
-    }, [project.id, shouldLoad]);
-
-    return (
-        <article ref={(node) => { elementRef.current = node; }} className={cn("canvas-project-tile group", selected && "is-selected")}>
-            <div className="canvas-project-tile__preview cursor-pointer" onClick={open}>
-                <button
-                    type="button"
-                    role="checkbox"
-                    aria-checked={selected}
-                    aria-label={t("canvas.project.select", { name: project.title })}
-                    className={cn(
-                        "absolute left-3 top-3 z-10 grid size-6 place-items-center rounded-md border shadow-sm transition",
-                        selected
-                            ? "border-violet-500 bg-violet-600 text-white opacity-100"
-                            : "border-white/80 bg-white/90 text-transparent opacity-0 group-hover:opacity-100 dark:border-white/15 dark:bg-stone-950/80",
-                    )}
-                    onClick={(event) => {
-                        event.stopPropagation();
-                        toggleSelected(project.id, !selected);
-                    }}
-                >
-                    <Check className="size-3.5" />
-                </button>
-                <div
-                    className="absolute right-3 top-3 z-10 flex translate-y-1 items-center gap-0.5 rounded-2xl border border-white/60 bg-white/80 p-1 opacity-0 shadow-[0_10px_24px_rgba(49,32,107,0.12)] backdrop-blur-md transition group-hover:translate-y-0 group-hover:opacity-100 dark:border-white/10 dark:bg-stone-950/75"
-                    onClick={(event) => event.stopPropagation()}
-                >
-                    <button type="button" className="canvas-project-icon-btn" onClick={() => void exportCanvasProjects([project], project.title || t("canvas.export.defaultProjectName"))} aria-label={t("canvas.project.export")}>
-                        <DownloadIcon className="size-3.5" />
-                    </button>
-                    <button
-                        type="button"
-                        className="canvas-project-icon-btn"
-                        onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            startEditing(project.id, project.title);
-                        }}
-                        aria-label={t("canvas.project.rename")}
-                    >
-                        <Pencil className="size-3.5" />
-                    </button>
-                    <button
-                        type="button"
-                        className="canvas-project-icon-btn is-danger"
-                        onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            setDeleteIds([project.id]);
-                        }}
-                        aria-label={t("canvas.project.delete")}
-                    >
-                        <Trash2 className="size-3.5" />
-                    </button>
-                </div>
-                <CanvasTopologyPreview project={project} />
-            </div>
-
-            <div className="canvas-project-tile__body">
-                <button
-                    type="button"
-                    className="flex min-w-0 flex-col gap-1.5 text-left"
-                    onClick={(event) => {
-                        event.stopPropagation();
-                        open();
-                    }}
-                >
-                    <span className="flex min-w-0 items-center justify-between gap-3">
-                        <h2 className="truncate text-[13px] font-semibold leading-4">{project.title}</h2>
-                        <ArrowUpRight className="size-3.5 shrink-0 text-violet-400 opacity-0 transition group-hover:opacity-100" />
-                    </span>
-                    <span className="canvas-project-tile__pills">
-                        <span className="canvas-project-tile__pill">
-                            {project.documentPending
-                                ? t("canvas.project.loadingStats")
-                                : t("canvas.project.stats", { nodes: project.nodes.length, connections: project.connections.length })}
-                        </span>
-                        <span className="canvas-project-tile__pill">{t("canvas.project.updated", { date: updatedAt })}</span>
-                        {typeof project.sizeBytes === "number" && project.sizeBytes > 0 ? (
-                            <span className="canvas-project-tile__pill" title="云端保存的项目大小">{formatCanvasProjectBytes(project.sizeBytes)}</span>
-                        ) : null}
-                    </span>
-                </button>
-            </div>
-        </article>
     );
 }
