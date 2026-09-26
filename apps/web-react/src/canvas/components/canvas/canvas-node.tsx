@@ -518,9 +518,9 @@ export const CanvasNode = React.memo(function CanvasNode({
                 <ResizeHandle corner="bottom-right" onPointerDown={handleResizePointerDown} />
             </div>
 
-            {!isGroup ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} active={isSelected || isConnectionTarget} highlight={isConnectionTarget} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
+            {!isGroup ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} active={isSelected || isConnectionTarget} highlight={isConnectionTarget} scale={scale} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
             {!isGroup ? (
-                <ConnectionHandleDot side="right" visible={(definition?.hasSourceHandle ?? true) && (hovered || isSelected || isConnecting)} active={isSelected} onMouseDown={(event) => onConnectStart(event, data.id, "source")} />
+                <ConnectionHandleDot side="right" visible={(definition?.hasSourceHandle ?? true) && (hovered || isSelected || isConnecting)} active={isSelected} scale={scale} onMouseDown={(event) => onConnectStart(event, data.id, "source")} />
             ) : null}
 
             {showPanel && !isGroup && renderPanel ? (
@@ -1389,40 +1389,44 @@ function ResizeHandle({ corner, onPointerDown }: { corner: ResizeCorner; onPoint
     return <div className={`absolute z-50 size-7 ${positionClass}`} onPointerDown={(event) => onPointerDown(event, corner)} />;
 }
 
-function ConnectionHandleDot({ side, visible, active = false, highlight = false, onMouseDown }: { side: "left" | "right"; visible: boolean; active?: boolean; highlight?: boolean; onMouseDown: (event: React.MouseEvent) => void }) {
+function ConnectionHandleDot({ side, visible, active = false, highlight = false, scale = 1, onMouseDown }: { side: "left" | "right"; visible: boolean; active?: boolean; highlight?: boolean; scale?: number; onMouseDown: (event: React.MouseEvent) => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const accent = theme.node.activeStroke;
+    // Keep ports a comfortable on-screen size when the canvas is zoomed out.
+    const counterScale = Math.min(3, Math.max(1, 1 / Math.max(scale || 1, 0.05)));
 
     // Input is a small hollow ring; output is a larger "+" that invites dragging out the next node.
     return (
         <div
-            className={`group/port absolute top-1/2 z-30 flex size-12 -translate-y-1/2 cursor-crosshair items-center justify-center transition-opacity duration-150 ${
-                side === "left" ? "-left-6" : "-right-6"
+            className={`group/port absolute top-1/2 z-30 flex size-14 cursor-crosshair items-center justify-center transition-opacity duration-150 ${
+                side === "left" ? "-left-7" : "-right-7"
             } ${visible || highlight ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
+            style={{ transform: `translateY(-50%) scale(${counterScale})` }}
             onMouseDown={onMouseDown}
         >
             {side === "left" ? (
                 <div
-                    className="rounded-full border-2 transition-all duration-150 group-hover/port:scale-125"
+                    className="rounded-full border-[2.5px] transition-all duration-150 group-hover/port:scale-125"
                     style={{
-                        width: highlight ? 14 : 10,
-                        height: highlight ? 14 : 10,
+                        width: highlight ? 18 : 14,
+                        height: highlight ? 18 : 14,
                         background: highlight ? accent : theme.node.panel,
                         borderColor: active || highlight ? accent : theme.node.port,
-                        boxShadow: highlight ? `0 0 0 5px ${theme.node.activeRing}` : undefined,
+                        boxShadow: highlight ? `0 0 0 6px ${theme.node.activeRing}` : "0 1px 3px rgba(30,20,80,.12)",
                     }}
                 />
             ) : (
                 <div
-                    className="grid size-6 place-items-center rounded-full border-[1.5px] transition-all duration-150 group-hover/port:scale-110"
+                    className="grid size-8 place-items-center rounded-full transition-all duration-200 group-hover/port:scale-110"
                     style={{
-                        background: active ? accent : theme.node.panel,
-                        borderColor: active ? accent : theme.node.port,
-                        color: active ? "#fff" : theme.node.text,
-                        boxShadow: active ? `0 0 0 4px ${theme.node.activeRing}, 0 4px 10px rgba(109,92,255,.3)` : "0 2px 6px rgba(30,20,80,.12)",
+                        background: active ? `linear-gradient(135deg, #9b7bff, ${accent})` : theme.node.panel,
+                        color: active ? "#fff" : accent,
+                        boxShadow: active
+                            ? `0 0 0 3px ${theme.node.panel}, 0 0 0 7px ${theme.node.activeRing}, 0 6px 16px rgba(109,92,255,.35)`
+                            : `0 0 0 1.5px ${theme.node.port}, 0 4px 12px rgba(30,20,80,.14)`,
                     }}
                 >
-                    <Plus className="size-3.5" strokeWidth={2.5} />
+                    <Plus className="size-[18px]" strokeWidth={2.6} />
                 </div>
             )}
         </div>
