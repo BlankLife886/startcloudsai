@@ -30,7 +30,7 @@ import { CanvasOperationNodeType, canvasNodeTypeForLocalImageOperation, isCanvas
 import { cardSizeForMedia, fitLockedImageNode, fitNodeSize, imageFrameSource, nodeSizeFromRatio, resultNodeSize } from "@/lib/canvas/canvas-node-size";
 import { App } from "antd";
 import { CANVAS_AUDIO_ENABLED, CANVAS_VIDEO_ENABLED, NODE_DEFAULT_SIZE, getNodeSpec, isCanvasGenerationModeEnabled, isCanvasNodeTypeEnabled } from "@/constant/canvas";
-import { ActiveConnectionPath, ConnectionPath, canvasConnectionPathD } from "@/components/canvas/canvas-connections";
+import { ActiveConnectionPath, CanvasConnectionDefs, ConnectionPath, canvasConnectionPathD } from "@/components/canvas/canvas-connections";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
@@ -7764,6 +7764,7 @@ function InfiniteCanvasPage() {
                     onDrop={handleDrop}
                 >
                     <svg className="absolute overflow-visible" style={{ pointerEvents: "none", transform: "translateZ(0)", zIndex: 0, left: connectionLayer.left, top: connectionLayer.top, width: connectionLayer.width, height: connectionLayer.height }} viewBox={`${connectionLayer.left} ${connectionLayer.top} ${connectionLayer.width} ${connectionLayer.height}`}>
+                        <CanvasConnectionDefs />
                         {connectionPathElements}
                         {connectingParams ? <ActiveConnectionPath node={displayNodeById.get(connectingParams.nodeId)} handle={connectingParams} mouseWorld={mouseWorld} target={connectionTargetNodeId ? displayNodeById.get(connectionTargetNodeId) : undefined} /> : null}
                     </svg>

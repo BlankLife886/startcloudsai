@@ -67,16 +67,20 @@ export function canvasSelectedControlStyle(theme: CanvasTheme) {
     };
 }
 
-export function canvasNodeShadow(theme: CanvasTheme, state: "idle" | "related" | "active" | "drop") {
+export function canvasNodeShadow(theme: CanvasTheme, state: "idle" | "hover" | "related" | "active" | "drop") {
     const accent = theme.node.activeStroke;
+    const ring = theme.node.activeRing;
     if (theme.scheme === "dark") {
-        return "none";
+        if (state === "drop") return `0 0 0 1px ${accent}, 0 0 0 4px ${ring}`;
+        if (state === "active") return `0 0 0 1px ${accent}, 0 0 0 7px ${ring}, 0 18px 40px rgba(0,0,0,.45)`;
+        if (state === "hover") return "0 18px 40px rgba(0,0,0,.45)";
+        return "0 10px 26px rgba(0,0,0,.3)";
     }
-    const glow = "rgba(49,32,107,.08)";
-    if (state === "drop") return `0 0 0 1.5px ${accent}55, 0 10px 24px ${glow}`;
-    if (state === "active") return `0 0 0 1.5px ${accent}88, 0 10px 24px ${glow}`;
-    if (state === "related") return `0 0 0 1px ${theme.node.muted}40, 0 8px 18px ${glow}`;
-    return `0 8px 18px ${glow}`;
+    if (state === "drop") return `0 0 0 1px ${accent}, 0 0 0 4px ${ring}, 0 16px 36px rgba(30,20,80,.13)`;
+    if (state === "active") return `0 0 0 1px ${accent}, 0 0 0 7px ${ring}, 0 18px 40px rgba(109,74,255,.2)`;
+    if (state === "hover") return "0 2px 4px rgba(30,20,80,.06), 0 16px 36px rgba(30,20,80,.13)";
+    if (state === "related") return `0 0 0 1px ${theme.node.muted}40, 0 8px 22px rgba(30,20,80,.08)`;
+    return "0 1px 2px rgba(30,20,80,.05), 0 8px 22px rgba(30,20,80,.07)";
 }
 
 export type CanvasEmptyCopy = {

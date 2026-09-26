@@ -380,12 +380,12 @@ export const CanvasNode = React.memo(function CanvasNode({
             onMouseDownCapture={(event) => onSelectCapture?.(event, data.id)}
             onContextMenu={(event) => onContextMenu(event, data.id)}
         >
-            {(isSelected || hovered) && (
-                <div className="pointer-events-auto absolute left-0 top-[-30px] z-[65] max-w-full px-0.5" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+            {!isGroup || isSelected || hovered ? (
+                <div className="pointer-events-auto absolute left-0 top-[-26px] z-[65] max-w-full px-1" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
                     <button
                         type="button"
-                        className="block max-w-full truncate border-b border-dashed border-transparent px-0 py-0 text-left text-xs font-medium leading-5 opacity-80 transition hover:border-current hover:opacity-100"
-                        style={{ color: theme.node.text, textShadow: `0 1px 6px ${theme.canvas.background}` }}
+                        className="block max-w-full truncate border-b border-dashed border-transparent px-0 py-0 text-left text-[11px] font-semibold leading-5 transition-colors hover:border-current"
+                        style={{ color: isSelected ? theme.node.activeStroke : hovered ? theme.node.text : theme.node.label, textShadow: `0 1px 6px ${theme.canvas.background}` }}
                         title={t("canvas.node.renameHint")}
                         onClick={(event) => {
                             event.stopPropagation();
@@ -395,19 +395,19 @@ export const CanvasNode = React.memo(function CanvasNode({
                         {data.title || t("canvas.node.untitled")}
                     </button>
                 </div>
-            )}
+            ) : null}
 
             <div
                 data-canvas-node-shell={data.type}
-                className={isGroup ? "relative h-full w-full overflow-visible rounded-[12px] border border-dashed" : data.type === CanvasNodeType.Image ? "relative h-full w-full overflow-visible rounded-[12px]" : "relative h-full w-full overflow-visible rounded-[12px] border"}
+                className={isGroup ? "relative h-full w-full overflow-visible rounded-[18px] border-[1.5px] border-dashed" : data.type === CanvasNodeType.Image ? "relative h-full w-full overflow-visible rounded-[18px]" : "relative h-full w-full overflow-visible rounded-[18px] border"}
                 style={{
                     // Selection decoration must not shrink the image's aspect-correct content box.
                     borderWidth: data.type === CanvasNodeType.Image ? 0 : undefined,
-                    outline: data.type === CanvasNodeType.Image ? `1px solid ${isActive ? theme.node.activeStroke : isRelated ? theme.node.muted : theme.node.stroke}` : undefined,
+                    outline: data.type === CanvasNodeType.Image ? `1px solid ${isActive ? theme.node.activeStroke : isRelated ? theme.node.muted : hovered ? theme.node.strokeHover : theme.node.stroke}` : undefined,
                     outlineOffset: data.type === CanvasNodeType.Image ? -1 : undefined,
                     background: isGroup ? theme.toolbar.panel : transparentBg ? "transparent" : theme.node.fill,
                     borderColor: isConfigCard
-                        ? isSelected || isConnectionTarget ? theme.node.activeStroke : theme.scheme === "dark" ? "#454059" : "#ded7ed"
+                        ? isSelected || isConnectionTarget ? theme.node.activeStroke : hovered ? theme.node.strokeHover : theme.node.stroke
                         : isGroup
                         ? isGroupDropTarget || isActive
                             ? theme.node.activeStroke
@@ -418,10 +418,16 @@ export const CanvasNode = React.memo(function CanvasNode({
                             ? theme.node.muted
                             : transparentBg
                               ? "transparent"
-                              : theme.node.stroke,
+                              : hovered
+                                ? theme.node.strokeHover
+                                : theme.node.stroke,
                     borderStyle: isGroup ? "dashed" : "solid",
-                    boxShadow: isConfigCard ? (theme.scheme === "dark" ? "none" : "0 3px 12px rgba(49,32,107,.06)") : isDragging ? "none" : canvasNodeShadow(theme, isGroupDropTarget ? "drop" : isActive ? "active" : isRelated ? "related" : "idle"),
-                    transition: isConfigCard ? "none" : undefined,
+                    boxShadow: isGroup && !isActive && !isGroupDropTarget
+                        ? "none"
+                        : isDragging
+                          ? "none"
+                          : canvasNodeShadow(theme, isGroupDropTarget || isConnectionTarget ? "drop" : isConfigCard ? (isSelected ? "active" : hovered ? "hover" : "idle") : isActive ? "active" : isRelated ? "related" : hovered ? "hover" : "idle"),
+                    transition: isDragging ? "none" : "box-shadow 200ms ease, border-color 200ms ease, outline-color 200ms ease",
                 }}
                 onMouseDown={(event) => onMouseDown(event, data.id)}
                 onDoubleClick={(event) => {
@@ -504,19 +510,15 @@ export const CanvasNode = React.memo(function CanvasNode({
 
                 {showImageInfo && hasImageContent ? <ImageInfoBar node={data} /> : null}
 
-                {!isGroup && data.type !== CanvasNodeType.Config && !hasImageContent && !hasVideoContent && !hasAudioContent ? (
-                    <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12" style={{ background: `linear-gradient(to top, ${theme.canvas.background}66, transparent)` }} />
-                ) : null}
-
                 <ResizeHandle corner="top-left" onPointerDown={handleResizePointerDown} />
                 <ResizeHandle corner="top-right" onPointerDown={handleResizePointerDown} />
                 <ResizeHandle corner="bottom-left" onPointerDown={handleResizePointerDown} />
                 <ResizeHandle corner="bottom-right" onPointerDown={handleResizePointerDown} />
             </div>
 
-            {!isGroup ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
+            {!isGroup ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} active={isSelected || isConnectionTarget} highlight={isConnectionTarget} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
             {!isGroup ? (
-                <ConnectionHandleDot side="right" visible={(definition?.hasSourceHandle ?? true) && (hovered || isSelected || isConnecting)} onMouseDown={(event) => onConnectStart(event, data.id, "source")} />
+                <ConnectionHandleDot side="right" visible={(definition?.hasSourceHandle ?? true) && (hovered || isSelected || isConnecting)} active={isSelected} onMouseDown={(event) => onConnectStart(event, data.id, "source")} />
             ) : null}
 
             {showPanel && !isGroup && renderPanel ? (
@@ -1344,24 +1346,41 @@ function ResizeHandle({ corner, onPointerDown }: { corner: ResizeCorner; onPoint
     return <div className={`absolute z-50 size-7 ${positionClass}`} onPointerDown={(event) => onPointerDown(event, corner)} />;
 }
 
-function ConnectionHandleDot({ side, visible, onMouseDown }: { side: "left" | "right"; visible: boolean; onMouseDown: (event: React.MouseEvent) => void }) {
+function ConnectionHandleDot({ side, visible, active = false, highlight = false, onMouseDown }: { side: "left" | "right"; visible: boolean; active?: boolean; highlight?: boolean; onMouseDown: (event: React.MouseEvent) => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const accent = theme.node.activeStroke;
 
+    // Input is a small hollow ring; output is a larger "+" that invites dragging out the next node.
     return (
         <div
-            className={`absolute top-1/2 z-30 flex size-12 -translate-y-1/2 cursor-crosshair items-center justify-center transition-opacity duration-150 ${
+            className={`group/port absolute top-1/2 z-30 flex size-12 -translate-y-1/2 cursor-crosshair items-center justify-center transition-opacity duration-150 ${
                 side === "left" ? "-left-6" : "-right-6"
-            } ${visible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-40"}`}
+            } ${visible || highlight ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
             onMouseDown={onMouseDown}
         >
-            <div
-                className="size-3.5 rounded-full border-2 transition-transform hover:scale-125"
-                style={{
-                    background: theme.node.panel,
-                    borderColor: theme.node.activeStroke,
-                    boxShadow: `0 0 0 3px ${theme.node.activeStroke}22`,
-                }}
-            />
+            {side === "left" ? (
+                <div
+                    className="rounded-full border-2 transition-all duration-150 group-hover/port:scale-125"
+                    style={{
+                        width: highlight ? 14 : 10,
+                        height: highlight ? 14 : 10,
+                        background: highlight ? accent : theme.node.panel,
+                        borderColor: active || highlight ? accent : theme.node.port,
+                        boxShadow: highlight ? `0 0 0 5px ${theme.node.activeRing}` : undefined,
+                    }}
+                />
+            ) : (
+                <div
+                    className="grid size-[18px] place-items-center rounded-full border-[1.5px] text-[12px] font-bold leading-none transition-all duration-150 group-hover/port:scale-110"
+                    style={{
+                        background: active ? accent : theme.node.panel,
+                        borderColor: active ? accent : theme.node.port,
+                        color: active ? "#fff" : theme.node.muted,
+                    }}
+                >
+                    +
+                </div>
+            )}
         </div>
     );
 }
