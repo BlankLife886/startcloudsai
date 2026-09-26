@@ -78,6 +78,7 @@ type NodeContentRendererProps = {
     node: CanvasNodeData;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     isEditingContent: boolean;
+    isSelected?: boolean;
     textareaRef: React.RefObject<HTMLTextAreaElement | null>;
     isBatchRoot: boolean;
     batchCount: number;
@@ -464,6 +465,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         node={data}
                         theme={theme}
                         isEditingContent={isEditingContent}
+                        isSelected={isSelected}
                         textareaRef={textareaRef}
                         isBatchRoot={isBatchRoot}
                         batchCount={batchCount}
@@ -848,42 +850,48 @@ function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "
     const { t } = useTranslation();
     const errorDetails = node.metadata?.errorDetails || t("canvas.node.failed");
     const needsRecharge = isCreditInsufficientError(node.metadata?.errorDetails);
-    const actionClassName =
-        "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition hover:scale-[1.02]";
-    const actionStyle = {
-        background: theme.toolbar.panel,
-        borderColor: theme.toolbar.border,
-        color: theme.node.text,
-    } as const;
+    const dark = theme.scheme === "dark";
+    const errorText = dark ? "#ff8a8e" : "#b42318";
+    const errorBorder = dark ? "rgba(229,72,77,.38)" : "#f5d0d0";
+    const actionClassName = "inline-flex h-7 items-center gap-1.5 rounded-[8px] border px-3 text-[11px] font-semibold transition-colors";
 
     return (
-        <div className="flex max-w-[280px] flex-col items-center gap-3 px-5 text-center">
-            <div className="text-xs leading-5 text-red-300">{errorDetails}</div>
-            <div className="flex flex-wrap items-center justify-center gap-2">
-                {needsRecharge ? (
-                    <a
-                        href="/pricing?plan=topup"
+        <div className="w-full max-w-[320px] px-3">
+            <div className="rounded-[12px] border p-3 text-left" style={{ background: dark ? "rgba(229,72,77,.1)" : "#fff6f6", borderColor: errorBorder }}>
+                <div className="flex items-start gap-2">
+                    <span className="mt-px grid size-[18px] shrink-0 place-items-center rounded-full text-[11px] font-extrabold text-white" style={{ background: "#e5484d" }}>
+                        !
+                    </span>
+                    <span className="line-clamp-4 min-w-0 text-[12px] leading-5" style={{ color: errorText }}>
+                        {errorDetails}
+                    </span>
+                </div>
+                <div className="mt-2.5 flex flex-wrap items-center gap-1.5 pl-[26px]">
+                    {needsRecharge ? (
+                        <a
+                            href="/pricing?plan=topup"
+                            className={actionClassName}
+                            style={{ background: theme.node.activeStroke, borderColor: theme.node.activeStroke, color: "#fff" }}
+                            onClick={(event) => event.stopPropagation()}
+                            onMouseDown={(event) => event.stopPropagation()}
+                        >
+                            {t("canvas.costConfirm.recharge")}
+                        </a>
+                    ) : null}
+                    <button
+                        type="button"
                         className={actionClassName}
-                        style={{ ...actionStyle, background: theme.node.activeStroke, borderColor: theme.node.activeStroke, color: "#fff" }}
-                        onClick={(event) => event.stopPropagation()}
+                        style={{ background: theme.node.panel, borderColor: errorBorder, color: errorText }}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onRetry?.(node);
+                        }}
                         onMouseDown={(event) => event.stopPropagation()}
                     >
-                        {t("canvas.costConfirm.recharge")}
-                    </a>
-                ) : null}
-                <button
-                    type="button"
-                    className={actionClassName}
-                    style={actionStyle}
-                    onClick={(event) => {
-                        event.stopPropagation();
-                        onRetry?.(node);
-                    }}
-                    onMouseDown={(event) => event.stopPropagation()}
-                >
-                    <RegenerateIcon className="size-3.5" />
-                    {t("canvas.node.retry")}
-                </button>
+                        <RegenerateIcon className="size-3.5" />
+                        {t("canvas.node.retry")}
+                    </button>
+                </div>
             </div>
         </div>
     );
@@ -902,54 +910,61 @@ function MissingPluginContent({ theme, type }: Pick<NodeContentRendererProps, "t
     );
 }
 
-function TextContent({ node, theme, isEditingContent, textareaRef, mentionReferences, onContentChange, onStopEditing, onDecreaseFont, onIncreaseFont }: NodeContentRendererProps) {
+function TextContent({ node, theme, isEditingContent, isSelected = false, textareaRef, mentionReferences, onContentChange, onStopEditing, onDecreaseFont, onIncreaseFont }: NodeContentRendererProps) {
     const { t } = useTranslation();
     const fontSize = node.metadata?.fontSize || 14;
-    const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as React.CSSProperties;
+    const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.72)}px`, color: theme.node.text, boxSizing: "border-box" } as React.CSSProperties;
     const isStoryboardCaption = Boolean(node.metadata?.storyboardSceneId);
+    const content = node.metadata?.content || "";
+    const charCount = content.replace(/\s/g, "").length;
+    const showFontControls = isSelected || isEditingContent;
 
     return (
         <div className={`relative flex h-full w-full flex-col overflow-hidden ${isStoryboardCaption ? "canvas-storyboard-caption" : ""}`}>
             {isStoryboardCaption ? <span className="pointer-events-none absolute inset-y-0 left-0 w-1" style={{ background: theme.node.activeStroke, opacity: 0.72 }} aria-hidden /> : null}
             {isEditingContent ? (
-                <CanvasResourceMentionTextarea
-                    ref={textareaRef}
-                    containerClassName="min-h-0 flex-1"
-                    className="thin-scrollbar m-0 block h-full w-full resize-none overflow-y-auto whitespace-pre-wrap break-words border-none bg-transparent px-4 pb-2 pt-3 font-mono outline-none select-text appearance-none"
-                    style={textStyle}
-                    value={node.metadata?.content || ""}
-                    references={mentionReferences}
-                    highlightLabels={false}
-                    onChange={(value) => onContentChange(node.id, value)}
-                    onBlur={onStopEditing}
-                    onKeyDown={(event) => {
-                        if (event.key === "Escape") onStopEditing();
-                    }}
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onWheel={(event) => event.stopPropagation()}
-                    data-canvas-no-zoom
-                />
+                <div className="mx-2 mt-2 flex min-h-0 flex-1 rounded-[12px]" style={{ background: theme.scheme === "dark" ? "rgba(255,255,255,.04)" : "#f8f7fb" }}>
+                    <CanvasResourceMentionTextarea
+                        ref={textareaRef}
+                        containerClassName="min-h-0 flex-1"
+                        className="thin-scrollbar m-0 block h-full w-full resize-none overflow-y-auto whitespace-pre-wrap break-words border-none bg-transparent px-2.5 py-2 outline-none select-text appearance-none"
+                        style={textStyle}
+                        value={content}
+                        references={mentionReferences}
+                        highlightLabels={false}
+                        onChange={(value) => onContentChange(node.id, value)}
+                        onBlur={onStopEditing}
+                        onKeyDown={(event) => {
+                            if (event.key === "Escape") onStopEditing();
+                        }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onWheel={(event) => event.stopPropagation()}
+                        data-canvas-no-zoom
+                    />
+                </div>
+            ) : content ? (
+                <div className="thin-scrollbar block min-h-0 w-full flex-1 overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-4 pb-2 pt-3.5" style={textStyle} data-canvas-no-zoom onWheel={(event) => event.stopPropagation()}>
+                    {content}
+                </div>
             ) : (
-                <div className="thin-scrollbar block min-h-0 w-full flex-1 overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-4 pb-2 pt-3 font-mono" style={textStyle} data-canvas-no-zoom onWheel={(event) => event.stopPropagation()}>
-                    {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>{t("canvas.node.editText")}</span>}
+                <div className="mx-3 mt-3 flex min-h-0 flex-1 flex-col items-center justify-center gap-1 rounded-[12px] border-[1.5px] border-dashed text-[12px] font-semibold" style={{ borderColor: isSelected ? `${theme.node.activeStroke}66` : theme.node.stroke, color: isSelected ? theme.node.activeStroke : theme.node.placeholder }}>
+                    <span>{t("canvas.node.editText")}</span>
                 </div>
             )}
-            <div className="flex h-12 shrink-0 items-center justify-end gap-1 px-4" data-canvas-no-zoom>
-                <TextNodeActionButton
-                    label={t("canvas.nodeToolbar.zoomOut")}
-                    title={t("canvas.nodeToolbar.decreaseFont")}
-                    icon={<Minus className="size-3.5" />}
-                    theme={theme}
-                    onClick={() => onDecreaseFont?.(node)}
-                />
-                <TextNodeActionButton
-                    label={t("canvas.nodeToolbar.zoomIn")}
-                    title={t("canvas.nodeToolbar.increaseFont")}
-                    icon={<Plus className="size-3.5" />}
-                    theme={theme}
-                    onClick={() => onIncreaseFont?.(node)}
-                />
+            <div className="flex h-10 shrink-0 items-center gap-2 border-t pl-4 pr-2" style={{ borderColor: content || isEditingContent ? theme.node.stroke : "transparent" }} data-canvas-no-zoom>
+                <span className="min-w-0 flex-1 truncate text-[11px] tabular-nums" style={{ color: theme.node.muted }}>
+                    {content || isEditingContent ? t("canvas.promptPanel.charCount", { count: charCount }) : ""}
+                </span>
+                {showFontControls ? (
+                    <span className="inline-flex items-center gap-px rounded-[9px] p-0.5" style={{ background: theme.toolbar.itemHover }}>
+                        <TextNodeActionButton label={t("canvas.nodeToolbar.zoomOut")} title={t("canvas.nodeToolbar.decreaseFont")} icon={<Minus className="size-3" />} theme={theme} onClick={() => onDecreaseFont?.(node)} />
+                        <span className="min-w-[18px] text-center text-[11px] tabular-nums" style={{ color: theme.node.muted }}>
+                            {fontSize}
+                        </span>
+                        <TextNodeActionButton label={t("canvas.nodeToolbar.zoomIn")} title={t("canvas.nodeToolbar.increaseFont")} icon={<Plus className="size-3" />} theme={theme} onClick={() => onIncreaseFont?.(node)} />
+                    </span>
+                ) : null}
             </div>
         </div>
     );
@@ -959,7 +974,7 @@ function TextNodeActionButton({ label, title = label, icon, theme, onClick }: { 
     return (
         <button
             type="button"
-            className="canvas-node-overlay-btn inline-flex h-8 items-center gap-1 rounded-full px-2 text-xs font-medium opacity-75 transition hover:opacity-100"
+            className="canvas-node-overlay-btn inline-flex h-6 items-center gap-1 rounded-[7px] px-1.5 text-[11px] font-medium transition hover:opacity-100"
             style={{ color: theme.node.text }}
             title={title}
             aria-label={title}

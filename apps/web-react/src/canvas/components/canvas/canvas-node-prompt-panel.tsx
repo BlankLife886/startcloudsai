@@ -11,7 +11,7 @@ import { catalogModelsByCapability, defaultConfig, formatModelPriceParts, modelM
 import { ModelCatalogIcon, ModelMaintenanceBadge } from "@react/components/common/ModelCatalogIcon.jsx";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
-import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
+import { CanvasIconWellStyle } from "@/lib/canvas-ui";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
@@ -80,7 +80,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     return (
         <div
             data-canvas-no-zoom
-            className="canvas-float-menu canvas-prompt-dock rounded-[22px] border p-3 backdrop-blur-xl"
+            className="canvas-float-menu canvas-prompt-dock rounded-[20px] border p-3 backdrop-blur-xl"
             style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
@@ -253,17 +253,29 @@ function PromptSendButton({
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const elapsedMs = useGenerationElapsed(startedAt, durationMs, isRunning);
     const runningLabel = t("canvas.configNode.stopWithDuration", { duration: formatGenerationDuration(elapsedMs) });
+    const running = isRunning;
     return (
         <button
             type="button"
-            className="grid size-9 shrink-0 place-items-center rounded-full disabled:opacity-35"
-            style={{ background: nodeTypeColor(mode, undefined, theme.scheme), color: "#fff" }}
+            className={`inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full text-[12px] font-semibold tabular-nums text-white transition disabled:cursor-default disabled:opacity-35 ${running ? "px-3.5" : "w-9"}`}
+            style={{
+                background: running ? theme.node.text : `linear-gradient(135deg, #9b7bff, ${theme.node.activeStroke})`,
+                color: running ? theme.node.panel : "#fff",
+                boxShadow: running || disabled ? "none" : "0 6px 16px rgba(109,92,255,.3)",
+            }}
             disabled={disabled}
             title={locked && !isRunning ? t("canvas.unavailable") : isRunning ? runningLabel : t("canvas.promptPanel.generate")}
             onClick={onClick}
             aria-label={isRunning ? runningLabel : t("canvas.promptPanel.generate")}
         >
-            {isRunning ? <Square className="size-3.5 fill-current" /> : <ArrowUp className="size-4" />}
+            {isRunning ? (
+                <>
+                    <Square className="size-3 fill-current" />
+                    {formatGenerationDuration(elapsedMs)}
+                </>
+            ) : (
+                <ArrowUp className="size-4" />
+            )}
         </button>
     );
 }

@@ -668,10 +668,11 @@ function CanvasStoryboardConfigNodePanel({
 
       <button
         type="button"
-        className="canvas-config-generate inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl text-[12px] font-medium disabled:opacity-60"
+        className="canvas-config-generate inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] text-[12px] font-semibold transition disabled:opacity-50"
         style={{
-          background: theme.scheme === "dark" ? colorWash(accent, 0.18) : accent,
-          color: theme.scheme !== "dark" ? "#fff" : accent,
+          background: running ? theme.node.text : `linear-gradient(135deg, #9b7bff 0%, ${theme.node.activeStroke} 60%, #3d7bff 100%)`,
+          color: running ? theme.node.panel : "#fff",
+          boxShadow: running ? "none" : "0 8px 18px rgba(109,92,255,.26)",
         }}
         disabled={!running && (!script.trim() || (batchMode === "refs" && !driverImages.length))}
         onMouseDown={(event) => event.stopPropagation()}
@@ -1173,7 +1174,7 @@ function CanvasGenerationConfigNodePanel({
       className="canvas-config-node canvas-config-refined flex h-full w-full cursor-move flex-col rounded-[inherit] px-3 py-2.5"
       style={{
         color: theme.node.text,
-        background: dark ? "#1c2029" : "#fdfdff",
+        background: dark ? theme.node.fill : "#ffffff",
       }}
       onWheel={(event) => event.stopPropagation()}
     >
@@ -1415,17 +1416,15 @@ function CanvasGenerationConfigNodePanel({
 
       <button
         type="button"
-        className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-70"
+        className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[11px] text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
         style={{
           background: queued
             ? "#b97716"
-            : mode === "image"
-              ? "#07845f"
-              : mode === "text"
-                ? "#6950d9"
-                : color,
-          color: "#fff",
-          boxShadow: "none",
+            : generating
+              ? theme.node.text
+              : `linear-gradient(135deg, #9b7bff 0%, ${theme.node.activeStroke} 60%, #3d7bff 100%)`,
+          color: generating ? theme.node.panel : "#fff",
+          boxShadow: queued || generating || !canGenerate ? "none" : "0 8px 18px rgba(109,92,255,.28)",
         }}
         disabled={!queued && !generating && !canGenerate}
         onMouseDown={(event) => event.stopPropagation()}
@@ -1638,18 +1637,11 @@ function CanvasLocalImageOperationPanel({
 
       <button
         type="button"
-        className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-60"
+        className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[11px] border text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
         style={{
-          background: queued
-            ? "#d97706"
-            : theme.scheme === "dark"
-              ? colorWash(accent, 0.16)
-              : accent,
-          color: queued ? "#fff" : theme.scheme === "dark" ? accent : "#fff",
-          boxShadow:
-            theme.scheme === "dark" && !queued
-              ? `inset 0 0 0 1px ${colorWash(accent, 0.38)}`
-              : undefined,
+          background: queued ? "#d97706" : theme.toolbar.itemHover,
+          borderColor: queued ? "#d97706" : theme.node.stroke,
+          color: queued ? "#fff" : theme.node.text,
         }}
         disabled={!queued && !running && !canRun}
         onMouseDown={(event) => event.stopPropagation()}
@@ -1911,14 +1903,11 @@ function CanvasAiOperationPanel({
       </div>
       <button
         type="button"
-        className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-60"
+        className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[11px] text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
         style={{
-          background: queued
-            ? "#d97706"
-            : theme.scheme === "dark"
-              ? colorWash(color, 0.16)
-              : color,
-          color: queued ? "#fff" : theme.scheme === "dark" ? color : "#fff",
+          background: queued ? "#d97706" : `linear-gradient(135deg, #9b7bff 0%, ${theme.node.activeStroke} 60%, #3d7bff 100%)`,
+          color: "#fff",
+          boxShadow: queued ? "none" : "0 8px 18px rgba(109,92,255,.26)",
         }}
         disabled={!queued && !running && !canRun}
         onMouseDown={(event) => event.stopPropagation()}

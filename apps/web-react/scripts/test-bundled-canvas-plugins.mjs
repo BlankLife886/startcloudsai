@@ -47,7 +47,7 @@ test("text node keeps font controls in its dedicated bottom action row", async (
         readCanvasSource("components/canvas/canvas-node.tsx"),
         readCanvasSource("components/canvas/canvas-node-hover-toolbar.tsx"),
     ]);
-    assert.match(canvasNode, /flex h-12 shrink-0 items-center justify-end gap-1 px-4/);
+    assert.match(canvasNode, /flex h-10 shrink-0 items-center gap-2 border-t pl-4 pr-2/);
     assert.match(canvasNode, /onDecreaseFont\?\.\(node\)/);
     assert.match(canvasNode, /onIncreaseFont\?\.\(node\)/);
     // Editing and generation moved to the hover toolbar, so the row stays font-only.
@@ -59,7 +59,7 @@ test("text node keeps font controls in its dedicated bottom action row", async (
     assert.doesNotMatch(hoverToolbar, /id: "decreaseFont"|id: "increaseFont"/);
     assert.match(hoverToolbar, /!isText \? \[\{ id: "rename"/);
     assert.doesNotMatch(hoverToolbar, /\bonInfo\b|id: "duplicate"|<InfoRow label="ID"|copyText\(node\.id\)/);
-    assert.match(hoverToolbar, /showLabel=\{showImageToolLabels\}/);
+    assert.match(hoverToolbar, /showLabel=\{showImageToolLabels && index < labelledCount\}/);
     assert.match(hoverToolbar, /const hasText = showLabel && Boolean\(label\)/);
 });
 

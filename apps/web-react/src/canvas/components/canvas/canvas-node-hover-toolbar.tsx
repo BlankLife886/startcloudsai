@@ -201,8 +201,10 @@ export function CanvasNodeHoverToolbar({
     const visibleTools = hasImage
         ? [...toolbarTools, { id: "more", title: t("canvas.imageTools.configure"), label: t("canvas.imageTools.more"), icon: <Ellipsis className="size-4" />, active: imageToolSettingsOpen, onClick: openImageToolSettings }]
         : toolbarTools;
-    const wrapAt = visibleTools.length > 8 ? Math.ceil(visibleTools.length / 2) : visibleTools.length;
-    const toolbarRows = [visibleTools.slice(0, wrapAt), visibleTools.slice(wrapAt)].filter((row) => row.length);
+    // One calm row: the first few actions keep their labels, the rest collapse to icons, and delete sits apart at the end.
+    const mainTools = visibleTools.filter((tool) => tool.id !== "delete" && tool.id !== "more");
+    const trailingTools = visibleTools.filter((tool) => tool.id === "delete" || tool.id === "more");
+    const labelledCount = mainTools.length > 5 ? 3 : mainTools.length;
 
     return (
         <>
@@ -213,8 +215,8 @@ export function CanvasNodeHoverToolbar({
                 placement="top"
                 gap={14}
                 data-canvas-node-toolbar
-                className="canvas-float-menu flex flex-col rounded-[20px] px-1.5 py-1.5 backdrop-blur-xl"
-                style={{ background: theme.toolbar.panel, color: theme.toolbar.item, boxShadow: theme.toolbar.shadow, zIndex: 110 }}
+                className="canvas-float-menu flex rounded-[14px] border p-1 backdrop-blur-xl"
+                style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.item, boxShadow: theme.toolbar.shadow, zIndex: 110 }}
                 onMouseEnter={() => onKeep(node.id)}
                 onMouseLeave={() => {
                     if (!imageToolSettingsOpen) onLeave();
@@ -222,17 +224,15 @@ export function CanvasNodeHoverToolbar({
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
             >
-                {toolbarRows.map((row, rowIndex) => (
-                    <div
-                        key={rowIndex}
-                        className="flex items-center justify-center"
-                        style={rowIndex ? { boxShadow: `inset 0 1px 0 ${theme.toolbar.border}` } : undefined}
-                    >
-                        {row.map((tool) => (
-                            <ToolbarAction key={tool.id} {...tool} showLabel={showImageToolLabels} theme={theme} />
-                        ))}
-                    </div>
-                ))}
+                <div className="flex items-center gap-0.5">
+                    {mainTools.map((tool, index) => (
+                        <ToolbarAction key={tool.id} {...tool} showLabel={showImageToolLabels && index < labelledCount} theme={theme} />
+                    ))}
+                    {trailingTools.length ? <span className="mx-1 h-4 w-px shrink-0" style={{ background: theme.toolbar.border }} aria-hidden /> : null}
+                    {trailingTools.map((tool) => (
+                        <ToolbarAction key={tool.id} {...tool} showLabel={false} theme={theme} />
+                    ))}
+                </div>
             </CanvasFloatingLayer>
             {hasImage ? (
                 <ImageToolSettingsModal
@@ -262,22 +262,24 @@ function dedupeToolbarTools(tools: ToolbarTool[]) {
 
 function ToolbarAction({ title, label, icon, onClick, showLabel, theme, active = false, danger = false }: ToolbarTool & { showLabel: boolean; theme: CanvasTheme }) {
     const hasText = showLabel && Boolean(label);
+    const color = danger ? "#e5484d" : active ? theme.toolbar.activeText : theme.toolbar.item;
     return (
         <Tooltip title={title} placement="top" mouseEnterDelay={0.2}>
-            <button type="button" className="relative flex h-11 shrink-0 items-center px-0.5" style={{ color: danger ? "#ef4444" : theme.toolbar.item }} onClick={onClick} aria-label={title}>
-                <span
-                    className={`flex h-8 items-center whitespace-nowrap rounded-full text-[13px] transition ${hasText ? "gap-1.5 px-2.5" : "justify-center px-2"}`}
-                    style={{ background: active ? theme.toolbar.activeBg : undefined, color: active ? theme.toolbar.activeText : undefined }}
-                    onMouseEnter={(event) => {
-                        if (!active) event.currentTarget.style.background = theme.toolbar.itemHover;
-                    }}
-                    onMouseLeave={(event) => {
-                        event.currentTarget.style.background = active ? theme.toolbar.activeBg : "transparent";
-                    }}
-                >
-                    {icon}
-                    {hasText ? <span>{label}</span> : null}
-                </span>
+            <button
+                type="button"
+                className={`flex h-8 shrink-0 items-center whitespace-nowrap rounded-[9px] text-[12px] font-medium transition-colors ${hasText ? "gap-1.5 px-2.5" : "w-8 justify-center"}`}
+                style={{ color, background: active ? theme.toolbar.activeBg : "transparent" }}
+                onMouseEnter={(event) => {
+                    if (!active) event.currentTarget.style.background = danger ? "rgba(229,72,77,.1)" : theme.toolbar.itemHover;
+                }}
+                onMouseLeave={(event) => {
+                    event.currentTarget.style.background = active ? theme.toolbar.activeBg : "transparent";
+                }}
+                onClick={onClick}
+                aria-label={title}
+            >
+                {icon}
+                {hasText ? <span>{label}</span> : null}
             </button>
         </Tooltip>
     );
