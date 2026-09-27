@@ -117,6 +117,10 @@ export type CanvasNodeMetadata = {
     workflowName?: string; // Side panel: user-chosen name of the workflow this config node heads.
     htmlShare?: { id: string; url: string; at: string }; // HTML plugin: the page's public share link, if published.
     pluginColor?: string;
+    panoViews?: Array<{ id: string; name: string; lon: number; lat: number; fov: number }>; // Panorama: saved view bookmarks.
+    panoHotspots?: Array<{ id: string; lon: number; lat: number; label: string; targetNodeId?: string }>; // Panorama: tour hotspots.
+    panoPreviousContent?: string; // Panorama: the image before the last AI seam repair, for one-step undo.
+    panoPreviousStorageKey?: string;
     stickyUpdatedAt?: string; // Sticky notes: when the text was last edited.
     taskId?: string;
     taskKind?: "image" | "assistant";

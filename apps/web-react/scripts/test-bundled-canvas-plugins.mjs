@@ -6,6 +6,7 @@ import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "../src/can
 import { applyHtmlPatches, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
 import { htmlImageTokens, isHtmlFrameMessage, withHtmlBridge } from "../src/canvas/components/canvas/nodes/bundled/html-node-runtime.ts";
 import { canvasMiniMapLayout } from "../src/canvas/lib/canvas/canvas-mini-map.ts";
+import { directionShots, isPanoramaShaped, pickLonLat, projectLonLat } from "../src/canvas/components/canvas/nodes/bundled/panorama-math.ts";
 import { continueStickyList, parseStickyLines, stickyTextColor, stickyTodoProgress, toggleStickyChecklist, toggleStickyTodo } from "../src/canvas/components/canvas/nodes/bundled/sticky-note-model.ts";
 import { repairRetypedConfigNodes } from "../src/canvas/lib/canvas/canvas-image-hydration.ts";
 import { collapseGroup, createGroupAround, dissolveGroup, expandGroup, fitGroupToMembers, GROUP_HEADER, GROUP_PADDING, growGroupsToFit, summarizeGroups } from "../src/canvas/lib/canvas/canvas-groups.ts";
@@ -322,4 +323,27 @@ test("sticky notes understand to-dos, bullets and headings and keep lists going 
 
     assert.equal(stickyTextColor("#fde68a"), "#1c1917");
     assert.equal(stickyTextColor("#334155"), "#fafaf9");
+});
+
+test("panorama picking and projection agree, and exports cover the right directions", () => {
+    const view = { lon: 37, lat: 12, fov: 75 };
+    for (const [x, y] of [[400, 250], [120, 60], [700, 430]]) {
+        const at = pickLonLat(view, x, y, 800, 500);
+        const back = projectLonLat(view, at.lon, at.lat, 800, 500);
+        assert.ok(back && Math.abs(back.x - x) < 0.01 && Math.abs(back.y - y) < 0.01, `round trip at ${x},${y}`);
+    }
+    const centre = pickLonLat(view, 400, 250, 800, 500);
+    assert.ok(Math.abs(centre.lon - 37) < 1e-6 && Math.abs(centre.lat - 12) < 1e-6, "the centre of the screen is the view direction");
+    assert.equal(projectLonLat(view, 37 + 180, 0, 800, 500), null, "points behind the camera are not drawn");
+    assert.deepEqual(directionShots().map((shot) => shot.lon), [0, 90, 180, -90]);
+    assert.equal(directionShots(true).length, 6);
+    assert.equal(isPanoramaShaped(4096, 2048), true);
+    assert.equal(isPanoramaShaped(1024, 1024), false);
+});
+
+test("a shared panorama page embeds its scenes safely", async () => {
+    const source = await readCanvasSource("components/canvas/nodes/bundled/panorama-share.ts");
+    assert.match(source, /replace\(\/<\/g, "\\\\u003c"\)/, "scene JSON cannot close the script tag");
+    assert.doesNotMatch(source, /cdn\.jsdelivr|unpkg|<script[^>]+src=/, "shared pages load no external scripts");
+    assert.match(source, /getContext\("webgl2"\) \|\| canvas\.getContext\("webgl"\)/);
 });
