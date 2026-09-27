@@ -1510,8 +1510,9 @@ function ConnectionHandleDot({ side, visible, active = false, highlight = false,
     // Input is a small hollow ring; output is a larger "+" that invites dragging out the next node.
     return (
         <div
-            className={`group/port absolute top-1/2 z-30 flex size-14 cursor-crosshair items-center justify-center transition-opacity duration-150 ${
-                side === "left" ? "-left-7" : "-right-7"
+            // The hit area matches the "+" (32px) so it reaches only 16px into the node and never covers its content.
+            className={`group/port absolute top-1/2 z-30 flex size-8 cursor-crosshair items-center justify-center transition-opacity duration-150 ${
+                side === "left" ? "-left-4" : "-right-4"
             } ${visible || highlight ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
             style={{ transform: `translateY(-50%) scale(${counterScale})` }}
             onMouseDown={onMouseDown}

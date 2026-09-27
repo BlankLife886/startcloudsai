@@ -117,6 +117,7 @@ export type CanvasNodeMetadata = {
     workflowName?: string; // Side panel: user-chosen name of the workflow this config node heads.
     htmlShare?: { id: string; url: string; at: string }; // HTML plugin: the page's public share link, if published.
     pluginColor?: string;
+    stickyUpdatedAt?: string; // Sticky notes: when the text was last edited.
     taskId?: string;
     taskKind?: "image" | "assistant";
 	generationStage?: string;

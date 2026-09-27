@@ -6,6 +6,7 @@ import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "../src/can
 import { applyHtmlPatches, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
 import { htmlImageTokens, isHtmlFrameMessage, withHtmlBridge } from "../src/canvas/components/canvas/nodes/bundled/html-node-runtime.ts";
 import { canvasMiniMapLayout } from "../src/canvas/lib/canvas/canvas-mini-map.ts";
+import { continueStickyList, parseStickyLines, stickyTextColor, stickyTodoProgress, toggleStickyChecklist, toggleStickyTodo } from "../src/canvas/components/canvas/nodes/bundled/sticky-note-model.ts";
 import { repairRetypedConfigNodes } from "../src/canvas/lib/canvas/canvas-image-hydration.ts";
 import { collapseGroup, createGroupAround, dissolveGroup, expandGroup, fitGroupToMembers, GROUP_HEADER, GROUP_PADDING, growGroupsToFit, summarizeGroups } from "../src/canvas/lib/canvas/canvas-groups.ts";
 import { buildCanvasSidePanelWorkflowGroups, canvasWorkflowDisplayName, orderCanvasWorkflowNodes } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
@@ -301,4 +302,24 @@ test("retrying a generation config runs it again instead of writing an image int
     const project = await readCanvasSource("pages/canvas/project.tsx");
     const retry = project.slice(project.indexOf("const handleRetryNode = useCallback"), project.indexOf("const handleRetryNode = useCallback") + 2500);
     assert.match(retry, /if \(isCanvasExecutableNode\(node\)\) \{[\s\S]*handleGenerateNode\(node\.id/);
+});
+
+test("sticky notes understand to-dos, bullets and headings and keep lists going on Enter", () => {
+    const note = "# 本周\n- [ ] 出海报\n- [x] 定配色\n- 备注\n随手记";
+    assert.deepEqual(parseStickyLines(note).map((line) => line.kind), ["heading", "todo", "todo", "bullet", "text"]);
+    assert.deepEqual(stickyTodoProgress(note), { total: 2, done: 1 });
+    assert.equal(toggleStickyTodo(note, 1).split("\n")[1], "- [x] 出海报");
+    assert.equal(toggleStickyTodo(note, 4), note, "plain lines do not toggle");
+
+    assert.equal(toggleStickyChecklist("买咖啡\n\n- 写周报"), "- [ ] 买咖啡\n\n- [ ] 写周报");
+    assert.equal(toggleStickyChecklist("- [ ] 买咖啡\n- [x] 写周报"), "买咖啡\n写周报");
+    assert.equal(toggleStickyChecklist(""), "- [ ] ");
+
+    const typed = "- [x] 定配色";
+    assert.deepEqual(continueStickyList(typed, typed.length), { value: "- [x] 定配色\n- [ ] ", caret: typed.length + 7 });
+    assert.deepEqual(continueStickyList("- 一\n- ", 6), { value: "- 一\n", caret: 4 }, "Enter on an empty item ends the list");
+    assert.equal(continueStickyList("普通文字", 4), null);
+
+    assert.equal(stickyTextColor("#fde68a"), "#1c1917");
+    assert.equal(stickyTextColor("#334155"), "#fafaf9");
 });
