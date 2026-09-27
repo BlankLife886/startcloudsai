@@ -10,7 +10,7 @@ import { isUsableCanvasImageSource, isUsableCanvasImageStorageKey, normalizeHydr
 import { reconcileStoryboardGroupStatuses } from "./canvas-storyboard-recovery.ts";
 import { describeStoryboardReference } from "./canvas-storyboard-references.ts";
 export { pendingCanvasTasks, type PendingCanvasTask } from "./canvas-pending-tasks.ts";
-export { repairMisappliedCanvasWorkflowOutputs } from "@/lib/canvas/canvas-image-hydration";
+export { repairMisappliedCanvasWorkflowOutputs, repairRetypedConfigNodes } from "@/lib/canvas/canvas-image-hydration";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import type { CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";

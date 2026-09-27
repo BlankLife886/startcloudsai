@@ -100,3 +100,21 @@ export function repairMisappliedCanvasWorkflowOutputs(nodes: CanvasNodeData[]) {
 function hasUsableImage(image: CanvasNodeImage) {
     return Boolean(image.deletedByHistory) || Boolean(image.taskId && image.status === "loading") || isUsableCanvasImageSource(image.content) || isUsableCanvasImageStorageKey(image.storageKey);
 }
+
+// Retrying a failed generation config used to go through the output-node path, which wrote the generated image into
+// the config itself and turned it into an image node. Such nodes keep their config id prefix and settings; put them
+// back as configs and drop the image written into them.
+const RETYPED_CONFIG_IMAGE_KEYS = ["content", "storageKey", "thumbnailUrl", "thumbnailKey", "images", "primaryImageId", "naturalWidth", "naturalHeight", "bytes", "mimeType", "loadedImageAspect", "taskId", "taskKind", "generationType", "cancelPolicy"] as const;
+
+export function repairRetypedConfigNodes(nodes: CanvasNodeData[]) {
+    let changed = false;
+    const next = nodes.map((node) => {
+        const metadata = node.metadata;
+        if (node.type !== "image" || !node.id.startsWith("config-") || !metadata?.generationMode || metadata.composerContent === undefined) return node;
+        changed = true;
+        const restored: CanvasNodeMetadata = { ...metadata };
+        RETYPED_CONFIG_IMAGE_KEYS.forEach((key) => delete restored[key]);
+        return { ...node, type: "config", width: 360, height: 414, metadata: restored };
+    });
+    return changed ? next : nodes;
+}

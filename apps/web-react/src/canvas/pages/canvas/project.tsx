@@ -119,7 +119,7 @@ import {
     isInFlightCanvasGeneration,
     isUnsubmittedCanvasGeneration,
     pendingCanvasTasks,
-    repairMisappliedCanvasWorkflowOutputs,
+    repairMisappliedCanvasWorkflowOutputs, repairRetypedConfigNodes,
     resetInterruptedGeneration,
     restartCanvasNodeGeneration,
     shouldCancelCreatedCanvasTask,
@@ -1209,7 +1209,7 @@ function InfiniteCanvasPage() {
                 return;
             }
             const project = loaded;
-            const repairedNodes = resetInterruptedGeneration(repairMisappliedCanvasWorkflowOutputs(project.nodes));
+            const repairedNodes = resetInterruptedGeneration(repairMisappliedCanvasWorkflowOutputs(repairRetypedConfigNodes(project.nodes)));
             const [restoredNodes, restoredSessions] = await Promise.all([
                 hydrateCanvasImages(repairedNodes),
                 hydrateAssistantImages(project.chatSessions || []),
@@ -7027,6 +7027,17 @@ function InfiniteCanvasPage() {
                   : undefined;
             if (localProducer) {
                 await generateNodeRef.current?.(localProducer.id, "image", "");
+                return;
+            }
+            // A generation config is retried by running it again, never through the output-node path below, which
+            // writes the result into the node itself (and used to turn the config into an image node).
+            if (isCanvasExecutableNode(node)) {
+                if (node.metadata?.storyboardConfig) {
+                    await runStoryboardFromConfigNode(node.id);
+                    return;
+                }
+                const requested = node.metadata?.generationMode || "image";
+                await handleGenerateNode(node.id, isCanvasGenerationModeEnabled(requested) ? requested : "image", node.metadata?.composerContent ?? node.metadata?.prompt ?? "");
                 return;
             }
             if (!isCanvasNodeTypeEnabled(node.type)) {

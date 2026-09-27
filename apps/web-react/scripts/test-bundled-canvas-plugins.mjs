@@ -6,6 +6,7 @@ import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "../src/can
 import { applyHtmlPatches, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
 import { htmlImageTokens, isHtmlFrameMessage, withHtmlBridge } from "../src/canvas/components/canvas/nodes/bundled/html-node-runtime.ts";
 import { canvasMiniMapLayout } from "../src/canvas/lib/canvas/canvas-mini-map.ts";
+import { repairRetypedConfigNodes } from "../src/canvas/lib/canvas/canvas-image-hydration.ts";
 import { collapseGroup, createGroupAround, dissolveGroup, expandGroup, fitGroupToMembers, GROUP_HEADER, GROUP_PADDING, growGroupsToFit, summarizeGroups } from "../src/canvas/lib/canvas/canvas-groups.ts";
 import { buildCanvasSidePanelWorkflowGroups, canvasWorkflowDisplayName, orderCanvasWorkflowNodes } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 
@@ -272,4 +273,32 @@ test("groups wrap a selection, grow with their members, fold into a card and dis
     assert.ok(!dissolved.some((item) => item.id === "g"));
     assert.equal(dissolved.find((item) => item.id === "a").metadata.hidden, undefined);
     assert.equal(dissolved.find((item) => item.id === "a").metadata.groupId, undefined);
+});
+
+test("a generation config that a retry turned into an image node is restored on load", () => {
+    const broken = {
+        id: "config-1790429586271-4iinv",
+        type: "image",
+        title: "生成配置",
+        position: { x: 0, y: 0 },
+        width: 580,
+        height: 440,
+        metadata: { generationMode: "image", composerContent: "蓝天白云", model: "gpt-image-2", workflowOutputNodeIds: ["out"], content: "/api/v1/files/x.png", storageKey: "tasks/x.png", images: [{ id: "i" }], primaryImageId: "i", naturalWidth: 1024, status: "success" },
+    };
+    const realImage = { id: "image-1", type: "image", title: "蓝天白云", position: { x: 0, y: 0 }, width: 300, height: 300, metadata: { content: "/api/v1/files/y.png" } };
+    const [config, untouched] = repairRetypedConfigNodes([broken, realImage]);
+    assert.equal(config.type, "config");
+    assert.equal(config.metadata.composerContent, "蓝天白云");
+    assert.deepEqual(config.metadata.workflowOutputNodeIds, ["out"]);
+    assert.equal(config.metadata.content, undefined);
+    assert.equal(config.metadata.images, undefined);
+    assert.equal(untouched, realImage, "real image nodes are left alone");
+    const clean = [realImage];
+    assert.equal(repairRetypedConfigNodes(clean), clean);
+});
+
+test("retrying a generation config runs it again instead of writing an image into it", async () => {
+    const project = await readCanvasSource("pages/canvas/project.tsx");
+    const retry = project.slice(project.indexOf("const handleRetryNode = useCallback"), project.indexOf("const handleRetryNode = useCallback") + 2500);
+    assert.match(retry, /if \(isCanvasExecutableNode\(node\)\) \{[\s\S]*handleGenerateNode\(node\.id/);
 });
