@@ -26,7 +26,9 @@ export function collectCanvasOwnedOutputIds(nodes: CanvasNodeData[], selectedIds
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const outputs = new Map<string, Set<string>>();
     const add = (owner: string, id: string) => {
-        if (!byId.get(id)?.metadata?.hidden) return;
+        // Inline outputs are hidden nodes owned by their producer; members hidden by a folded group are not outputs.
+        const metadata = byId.get(id)?.metadata;
+        if (!metadata?.hidden || metadata.collapsedIntoGroupId) return;
         const ids = outputs.get(owner) || new Set<string>();
         ids.add(id);
         outputs.set(owner, ids);

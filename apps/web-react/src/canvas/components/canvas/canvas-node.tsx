@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Ban, ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, Minus, Music2, Plus, Puzzle, RefreshCw, Star, Trash2, TriangleAlert, Video, Wallet, X } from "lucide-react";
+import { Ban, ChevronDown, ChevronRight, Clapperboard, Copy, Image as ImageIcon, Minus, Music2, Plus, Puzzle, RefreshCw, Star, Trash2, TriangleAlert, Video, Wallet, X } from "lucide-react";
 import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { RegenerateIcon } from "@react/components/common/RegenerateIcon.jsx";
 
@@ -22,6 +22,7 @@ import { useTranslation } from "react-i18next";
 import { getCanvasLiveScale } from "./infinite-canvas";
 import { CanvasFloatingLayer } from "./canvas-floating-layer";
 import { imageFrameRatio, imageFrameSource } from "@/lib/canvas/canvas-node-size";
+import { groupColor, type CanvasGroupSummary } from "@/lib/canvas/canvas-groups";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
@@ -47,6 +48,8 @@ type CanvasNodeProps = {
     renderPanel?: (node: CanvasNodeData) => ReactNode;
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
     groupChildCount?: number;
+    groupSummary?: CanvasGroupSummary;
+    onToggleGroupCollapse?: (groupId: string) => void;
     storyboardGroupStats?: StoryboardGroupStats;
     isGroupDropTarget?: boolean;
     batchExpanded?: boolean;
@@ -104,6 +107,9 @@ type NodeContentRendererProps = {
     onDeleteBatchImage?: (imageId: string) => void;
     onViewBatchImage?: (image: CanvasNodeImage) => void;
     groupChildCount: number;
+    groupSummary?: CanvasGroupSummary;
+    onToggleGroupCollapse?: () => void;
+    onRenameGroup?: () => void;
     storyboardGroupStats?: StoryboardGroupStats;
 };
 
@@ -143,6 +149,8 @@ export const CanvasNode = React.memo(function CanvasNode({
     renderPanel,
     renderNodeContent,
     groupChildCount = 0,
+    groupSummary,
+    onToggleGroupCollapse,
     storyboardGroupStats,
     isGroupDropTarget = false,
     batchExpanded = false,
@@ -185,6 +193,9 @@ export const CanvasNode = React.memo(function CanvasNode({
     const imageGenerationItems = data.type === CanvasNodeType.Image ? data.metadata?.images || [] : [];
     const imageGenerationCompleted = imageGenerationItems.filter((image) => image.status !== "loading").length;
     const isGroup = data.type === CanvasNodeType.Group;
+    // Ordinary groups draw their own coloured title bar; storyboard groups keep their dedicated layout.
+    const isPlainGroup = isGroup && !data.metadata?.storyboardId;
+    const plainGroupColor = isPlainGroup ? groupColor(data) : "";
     const batchCount = data.type === CanvasNodeType.Image ? data.metadata?.images?.length || 0 : 0;
     const isBatchRoot = batchCount > 1;
     // Nodes with the interaction/move toggle ignore content pointer events in move mode and allow interaction in interactive mode.
@@ -388,7 +399,7 @@ export const CanvasNode = React.memo(function CanvasNode({
             onMouseDownCapture={(event) => onSelectCapture?.(event, data.id)}
             onContextMenu={(event) => onContextMenu(event, data.id)}
         >
-            {!isGroup || isSelected || hovered ? (
+            {!isPlainGroup && (!isGroup || isSelected || hovered) ? (
                 <div className="pointer-events-auto absolute left-0 top-[-26px] z-[65] max-w-full px-1" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
                     <button
                         type="button"
@@ -407,7 +418,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 
             <div
                 data-canvas-node-shell={data.type}
-                className={isGroup ? "relative h-full w-full overflow-visible rounded-[18px] border-[1.5px] border-dashed" : data.type === CanvasNodeType.Image ? "relative h-full w-full overflow-visible rounded-[16px]" : "relative h-full w-full overflow-visible rounded-[16px] border"}
+                className={isPlainGroup ? "relative h-full w-full overflow-visible rounded-[18px] border-[1.5px]" : isGroup ? "relative h-full w-full overflow-visible rounded-[18px] border-[1.5px] border-dashed" : data.type === CanvasNodeType.Image ? "relative h-full w-full overflow-visible rounded-[16px]" : "relative h-full w-full overflow-visible rounded-[16px] border"}
                 style={{
                     // Selection lives in an offset outline so it never shrinks the image's aspect-correct content box.
                     borderWidth: data.type === CanvasNodeType.Image ? 0 : undefined,
@@ -422,7 +433,9 @@ export const CanvasNode = React.memo(function CanvasNode({
                               : "2px solid transparent",
                     // Selection hugs the border so the ports, which sit on the border, read as centred on the node edge.
                     outlineOffset: isGroup ? undefined : isConnectionTarget ? 2 : isSelected ? 0 : data.type === CanvasNodeType.Image ? -1 : 3,
-                    background: isGroup
+                    background: isPlainGroup
+                        ? `${plainGroupColor}${theme.scheme === "dark" ? "14" : "0d"}`
+                        : isGroup
                         ? theme.scheme === "dark"
                             ? "rgba(255,255,255,.025)"
                             : "rgba(255,255,255,.55)"
@@ -433,14 +446,16 @@ export const CanvasNode = React.memo(function CanvasNode({
                                 ? "#24212e"
                                 : "#eeebf5"
                             : theme.node.fill,
-                    borderColor: isGroup ? (isGroupDropTarget || isSelected ? theme.node.activeStroke : theme.node.stroke) : transparentBg && !hovered ? "transparent" : hovered ? theme.node.strokeHover : theme.node.stroke,
-                    borderStyle: isGroup ? "dashed" : "solid",
+                    borderColor: isPlainGroup ? `${plainGroupColor}${isGroupDropTarget || isSelected ? "" : hovered ? "b3" : "66"}` : isGroup ? (isGroupDropTarget || isSelected ? theme.node.activeStroke : theme.node.stroke) : transparentBg && !hovered ? "transparent" : hovered ? theme.node.strokeHover : theme.node.stroke,
+                    borderStyle: isGroup && !isPlainGroup ? "dashed" : "solid",
                     boxShadow: isDragging
                         ? "none"
                         : isGroup
                           ? isGroupDropTarget
-                              ? `0 0 0 4px ${theme.node.activeRing}`
-                              : "none"
+                              ? `0 0 0 5px ${isPlainGroup ? `${plainGroupColor}33` : theme.node.activeRing}`
+                              : isPlainGroup && isSelected
+                                ? `0 0 0 4px ${plainGroupColor}26`
+                                : "none"
                           : isConnectionTarget
                             ? "0 0 0 10px rgba(61,123,255,.1), 0 14px 34px rgba(61,123,255,.2)"
                             : isSelected
@@ -512,6 +527,9 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onDeleteBatchImage={(imageId) => onDeleteBatchImage?.(data.id, imageId)}
                         onViewBatchImage={(image) => onViewImage?.(data, image)}
                         groupChildCount={groupChildCount}
+                        groupSummary={groupSummary}
+                        onToggleGroupCollapse={() => onToggleGroupCollapse?.(data.id)}
+                        onRenameGroup={() => onRenameRequest(data)}
                         storyboardGroupStats={storyboardGroupStats}
                     />
                 </div>
@@ -594,7 +612,7 @@ const nodeContentRenderers = {
     [CanvasNodeType.Group]: GroupNodeContent,
 } satisfies Record<CanvasNodeType, (props: NodeContentRendererProps) => ReactNode>;
 
-function GroupNodeContent({ node, theme, groupChildCount, storyboardGroupStats }: NodeContentRendererProps) {
+function GroupNodeContent({ node, theme, groupChildCount, storyboardGroupStats, groupSummary, onToggleGroupCollapse, onRenameGroup }: NodeContentRendererProps) {
     const { t } = useTranslation();
     const storyboard = node.metadata?.storyboardId ? node.metadata : null;
     if (storyboard) {
@@ -691,15 +709,83 @@ function GroupNodeContent({ node, theme, groupChildCount, storyboardGroupStats }
             </div>
         );
     }
+    return <PlainGroupContent node={node} theme={theme} summary={groupSummary} onToggleCollapse={onToggleGroupCollapse} onRename={onRenameGroup} />;
+}
+
+/** Title bar (colour, name, what's inside, fold button) and, when folded, a strip of thumbnails. */
+function PlainGroupContent({ node, theme, summary, onToggleCollapse, onRename }: { node: CanvasNodeData; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; summary?: CanvasGroupSummary; onToggleCollapse?: () => void; onRename?: () => void }) {
+    const { t } = useTranslation();
+    const color = groupColor(node);
+    const collapsed = Boolean(node.metadata?.groupCollapsed);
+    const dark = theme.scheme === "dark";
+    const total = summary?.total || 0;
+    const stop = (event: React.SyntheticEvent) => event.stopPropagation();
     return (
-        <div className="pointer-events-none flex h-full w-full flex-col px-3.5 py-3">
-            <div className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: theme.node.muted }}>
-                <Group className="size-3.5" />
-                <span>{t("canvas.node.group")}</span>
-                <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}>
-                    {t("canvas.node.nodeCount", { count: groupChildCount })}
+        <div className="flex h-full w-full flex-col">
+            <div className="flex h-[44px] shrink-0 items-center gap-2 rounded-t-[16px] px-3" style={{ background: `${color}${dark ? "2e" : "1f"}` }}>
+                <span className="size-2.5 shrink-0 rounded-full" style={{ background: color, boxShadow: `0 0 0 3px ${color}33` }} />
+                <button
+                    type="button"
+                    className="pointer-events-auto min-w-0 truncate text-left text-[13px] font-semibold"
+                    style={{ color: dark ? "#fff" : color }}
+                    title={t("canvas.node.renameHint")}
+                    onMouseDown={stop}
+                    onPointerDown={stop}
+                    onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        onRename?.();
+                    }}
+                >
+                    {node.title || t("canvas.group.untitled")}
+                </button>
+                <span className="min-w-0 flex-1 truncate text-[11px] tabular-nums" style={{ color: theme.node.muted }}>
+                    {t("canvas.group.members", { count: total })}
+                    {summary?.done ? ` · ${t("canvas.group.done", { count: summary.done })}` : ""}
+                    {summary?.running ? <span style={{ color }}>{` · ${t("canvas.group.running", { count: summary.running })}`}</span> : null}
+                    {summary?.failed ? <span style={{ color: "#e5484d" }}>{` · ${t("canvas.group.failed", { count: summary.failed })}`}</span> : null}
                 </span>
+                <button
+                    type="button"
+                    className="pointer-events-auto grid size-7 shrink-0 place-items-center rounded-full transition-colors"
+                    style={{ color: dark ? "#fff" : color, background: `${color}1a` }}
+                    title={t(collapsed ? "canvas.group.expandTitle" : "canvas.group.collapseTitle")}
+                    aria-label={t(collapsed ? "canvas.group.expand" : "canvas.group.collapse")}
+                    onMouseDown={stop}
+                    onPointerDown={stop}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onToggleCollapse?.();
+                    }}
+                >
+                    <ChevronDown className={`size-4 transition-transform ${collapsed ? "" : "rotate-180"}`} />
+                </button>
             </div>
+            {collapsed ? (
+                <div className="pointer-events-none flex min-h-0 flex-1 items-center gap-1.5 px-3">
+                    {summary?.thumbnails.length ? (
+                        <>
+                            {summary.thumbnails.slice(0, 4).map((src, index) => (
+                                <span key={`${src}-${index}`} className="size-[58px] shrink-0 overflow-hidden rounded-[10px]" style={{ background: dark ? "#2a2735" : "#eeebf5" }}>
+                                    <img src={src} alt="" draggable={false} className="size-full object-cover" />
+                                </span>
+                            ))}
+                            {total > 4 ? (
+                                <span className="text-[11px] font-semibold tabular-nums" style={{ color: theme.node.muted }}>
+                                    {t("canvas.group.more", { count: total - Math.min(4, summary.thumbnails.length) })}
+                                </span>
+                            ) : null}
+                        </>
+                    ) : (
+                        <span className="text-[12px]" style={{ color: theme.node.muted }}>
+                            {t("canvas.group.members", { count: total })}
+                        </span>
+                    )}
+                </div>
+            ) : !total ? (
+                <div className="pointer-events-none grid min-h-0 flex-1 place-items-center px-6 text-center text-[12px]" style={{ color: theme.node.muted }}>
+                    {t("canvas.group.empty")}
+                </div>
+            ) : null}
         </div>
     );
 }

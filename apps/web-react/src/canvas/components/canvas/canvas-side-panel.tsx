@@ -12,6 +12,7 @@ import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
 import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
 import { canvasMiniMapLayout } from "@/lib/canvas/canvas-mini-map";
+import { groupColor } from "@/lib/canvas/canvas-groups";
 import { getCanvasPortalRoot } from "@/lib/canvas-portal";
 import { buildCanvasSidePanelWorkflowGroups, canvasWorkflowDisplayName, orderCanvasWorkflowNodes } from "@/lib/canvas/canvas-workflow-groups";
 import { isCanvasExecutableNode, isCanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
@@ -366,13 +367,22 @@ function CanvasNodesTab({
         return () => window.removeEventListener("keydown", onKey);
     }, []);
 
+    // Group frames get their own section; the lists below only hold content nodes.
+    const frames = useMemo(() => nodes.filter((node) => node.type === CanvasNodeType.Group && !node.metadata?.storyboardId), [nodes]);
+    const memberCountByFrame = useMemo(() => {
+        const counts = new Map<string, number>();
+        nodes.forEach((node) => node.metadata?.groupId && counts.set(node.metadata.groupId, (counts.get(node.metadata.groupId) || 0) + 1));
+        return counts;
+    }, [nodes]);
     const workflowGroups = useMemo(
         () =>
-            buildCanvasSidePanelWorkflowGroups(nodes, connections).map((group) => ({
-                ...group,
-                nodes: orderCanvasWorkflowNodes(group.nodes, connections),
-                name: group.firstConfig ? canvasWorkflowDisplayName(group, connections) : "",
-            })),
+            buildCanvasSidePanelWorkflowGroups(nodes, connections)
+                .map((group) => ({
+                    ...group,
+                    nodes: orderCanvasWorkflowNodes(group.nodes, connections).filter((node) => !(node.type === CanvasNodeType.Group && !node.metadata?.storyboardId)),
+                    name: group.firstConfig ? canvasWorkflowDisplayName(group, connections) : "",
+                }))
+                .filter((group) => group.nodes.length),
         [connections, nodes],
     );
     const counts = useMemo(() => {
@@ -527,6 +537,37 @@ function CanvasNodesTab({
                     })}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+                {frames.length && !narrowing && !selectMode ? (
+                    <div className="mb-2 rounded-[12px] border px-1.5 py-1.5" style={{ borderColor: dark ? "rgba(255,255,255,.07)" : "#eeecf4" }}>
+                        <div className="px-1.5 pb-1 text-[11px] font-medium" style={{ color: theme.node.faint }}>
+                            {t("canvas.sidePanel.list.groups")} <span className="tabular-nums opacity-70">{frames.length}</span>
+                        </div>
+                        {frames.map((frame) => {
+                            const color = groupColor(frame);
+                            const active = selectedNodeIds.has(frame.id);
+                            return (
+                                <button
+                                    key={frame.id}
+                                    type="button"
+                                    className="flex w-full items-center gap-2 rounded-[8px] px-1.5 py-1.5 text-left transition-colors hover:bg-[#f5f3fa] dark:hover:bg-white/[.05]"
+                                    style={active ? { background: `${color}1f` } : undefined}
+                                    onClick={() => onFocusNode(frame.id)}
+                                    onMouseEnter={() => onHoverNode?.(frame.id)}
+                                    onMouseLeave={() => onHoverNode?.(null)}
+                                    title={t("canvas.sidePanel.list.locate")}
+                                >
+                                    <span className="size-2.5 shrink-0 rounded-[3px]" style={{ background: color }} />
+                                    <span className="min-w-0 flex-1 truncate text-[12px] font-medium" style={{ color: theme.node.text }}>
+                                        {frame.title || t("canvas.group.untitled")}
+                                    </span>
+                                    <span className="shrink-0 text-[11px] tabular-nums" style={{ color: theme.node.faint }}>
+                                        {frame.metadata?.groupCollapsed ? t("canvas.sidePanel.list.folded") : t("canvas.group.members", { count: memberCountByFrame.get(frame.id) || 0 })}
+                                    </span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                ) : null}
                 {filtered.length ? (
                     <motion.div key={filter} className="space-y-1.5" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, ease: PANEL_EASE }}>
                         {grouped.map((group) => {

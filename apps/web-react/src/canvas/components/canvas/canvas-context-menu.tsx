@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { Clapperboard, Eye, Pencil, Settings2, Trash2 } from "lucide-react";
+import { Clapperboard, Eye, Group, Pencil, Settings2, Trash2, Ungroup } from "lucide-react";
 import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { useTranslation } from "react-i18next";
 
@@ -9,7 +9,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import type { ContextMenuState } from "@/types/canvas";
 import { CanvasFloatingLayer } from "./canvas-floating-layer";
 
-export function CanvasNodeContextMenu({ menu, connectionCount = 1, onClose, onRename, onEdit, onStoryboard, onPreview, onDownload, onDelete }: { menu: ContextMenuState; connectionCount?: number; onClose: () => void; onRename?: () => void; onEdit?: () => void; onStoryboard?: () => void; onPreview?: () => void; onDownload?: () => void; onDelete: () => void }) {
+export function CanvasNodeContextMenu({ menu, connectionCount = 1, onClose, onRename, onEdit, onStoryboard, onPreview, onDownload, onGroup, onUngroup, onDelete }: { menu: ContextMenuState; connectionCount?: number; onClose: () => void; onRename?: () => void; onEdit?: () => void; onStoryboard?: () => void; onPreview?: () => void; onDownload?: () => void; onGroup?: () => void; onUngroup?: () => void; onDelete: () => void }) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const onCloseRef = useRef(onClose);
@@ -50,6 +50,8 @@ export function CanvasNodeContextMenu({ menu, connectionCount = 1, onClose, onRe
                     {onStoryboard ? <MenuButton icon={<Clapperboard className="size-4" />} label={t("canvas.toolbar.storyboard")} onClick={onStoryboard} /> : null}
                     {onPreview ? <MenuButton icon={<Eye className="size-4" />} label={t("canvas.imageTools.view")} onClick={onPreview} /> : null}
                     {onDownload ? <MenuButton icon={<DownloadIcon className="size-4" />} label={t("common.download")} onClick={onDownload} /> : null}
+                    {onGroup ? <MenuButton icon={<Group className="size-4" />} label={t("canvas.group.group")} hint="⌘G" onClick={onGroup} /> : null}
+                    {onUngroup ? <MenuButton icon={<Ungroup className="size-4" />} label={t("canvas.group.ungroup")} hint="⇧⌘G" onClick={onUngroup} /> : null}
                     <div className="my-1 h-px" style={{ background: theme.toolbar.border }} />
                 </>
             ) : null}
@@ -58,7 +60,7 @@ export function CanvasNodeContextMenu({ menu, connectionCount = 1, onClose, onRe
     );
 }
 
-function MenuButton({ icon, label, onClick, danger = false }: { icon: ReactNode; label: string; onClick?: () => void; danger?: boolean }) {
+function MenuButton({ icon, label, hint, onClick, danger = false }: { icon: ReactNode; label: string; hint?: string; onClick?: () => void; danger?: boolean }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
 
     return (
@@ -71,7 +73,8 @@ function MenuButton({ icon, label, onClick, danger = false }: { icon: ReactNode;
             onClick={onClick}
         >
             {icon}
-            <span>{label}</span>
+            <span className="flex-1">{label}</span>
+            {hint ? <span className="text-[11px] font-normal opacity-45">{hint}</span> : null}
         </button>
     );
 }

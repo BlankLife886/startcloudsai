@@ -14,7 +14,7 @@ export type CanvasNodeClipboard = {
 export function createCanvasNodeClipboard(nodes: CanvasNodeData[], connections: CanvasConnection[], selectedIds: Set<string>): CanvasNodeClipboard | null {
     const children = new Map<string, string[]>();
     for (const node of nodes) {
-        const owners = [node.metadata?.groupId, node.metadata?.hidden ? node.metadata?.workflowProducerNodeId : undefined];
+        const owners = [node.metadata?.groupId, node.metadata?.hidden && !node.metadata?.collapsedIntoGroupId ? node.metadata?.workflowProducerNodeId : undefined];
         for (const owner of owners) {
             if (!owner) continue;
             const items = children.get(owner);

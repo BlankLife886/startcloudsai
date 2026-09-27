@@ -110,6 +110,10 @@ export type CanvasNodeMetadata = {
     htmlPrompt?: string; // HTML plugin: last AI request that produced the page.
     htmlPreviousContent?: string; // HTML plugin: the page before the last AI edit, for one-step rollback.
     htmlVersions?: Array<{ id: string; at: string; prompt: string; content: string }>; // HTML plugin: recent page versions, newest last.
+    groupColor?: string; // Group frames: colour key (see GROUP_COLORS).
+    groupCollapsed?: boolean; // Group frames: folded into a small card; members are hidden meanwhile.
+    groupExpandedSize?: { width: number; height: number }; // Group frames: size to restore when unfolded.
+    collapsedIntoGroupId?: string; // Members hidden because their group is folded (restored on unfold).
     workflowName?: string; // Side panel: user-chosen name of the workflow this config node heads.
     htmlShare?: { id: string; url: string; at: string }; // HTML plugin: the page's public share link, if published.
     pluginColor?: string;

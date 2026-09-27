@@ -6,6 +6,7 @@ import { BUNDLED_CANVAS_NODE_TYPES, BUNDLED_CANVAS_PLUGIN_IDS } from "../src/can
 import { applyHtmlPatches, isTruncatedHtml, mergeHtmlContinuation, parseHtmlPatches, stashHtmlAssets } from "../src/canvas/components/canvas/nodes/bundled/html-node-edit.ts";
 import { htmlImageTokens, isHtmlFrameMessage, withHtmlBridge } from "../src/canvas/components/canvas/nodes/bundled/html-node-runtime.ts";
 import { canvasMiniMapLayout } from "../src/canvas/lib/canvas/canvas-mini-map.ts";
+import { collapseGroup, createGroupAround, dissolveGroup, expandGroup, fitGroupToMembers, GROUP_HEADER, GROUP_PADDING, growGroupsToFit, summarizeGroups } from "../src/canvas/lib/canvas/canvas-groups.ts";
 import { buildCanvasSidePanelWorkflowGroups, canvasWorkflowDisplayName, orderCanvasWorkflowNodes } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 
 const canvasSource = new URL("../src/canvas/", import.meta.url);
@@ -229,4 +230,46 @@ test("recent project preview fits the canvas into a small map with connection cu
     assert.equal(map.paths.length, 1);
     assert.match(map.paths[0], /^M [\d.]+ [\d.]+ C /);
     assert.deepEqual(canvasMiniMapLayout([], [], 276, 168).rects, []);
+});
+
+test("groups wrap a selection, grow with their members, fold into a card and dissolve cleanly", () => {
+    const node = (id, type, x, y, width, height, metadata = {}) => ({ id, type, title: id, position: { x, y }, width, height, metadata });
+    const inline = node("inline", "image", 900, 900, 50, 50, { hidden: true, workflowProducerNodeId: "cfg" });
+    const start = [node("a", "text", 100, 100, 200, 100), node("b", "image", 400, 150, 200, 200, { status: "error" }), node("cfg", "config", 100, 400, 300, 200), inline];
+    const created = createGroupAround(start, ["a", "b", "inline"], { id: "g", title: "组" });
+    assert.ok(created);
+    const group = created.nodes[0];
+    assert.equal(group.id, "g", "frames go first so they draw behind members");
+    assert.deepEqual(group.position, { x: 100 - GROUP_PADDING, y: 100 - GROUP_PADDING - GROUP_HEADER });
+    assert.equal(group.width, 500 + GROUP_PADDING * 2);
+    assert.equal(created.nodes.find((item) => item.id === "inline").metadata.groupId, undefined, "hidden nodes are not grabbed");
+
+    // A member moving past the edge widens the frame; nothing changes when everything fits.
+    const moved = created.nodes.map((item) => (item.id === "b" ? { ...item, position: { x: 900, y: 150 } } : item));
+    const grown = growGroupsToFit(moved);
+    assert.equal(grown.find((item) => item.id === "g").width, 1100 - 100 + GROUP_PADDING * 2);
+    assert.equal(growGroupsToFit(grown), grown);
+    const fitted = fitGroupToMembers(grown.map((item) => (item.id === "g" ? { ...item, width: 5000 } : item)), "g");
+    assert.equal(fitted.find((item) => item.id === "g").width, 1100 - 100 + GROUP_PADDING * 2);
+
+    const summary = summarizeGroups(created.nodes).get("g");
+    assert.equal(summary.total, 2);
+    assert.equal(summary.failed, 1);
+
+    // Folding hides members (and remembers them); unfolding restores exactly those, not nodes hidden for other reasons.
+    const folded = collapseGroup([...created.nodes.map((item) => (item.id === "inline" ? { ...item, metadata: { ...item.metadata, groupId: "g" } } : item))], "g");
+    assert.equal(folded.find((item) => item.id === "g").metadata.groupCollapsed, true);
+    assert.equal(folded.find((item) => item.id === "a").metadata.hidden, true);
+    assert.equal(folded.find((item) => item.id === "inline").metadata.collapsedIntoGroupId, undefined);
+    assert.equal(growGroupsToFit(folded), folded, "folded frames never grow");
+    const unfolded = expandGroup(folded, "g");
+    assert.equal(unfolded.find((item) => item.id === "a").metadata.hidden, undefined);
+    assert.equal(unfolded.find((item) => item.id === "inline").metadata.hidden, true);
+    assert.equal(unfolded.find((item) => item.id === "g").width, group.width);
+
+    // Dissolving a folded group brings its members back and drops the frame.
+    const dissolved = dissolveGroup(folded, "g");
+    assert.ok(!dissolved.some((item) => item.id === "g"));
+    assert.equal(dissolved.find((item) => item.id === "a").metadata.hidden, undefined);
+    assert.equal(dissolved.find((item) => item.id === "a").metadata.groupId, undefined);
 });

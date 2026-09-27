@@ -4,7 +4,7 @@ import { useBlocker, useNavigate, useParams, useSearchParams, type BlockerFuncti
 import { useAuth } from "@react/auth/AuthContext.jsx";
 import { takePendingPrompt } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
-import { Eraser, Group, Video } from "lucide-react";
+import { Copy as CopyIcon, Download as DownloadLucide, Eraser, Group, Maximize2, Minimize2, Palette, Play, Scan, Ungroup, Video } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
@@ -80,6 +80,8 @@ import { buildCanvasNodeMentionReferences, type CanvasResourceReference } from "
 import { collectCanvasDragNodeIds, collectCanvasOwnedOutputIds, createCanvasResourceIndex } from "@/lib/canvas/canvas-resource-index";
 import { storyboardPackedLayout, storyboardSequenceLinks } from "@/lib/canvas/canvas-storyboard-layout";
 import { resolveStoryboardShotAspectRatio, storyboardShotAspectSourceText } from "@/lib/canvas/canvas-storyboard-aspect";
+import { collapseGroup, createGroupAround, dissolveGroup, expandGroup, fitGroupToMembers, groupColor, growGroupsToFit, nextGroupColor, summarizeGroups } from "@/lib/canvas/canvas-groups";
+import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
 import { createCanvasNodeClipboard, parseCanvasNodeClipboard, serializeCanvasNodeClipboard, type CanvasNodeClipboard } from "@/lib/canvas/canvas-node-clipboard";
 import { canvasConnectionIntersectsRect, canvasWorkspaceRect, constrainCanvasPanelWidths, findCanvasInsertionCenter } from "@/lib/canvas/canvas-workspace-geometry";
 import { buildCanvasSidePanelWorkflowGroups } from "@/lib/canvas/canvas-workflow-groups";
@@ -266,7 +268,8 @@ function findIndexedGroupDropTarget(index: CanvasSpatialIndex, initialPositions:
         const centerY = position.y + delta.y + node.height / 2;
         for (const candidate of index.queryPoint(centerX, centerY)) {
             const order = index.orderOf(candidate.id);
-            if (candidate.type !== CanvasNodeType.Group || movedIds.has(candidate.id) || order <= bestOrder) continue;
+            // A folded group is a closed card: nothing drops into it until it is unfolded.
+            if (candidate.type !== CanvasNodeType.Group || candidate.metadata?.groupCollapsed || movedIds.has(candidate.id) || order <= bestOrder) continue;
             bestGroup = candidate;
             bestOrder = order;
         }
@@ -277,7 +280,7 @@ function findIndexedGroupDropTarget(index: CanvasSpatialIndex, initialPositions:
 function findIndexedContainingGroupId(index: CanvasSpatialIndex, node: CanvasNodeData) {
     const centerX = node.position.x + node.width / 2;
     const centerY = node.position.y + node.height / 2;
-    return index.queryPoint(centerX, centerY).find((candidate) => candidate.type === CanvasNodeType.Group && candidate.id !== node.id)?.id;
+    return index.queryPoint(centerX, centerY).find((candidate) => candidate.type === CanvasNodeType.Group && !candidate.metadata?.groupCollapsed && candidate.id !== node.id)?.id;
 }
 
 function equalNodeIdSets(first: Set<string>, second: Set<string>) {
@@ -433,6 +436,7 @@ function InfiniteCanvasPage() {
     }, [size.width, sidePanelOpen, sidePanelWidth, agentPanelOpen, agentPanelWidth]);
     const [selectedNodeIds, setSelectedNodeIdsState] = useState<Set<string>>(new Set());
     const selectedNodeIdsRef = useRef(selectedNodeIds);
+    const groupActionsRef = useRef<{ group: (ids?: Set<string>) => void; ungroup: (groupId: string) => void } | null>(null);
     const setSelectedNodeIds = useCallback((value: Set<string> | ((current: Set<string>) => Set<string>)) => {
         const next = typeof value === "function" ? value(selectedNodeIdsRef.current) : value;
         selectedNodeIdsRef.current = next;
@@ -1587,10 +1591,12 @@ function InfiniteCanvasPage() {
         [nodeSpatialIndex, renderViewport, size],
     );
     const displayConnections = useMemo(() => {
+        // Hidden nodes hand their connections to whatever stands in for them: the card of a folded group, or the
+        // producer of an inline output.
         const hiddenProducerById = new Map(
             nodes
-                .filter((node) => node.metadata?.hidden && node.metadata?.workflowProducerNodeId)
-                .map((node) => [node.id, node.metadata!.workflowProducerNodeId!]),
+                .filter((node) => node.metadata?.hidden && (node.metadata?.collapsedIntoGroupId || node.metadata?.workflowProducerNodeId))
+                .map((node) => [node.id, (node.metadata!.collapsedIntoGroupId || node.metadata!.workflowProducerNodeId)!]),
         );
         const seen = new Set<string>();
         return connections.flatMap((connection): CanvasConnection[] => {
@@ -1670,6 +1676,19 @@ function InfiniteCanvasPage() {
         });
         return map;
     }, [nodes]);
+    const groupSummaryById = useMemo(() => summarizeGroups(nodes), [nodes]);
+    // Two or more loose nodes selected: offer to group them right above the selection.
+    const multiSelectionBounds = useMemo(() => {
+        if (selectedNodeIds.size < 2) return null;
+        const selected = visibleNodes.filter((node) => selectedNodeIds.has(node.id) && node.type !== CanvasNodeType.Group);
+        if (selected.length < 2) return null;
+        return {
+            count: selected.length,
+            left: Math.min(...selected.map((node) => node.position.x)),
+            right: Math.max(...selected.map((node) => node.position.x + node.width)),
+            top: Math.min(...selected.map((node) => node.position.y)),
+        };
+    }, [selectedNodeIds, visibleNodes]);
     const storyboardGroupStatsById = useMemo(() => {
         const groups = new Map<string, {
             total: number;
@@ -1988,6 +2007,9 @@ function InfiniteCanvasPage() {
                 const next = repaired.filter((node) => !allIds.has(node.id));
                 return next.map((node) => {
                     const groupId = node.metadata?.groupId;
+                    const collapsedInto = node.metadata?.collapsedIntoGroupId;
+                    // Deleting a group keeps its members; members hidden by a folded group come back into view.
+                    if (collapsedInto && allIds.has(collapsedInto)) return { ...node, metadata: { ...node.metadata, groupId: undefined, hidden: undefined, collapsedIntoGroupId: undefined } };
                     if (groupId && allIds.has(groupId)) return { ...node, metadata: { ...node.metadata, groupId: undefined } };
                     return node;
                 });
@@ -2114,8 +2136,9 @@ function InfiniteCanvasPage() {
         const pastedNodes = nextNodes.map((node) => {
             const metadata = copyCanvasNodeMetadata(node.metadata, idMap);
             const groupId = node.metadata?.groupId;
-            if (!groupId) return { ...node, metadata };
-            return { ...node, metadata: { ...metadata, groupId: idMap.get(groupId) } };
+            const collapsedInto = node.metadata?.collapsedIntoGroupId;
+            if (!groupId && !collapsedInto) return { ...node, metadata };
+            return { ...node, metadata: { ...metadata, groupId: groupId ? idMap.get(groupId) : undefined, ...(collapsedInto ? { collapsedIntoGroupId: idMap.get(collapsedInto) } : {}) } };
         });
 
         const nextConnections = clipboard.connections.flatMap((connection, index) => {
@@ -2434,7 +2457,8 @@ function InfiniteCanvasPage() {
                 const targetGroup = findIndexedGroupDropTarget(finalIndex, movedPositions, { x: 0, y: 0 });
                 if (targetGroup) return snapNodesIntoGroup(movedIds, moved, targetGroup);
                 return moved.map((node) => {
-                    if (!movedIds.has(node.id) || node.type === CanvasNodeType.Group) return node;
+                    // Hidden members (e.g. of a folded group) travel with their frame and keep their membership.
+                    if (!movedIds.has(node.id) || node.type === CanvasNodeType.Group || node.metadata?.hidden) return node;
                     const groupId = findIndexedContainingGroupId(finalIndex, node);
                     if (node.metadata?.groupId === groupId) return node;
                     return { ...node, metadata: { ...node.metadata, groupId } };
@@ -2896,6 +2920,14 @@ function InfiniteCanvasPage() {
 
             if (isModifierShortcut && !event.altKey && key === "c") {
                 // Let the browser dispatch a copy event with a writable clipboard.
+                return;
+            }
+
+            if (isModifierShortcut && !event.altKey && key === "g") {
+                event.preventDefault();
+                const selected = nodesRef.current.filter((node) => selectedNodeIdsRef.current.has(node.id));
+                if (event.shiftKey) selected.filter((node) => node.type === CanvasNodeType.Group).forEach((node) => groupActionsRef.current?.ungroup(node.id));
+                else groupActionsRef.current?.group();
                 return;
             }
 
@@ -7599,6 +7631,93 @@ function InfiniteCanvasPage() {
         setPreviewNodeId(node.id);
         setPreviewImageId(image?.id || null);
     }, []);
+    // ---- Groups ------------------------------------------------------------------------------------------------
+    const groupSelection = useCallback(
+        (ids?: Set<string>) => {
+            const current = nodesRef.current;
+            const lastColor = [...current].reverse().find((node) => node.type === CanvasNodeType.Group)?.metadata?.groupColor;
+            const id = `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            const result = createGroupAround(current, ids || selectedNodeIdsRef.current, { id, title: t("canvas.group.defaultName"), color: lastColor ? nextGroupColor(lastColor) : undefined });
+            if (!result) return;
+            setNodes(result.nodes);
+            setSelectedNodeIds(new Set([id]));
+            setSelectedConnectionId(null);
+            setToolbarNodeId(id);
+            setContextMenu(null);
+        },
+        [t],
+    );
+    const ungroupGroup = useCallback((groupId: string) => {
+        const members = nodesRef.current.filter((node) => node.metadata?.groupId === groupId || node.metadata?.collapsedIntoGroupId === groupId).map((node) => node.id);
+        setNodes((prev) => dissolveGroup(prev, groupId));
+        setSelectedNodeIds(new Set(members));
+        setToolbarNodeId(null);
+        setContextMenu(null);
+    }, []);
+    groupActionsRef.current = { group: groupSelection, ungroup: ungroupGroup };
+    const toggleGroupCollapse = useCallback((groupId: string) => {
+        setNodes((prev) => (prev.find((node) => node.id === groupId)?.metadata?.groupCollapsed ? expandGroup(prev, groupId) : collapseGroup(prev, groupId)));
+    }, []);
+    const fitGroup = useCallback((groupId: string) => setNodes((prev) => fitGroupToMembers(prev, groupId)), []);
+    const cycleGroupColor = useCallback((groupId: string) => {
+        setNodes((prev) => prev.map((node) => (node.id === groupId ? { ...node, metadata: { ...node.metadata, groupColor: nextGroupColor(node.metadata?.groupColor) } } : node)));
+    }, []);
+    const duplicateGroup = useCallback(
+        (groupId: string) => {
+            const clipboard = createCanvasNodeClipboard(nodesRef.current, connectionsRef.current, new Set([groupId]));
+            if (clipboard) pasteCopiedNodes(clipboard);
+        },
+        [pasteCopiedNodes],
+    );
+    const runGroup = useCallback(
+        (groupId: string) => {
+            const configIds = nodesRef.current.filter((node) => node.metadata?.groupId === groupId && isCanvasExecutableNode(node)).map((node) => node.id);
+            if (!configIds.length) {
+                message.info(t("canvas.group.noConfig"));
+                return;
+            }
+            void runWorkflow({ nodeIds: configIds });
+        },
+        [message, runWorkflow, t],
+    );
+    const downloadGroup = useCallback(
+        (groupId: string) => {
+            const group = nodesRef.current.find((node) => node.id === groupId);
+            const media = nodesRef.current.filter(
+                (node) => node.metadata?.groupId === groupId && ([CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Audio] as readonly string[]).includes(node.type) && Boolean(node.metadata?.content || node.metadata?.storageKey),
+            );
+            if (!media.length) {
+                message.info(t("canvas.group.noMedia"));
+                return;
+            }
+            void exportCanvasNodes(media, group?.title || t("canvas.group.untitled")).catch(() => message.error(t("canvas.sidePanel.exportFailed")));
+        },
+        [message, t],
+    );
+    const groupToolbarItems = useCallback(
+        (group: CanvasNodeData) => {
+            const summary = groupSummaryById.get(group.id);
+            const collapsed = Boolean(group.metadata?.groupCollapsed);
+            return [
+                ...(summary?.configIds.length ? [{ id: "group-run", title: t("canvas.group.runTitle"), label: t("canvas.group.run"), icon: <Play className="size-4" />, onClick: () => runGroup(group.id) }] : []),
+                ...(summary?.mediaIds.length ? [{ id: "group-download", title: t("canvas.group.downloadTitle"), label: t("canvas.group.download"), icon: <DownloadLucide className="size-4" />, onClick: () => downloadGroup(group.id) }] : []),
+                { id: "group-collapse", title: t(collapsed ? "canvas.group.expandTitle" : "canvas.group.collapseTitle"), label: t(collapsed ? "canvas.group.expand" : "canvas.group.collapse"), icon: collapsed ? <Maximize2 className="size-4" /> : <Minimize2 className="size-4" />, onClick: () => toggleGroupCollapse(group.id) },
+                ...(!collapsed && summary?.total ? [{ id: "group-fit", title: t("canvas.group.fitTitle"), label: t("canvas.group.fit"), icon: <Scan className="size-4" />, onClick: () => fitGroup(group.id) }] : []),
+                { id: "group-color", title: t("canvas.group.colorTitle"), label: t("canvas.group.color"), icon: <Palette className="size-4" style={{ color: groupColor(group) }} />, onClick: () => cycleGroupColor(group.id) },
+                { id: "group-duplicate", title: t("canvas.group.duplicateTitle"), label: t("canvas.group.duplicate"), icon: <CopyIcon className="size-4" />, onClick: () => duplicateGroup(group.id) },
+                { id: "group-ungroup", title: t("canvas.group.ungroupTitle"), label: t("canvas.group.ungroup"), icon: <Ungroup className="size-4" />, onClick: () => ungroupGroup(group.id) },
+            ];
+        },
+        [cycleGroupColor, downloadGroup, duplicateGroup, fitGroup, groupSummaryById, runGroup, t, toggleGroupCollapse, ungroupGroup],
+    );
+
+    // Members that move or grow past their frame widen it (never while a drag or resize is still in flight).
+    useEffect(() => {
+        if (isNodeDragging || isNodeResizing) return;
+        const grown = growGroupsToFit(nodes);
+        if (grown !== nodes) setNodes(grown);
+    }, [isNodeDragging, isNodeResizing, nodes]);
+
     const handleNodeRetry = useCallback(
             (node: CanvasNodeData) => {
             if (node.metadata?.storyboardSceneId && (node.metadata.storyboardStatus === "failed" || node.metadata.storyboardStatus === "canceled" || (node.metadata.storyboardStatus === "succeeded" && node.metadata.storyboardNeedsRegeneration === true))) {
@@ -7902,6 +8021,8 @@ function InfiniteCanvasPage() {
                             editRequestNonce={editingNodeId === node.id ? editRequestNonce : 0}
                             showPanel={dialogNodeId === node.id && !selectionBox && !getNodeDefinition(node.type)?.hidePanel}
                             groupChildCount={groupChildCountById.get(node.id) || 0}
+                            groupSummary={node.type === CanvasNodeType.Group ? groupSummaryById.get(node.id) : undefined}
+                            onToggleGroupCollapse={toggleGroupCollapse}
                             storyboardGroupStats={node.metadata?.storyboardId ? storyboardGroupStatsById.get(node.metadata.storyboardId) : undefined}
                             isGroupDropTarget={dropTargetGroupId === node.id}
                             batchExpanded={expandedImageNodeId === node.id}
@@ -7942,6 +8063,30 @@ function InfiniteCanvasPage() {
                         />
                     ))}
 
+                    {multiSelectionBounds && !isNodeDragging && !isNodeResizing && !selectionBox ? (
+                        <div
+                            className="absolute z-[90]"
+                            style={{ left: (multiSelectionBounds.left + multiSelectionBounds.right) / 2, top: multiSelectionBounds.top, transform: `translate(-50%, -100%) scale(${1 / Math.max(viewport.k, 0.05)})`, transformOrigin: "50% 100%", paddingBottom: 14 }}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onPointerDown={(event) => event.stopPropagation()}
+                        >
+                            <div className="canvas-float-menu flex items-center gap-1 whitespace-nowrap rounded-full border py-1 pl-3 pr-1 text-[12px]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, boxShadow: theme.toolbar.shadow, color: theme.node.muted }}>
+                                <span className="tabular-nums">{t("canvas.group.selected", { count: multiSelectionBounds.count })}</span>
+                                <button
+                                    type="button"
+                                    className="ml-1 inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold text-white transition hover:brightness-110"
+                                    style={{ background: "linear-gradient(135deg,#8b6cff,#3d7bff)" }}
+                                    title={t("canvas.group.groupTitle")}
+                                    onClick={() => groupSelection()}
+                                >
+                                    <Group className="size-3.5" />
+                                    {t("canvas.group.group")}
+                                    <span className="text-[10px] font-medium opacity-75">⌘G</span>
+                                </button>
+                            </div>
+                        </div>
+                    ) : null}
+
                     {selectionBox ? (
                         <svg
                             className="pointer-events-none absolute z-[100] overflow-visible"
@@ -7977,7 +8122,7 @@ function InfiniteCanvasPage() {
                 <CanvasNodeHoverToolbar
                     node={isNodeDragging || isNodeResizing || expandedImageNodeId || viewportBusy ? null : toolbarNode}
                     viewport={viewport}
-                    extraTools={toolbarNode ? buildNodeToolbarItems(toolbarNode) : undefined}
+                    extraTools={toolbarNode ? (toolbarNode.type === CanvasNodeType.Group ? groupToolbarItems(toolbarNode) : buildNodeToolbarItems(toolbarNode)) : undefined}
                     onKeep={keepNodeToolbar}
                     onLeave={hideNodeToolbar}
                     onRename={openNodeRename}
@@ -8013,6 +8158,8 @@ function InfiniteCanvasPage() {
                         connectionCount={contextMenu.type === "connection" ? selectedConnectionIds.size : 1}
                         onClose={() => setContextMenu(null)}
                         onRename={contextNode ? () => (openNodeRename(contextNode), setContextMenu(null)) : undefined}
+                        onGroup={contextNode && contextNode.type !== CanvasNodeType.Group && !contextNode.metadata?.storyboardId ? () => groupSelection() : undefined}
+                        onUngroup={contextNode?.type === CanvasNodeType.Group && !contextNode.metadata?.storyboardId ? () => ungroupGroup(contextNode.id) : undefined}
                         onEdit={contextNodeCanEdit && contextNode ? () => {
                             if (contextNode.type === CanvasNodeType.Text) openTextEditor(contextNode);
                             else setDialogNodeId(contextNode.id);
