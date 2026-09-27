@@ -105,6 +105,7 @@ import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig
 import { composePendingLaunchPrompt, takePendingPrompt } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import {
   generateCommerceProductBrief,
+  classifyTryonGarment,
   generateDetailPlan,
   generateListingPlan,
   listTryonCatalog,
@@ -217,6 +218,28 @@ import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components
 import { TryonFlipLightbox } from "../features/ecommerce/TryonFlipLightbox.jsx";
 import { useEcommerceJobs } from "../features/ecommerce/useEcommerceJobs.js";
 import { useTryonBusinessState } from "../features/ecommerce/businesses/tryon/useTryonBusinessState.js";
+import { inspectTryonImage } from "../features/ecommerce/businesses/tryon/tryonImageCheck.js";
+import {
+  TRYON_SHOT_PACKS,
+  TRYON_WHITE_STUDIO_PROMPT,
+  tryonShotBlueprints,
+  tryonShotPackById,
+  tryonWhiteIdentityLock,
+  tryonWhiteReferenceRoles,
+  tryonWhiteTaskPrompt,
+} from "@react/legacy-modules/features/ecommerce/tryonShots.js";
+import { TryonCropDialog } from "../features/ecommerce/businesses/tryon/TryonCropDialog.jsx";
+import {
+  EcommerceHistoryPage,
+  historyShotLabel,
+} from "../features/ecommerce/EcommerceHistoryPage.jsx";
+import {
+  forgetTryonCustomPick,
+  readTryonCustomPicks,
+  rememberTryonCustomPick,
+  tryonCustomSourceLabel,
+  tryonFileUrlFromKey,
+} from "../features/ecommerce/businesses/tryon/tryonCustomPicks.js";
 import {
   TryonChoicePicker,
   TryonLiveStage,
@@ -288,12 +311,14 @@ const OPTIONS = {
     { value: "16:9", label: "16:9 横图" },
     { value: "9:16", label: "9:16 竖屏" },
   ],
+  // 按电商平台常用规格排序：主图多为 3:4 或 1:1
   tryonRatio: [
-    { value: "1:1", label: "1:1" },
-    { value: "2:3", label: "2:3" },
-    { value: "3:2", label: "3:2" },
-    { value: "16:9", label: "16:9" },
-    { value: "9:16", label: "9:16" },
+    { value: "3:4", label: "3:4", hint: "亚马逊 · 天猫 · 小红书" },
+    { value: "1:1", label: "1:1", hint: "TikTok · Shopee · 拼多多" },
+    { value: "4:5", label: "4:5", hint: "独立站 · Instagram" },
+    { value: "9:16", label: "9:16", hint: "抖音 · 短视频封面" },
+    { value: "2:3", label: "2:3", hint: "海报 · 竖版大片" },
+    { value: "16:9", label: "16:9", hint: "横幅 Banner" },
   ],
   handheldRatio: [
     { value: "1:1", label: "1:1" },
@@ -328,7 +353,7 @@ const OPTIONS = {
   ],
   campaign: ["新品首发", "日常种草", "限时促销", "节日活动", "品牌宣传"],
   apparel: ["上装", "下装", "连衣裙", "连体服", "套装", "外套"],
-  tryonApparel: ["上装", "下装", "全身"],
+  tryonApparel: ["上装", "下装", "全身", "套装"],
   model: [
     "东亚女性",
     "东亚男性",
@@ -339,6 +364,15 @@ const OPTIONS = {
   ],
   pose: ["正面站姿", "侧身展示", "半身特写", "生活方式", "坐姿展示"],
   shadow: ["自然接触影", "柔和投影", "悬浮阴影", "长投影", "镜面倒影"],
+};
+
+// 光影下拉的一句话说明
+const TRYON_LIGHT_HINTS = {
+  available: "保留场景原光，最真实",
+  fill: "柔光补亮暗部，通用",
+  rim: "逆光勾边，人物更立体",
+  negative: "压暗一侧，层次更强",
+  hard: "强阴影高反差，大片感",
 };
 
 const SHOOT_USE_CASE_LABELS = {
@@ -959,6 +993,9 @@ export function EcommerceBusinessSession({
   const modelFileInput = useRef(null);
   const sceneFileInput = useRef(null);
   const layoutFileInput = useRef(null);
+  const bottomFileInput = useRef(null);
+  const batchFileInput = useRef(null);
+  const garmentDetectFileRef = useRef(null);
   const previewUrlsRef = useRef([]);
   const tryonNoticeTimer = useRef(0);
   const compressControllerRef = useRef(null);
@@ -1027,7 +1064,28 @@ export function EcommerceBusinessSession({
     setTryonLight,
     tryonPreview,
     setTryonPreview,
+    tryonGarmentDetect,
+    setTryonGarmentDetect,
+    tryonPack,
+    setTryonPack,
+    tryonBackdrop,
+    setTryonBackdrop,
+    tryonSlotHints,
+    setTryonSlotHints,
+    tryonUndo,
+    setTryonUndo,
+    tryonBatchGarments,
+    setTryonBatchGarments,
   } = useTryonBusinessState();
+  const [walletAvailable, setWalletAvailable] = useState(null);
+  const [tryonCropRole, setTryonCropRole] = useState("");
+  // 自己的模特/场景（上传、裁剪、设为模特），在选择弹窗的“最近”里复用
+  const [tryonCustomPicks, setTryonCustomPicks] = useState(() => ({
+    model: readTryonCustomPicks("model"),
+    scene: readTryonCustomPicks("scene"),
+  }));
+  const [tryonCropSrc, setTryonCropSrc] = useState("");
+  const tryonUndoTimer = useRef(0);
   const {
     handheldUploadNotice,
     setHandheldUploadNoticeState,
@@ -1515,7 +1573,7 @@ export function EcommerceBusinessSession({
       mode.id === "tryon"
         ? OPTIONS.tryonRatio.some((item) => item.value === mode.ratio)
           ? mode.ratio
-          : "2:3"
+          : "3:4"
         : mode.id === "handheld"
           ? OPTIONS.handheldRatio.some((item) => item.value === mode.ratio)
             ? mode.ratio
@@ -1663,7 +1721,12 @@ export function EcommerceBusinessSession({
     jobs.tasks,
     jobs.hydrateHandheldBatch,
   ]);
-  const tryonUrlsRef = useRef({ garment: null, model: null, scene: null });
+  const tryonUrlsRef = useRef({
+    garment: null,
+    bottom: null,
+    model: null,
+    scene: null,
+  });
   const handheldUrlsRef = useRef({
     product: null,
     model: null,
@@ -1679,10 +1742,11 @@ export function EcommerceBusinessSession({
   useEffect(() => {
     const next = {
       garment: tryonSlots.garment?.local ? tryonSlots.garment.url : null,
+      bottom: tryonSlots.bottom?.local ? tryonSlots.bottom.url : null,
       model: tryonSlots.model?.local ? tryonSlots.model.url : null,
       scene: tryonSlots.scene?.local ? tryonSlots.scene.url : null,
     };
-    for (const role of ["garment", "model", "scene"]) {
+    for (const role of ["garment", "bottom", "model", "scene"]) {
       const previous = tryonUrlsRef.current[role];
       if (previous && previous !== next[role]) URL.revokeObjectURL(previous);
     }
@@ -1766,8 +1830,21 @@ export function EcommerceBusinessSession({
           ) {
             setAspectRatio(draft.aspectRatio);
           }
-          const restored = { garment: null, model: null, scene: null };
-          for (const role of ["garment", "model", "scene"]) {
+          if (draft.lens && tryonLensById(draft.lens)?.id === draft.lens)
+            setTryonLens(draft.lens);
+          if (draft.light && tryonLightById(draft.light)?.id === draft.light)
+            setTryonLight(draft.light);
+          if (TRYON_SHOT_PACKS.some((pack) => pack.id === draft.pack))
+            setTryonPack(draft.pack);
+          if (draft.backdrop === "white" || draft.backdrop === "scene")
+            setTryonBackdrop(draft.backdrop);
+          const restored = {
+            garment: null,
+            bottom: null,
+            model: null,
+            scene: null,
+          };
+          for (const role of ["garment", "bottom", "model", "scene"]) {
             const item = draft.slots?.[role];
             if (item?.file instanceof Blob && item.file.size > 0) {
               restored[role] = {
@@ -2079,7 +2156,7 @@ export function EcommerceBusinessSession({
   ]);
   useEffect(() => {
     if (mode.id !== "tryon") return;
-    for (const role of ["garment", "model", "scene"]) {
+    for (const role of ["garment", "bottom", "model", "scene"]) {
       const slot = tryonSlots[role];
       if (
         slot?.file instanceof Blob &&
@@ -2115,6 +2192,10 @@ export function EcommerceBusinessSession({
         scene,
         modelProfile,
         aspectRatio,
+        lens: tryonLens,
+        light: tryonLight,
+        pack: tryonPack,
+        backdrop: tryonBackdrop,
       }).catch(() => {});
     }, 280);
     return () => window.clearTimeout(timer);
@@ -2128,7 +2209,31 @@ export function EcommerceBusinessSession({
     scene,
     modelProfile,
     aspectRatio,
+    tryonLens,
+    tryonLight,
+    tryonPack,
+    tryonBackdrop,
   ]);
+  useEffect(() => {
+    if (!auth.isAuthenticated) {
+      setWalletAvailable(null);
+      return undefined;
+    }
+    const controller = new AbortController();
+    const apply = (wallet) => {
+      const value = Number(
+        wallet?.availableCents ?? wallet?.balanceCents ?? wallet?.availablePoints,
+      );
+      if (Number.isFinite(value)) setWalletAvailable(Math.max(0, value));
+    };
+    const onWalletUpdated = (event) => apply(event?.detail);
+    window.addEventListener("starclouds:wallet-updated", onWalletUpdated);
+    getWallet({ signal: controller.signal }).then(apply).catch(() => null);
+    return () => {
+      controller.abort();
+      window.removeEventListener("starclouds:wallet-updated", onWalletUpdated);
+    };
+  }, [auth.isAuthenticated]);
   useEffect(() => {
     if (!handheldDraftReady) return undefined;
     const timer = window.setTimeout(() => {
@@ -2416,8 +2521,8 @@ export function EcommerceBusinessSession({
     [selectedModules, detailCustomDirections],
   );
   const tryonBlueprints = useMemo(
-    () => ecommerceShotBlueprints("tryon").slice(0, 1),
-    [],
+    () => tryonShotBlueprints(tryonPack, apparel, tryonBackdrop),
+    [tryonPack, apparel, tryonBackdrop],
   );
   const handheldBlueprints = useMemo(
     () => handheldShotBlueprints(handheldPack, { crop: handheldCrop }),
@@ -2500,7 +2605,9 @@ export function EcommerceBusinessSession({
           tryonModelCatalog[0]
         )?.label || "";
   const tryonMentionSceneLabel =
-    tryonSlots.scene?.source === "upload"
+    tryonBackdrop === "white"
+      ? "纯白棚拍"
+      : tryonSlots.scene?.source === "upload"
       ? "自定义场景"
       : (
           catalogOptionById(tryonSceneCatalog, featuredTryonSceneId) ||
@@ -2511,7 +2618,8 @@ export function EcommerceBusinessSession({
         apparel,
         modelLabel: tryonMentionModelLabel,
         sceneLabel: tryonMentionSceneLabel,
-        lens: tryonLens,
+        // 镜头由机位自带；补充说明里仍可用 @镜头 按需指定
+        lens: "auto",
         light: tryonLight,
         aspectRatio,
       })
@@ -2593,7 +2701,9 @@ export function EcommerceBusinessSession({
             amazon: detailAmazonMode ? detailAmazon : null,
           })
       : [
-          `任务：${mode.label}。${mode.prompt}`,
+          mode.id === "tryon" && tryonBackdrop === "white"
+            ? `任务：${mode.label}。${tryonWhiteTaskPrompt(apparel === "套装")}`
+            : `任务：${mode.label}。${mode.prompt}`,
           isTryonMode(mode.id)
             ? ""
             : `商品名称：${productName.trim() || "根据商品图片准确识别"}。`,
@@ -2624,21 +2734,26 @@ export function EcommerceBusinessSession({
               ? "按下装穿着生成，完整展示腰线到裤脚/裙摆的穿着关系，不要改成连衣裙。"
               : mode.id === "tryon" && apparel === "全身"
                 ? "按全身造型生成，上下装作为完整穿着关系一起展示。"
-                : "",
+                : mode.id === "tryon" && apparel === "套装"
+                  ? `按套装搭配生成：第 1 张参考图是上装，第 ${tryonBackdrop === "white" ? 3 : 4} 张参考图是下装，两件同时穿在第 2 张模特身上，按真实穿着处理塞衣、外搭与腰线层叠关系，完整展示上下装，不要合并成一件或省略其中之一。`
+                  : "",
           isTryonMode(mode.id)
             ? "人物身份只以第 2 张模特参考图为准，不要根据人群标签另造人物。"
             : fields.has("model")
               ? `模特人群：${modelProfile}。`
               : "",
           mode.id === "tryon"
-            ? buildTryonPhotographyPrompt(tryonLensOption)
+            ? // 镜头由每个机位自带（见 tryonShots），这里只保留实拍质感要求
+              buildTryonPhotographyPrompt("auto")
             : fields.has("pose")
               ? `模特姿态：${pose}。`
               : "",
-          isTryonMode(mode.id)
+          isTryonMode(mode.id) && tryonBackdrop !== "white"
             ? buildTryonLightingPrompt(tryonLightOption)
             : "",
-          isTryonMode(mode.id)
+          isTryonMode(mode.id) && tryonBackdrop === "white"
+            ? TRYON_WHITE_STUDIO_PROMPT
+            : isTryonMode(mode.id)
             ? tryonLightOption.id === "available"
               ? "环境、光线、材质与空间以第 3 张场景参考图为准；禁止把场景图中的人物或商品带入结果，也不要用文字场景名另造布景。"
               : "空间、色温和环境以第 3 张场景参考图为准；禁止把场景图中的人物或商品带入结果。主光仍来自该场景，只用所选光影手法塑形，不要换一套棚灯或改成另一个时段。"
@@ -2672,7 +2787,7 @@ export function EcommerceBusinessSession({
         ]
           .filter(Boolean)
           .join("\n");
-  const generationPlan = buildEcommerceGenerationPlan({
+  const baseGenerationPlan = buildEcommerceGenerationPlan({
     modeId: mode.id,
     count: outputCount,
     selectedModules: selectedModuleDetails.map((item) => item.value),
@@ -2683,11 +2798,15 @@ export function EcommerceBusinessSession({
         ? Math.max(1, Math.min(3, inputFiles.length))
         : mode.id === "shoot" || isDetailMode(mode.id)
           ? inputFiles.length
-          : hidesCommerceSettings(mode.id)
+          : mode.id === "tryon"
+            ? (tryonBackdrop === "white" ? 2 : 3) + (apparel === "套装" ? 1 : 0)
+            : hidesCommerceSettings(mode.id)
             ? 3
             : inputFiles.length,
     referenceRoles: isHandheldMode(mode.id)
       ? handheldRoles
+      : mode.id === "tryon" && tryonBackdrop === "white"
+        ? tryonWhiteReferenceRoles(apparel === "套装")
       : isAccessoryMode(mode.id)
         ? accessoryReferenceRoles(inputFiles.length)
         : workbenchReferenceRoles,
@@ -2703,7 +2822,9 @@ export function EcommerceBusinessSession({
             hasModel: accessoryHasModel,
             hasScene: accessoryHasScene,
           })
-        : "",
+        : mode.id === "tryon" && tryonBackdrop === "white"
+          ? tryonWhiteIdentityLock(apparel === "套装")
+          : "",
     hasPersonIdentity: isHandheldMode(mode.id)
       ? handheldHasModel
       : isAccessoryMode(mode.id)
@@ -2732,6 +2853,28 @@ export function EcommerceBusinessSession({
                   ? aplusBlueprints
                   : variantBlueprints,
   });
+  const tryonBatchActive =
+    mode.id === "tryon" &&
+    apparel !== "套装" &&
+    tryonBatchGarments.length > 0;
+  const tryonPlanBase =
+    mode.id === "tryon"
+      ? baseGenerationPlan.map((item) => ({
+          ...item,
+          // 记录背景，结果对比时据此找到下装参考图的位置
+          tryonBackdrop,
+        }))
+      : baseGenerationPlan;
+  const generationPlan = tryonBatchActive
+    ? [null, ...tryonBatchGarments].flatMap((_, garmentIndex) =>
+        tryonPlanBase.map((item) => ({
+          ...item,
+          garmentIndex,
+          viewId: `${item.viewId}-g${garmentIndex + 1}`,
+          viewLabel: `${item.viewLabel} · 第${garmentIndex + 1}件`,
+        })),
+      )
+    : tryonPlanBase;
   function handheldPromptForShot(shot, index) {
     const shotId = String(shot?.id || `shot-${index + 1}`);
     const basePrompt = String(generationPlan[index]?.prompt || "").trim();
@@ -2760,7 +2903,12 @@ export function EcommerceBusinessSession({
     });
   const canGenerate =
     (mode.id === "tryon"
-      ? Boolean(tryonSlots.garment && tryonSlots.model && tryonSlots.scene)
+      ? Boolean(
+          tryonSlots.garment &&
+            tryonSlots.model &&
+            (tryonBackdrop === "white" || tryonSlots.scene) &&
+            (apparel !== "套装" || tryonSlots.bottom),
+        )
       : mode.id === "handheld"
         ? Boolean(handheldSlots.product) &&
           (!handheldCropNeedsPerson(handheldCrop) || handheldHasModel)
@@ -2780,9 +2928,11 @@ export function EcommerceBusinessSession({
   const readiness =
     mode.id === "tryon" && !tryonSlots.garment
       ? "还需上传服装"
+      : mode.id === "tryon" && apparel === "套装" && !tryonSlots.bottom
+        ? "还需上传下装"
       : mode.id === "tryon" && !tryonSlots.model
         ? "还需选择模特"
-        : mode.id === "tryon" && !tryonSlots.scene
+        : mode.id === "tryon" && tryonBackdrop !== "white" && !tryonSlots.scene
           ? "还需选择场景"
           : mode.id === "accessory" && !accessoryPresence.hasProduct
         ? "还需上传饰品"
@@ -2827,6 +2977,16 @@ export function EcommerceBusinessSession({
     (row) => outputModeId(row) === mode.id,
   );
   const latestTryonUrl = isTryonMode(mode.id) ? modeRows[0]?.url || "" : "";
+  // 预计耗时：取最近 10 次成功出图耗时的中位数（多张为并发任务，整体约等于单张）
+  const tryonTypicalSeconds = (() => {
+    if (!isTryonMode(mode.id)) return 0;
+    const samples = modeRows
+      .slice(0, 10)
+      .map((row) => ecommerceElapsedSeconds(row.task))
+      .filter((value) => value > 3 && value < 900)
+      .sort((a, b) => a - b);
+    return samples.length ? samples[Math.floor(samples.length / 2)] : 0;
+  })();
   const latestTryonRatio = isTryonMode(mode.id)
     ? coerceRatioValue(modeRows[0]?.aspectRatio, OPTIONS.tryonRatio)
     : "";
@@ -2886,7 +3046,7 @@ export function EcommerceBusinessSession({
       coerceRatioValue(currentRow?.aspectRatio, OPTIONS.tryonRatio) ||
       tryonInferredRatiosRef.current[currentRow?.url] ||
       coerceRatioValue(aspectRatio, OPTIONS.tryonRatio) ||
-      "2:3";
+      "3:4";
     setAspectRatio(next);
   }, [mode.id, aspectRatio, currentRow?.url, currentRow?.aspectRatio]);
   const rowsByUrl = new Map(modeRows.map((row) => [row.url, row]));
@@ -3148,7 +3308,7 @@ export function EcommerceBusinessSession({
           aspectRatio ||
           "4:5"
       : isTryonMode(mode.id)
-        ? aspectRatio || latestTryonRatio || "2:3"
+        ? aspectRatio || latestTryonRatio || "3:4"
         : aspectRatio || "2:3",
   );
   const [shotRatioW, shotRatioH] = shotRatio.split(":").map(Number);
@@ -3197,7 +3357,147 @@ export function EcommerceBusinessSession({
       })),
     ]);
   }
+  function rememberTryonUndo(role, previous, message) {
+    window.clearTimeout(tryonUndoTimer.current);
+    if (!previous?.file) {
+      setTryonUndo(null);
+      return;
+    }
+    setTryonUndo({ role, previous, message });
+    tryonUndoTimer.current = window.setTimeout(() => setTryonUndo(null), 6000);
+  }
+  function undoTryonSlot() {
+    const undo = tryonUndo;
+    if (!undo) return;
+    window.clearTimeout(tryonUndoTimer.current);
+    setTryonUndo(null);
+    const { role, previous } = undo;
+    // 旧的 object URL 已在替换时回收，这里按原文件重新生成
+    const restored = previous.local
+      ? { ...previous, url: URL.createObjectURL(previous.file) }
+      : previous;
+    setTryonSlots((current) => ({ ...current, [role]: restored }));
+    setTryonSlotHints((current) => ({ ...current, [role]: null }));
+    if (role === "garment") {
+      garmentDetectFileRef.current = null;
+      setTryonGarmentDetect({ status: "idle" });
+    }
+  }
+  const TRYON_BATCH_LIMIT = 5;
+  async function addTryonBatchGarments(list) {
+    const incoming = Array.from(list || []).slice(
+      0,
+      Math.max(0, TRYON_BATCH_LIMIT - tryonBatchGarments.length),
+    );
+    if (!incoming.length) {
+      showTryonUploadNotice(`批量最多再加 ${TRYON_BATCH_LIMIT} 件服装`);
+      return;
+    }
+    const added = [];
+    for (const raw of incoming) {
+      try {
+        const coerced = await coerceEcommerceImageFile(raw);
+        if (!coerced) continue;
+        const file = await prepareUploadFile(coerced);
+        added.push({
+          id: crypto.randomUUID(),
+          file,
+          url: URL.createObjectURL(file),
+        });
+      } catch (error) {
+        showTryonUploadNotice(error?.message || "有服装图读取失败，已跳过");
+      }
+    }
+    if (added.length) {
+      setTryonBatchGarments((current) =>
+        [...current, ...added].slice(0, TRYON_BATCH_LIMIT),
+      );
+    }
+  }
+  useEffect(() => {
+    const file = tryonCropRole ? tryonSlots[tryonCropRole]?.file : null;
+    if (!(file instanceof Blob)) {
+      setTryonCropSrc("");
+      return undefined;
+    }
+    const url = URL.createObjectURL(file);
+    setTryonCropSrc(url);
+    return () => URL.revokeObjectURL(url);
+  }, [tryonCropRole, tryonSlots]);
+  function tryonCustomOptions(role) {
+    return tryonCustomPicks[role].map((item) => ({
+      id: item.id,
+      label: tryonCustomSourceLabel(item.key),
+      image: tryonFileUrlFromKey(item.key),
+      custom: true,
+    }));
+  }
+  async function selectTryonCustomPick(role, option) {
+    try {
+      const file = await fileFromCatalogImage(
+        option.image,
+        `tryon-${role}-custom.jpg`,
+      );
+      await setTryonSlot(role, [file]);
+    } catch (error) {
+      showTryonUploadNotice(error?.message || "图片读取失败，请重新上传");
+    }
+  }
+  function forgetTryonCustom(role, id) {
+    const list = forgetTryonCustomPick(role, id);
+    setTryonCustomPicks((current) => ({ ...current, [role]: list }));
+  }
+  async function applyTryonCrop(rect) {
+    const role = tryonCropRole;
+    setTryonCropRole("");
+    const source = tryonSlots[role]?.file;
+    if (!source) return;
+    try {
+      const bitmap = await createImageBitmap(source);
+      const sx = Math.round(rect.x * bitmap.width);
+      const sy = Math.round(rect.y * bitmap.height);
+      const sw = Math.max(1, Math.round(rect.w * bitmap.width));
+      const sh = Math.max(1, Math.round(rect.h * bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = sw;
+      canvas.height = sh;
+      canvas.getContext("2d").drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+      bitmap.close?.();
+      const blob = await new Promise((resolve) =>
+        canvas.toBlob(resolve, "image/jpeg", 0.95),
+      );
+      if (!blob) throw new Error("裁剪失败，请重试");
+      await setTryonSlot(role, [
+        new File([blob], `tryon-${role}-crop.jpg`, { type: "image/jpeg" }),
+      ]);
+    } catch (error) {
+      showTryonUploadNotice(error?.message || "裁剪失败，请重试");
+    }
+  }
+  function removeTryonBatchGarment(id) {
+    setTryonBatchGarments((current) => {
+      const target = current.find((entry) => entry.id === id);
+      if (target) URL.revokeObjectURL(target.url);
+      return current.filter((entry) => entry.id !== id);
+    });
+  }
+  async function checkTryonSlotImage(role, file) {
+    const hints = await inspectTryonImage(file, role);
+    setTryonSlotHints((current) => ({ ...current, [role]: { file, hints } }));
+  }
+  const TRYON_ROLE_LABELS = {
+    garment: "服装",
+    bottom: "下装",
+    model: "模特",
+    scene: "场景",
+  };
   function commitTryonSlot(role, file) {
+    rememberTryonUndo(
+      role,
+      tryonSlots[role],
+      `已替换${TRYON_ROLE_LABELS[role] || ""}`,
+    );
+    if (role !== "scene") void checkTryonSlotImage(role, file);
     const url = URL.createObjectURL(file);
     setTryonSlots((current) => ({
       ...current,
@@ -3206,7 +3506,10 @@ export function EcommerceBusinessSession({
         url,
         local: true,
         managed: "slot",
-        ...(role === "model" || role === "scene" || role === "garment"
+        ...(role === "model" ||
+        role === "scene" ||
+        role === "garment" ||
+        role === "bottom"
           ? { source: "upload" }
           : {}),
       },
@@ -3214,7 +3517,53 @@ export function EcommerceBusinessSession({
     if (role === "model") setModelProfile("不限定人群");
     if (role === "scene") setScene("自定义场景");
     setSelectedProduct(null);
-    void prefetchSlotUpload(role, file);
+    if (role === "garment") void detectTryonGarment(file);
+    else if (role === "model" || role === "scene") {
+      void prefetchSlotUpload(role, file)
+        .then((key) => {
+          if (!key) return;
+          const list = rememberTryonCustomPick(role, key);
+          setTryonCustomPicks((current) => ({ ...current, [role]: list }));
+        })
+        .catch(() => {});
+    } else void prefetchSlotUpload(role, file);
+  }
+  async function detectTryonGarment(file) {
+    garmentDetectFileRef.current = file;
+    if (!auth.isAuthenticated) {
+      setTryonGarmentDetect({ status: "idle" });
+      void prefetchSlotUpload("garment", file);
+      return;
+    }
+    setTryonGarmentDetect({ status: "busy", file });
+    try {
+      const inputKey = await prefetchSlotUpload("garment", file);
+      if (!inputKey) throw new Error("服装图上传失败");
+      const result = await classifyTryonGarment({ inputKey });
+      if (garmentDetectFileRef.current !== file) return;
+      const detected = OPTIONS.tryonApparel.includes(result?.apparel)
+        ? result.apparel
+        : "";
+      setTryonGarmentDetect({
+        status: detected ? "done" : "error",
+        apparel: detected,
+        label: String(result?.label || ""),
+        file,
+      });
+      // 已选“套装”且识别为单件上装时保持套装，让用户继续补下装
+      if (detected)
+        setApparel((current) =>
+          current === "套装" && detected === "上装" ? current : detected,
+        );
+    } catch (error) {
+      if (garmentDetectFileRef.current !== file) return;
+      // 后台关闭了服装识别：静默跳过，不打扰用户
+      if (error?.code === "feature_disabled") {
+        setTryonGarmentDetect({ status: "idle" });
+        return;
+      }
+      setTryonGarmentDetect({ status: "error", file });
+    }
   }
   function commitHandheldSlot(role, file) {
     handheldClearedRef.current[role] = false;
@@ -3592,7 +3941,17 @@ export function EcommerceBusinessSession({
     });
   }
   function clearTryonSlot(role) {
+    rememberTryonUndo(
+      role,
+      tryonSlots[role],
+      `已移除${TRYON_ROLE_LABELS[role] || ""}`,
+    );
+    setTryonSlotHints((current) => ({ ...current, [role]: null }));
     setTryonSlots((current) => ({ ...current, [role]: null }));
+    if (role === "garment") {
+      garmentDetectFileRef.current = null;
+      setTryonGarmentDetect({ status: "idle" });
+    }
     if (role === "scene") {
       const option =
         catalogOptionById(tryonSceneCatalog, featuredTryonSceneId) ||
@@ -4264,7 +4623,7 @@ export function EcommerceBusinessSession({
     try {
       const quote = await jobs.quoteBatch({
         modelId,
-        items: generationPlan.map((item) => ({
+        items: generationPlan.map(({ garmentIndex: _garment, ...item }) => ({
           ...item,
           kindVariant: mode.id,
           aspectRatio: item.aspectRatio || aspectRatio,
@@ -4304,6 +4663,15 @@ export function EcommerceBusinessSession({
       quotedUnit,
       true,
     );
+  }
+  async function applyTryonResultAsModel(url) {
+    if (!url) return;
+    try {
+      const file = await fileFromCatalogImage(url, "tryon-model-from-result.png");
+      await setTryonSlot("model", [file]);
+    } catch (error) {
+      showTryonUploadNotice(error?.message || "设为模特失败，请重试");
+    }
   }
   async function fileFromCatalogImage(url, name) {
     const imageUrl =
@@ -4345,7 +4713,8 @@ export function EcommerceBusinessSession({
       );
       next.model = builtinCatalogSlot(file, featuredTryonModel);
     }
-    if (!next.scene?.file) {
+    const whiteStudio = tryonBackdrop === "white";
+    if (!whiteStudio && !next.scene?.file) {
       if (!featuredTryonScene?.image) {
         throw new Error("请先选择场景");
       }
@@ -4355,20 +4724,29 @@ export function EcommerceBusinessSession({
       );
       next.scene = builtinCatalogSlot(file, featuredTryonScene);
     }
-    const files = [next.garment.file, next.model.file, next.scene.file].filter(
-      (file) => file instanceof Blob && file.size > 0,
-    );
-    if (files.length < 3) {
+    const outfit = apparel === "套装";
+    if (outfit && !next.bottom?.file) {
+      throw new Error("套装还需上传下装");
+    }
+    // 顺序：衣服、模特、[场景]、[下装]。纯白棚拍不发送场景图
+    const ordered = [
+      ["garment", next.garment],
+      ["model", next.model],
+      ...(whiteStudio ? [] : [["scene", next.scene]]),
+      ...(outfit ? [["bottom", next.bottom]] : []),
+    ];
+    const files = ordered
+      .map(([, slot]) => slot?.file)
+      .filter((file) => file instanceof Blob && file.size > 0);
+    if (files.length < ordered.length) {
       throw new Error("模特、衣服或场景未准备好，请重新选择后再生成");
     }
-    attachEcommerceUploadKey(files[0], next.garment.uploadKey);
-    attachEcommerceUploadKey(files[1], next.model.uploadKey);
-    attachEcommerceUploadKey(files[2], next.scene.uploadKey);
-    await Promise.all([
-      prefetchSlotUpload("garment", files[0]),
-      prefetchSlotUpload("model", files[1]),
-      prefetchSlotUpload("scene", files[2]),
-    ]);
+    ordered.forEach(([, slot], index) =>
+      attachEcommerceUploadKey(files[index], slot.uploadKey),
+    );
+    await Promise.all(
+      ordered.map(([role], index) => prefetchSlotUpload(role, files[index])),
+    );
     if (next.model !== tryonSlots.model || next.scene !== tryonSlots.scene) {
       setTryonSlots(next);
     }
@@ -4560,6 +4938,27 @@ export function EcommerceBusinessSession({
               })
             : null;
         let planItems = generationPlan;
+        if (tryonBatchActive) {
+          // 追加的服装各自带一组参考图：[该服装, 同一模特, 同一场景]
+          const extraFiles = tryonBatchGarments.map((entry) => entry.file);
+          await Promise.all(
+            extraFiles.map((file, index) =>
+              prefetchSlotUpload(`batch-${index}`, file),
+            ),
+          );
+          planItems = generationPlan.map(({ garmentIndex, ...item }) =>
+            garmentIndex > 0
+              ? {
+                  ...item,
+                  // 换掉第 1 张衣服，模特与（若有）场景沿用
+                  inputFiles: [
+                    extraFiles[garmentIndex - 1],
+                    ...resolvedFiles.slice(1, tryonBackdrop === "white" ? 2 : 3),
+                  ],
+                }
+              : item,
+          );
+        }
         if (mode.id === "detail" && !detailPlan?.items?.length) {
           // 「策划完毕后自动直接生成」：先策划，再用策划结果重组每张图的 prompt
           setDetailPlanning(true);
@@ -4653,7 +5052,7 @@ export function EcommerceBusinessSession({
       apparel,
       modelLabel: tryonMentionModelLabel,
       sceneLabel: tryonMentionSceneLabel,
-      lens: tryonLens,
+      lens: "auto",
       light: tryonLight,
       aspectRatio: aspectRatio || sourceRow.aspectRatio,
       versionNumber: nextVersion,
@@ -5543,28 +5942,12 @@ export function EcommerceBusinessSession({
                 value={
                   matchingRatio(aspectRatio, OPTIONS.tryonRatio) ||
                   coerceRatioValue(aspectRatio, OPTIONS.tryonRatio) ||
-                  "2:3"
+                  "3:4"
                 }
                 options={OPTIONS.tryonRatio}
                 onChange={setAspectRatio}
                 ariaLabel="选择画面比例"
-                menuMinWidth={160}
-                disabled={jobs.running}
-              />
-            </label>
-            <label className="commerce-header__lens">
-              <span>{t("镜头")}</span>
-              <CommerceSelect
-                value={tryonLens}
-                options={TRYON_LENS_OPTIONS.map((item) => ({
-                  value: item.id,
-                  label: item.range
-                    ? `${t(item.label)} · ${item.range}`
-                    : t(item.label),
-                }))}
-                onChange={setTryonLens}
-                ariaLabel="选择摄影镜头"
-                menuMinWidth={240}
+                menuMinWidth={280}
                 disabled={jobs.running}
               />
             </label>
@@ -5575,10 +5958,29 @@ export function EcommerceBusinessSession({
                 options={TRYON_LIGHT_OPTIONS.map((item) => ({
                   value: item.id,
                   label: item.label,
+                  hint: TRYON_LIGHT_HINTS[item.id] || "",
                 }))}
                 onChange={setTryonLight}
                 ariaLabel="选择光影调整"
-                menuMinWidth={160}
+                menuMinWidth={280}
+                disabled={jobs.running}
+              />
+            </label>
+            <label className="commerce-header__light commerce-header__pack">
+              <span>{t("出图")}</span>
+              <CommerceSelect
+                value={tryonPack}
+                options={TRYON_SHOT_PACKS.map((pack) => ({
+                  value: pack.id,
+                  label:
+                    pack.count > 1
+                      ? `${t(pack.label)}（${pack.count}${t("张")}）`
+                      : t(pack.label),
+                  hint: pack.hint || "正面主图",
+                }))}
+                onChange={setTryonPack}
+                ariaLabel="选择出图套餐"
+                menuMinWidth={320}
                 disabled={jobs.running}
               />
             </label>
@@ -5941,6 +6343,13 @@ export function EcommerceBusinessSession({
                 ["history", "bi-clock-history", "电商历史"],
                 ["operations", "bi-kanban", text.operations],
               ]
+            : isTryonMode(mode.id)
+            ? // 试衣不需要业务中心（审核交付）和商品库（商品事实包）
+              [
+                ["result", "bi-easel2", text.creative],
+                ["history", "bi-clock-history", "电商历史"],
+                ["assets", "bi-collection", "资产与素材"],
+              ]
             : [
                 ["result", "bi-easel2", text.creative],
                 ["operations", "bi-kanban", text.operations],
@@ -6001,14 +6410,16 @@ export function EcommerceBusinessSession({
         >
           历史
         </button>
-        <button
-          type="button"
-          role="tab"
-          className={workspace === "operations" ? "active" : ""}
-          onClick={() => openWorkspace("operations")}
-        >
-          {text.operationsMobile}
-        </button>
+        {!isTryonMode(mode.id) && (
+          <button
+            type="button"
+            role="tab"
+            className={workspace === "operations" ? "active" : ""}
+            onClick={() => openWorkspace("operations")}
+          >
+            {text.operationsMobile}
+          </button>
+        )}
         {!isShootMode(mode.id) && (
           <>
             <button
@@ -6019,14 +6430,16 @@ export function EcommerceBusinessSession({
             >
               素材
             </button>
-            <button
-              type="button"
-              role="tab"
-              className={workspace === "products" ? "active" : ""}
-              onClick={() => openWorkspace("products")}
-            >
-              商品库
-            </button>
+            {!isTryonMode(mode.id) && (
+              <button
+                type="button"
+                role="tab"
+                className={workspace === "products" ? "active" : ""}
+                onClick={() => openWorkspace("products")}
+              >
+                商品库
+              </button>
+            )}
           </>
         )}
       </div>
@@ -6070,6 +6483,9 @@ export function EcommerceBusinessSession({
                     aria-label={group.label}
                   />
                 )}
+                <span className="commerce-rail__group-label" aria-hidden="true">
+                  {t(group.label)}
+                </span>
                 {group.items.map((item) => (
                   <button
                     key={item.id}
@@ -6159,6 +6575,29 @@ export function EcommerceBusinessSession({
                   void setHandheldSlot("layout", files);
               }}
             />
+            <input
+              ref={batchFileInput}
+              hidden
+              multiple
+              type="file"
+              accept={ECOMMERCE_IMAGE_ACCEPT}
+              onChange={(event) => {
+                const files = Array.from(event.target.files || []);
+                event.target.value = "";
+                if (isTryonMode(mode.id)) void addTryonBatchGarments(files);
+              }}
+            />
+            <input
+              ref={bottomFileInput}
+              hidden
+              type="file"
+              accept={ECOMMERCE_IMAGE_ACCEPT}
+              onChange={(event) => {
+                const files = Array.from(event.target.files || []);
+                event.target.value = "";
+                if (isTryonMode(mode.id)) void setTryonSlot("bottom", files);
+              }}
+            />
           </>
         )}
         <section
@@ -6185,124 +6624,30 @@ export function EcommerceBusinessSession({
               onClose={() => openWorkspace("result")}
             />
           ) : workspace === "history" ? (
-            <section className="workspace-library">
-              <header className="workspace-library__header">
-                <div>
-                  <span className="workspace-library__icon">
-                    <i className="bi bi-clock-history" />
-                  </span>
-                  <span>
-                    <small>
-                      {isAccessoryMode(mode.id) ? "饰品穿戴" : "AI 电商资产"}
-                    </small>
-                    <strong>
-                      {isAccessoryMode(mode.id)
-                        ? "饰品生成历史"
-                        : "电商生成历史"}
-                    </strong>
-                  </span>
-                </div>
-                <div className="workspace-library__tools">
-                  <button
-                    type="button"
-                    className="workspace-icon-button"
-                    aria-label="刷新历史"
-                    onClick={jobs.refreshHistory}
-                  >
-                    <i className="bi bi-arrow-clockwise" />
-                  </button>
-                </div>
-              </header>
-              <div className="workspace-library__body">
-                {jobs.historyError && (
-                  <div className="workspace-library__inline-error" role="alert">
-                    <span>
-                      <i className="bi bi-exclamation-circle" />
-                      {jobs.historyError}
-                    </span>
-                    <button type="button" onClick={jobs.refreshHistory}>
-                      <i className="bi bi-arrow-clockwise" />
-                      重试
-                    </button>
-                  </div>
-                )}
-                {modeRows.length ? (
-                  <div className="asset-grid">
-                    {modeRows.map((row) => (
-                      <article key={row.url} className="asset-card">
-                        <button
-                          type="button"
-                          className="asset-card__media"
-                          onClick={() => {
-                            setActiveUrl(row.url);
-                            openWorkspace("result");
-                          }}
-                        >
-                          <AuthenticatedImage
-                            src={row.preview}
-                            alt="电商历史结果"
-                            maxDimension={420}
-                          />
-                          <span>V1</span>
-                        </button>
-                        <div className="asset-card__copy">
-                          <strong>
-                            {ecommerceModeById(outputModeId(row)).shortLabel}
-                          </strong>
-                          <small>01/01 08:01</small>
-                        </div>
-                        <div className="asset-card__actions">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setActiveUrl(row.url);
-                              openWorkspace("result");
-                            }}
-                          >
-                            <i className="bi bi-eye" />
-                            查看
-                          </button>
-                          <button
-                            type="button"
-                            className="primary"
-                            onClick={() => useRemote(row.url)}
-                          >
-                            <i className="bi bi-plus-circle" />
-                            作为参考
-                          </button>
-                          <button
-                            type="button"
-                            className="danger"
-                            aria-label={`删除${ecommerceModeById(outputModeId(row)).shortLabel}历史记录`}
-                            onClick={() => setDeleteRow(row)}
-                          >
-                            <i className="bi bi-trash3" />
-                            删除
-                          </button>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                ) : (
-                  !jobs.historyError &&
-                  !jobs.historyLoading && (
-                    <div className="workspace-empty">
-                      <span>
-                        <i className="bi bi-clock-history" />
-                      </span>
-                      <strong>还没有{mode.label}记录</strong>
-                      <small>完成生成后，成品会自动保存在这里</small>
-                      <button
-                        type="button"
-                        onClick={() => openWorkspace("result")}
-                      >
-                        开始创作
-                      </button>
-                    </div>
-                  )
-                )}
-              </div>
-            </section>
+            <EcommerceHistoryPage
+              title={`${mode.shortLabel || mode.label} · 生成历史`}
+              rows={modeRows}
+              loading={jobs.historyLoading}
+              error={jobs.historyError}
+              hasMore={jobs.historyHasMore}
+              onLoadMore={jobs.loadMoreHistory}
+              onRefresh={jobs.refreshHistory}
+              onOpen={(row) => setPreviewUrl(row.url)}
+              onDownload={(row) => downloadOutput(row)}
+              onDownloadBatch={(rows) =>
+                downloadHistoryImagesAsZip(
+                  rows.map((row, index) => ({
+                    url: row.url,
+                    filename: `${ecommerceModeById(outputModeId(row)).shortLabel}-${historyShotLabel(row) || index + 1}`,
+                  })),
+                )
+              }
+              onDelete={(row) => setDeleteRow(row)}
+              onStart={() => openWorkspace("result")}
+              modeLabelOf={(row) => ecommerceModeById(outputModeId(row)).shortLabel}
+              modeIconOf={(row) => ecommerceModeById(outputModeId(row)).icon}
+              emptyLabel={mode.label}
+            />
           ) : workspace === "assets" ? (
             <section className="workspace-library">
               <header className="workspace-library__header">
@@ -6536,6 +6881,65 @@ export function EcommerceBusinessSession({
               apparelOptions={OPTIONS.tryonApparel}
               onChangeApparel={setApparel}
               garment={tryonSlots.garment}
+              slotHints={Object.fromEntries(
+                ["garment", "bottom", "model"].map((role) => {
+                  const entry = tryonSlotHints[role];
+                  return [
+                    role,
+                    entry?.file && entry.file === tryonSlots[role]?.file
+                      ? entry.hints
+                      : [],
+                  ];
+                }),
+              )}
+              undo={
+                tryonUndo
+                  ? { message: tryonUndo.message, onUndo: undoTryonSlot }
+                  : null
+              }
+              balanceShort={
+                walletAvailable !== null &&
+                walletAvailable < generationPlan.length * unitPrice
+              }
+              backdrop={tryonBackdrop}
+              onChangeBackdrop={setTryonBackdrop}
+              // 首屏数据（历史、草稿）未就绪前显示骨架，避免先画空状态再跳变
+              historyPending={jobs.historyLoading && !modeRows.length}
+              historyHasMore={jobs.historyHasMore}
+              historyLoadingMore={jobs.historyLoading && modeRows.length > 0}
+              onLoadMoreHistory={jobs.loadMoreHistory}
+              runningGarments={
+                tryonBusy
+                  ? new Set(generationPlan.map((item) => item.garmentIndex || 0))
+                      .size
+                  : 0
+              }
+              inputsPending={!tryonDraftReady}
+              packLabel={
+                tryonPack === "single"
+                  ? ""
+                  : `${tryonShotPackById(tryonPack).label} · ${tryonBlueprints
+                      .map((item) => item.label)
+                      .join(" / ")}`
+              }
+              estimateSeconds={tryonTypicalSeconds}
+              batchGarments={
+                apparel === "套装" || !tryonSlots.garment
+                  ? null
+                  : tryonBatchGarments
+              }
+              onAddBatch={() => batchFileInput.current?.click()}
+              onRemoveBatch={removeTryonBatchGarment}
+              onDropBatch={(files) => void addTryonBatchGarments(files)}
+              bottomGarment={apparel === "套装" ? tryonSlots.bottom : undefined}
+              onUploadBottom={() => bottomFileInput.current?.click()}
+              onRemoveBottom={() => clearTryonSlot("bottom")}
+              garmentDetect={
+                tryonGarmentDetect.file &&
+                tryonGarmentDetect.file === tryonSlots.garment?.file
+                  ? tryonGarmentDetect
+                  : null
+              }
               modelImage={tryonModelPreview}
               modelLabel={tryonModelLabel}
               scene={tryonSceneLabel}
@@ -6557,9 +6961,25 @@ export function EcommerceBusinessSession({
               generateDisabled={auth.isAuthenticated && !canGenerate}
               generateHint={readiness}
               shotCount={generationPlan.length}
+              costLabel={`${generationPlan.length * unitPrice} 积分`}
               onGenerate={generate}
               onCancel={jobs.cancelAll}
               onSelectHistory={selectTryonHistory}
+              onUseResultAsModel={applyTryonResultAsModel}
+              onDownloadResult={(url) => downloadOutput(rowsByUrl.get(url))}
+              onDownloadGroup={(rows) =>
+                downloadHistoryImagesAsZip(
+                  rows.map((row, index) => ({
+                    url: row.url,
+                    filename: `虚拟试衣-${
+                      String(row.task?.params?.viewLabel || "")
+                        .split(" · ")
+                        .slice(1)
+                        .join("-") || index + 1
+                    }`,
+                  })),
+                )
+              }
               onResultImageSize={applyTryonImageSize}
               editBrief={tryonBrief}
               editMentions={tryonMentions}
@@ -6594,7 +7014,25 @@ export function EcommerceBusinessSession({
                   disabled={jobs.running || tryonModelBusy}
                   onPickUpload={() => modelFileInput.current?.click()}
                   onSelectBuiltin={applyBuiltinTryonModel}
-                />
+                  customItems={tryonCustomOptions("model")}
+                  onSelectCustom={(option) =>
+                    void selectTryonCustomPick("model", option)
+                  }
+                  onForgetCustom={(id) => forgetTryonCustom("model", id)}
+                >
+                  {tryonSlots.model?.source === "upload" &&
+                  tryonSlots.model?.file instanceof Blob ? (
+                    <button
+                      type="button"
+                      disabled={jobs.running}
+                      title="框选只保留人物，去掉海报文字和排版"
+                      onClick={() => setTryonCropRole("model")}
+                    >
+                      <i className="bi bi-crop" />
+                      裁剪
+                    </button>
+                  ) : null}
+                </TryonChoicePicker>
               }
               scenePicker={
                 <TryonChoicePicker
@@ -6612,6 +7050,12 @@ export function EcommerceBusinessSession({
                   disabled={jobs.running || tryonSceneBusy}
                   onPickUpload={() => sceneFileInput.current?.click()}
                   onSelectBuiltin={applyBuiltinTryonScene}
+                  customItems={tryonCustomOptions("scene")}
+                  onSelectCustom={(option) => {
+                    setTryonBackdrop("scene");
+                    void selectTryonCustomPick("scene", option);
+                  }}
+                  onForgetCustom={(id) => forgetTryonCustom("scene", id)}
                 />
               }
               garmentPicker={
@@ -7117,6 +7561,14 @@ export function EcommerceBusinessSession({
         open={isHandheldMode(mode.id) && handheldGuideOpen}
         onClose={() => setHandheldGuideOpen(false)}
       />
+      {tryonCropRole && tryonCropSrc ? (
+        <TryonCropDialog
+          src={tryonCropSrc}
+          title={tryonCropRole === "model" ? "裁剪模特" : "裁剪图片"}
+          onCancel={() => setTryonCropRole("")}
+          onConfirm={(rect) => void applyTryonCrop(rect)}
+        />
+      ) : null}
       <CostConfirmDialog
         cost={costConfirm}
         light={!isDark}

@@ -67,6 +67,7 @@ func TestRouterExposesOnlyVersionedRESTContract(t *testing.T) {
 		"GET /api/v1/me/data-export",
 		"DELETE /api/v1/me/notifications/:id",
 		"GET /api/v1/commerce/tryon-catalog",
+		"POST /api/v1/commerce/tryon/garment-classifications",
 		"GET /api/v1/commerce/aplus-catalog",
 		"POST /api/v1/commerce/aplus-plans",
 		"GET /api/v1/commerce/handheld/catalog",

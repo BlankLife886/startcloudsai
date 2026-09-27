@@ -13,6 +13,7 @@ declare module 'vue' {
     AdminListShell: typeof import('./components/AdminListShell.vue')['default']
     CursorPager: typeof import('./components/CursorPager.vue')['default']
     EChart: typeof import('./components/EChart.vue')['default']
+    EcommerceAiAssistsDialog: typeof import('./components/EcommerceAiAssistsDialog.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElAvatar: typeof import('element-plus/es')['ElAvatar']
     ElBadge: typeof import('element-plus/es')['ElBadge']

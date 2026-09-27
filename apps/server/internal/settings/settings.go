@@ -62,6 +62,8 @@ var Defaults = map[string]json.RawMessage{
 	"growth_usage_milestones":                     json.RawMessage(`[{"units":10,"rewardCents":20},{"units":30,"rewardCents":50},{"units":100,"rewardCents":150}]`),
 	"suggestion_reward_max_cents":                 json.RawMessage(`10000`),
 	"page_controls":                               mustMarshalPageControls(PageControlDefaults()),
+	// AI 电商辅助：虚拟试衣上传服装后自动识别品类（使用“AI 电商 · 商品分析模型”）
+	"ecommerce_tryon_garment_classify_enabled": json.RawMessage(`true`),
 	// 可选平台日志。总开关默认关闭；分类开关只在总开关开启后生效。
 	"platform_logging_enabled":            json.RawMessage(`false`),
 	"platform_log_security_enabled":       json.RawMessage(`true`),

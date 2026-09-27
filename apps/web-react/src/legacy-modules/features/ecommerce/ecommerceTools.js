@@ -1,3 +1,4 @@
+import { tryonShotBlueprints } from "./tryonShots.js";
 import tryonMenuCover from "@react/legacy-static/assets/ecommerce/tryon-preview.webp";
 import listingMenuCover from "@react/legacy-static/assets/ecommerce/listing-preview.webp";
 import detailMenuCover from "@react/legacy-static/assets/ecommerce/detail-preview.webp";
@@ -126,7 +127,7 @@ export const ECOMMERCE_MODES = [
     uploadHint: "服装必填；模特和场景使用画布所选参考图",
     referenceLabels: ["服装", "模特", "场景"],
     icon: "bi-person-standing-dress",
-    ratio: "2:3",
+    ratio: "3:4",
     maxCount: 4,
     fields: ["apparel", "model", "scene"],
     prompt:
@@ -612,7 +613,7 @@ export function detailShotBlueprintsFromDirections(directions = []) {
 }
 
 const ECOMMERCE_REFERENCE_ROLE_LABELS = {
-  tryon: ["服装身份", "模特身份", "场景环境"],
+  tryon: ["服装身份", "模特身份", "场景环境", "下装身份"],
   handheld: ["商品身份", "模特身份", "场景环境"],
   accessory: ["饰品身份", "模特身份"],
   backdrop: ["商品身份", "背景视觉"],
@@ -660,7 +661,9 @@ export function ecommerceConsistencyProfile(
     "商品身份锁：参考商品是唯一商品事实来源。锁定整体几何轮廓、长宽厚比例、部件数量与位置、Logo、包装文字、颜色、纹理、接口、装饰和真实尺度；不可补造、删减、镜像或换成相似商品。";
   if (id === "tryon") {
     identityLock =
-      count >= 3
+      count >= 4
+        ? "套装身份锁：第 1 张是上装身份，第 4 张是下装身份，两件都锁定版型、长度、领口、袖型、腰头、裤脚或裙摆、图案、颜色、面料与缝线，必须同时穿在同一人身上，不得合并成一件或替换其中之一；第 2 张是模特身份，必须是同一人，锁定脸型、五官比例、肤色、年龄感、发型和体型；第 3 张是拍摄场景，只提供环境、光线、材质与空间，禁止把场景图中的人物或商品带入结果。姿势与机位可以变化，人物身份和服装设计不可变化。"
+        : count >= 3
         ? "三图身份锁：第 1 张是服装身份，锁定版型、长度、领口、袖型、图案、颜色、面料与缝线；第 2 张是模特身份，必须是同一人，锁定脸型、五官比例、肤色、年龄感、发型和体型，禁止生成另一个相似的人；第 3 张是拍摄场景，只提供环境、光线、材质与空间，禁止把场景图中的人物或商品带入结果。姿势与机位可以变化，人物身份和服装设计不可变化。"
         : "双身份锁：服装参考锁定版型、长度、领口、袖型、图案、颜色、面料与缝线；若有模特参考，模特参考锁定同一人的脸型、五官比例、肤色、年龄感、发型和体型。若有场景参考，场景参考只提供环境、光线、材质与空间，禁止把场景图中的人物或商品带入结果。姿势与机位可以变化，人物身份和服装设计不可变化。";
   } else if (id === "handheld") {
@@ -751,30 +754,7 @@ const DEFAULT_SHOT_BLUEPRINTS = {
     ["品牌氛围", "强化所选视觉风格，但沿用第一张的主色、材质和光线体系。"],
     ["投放版位", "生成适合广告裁切和叠加文案的构图，保留充足安全区。"],
   ],
-  tryon: [
-    {
-      id: "hero",
-      label: "上身主图",
-      direction:
-        "完整展示服装版型、长度、图案和垂坠感，模特穿着自然，不改变服装设计。按商业时装摄影布光，面料质感清晰，主体与背景有镜头光学分离。",
-    },
-    {
-      id: "side",
-      label: "版型侧面",
-      direction:
-        "使用轻微三分之四角度展示侧面版型，保持同一模特身份和服装细节。",
-    },
-    {
-      id: "lifestyle",
-      label: "穿着场景",
-      direction: "在所选拍摄场景中展示穿着效果，保持模特、服装和光线一致。",
-    },
-    {
-      id: "fabric",
-      label: "面料细节",
-      direction: "以半身或局部构图展示真实面料、走线和剪裁，不重新设计服装。",
-    },
-  ],
+  tryon: tryonShotBlueprints("set", "全身"),
   handheld: [
     {
       id: "hero",

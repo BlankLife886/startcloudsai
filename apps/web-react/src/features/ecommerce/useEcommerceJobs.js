@@ -247,6 +247,9 @@ export function ecommerceGenerationStageLabel(stage, running = false) {
 export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
   const [tasks, setTasks] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  // 历史请求会被新请求取代（先发的被 abort）；只有最新一次结束才算加载完成，
+  // 否则被取消的旧请求会提前把 loading 置为 false，首屏先闪出空状态
+  const historyRequestSeqRef = useRef(0);
   const [historyError, setHistoryError] = useState("");
   const [historyCursor, setHistoryCursor] = useState("");
   const [runningIds, setRunningIds] = useState([]);
@@ -304,6 +307,7 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
       controllersRef.current.get(key)?.abort();
       const controller = new AbortController();
       controllersRef.current.set(key, controller);
+      const requestSeq = ++historyRequestSeqRef.current;
       setHistoryLoading(true);
       if (!append) setHistoryError("");
       try {
@@ -341,8 +345,12 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
           setHistoryError("历史记录读取失败，请重试");
         }
       } finally {
-        controllersRef.current.delete(key);
-        if (mountedRef.current) setHistoryLoading(false);
+        if (controllersRef.current.get(key) === controller) {
+          controllersRef.current.delete(key);
+        }
+        if (mountedRef.current && requestSeq === historyRequestSeqRef.current) {
+          setHistoryLoading(false);
+        }
       }
     },
     [historyCursor, taskKind, watchTask],
@@ -409,15 +417,24 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
       );
       if (selectedModel) {
         const maxReferences = normalizeImageModelCapabilities(selectedModel).maxReferenceImages;
-        if (files.length > maxReferences) {
+        const largest = Math.max(
+          files.length,
+          ...items.map((item) => item.inputFiles?.length || 0),
+        );
+        if (largest > maxReferences) {
           throw new Error(`当前模型最多支持 ${maxReferences} 张参考图`);
         }
       }
+      // 单个任务可带自己的参考图（如试衣批量：每件衣服一组），不带则用共享 files
+      const itemFiles = items.map((item) =>
+        Array.isArray(item.inputFiles) ? item.inputFiles : null,
+      );
+      const plainItems = items.map(({ inputFiles: _files, ...item }) => item);
       const taskItems = selectedModel
-        ? items.map((item) => sanitizeEcommerceImageParams(item, selectedModel))
-        : items;
+        ? plainItems.map((item) => sanitizeEcommerceImageParams(item, selectedModel))
+        : plainItems;
       if (
-        files.some(
+        [...files, ...itemFiles.flatMap((list) => list || [])].some(
           (file) =>
             !String(file?.sourceUrl || "") &&
             (!file || !(file instanceof Blob) || !file.size),
@@ -445,7 +462,22 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
             resolveEcommerceUploadKey(file, controller.signal),
           ),
         );
-        if (uploads.some((key) => !isReusableTaskImageKey(key))) {
+        const itemUploads = await Promise.all(
+          itemFiles.map((list) =>
+            list
+              ? Promise.all(
+                  list.map((file) =>
+                    resolveEcommerceUploadKey(file, controller.signal),
+                  ),
+                )
+              : null,
+          ),
+        );
+        if (
+          [...uploads, ...itemUploads.flatMap((list) => list || [])].some(
+            (key) => !isReusableTaskImageKey(key),
+          )
+        ) {
           throw new Error("参考图上传失败，请重新选择模特、衣服或场景");
         }
         const batchCreatedAt = new Date().toISOString();
@@ -468,8 +500,12 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
                 batchIndex,
                 batchSize: nextBatchSize,
                 batchCreatedAt,
+                // 试衣记下本张实际用到的参考图，结果对比时按它回看，不拿当前画布的图
+                ...(item.kindVariant === "tryon"
+                  ? { referenceKeys: itemUploads[index] || uploads }
+                  : {}),
               },
-              inputKeys: uploads,
+              inputKeys: itemUploads[index] || uploads,
               count: 1,
               idempotencyKey: crypto.randomUUID(),
               expectedUnitPriceCents,

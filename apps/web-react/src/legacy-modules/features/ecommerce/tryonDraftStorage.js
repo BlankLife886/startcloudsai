@@ -1,7 +1,7 @@
 import localforage from 'localforage'
 import { attachEcommerceUploadKey, isReusableTaskImageKey, normalizeTaskImageKey } from './ecommerceTools.js'
 
-const ROLES = ['garment', 'model', 'scene']
+const ROLES = ['garment', 'bottom', 'model', 'scene']
 const META_KEY = 'slots-v1'
 
 const metaStore = localforage.createInstance({
@@ -78,6 +78,10 @@ export async function loadTryonDraft() {
     scene: String(meta.scene || ''),
     modelProfile: String(meta.modelProfile || ''),
     aspectRatio: String(meta.aspectRatio || ''),
+    lens: String(meta.lens || ''),
+    light: String(meta.light || ''),
+    pack: String(meta.pack || ''),
+    backdrop: String(meta.backdrop || ''),
     slots,
   }
 }
@@ -101,6 +105,10 @@ export async function saveTryonDraft(draft = {}) {
     scene: draft.scene || '',
     modelProfile: draft.modelProfile || '',
     aspectRatio: draft.aspectRatio || '',
+    lens: draft.lens || '',
+    light: draft.light || '',
+    pack: draft.pack || '',
+    backdrop: draft.backdrop || '',
     slots: slotsMeta,
     savedAt: Date.now(),
   })

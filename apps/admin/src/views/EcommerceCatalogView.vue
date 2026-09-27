@@ -19,6 +19,7 @@ import {
 } from "@element-plus/icons-vue";
 import draggable from "vuedraggable";
 import AdminDialog from "@/components/AdminDialog.vue";
+import EcommerceAiAssistsDialog from "@/components/EcommerceAiAssistsDialog.vue";
 import { request } from "@/request";
 import {
   compressCatalogImage,
@@ -27,6 +28,7 @@ import {
 } from "@/utils/compressCatalogImage";
 
 type CatalogKind = "model" | "scene" | "garment" | "hand";
+const aiAssistsOpen = ref(false);
 type CatalogStatus = "all" | "active" | "inactive";
 type CatalogSort = "manual" | "newest" | "name";
 
@@ -919,6 +921,7 @@ onBeforeUnmount(() => {
         <el-button v-if="hasFilters" @click="clearFilters">重置</el-button>
       </div>
       <div class="library-toolbar__actions">
+        <el-button :icon="MagicStick" @click="aiAssistsOpen = true">AI 辅助功能</el-button>
         <el-popover placement="bottom-end" :width="292" trigger="click">
           <template #reference>
             <el-button :icon="Setting">压缩</el-button>
@@ -1357,6 +1360,7 @@ onBeforeUnmount(() => {
       </el-form>
     </AdminDialog>
 
+    <EcommerceAiAssistsDialog v-model="aiAssistsOpen" />
     <AdminDialog
       v-model="sortOpen"
       :title="`调整${kindMeta.label}顺序`"

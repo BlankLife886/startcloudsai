@@ -857,14 +857,16 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   await expect(page.getByLabel("选择目标市场")).toHaveCount(0);
   await expect(page.getByLabel("选择视觉风格")).toHaveCount(0);
   await expect(page.getByLabel("选择画面比例")).toBeVisible();
-  await expect(page.getByLabel("选择画面比例")).toContainText("2:3");
+  // 试衣比例按电商平台常用规格排序，默认 3:4（亚马逊、天猫、小红书主图）
+  await expect(page.getByLabel("选择画面比例")).toContainText("3:4");
   await page.getByLabel("选择画面比例").click();
   await expect(page.getByRole("option")).toHaveText([
-    "1:1",
-    "2:3",
-    "3:2",
-    "16:9",
-    "9:16",
+    /^3:4.*亚马逊/,
+    /^1:1.*TikTok/,
+    /^4:5/,
+    /^9:16/,
+    /^2:3/,
+    /^16:9/,
   ]);
   await page.keyboard.press("Escape");
   await expect(page.getByText("补充要求")).toHaveCount(0);
@@ -876,17 +878,13 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   await expect(page.getByLabel("选择模特人群")).toHaveCount(0);
   await expect(page.getByLabel("选择模特姿态")).toHaveCount(0);
   await expect(page.getByLabel("选择生成张数")).toHaveCount(0);
-  await expect(page.getByLabel("选择摄影镜头")).toBeVisible();
-  await page.getByLabel("选择摄影镜头").click();
-  await expect(page.getByRole("option", { name: /超广角/ })).toBeVisible();
-  await expect(page.getByRole("option", { name: /中长焦/ })).toBeVisible();
-  await expect(page.getByRole("option", { name: /70–135mm/ })).toBeVisible();
-  await page.keyboard.press("Escape");
+  // 镜头改为由每个机位自带，顶栏不再提供全局镜头选择
+  await expect(page.getByLabel("选择摄影镜头")).toHaveCount(0);
   await expect(page.getByLabel("选择光影调整")).toBeVisible();
   await page.getByLabel("选择光影调整").click();
-  await expect(page.getByRole("option", { name: "补光塑形" })).toBeVisible();
-  await expect(page.getByRole("option", { name: "现场光" })).toBeVisible();
-  await expect(page.getByRole("option", { name: "轮廓分离" })).toBeVisible();
+  await expect(page.getByRole("option", { name: /^补光塑形/ })).toBeVisible();
+  await expect(page.getByRole("option", { name: /^现场光/ })).toBeVisible();
+  await expect(page.getByRole("option", { name: /^轮廓分离/ })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "正面站姿" })).toHaveCount(0);
   await expect(page.locator(".commerce-header__brand")).toHaveCount(0);
@@ -902,8 +900,9 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   await expect(page.locator(".tryon-compose")).toBeVisible();
   await expect(page.locator(".tryon-compose__link")).toHaveCount(3);
   await expect(page.locator(".tryon-compose__arrow")).toHaveCount(0);
-  await expect(page.getByLabel("生成历史")).toBeVisible();
-  await expect(page.locator(".tryon-history__empty")).toContainText("暂无记录");
+  // 没有历史时历史栏收起，把宽度让给结果区
+  await expect(page.locator(".tryon-stage")).toHaveClass(/is-history-empty/);
+  await expect(page.getByLabel("生成历史")).toBeHidden();
   await expect(
     page.getByRole("button", { name: "补充说明当前结果" }),
   ).toHaveCount(0);
@@ -913,7 +912,7 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   );
   await expect(page.locator(".tryon-stage__result")).toHaveAttribute(
     "data-ratio",
-    "2:3",
+    "3:4",
   );
   await expect(page.getByRole("button", { name: /一键生成/ })).toBeVisible();
   await expect(page.locator(".tryon-generate")).toContainText("生成");
@@ -967,7 +966,7 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   const inputBox = page.locator(".tryon-stage__frame");
   const inputBefore = await inputBox.boundingBox();
   await page.getByLabel("选择画面比例").click();
-  await page.getByRole("option", { name: "16:9", exact: true }).click();
+  await page.getByRole("option", { name: /^16:9/ }).click();
   await expect(page.locator(".tryon-stage__result")).toHaveAttribute(
     "data-ratio",
     "16:9",
@@ -980,10 +979,10 @@ test("fashion try-on separates garment, model, and scene choices", async ({
     Math.abs((inputAfterWide?.height || 0) - (inputBefore?.height || 0)),
   ).toBeLessThan(2);
   await page.getByLabel("选择画面比例").click();
-  await page.getByRole("option", { name: "2:3", exact: true }).click();
+  await page.getByRole("option", { name: /^3:4/ }).click();
   await expect(page.locator(".tryon-stage__result")).toHaveAttribute(
     "data-ratio",
-    "2:3",
+    "3:4",
   );
   await expect(page.locator(".showcase-demo")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /从素材库选择/ })).toHaveCount(

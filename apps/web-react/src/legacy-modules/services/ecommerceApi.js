@@ -72,6 +72,13 @@ export async function generateCommerceProductBrief(payload, { signal } = {}) {
   })
 }
 
+export async function classifyTryonGarment(payload, { signal } = {}) {
+  return apiPost('/commerce/tryon/garment-classifications', payload, {
+    signal,
+    fallbackMessage: '服装类型识别失败',
+  })
+}
+
 export async function generateListingPlan(payload, { signal } = {}) {
   return apiPost('/commerce/listing-plans', payload, {
     signal,
