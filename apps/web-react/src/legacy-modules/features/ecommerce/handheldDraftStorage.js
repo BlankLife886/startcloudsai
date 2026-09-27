@@ -2,7 +2,7 @@ import localforage from 'localforage'
 import { attachEcommerceUploadKey, isReusableTaskImageKey, normalizeTaskImageKey } from './ecommerceTools.js'
 import { tryonSlotDraftRecord } from './tryonDraftStorage.js'
 
-const ROLES = ['product', 'model', 'scene', 'layout']
+const ROLES = ['product', 'model', 'scene', 'layout', 'productSide', 'productBack', 'productLogo']
 const META_KEY = 'slots-v1'
 const OPTIONAL_SELECTION_VERSION = 4
 

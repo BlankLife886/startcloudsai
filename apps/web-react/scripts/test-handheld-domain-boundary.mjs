@@ -39,7 +39,7 @@ for (const forbidden of [
   "onAccept",
   "onReject",
   "decideCurrentHandheld",
-  "onDownload",
+  // 下载（onDownloadShot / onDownloadGroup）已是手持商品自己的功能，不再禁止
   "onRegenerate",
   "onCancel",
 ]) {

@@ -861,8 +861,12 @@ export function handheldReferenceLabels({
   hasScene = false,
   hasLayout = false,
   variantCount = 0,
+  angleRoles = [],
 } = {}) {
   const roles = ['商品身份']
+  for (const slot of HANDHELD_PRODUCT_ANGLE_SLOTS) {
+    if (angleRoles.includes(slot.role)) roles.push(slot.refLabel)
+  }
   for (
     let index = 0;
     index < Math.max(0, Number(variantCount) || 0);
@@ -883,12 +887,18 @@ export function buildHandheldIdentityLock({
   hasScene = false,
   hasLayout = false,
   variantCount = 0,
+  angleCount = 0,
 } = {}) {
-  if (hasModel && hasScene && !hasLayout && !variantCount)
+  if (hasModel && hasScene && !hasLayout && !variantCount && !angleCount)
     return HANDHELD_THREE_REF_LOCK
   const parts = [
     '商品身份锁：第 1 张是唯一可售商品事实来源，锁定几何轮廓、长宽厚比例、边角锐度、包装、Logo、文字、颜色、材质和真实尺度，禁止变形。',
   ]
+  if (angleCount > 0) {
+    parts.push(
+      `第 2${angleCount > 1 ? `–${angleCount + 1}` : ''} 张是同一件商品的其他角度，只用来还原对应的面，身份仍以第 1 张为准。`,
+    )
+  }
   if (variantCount > 0) {
     parts.push(
       '后续色号变体图只提供颜色或包装差异，外形结构仍以第 1 张为准；本张只使用提示词指定的那一个色号。',
@@ -1011,6 +1021,7 @@ export function buildHandheldTaskPrompt({
   aspectRatio = '4:5',
   language = '',
   annotations = [],
+  angleRoles = [],
 } = {}) {
   const categoryOption = handheldSelectedOptionById(
     HANDHELD_CATEGORY_OPTIONS,
@@ -1044,8 +1055,17 @@ export function buildHandheldTaskPrompt({
     HANDHELD_LANGUAGE_OPTIONS,
     language,
   )
+  const summary = handheldSelectionSummary({
+    pose, hand, crop, lens, light, camera, depth, style, category, packState, platform,
+  })
+  const conflicts = handheldSelectionConflicts({ lens, depth, crop, pack, hasScene, angleRoles })
+  const multiShot = packOption.shotIds.length > 1
   return [
     `任务：手持商品图。${HANDHELD_MODE_PROMPT}`,
+    summary.length
+      ? `用户已选（每项都必须在画面中体现，优先级高于下方通用描述）：${summary.map(([key, value]) => `${key}=${value}`).join('；')}。`
+      : '',
+    handheldAngleCoveragePrompt(angleRoles, pack),
     productName.trim()
       ? `商品名称：${productName.trim()}。`
       : '商品名称：根据商品图片准确识别。',
@@ -1077,10 +1097,102 @@ export function buildHandheldTaskPrompt({
     cameraOption?.prompt,
     materialInteractionOption?.prompt,
     buildHandheldStylePrompt(style),
-    platformOption.prompt,
+    ...conflicts.map((item) => item.prompt),
+    multiShot
+      ? `${platformOption.prompt.replace(/。$/, '')}（主图位严格遵守；套图其他张保持同一风格，按各自职责构图）。`
+      : platformOption.prompt,
     `画面比例：${aspectRatio}。`,
     HANDHELD_QA_PROMPT,
   ]
     .filter(Boolean)
     .join('\n')
+}
+
+// ---- 货不对版治理 -------------------------------------------------------
+// 1. 多角度商品图：只给正面时，AI 只能猜侧面/背面，最容易走样。
+export const HANDHELD_PRODUCT_ANGLE_SLOTS = [
+  { role: 'productSide', label: '侧面', refRole: 'product_side', refLabel: '商品侧面' },
+  { role: 'productBack', label: '背面', refRole: 'product_back', refLabel: '商品背面' },
+  { role: 'productLogo', label: 'Logo', refRole: 'logo_detail', refLabel: 'Logo 特写' },
+]
+
+// 需要转动商品、会露出正面以外区域的机位
+const HANDHELD_TURNING_SHOTS = new Set(['present', 'use', 'detail', 'unbox', 'ugc'])
+
+export function handheldAngleCoveragePrompt(angleRoles = [], pack) {
+  const have = new Set(angleRoles)
+  const labels = HANDHELD_PRODUCT_ANGLE_SLOTS.filter((slot) => have.has(slot.role))
+  if (!labels.length) {
+    const turning = handheldPackById(pack).shotIds.some((id) => HANDHELD_TURNING_SHOTS.has(id))
+    return turning
+      ? '商品只提供了正面图：每张商品转角不超过 30°，只露出参考图里看得见的面；看不见的侧面、背面、底部保持简洁、与正面同色同材质，禁止臆造新的按钮、接口、文字、标签或图案。'
+      : '商品只提供了正面图：保持正面朝向镜头，禁止臆造看不见的侧面、背面或底部细节。'
+  }
+  const parts = labels.map((slot) => slot.refLabel).join('、')
+  return `商品另外提供了${parts}参考：这些是同一件商品的其他角度，露出对应的面时必须照参考还原，不是另一件商品或色号；参考里没有的面仍不得臆造细节。`
+}
+
+// 2. 用户选择摘要：放在提示词最前，避免被长规则淹没。
+export function handheldSelectionSummary({
+  pose, hand, crop, lens, light, camera, depth, style, category, packState, platform,
+} = {}) {
+  const pick = (list, id) => handheldSelectedOptionById(list, id)?.label || ''
+  const rows = [
+    ['品类', pick(HANDHELD_CATEGORY_OPTIONS, category)],
+    ['握持', pick(HANDHELD_POSE_OPTIONS, pose)],
+    ['手', pick(HANDHELD_HAND_OPTIONS, hand)],
+    ['出镜', handheldCropById(crop)?.label || ''],
+    ['包装', pick(HANDHELD_PACK_STATE_OPTIONS, packState)],
+    ['镜头', pick(HANDHELD_LENS_OPTIONS, lens)],
+    ['景深', pick(HANDHELD_DEPTH_OPTIONS, depth)],
+    ['光影', pick(HANDHELD_LIGHT_OPTIONS, light)],
+    ['机位', pick(HANDHELD_CAMERA_OPTIONS, camera)],
+    ['风格', pick(HANDHELD_STYLE_OPTIONS, style)],
+    ['渠道', handheldPlatformById(platform)?.label || ''],
+  ].filter(([, value]) => value && value !== '不指定')
+  return rows
+}
+
+// 3. 选项冲突：界面提示 + 提示词里写明谁让步，避免模型自己挑一个。
+export function handheldSelectionConflicts({
+  lens, depth, crop, pack, hasScene = false, angleRoles = [],
+} = {}) {
+  const shotIds = handheldPackById(pack).shotIds
+  const conflicts = []
+  if (lens === 'macro' && crop === 'full') {
+    conflicts.push({
+      id: 'macro-full',
+      message: '全身出镜不适合微距，本次按标准镜头拍',
+      prompt: '冲突处理：出镜范围是全身，微距不成立，按约 50mm 标准镜头拍摄，忽略微距要求。',
+    })
+  } else if (lens === 'macro' && hasScene) {
+    conflicts.push({
+      id: 'macro-scene',
+      message: '微距会把场景虚化到认不出，已改为适度虚化',
+      prompt: '冲突处理：已选场景参考，微距只用于拉近主体，背景虚化控制在仍能认出场景陈设和色调的程度，不要虚化成纯色。',
+    })
+  }
+  if (depth === 'shallow' && hasScene && lens !== 'macro') {
+    conflicts.push({
+      id: 'shallow-scene',
+      message: '浅景深会弱化场景，场景仍保持可辨认',
+      prompt: '冲突处理：浅景深与场景参考同时存在时，背景只做轻度虚化，场景的空间结构和主要陈设仍须可辨认。',
+    })
+  }
+  if ((depth === 'shallow' || lens === 'macro') && shotIds.includes('use')) {
+    conflicts.push({
+      id: 'use-sharp',
+      message: '「使用瞬间」那张要求整张清晰，浅景深/微距对它不生效',
+      prompt: '',
+    })
+  }
+  if (!angleRoles.length && shotIds.some((id) => HANDHELD_TURNING_SHOTS.has(id))) {
+    conflicts.push({
+      id: 'front-only',
+      level: 'info',
+      message: '只有正面图，套图里转角度的几张可能被猜错，建议补侧面/背面',
+      prompt: '',
+    })
+  }
+  return conflicts
 }

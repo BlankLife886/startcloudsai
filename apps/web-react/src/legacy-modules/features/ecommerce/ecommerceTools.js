@@ -1203,6 +1203,10 @@ export {
   handheldReferenceLabels,
   handheldShotBlueprints,
   handheldStyleById,
+  handheldSelectionConflicts,
+  handheldSelectionSummary,
+  handheldAngleCoveragePrompt,
+  HANDHELD_PRODUCT_ANGLE_SLOTS,
 } from "./handheldCommerce.js";
 
 export function buildEcommerceGenerationPlan({

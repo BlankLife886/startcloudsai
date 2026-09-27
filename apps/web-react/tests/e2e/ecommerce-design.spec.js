@@ -1098,6 +1098,10 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
 
   await expect(page.getByLabel("手持商品工作台")).toBeVisible();
   await expect(page.getByText("商品图", { exact: true })).toBeVisible();
+  // 商品下方可补同一件商品的其他角度，没传正面前不可用
+  await expect(page.getByRole("button", { name: "上传商品侧面" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "上传商品背面" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "上传商品Logo" })).toBeVisible();
   await expect(page.locator(".handheld-out .handheld-product")).toBeVisible();
   await expect(page.locator(".handheld-pane .handheld-product")).toHaveCount(0);
   await expect(page.locator(".handheld-out .handheld-scene")).toBeVisible();
@@ -1115,7 +1119,10 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   await expect(page.getByRole("button", { name: "更多商品图" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "清空商品图" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "上传商品图" })).toBeVisible();
+  // 没有结果时画布先告诉用户这次会出什么
   await expect(page.getByText("还没有结果")).toBeVisible();
+  await expect(page.getByText("本次会生成 1 张")).toBeVisible();
+  await expect(page.locator(".handheld-plan__shots li")).toHaveText(["01手持主图"]);
 
   await expect(
     page.getByRole("button", { name: "使用说明", exact: true }),
@@ -1332,6 +1339,9 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   await expect(page.getByLabel("本次套图")).toBeVisible();
   await expect(page.locator(".handheld-frame__thumb")).toHaveCount(4);
   await expect(page.locator(".handheld-pack-summary")).toHaveCount(0);
+  // 只有正面图时，套图里转角度的几张提醒补图
+  await expect(page.locator(".handheld-conflicts")).toContainText("只有正面图");
+  await expect(page.locator(".handheld-plan__shots li")).toHaveCount(4);
   await page
     .getByLabel("选择出图任务")
     .getByRole("radio", { name: /单张主图/ })
@@ -1383,6 +1393,21 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
     page.getByRole("button", { name: "查看商品大图" }),
   ).toBeVisible();
   await expect(page.locator(".handheld-pane__notice")).toHaveCount(0);
+
+  // 补一张侧面：同一件商品的其他角度，可查看、可移除
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "上传商品侧面" }).click();
+  await (await chooser).setFiles({
+    name: "side.jpg",
+    mimeType: "image/jpeg",
+    buffer: Buffer.from(
+      "/9j/4AAQSkZJRgABAQAAAQABAAD/2wAAAAD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAP/2Q==",
+      "base64",
+    ),
+  });
+  await expect(page.getByRole("button", { name: "查看商品侧面" })).toBeVisible();
+  await page.getByRole("button", { name: "移除商品侧面" }).click();
+  await expect(page.getByRole("button", { name: "上传商品侧面" })).toBeVisible();
 });
 
 test("accessory mode exposes commercial wearing controls and a four-shot PDP pack", async ({

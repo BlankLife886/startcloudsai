@@ -86,6 +86,9 @@ import {
   handheldStyleById,
   handheldReferenceLabels,
   handheldShotBlueprints,
+  handheldSelectionConflicts,
+  handheldSelectionSummary,
+  HANDHELD_PRODUCT_ANGLE_SLOTS,
   normalizeHandheldAnnotations,
 } from "../features/ecommerce/ecommerceTools.js";
 import { compressEcommerceUploadFile } from "@react/legacy-modules/features/ecommerce/compressEcommerceUpload.js";
@@ -393,6 +396,11 @@ function isTryonMode(id) {
   return id === "tryon";
 }
 
+function handheldAngleSlotFiles(slots) {
+  return HANDHELD_PRODUCT_ANGLE_SLOTS.map((slot) => slots?.[slot.role]?.file).filter(
+    (file) => file instanceof Blob && file.size > 0,
+  );
+}
 function isHandheldMode(id) {
   return id === "handheld";
 }
@@ -993,6 +1001,8 @@ export function EcommerceBusinessSession({
   const modelFileInput = useRef(null);
   const sceneFileInput = useRef(null);
   const layoutFileInput = useRef(null);
+  const angleFileInput = useRef(null);
+  const angleRoleRef = useRef("");
   const bottomFileInput = useRef(null);
   const batchFileInput = useRef(null);
   const garmentDetectFileRef = useRef(null);
@@ -1758,8 +1768,11 @@ export function EcommerceBusinessSession({
       model: handheldSlots.model?.local ? handheldSlots.model.url : null,
       scene: handheldSlots.scene?.local ? handheldSlots.scene.url : null,
       layout: handheldSlots.layout?.local ? handheldSlots.layout.url : null,
+      productSide: handheldSlots.productSide?.local ? handheldSlots.productSide.url : null,
+      productBack: handheldSlots.productBack?.local ? handheldSlots.productBack.url : null,
+      productLogo: handheldSlots.productLogo?.local ? handheldSlots.productLogo.url : null,
     };
-    for (const role of ["product", "model", "scene", "layout"]) {
+    for (const role of ["product", "model", "scene", "layout", "productSide", "productBack", "productLogo"]) {
       const previous = handheldUrlsRef.current[role];
       if (previous && previous !== next[role]) URL.revokeObjectURL(previous);
     }
@@ -2053,8 +2066,11 @@ export function EcommerceBusinessSession({
             model: null,
             scene: null,
             layout: null,
+            productSide: null,
+            productBack: null,
+            productLogo: null,
           };
-          for (const role of ["product", "model", "scene", "layout"]) {
+          for (const role of ["product", "model", "scene", "layout", "productSide", "productBack", "productLogo"]) {
             const item = handheldDraft.slots?.[role];
             if (item?.file instanceof Blob && item.file.size > 0) {
               restoredHandheld[role] = {
@@ -2072,7 +2088,8 @@ export function EcommerceBusinessSession({
               !item.catalogId ||
               !restorePicturePlan ||
               role === "product" ||
-              role === "layout"
+              role === "layout" ||
+              role.startsWith("product")
             )
               continue;
             const option = catalogOptionById(
@@ -2169,7 +2186,7 @@ export function EcommerceBusinessSession({
   }, [mode.id, tryonSlots]);
   useEffect(() => {
     if (mode.id !== "handheld") return;
-    for (const role of ["product", "model", "scene", "layout"]) {
+    for (const role of ["product", "model", "scene", "layout", "productSide", "productBack", "productLogo"]) {
       const slot = handheldSlots[role];
       if (
         slot?.file instanceof Blob &&
@@ -2480,6 +2497,7 @@ export function EcommerceBusinessSession({
         ? handheldSlots.product?.file
           ? [
               handheldSlots.product.file,
+              ...handheldAngleSlotFiles(handheldSlots),
               ...(handheldSlots.model?.file ? [handheldSlots.model.file] : []),
               ...(handheldSlots.scene?.file ? [handheldSlots.scene.file] : []),
               ...(handheldSlots.layout?.file
@@ -2631,7 +2649,23 @@ export function EcommerceBusinessSession({
   const handheldHasHand = handheldHasHandOrModel && !handheldHasModel;
   const handheldHasScene = Boolean(handheldSlots.scene?.file);
   const handheldHasLayout = Boolean(handheldSlots.layout?.file);
+  const handheldAngleRoles = selectedProduct?.id
+    ? HANDHELD_PRODUCT_ANGLE_SLOTS.slice(0, Math.max(0, files.length - 1)).map(
+        (slot) => slot.role,
+      )
+    : HANDHELD_PRODUCT_ANGLE_SLOTS.filter(
+        (slot) => handheldSlots[slot.role]?.file,
+      ).map((slot) => slot.role);
+  const handheldConflicts = handheldSelectionConflicts({
+    lens: handheldLens,
+    depth: handheldDepth,
+    crop: handheldCrop,
+    pack: handheldPack,
+    hasScene: Boolean(handheldSlots.scene?.file),
+    angleRoles: handheldAngleRoles,
+  });
   const handheldRoles = handheldReferenceLabels({
+    angleRoles: handheldAngleRoles,
     hasModel: handheldHasModel,
     hasHand: handheldHasHand,
     hasScene: handheldHasScene,
@@ -2667,6 +2701,7 @@ export function EcommerceBusinessSession({
         aspectRatio,
         language: handheldLanguage,
         annotations: handheldAnnotations,
+        angleRoles: handheldAngleRoles,
       })
     : isAccessoryMode(mode.id)
       ? buildAccessoryTaskPrompt({
@@ -2812,6 +2847,7 @@ export function EcommerceBusinessSession({
         : workbenchReferenceRoles,
     identityLock: isHandheldMode(mode.id)
       ? buildHandheldIdentityLock({
+          angleCount: handheldAngleRoles.length,
           hasModel: handheldHasModel,
           hasHand: handheldHasHand,
           hasScene: handheldHasScene,
@@ -3581,7 +3617,16 @@ export function EcommerceBusinessSession({
     if (role === "model") setModelProfile("不限定人群");
     if (role === "scene") setScene("自定义场景");
     setSelectedProduct(null);
-    if (role === "product") setHandheldAnnotations([]);
+    if (role === "product") {
+      setHandheldAnnotations([]);
+      // 换了商品，旧商品的侧面/背面不能再当同一件货
+      setHandheldSlots((current) => ({
+        ...current,
+        productSide: null,
+        productBack: null,
+        productLogo: null,
+      }));
+    }
     void prefetchSlotUpload(role, file, setHandheldSlots);
   }
   async function prepareUploadFile(file, signal) {
@@ -4207,6 +4252,9 @@ export function EcommerceBusinessSession({
         model: handheldSlots.model,
         scene: handheldSlots.scene,
         layout: handheldSlots.layout,
+        productSide: null,
+        productBack: null,
+        productLogo: null,
       });
     }
     if (mode.id === "accessory") {
@@ -4760,6 +4808,7 @@ export function EcommerceBusinessSession({
     const next = { ...handheldSlots };
     const files = [
       next.product.file,
+      ...handheldAngleSlotFiles(next),
       ...(includeModel && next.model?.file ? [next.model.file] : []),
       ...(next.scene?.file ? [next.scene.file] : []),
       ...(next.layout?.file ? [next.layout.file] : []),
@@ -4777,8 +4826,16 @@ export function EcommerceBusinessSession({
     if (next.layout?.file) {
       attachEcommerceUploadKey(next.layout.file, next.layout.uploadKey);
     }
+    for (const slot of HANDHELD_PRODUCT_ANGLE_SLOTS) {
+      if (next[slot.role]?.file) {
+        attachEcommerceUploadKey(next[slot.role].file, next[slot.role].uploadKey);
+      }
+    }
     await Promise.all([
       prefetchSlotUpload("product", next.product.file, setHandheldSlots),
+      ...HANDHELD_PRODUCT_ANGLE_SLOTS.filter((slot) => next[slot.role]?.file).map(
+        (slot) => prefetchSlotUpload(slot.role, next[slot.role].file, setHandheldSlots),
+      ),
       includeModel && next.model?.file
         ? prefetchSlotUpload("model", next.model.file, setHandheldSlots)
         : Promise.resolve(""),
@@ -4820,12 +4877,22 @@ export function EcommerceBusinessSession({
       "colorway",
       "colorway",
     ];
-    const productRoles = productCandidates
-      .slice(0, Math.max(1, 6 - extraRoles.length))
-      .map((file, index) => ({
-        role: productRoleNames[index] || "logo_detail",
-        file,
-      }));
+    const productRoles = selectedProduct?.id
+      ? productCandidates
+          .slice(0, Math.max(1, 6 - extraRoles.length))
+          .map((file, index) => ({
+            role: productRoleNames[index] || "logo_detail",
+            file,
+          }))
+      : [
+          { role: "product_front", file: resolved.slots.product.file },
+          ...HANDHELD_PRODUCT_ANGLE_SLOTS.filter(
+            (slot) => resolved.slots[slot.role]?.file,
+          ).map((slot) => ({
+            role: slot.refRole,
+            file: resolved.slots[slot.role].file,
+          })),
+        ].slice(0, Math.max(1, 6 - extraRoles.length));
     const handheldSpec = {
       crop: handheldCrop,
       pack: handheldPack,
@@ -6564,6 +6631,19 @@ export function EcommerceBusinessSession({
               }}
             />
             <input
+              ref={angleFileInput}
+              hidden
+              type="file"
+              accept={ECOMMERCE_IMAGE_ACCEPT}
+              onChange={(event) => {
+                const files = Array.from(event.target.files || []);
+                event.target.value = "";
+                const role = angleRoleRef.current;
+                if (isHandheldMode(mode.id) && role)
+                  void setHandheldSlot(role, files);
+              }}
+            />
+            <input
               ref={layoutFileInput}
               hidden
               type="file"
@@ -7229,6 +7309,44 @@ export function EcommerceBusinessSession({
               onChangeAnnotations={setHandheldAnnotations}
               needsPerson={handheldCropNeedsPerson(handheldCrop)}
               uploadNotice={handheldUploadNotice}
+              productAngles={HANDHELD_PRODUCT_ANGLE_SLOTS.map((slot) => ({
+                role: slot.role,
+                label: slot.label,
+                image: handheldSlots[slot.role]?.url || "",
+              }))}
+              onUploadAngle={(role) => {
+                angleRoleRef.current = role;
+                angleFileInput.current?.click();
+              }}
+              onClearAngle={(role) => clearHandheldSlot(role)}
+              conflicts={handheldConflicts}
+              selectionSummary={handheldSelectionSummary({
+                pose: handheldPose,
+                hand: handheldHand,
+                crop: handheldCrop,
+                lens: handheldLens,
+                light: handheldLight,
+                camera: handheldCamera,
+                depth: handheldDepth,
+                style: handheldStyle,
+                category: handheldCategory,
+                packState: handheldPackState,
+                platform: handheldPlatform,
+              })}
+              onDownloadShot={(url) =>
+                downloadOutput(rowsByUrl.get(url) || { url })
+              }
+              onDownloadGroup={(rows) =>
+                downloadHistoryImagesAsZip(
+                  rows.map((row, index) => ({
+                    url: row.url,
+                    filename: `手持商品-${String(index + 1).padStart(2, "0")}-${row.label || "图"}`,
+                  })),
+                )
+              }
+              historyHasMore={jobs.historyHasMore}
+              historyLoadingMore={jobs.historyLoading && modeRows.length > 0}
+              onLoadMoreHistory={jobs.loadMoreHistory}
             />
           ) : isAccessoryMode(mode.id) ? (
             <AccessoryStudio

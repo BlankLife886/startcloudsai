@@ -21,6 +21,10 @@ export function useHandheldBusinessState() {
     model: null,
     scene: null,
     layout: null,
+    // 同一件商品的其他角度（可选），减少 AI 臆造看不见的面
+    productSide: null,
+    productBack: null,
+    productLogo: null,
   });
   const [handheldModelCatalog, setHandheldModelCatalog] = useState(
     HANDHELD_MODEL_CATALOG,

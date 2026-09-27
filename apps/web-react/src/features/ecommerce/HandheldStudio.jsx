@@ -8,6 +8,8 @@ import { useIsDark } from "../../hooks/useIsDark.js";
 import { DialogMotion } from "../../components/motion/DialogMotion.jsx";
 import { CommerceSelect } from "./CommerceSelect.jsx";
 import { handheldShotBlueprints } from "./ecommerceTools.js";
+import { TryonGroupViewer } from "./businesses/tryon/TryonGroupViewer.jsx";
+import { tryonFileUrlFromKey } from "./businesses/tryon/tryonCustomPicks.js";
 import "./HandheldStudio.css";
 
 gsap.registerPlugin(useGSAP);
@@ -27,6 +29,30 @@ function handheldAnimationsDisabled() {
   return (
     window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ||
     document.documentElement.classList.contains("settings-no-animations")
+  );
+}
+
+const HANDHELD_INPUT_LABELS = {
+  product_front: "商品正面",
+  product_side: "商品侧面",
+  product_back: "商品背面",
+  logo_detail: "Logo 特写",
+  colorway: "色号",
+  hand_or_model: "手 / 模特",
+  scene: "场景",
+  layout: "构图参考",
+};
+
+// 历史行的机位名：优先任务里记录的本张 label
+function handheldRowLabel(row) {
+  const params = row?.task?.params || {};
+  const shots = params.handheldSpec?.shots;
+  const index = Number(params.batchIndex ?? row?.index ?? 0);
+  const fromSpec = Array.isArray(shots) ? shots[index]?.label : "";
+  return (
+    String(fromSpec || row?.viewLabel || params.viewLabel || "")
+      .split(" · ")
+      .pop() || "手持商品图"
   );
 }
 
@@ -171,6 +197,7 @@ export function HandheldTunePopover({
         ref={triggerRef}
         type="button"
         className={`commerce-header__tune-trigger${hasSelection ? "" : " is-placeholder"}${open ? " is-open" : ""}`}
+        title={hasSelection ? undefined : "未选择：由 AI 按商品自动判断，点开可指定"}
         disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -396,6 +423,7 @@ export function HandheldProductPopover({
         ref={triggerRef}
         type="button"
         className={`commerce-header__tune-trigger${hasSelection ? "" : " is-placeholder"}${open ? " is-open" : ""}`}
+        title={hasSelection ? undefined : "未选择：由 AI 按商品自动判断，点开可指定"}
         disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -550,6 +578,7 @@ export function HandheldPosePopover({
         ref={triggerRef}
         type="button"
         className={`commerce-header__tune-trigger${hasSelection ? "" : " is-placeholder"}${open ? " is-open" : ""}`}
+        title={hasSelection ? undefined : "未选择：由 AI 按商品自动判断，点开可指定"}
         disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -601,7 +630,7 @@ const PLATFORM_SHORT = {
   detail: "配图",
   xhs: "小红书",
   douyin: "抖音",
-  amazon: "Amazon",
+  amazon: "亚马逊",
   shop: "独立站",
 };
 
@@ -1551,8 +1580,22 @@ export function HandheldStudio({
   onRetryShot,
   needsPerson = false,
   uploadNotice = "",
+  productAngles = [],
+  onUploadAngle,
+  onClearAngle,
+  conflicts = [],
+  selectionSummary = [],
+  onDownloadShot,
+  onDownloadGroup,
+  historyHasMore = false,
+  historyLoadingMore = false,
+  onLoadMoreHistory,
 }) {
   const [runSeconds, setRunSeconds] = useState(0);
+  const [viewer, setViewer] = useState(null);
+  const [toolBusy, setToolBusy] = useState("");
+  // 实际出图尺寸：模型不一定按要求比例出图，画框跟随真实图片，避免黑边
+  const [imageSizes, setImageSizes] = useState({});
   const [promptEditor, setPromptEditor] = useState(null);
   const [annotationOpen, setAnnotationOpen] = useState(false);
   const outRef = useRef(null);
@@ -1619,12 +1662,67 @@ export function HandheldStudio({
     plannedShots.find((item) => !item.url && !item.failed) ||
     plannedShots[0];
   const canvasShots = displayShot ? [displayShot] : [];
+  const measured = displayShot?.url && !running ? imageSizes[displayShot.url] : null;
+  const frameRatio = measured ? `${measured.w}:${measured.h}` : posterRatio;
+  const frameStyle = measured
+    ? {
+        ...ratioStyle,
+        "--commerce-shot-ratio": `${measured.w} / ${measured.h}`,
+        "--ratio-w": measured.w,
+        "--ratio-h": measured.h,
+      }
+    : ratioStyle;
   // 原图 URL → 展示图 URL（服务端压缩大图）；主舞台大图用，404 回退原图
   const displayByUrl = new Map(
     (history || []).map((row) => [row.url, row.display || ""]),
   );
   const hasAnyResult = plannedShots.some((item) => item.url);
   const packThumbs = plannedShots.length > 1 ? plannedShots : [];
+  const readyShots = plannedShots.filter((item) => item.url);
+  const viewerRows = readyShots.map((item) => {
+    const row = (history || []).find((entry) => entry.url === item.url);
+    return {
+      url: item.url,
+      preview: item.preview || item.url,
+      display: displayByUrl.get(item.url) || "",
+      label: item.label || handheldRowLabel(row),
+      task: row?.task,
+    };
+  });
+  const openViewer = (startUrl, event) => {
+    if (!viewerRows.length) return;
+    setViewer({
+      startUrl: startUrl || viewerRows[0].url,
+      originRect: event?.currentTarget?.getBoundingClientRect?.() || null,
+    });
+  };
+  const inputsOfRow = (row) => {
+    const inputs = row?.task?.params?.handheldSpec?.inputs;
+    if (Array.isArray(inputs) && inputs.length) {
+      return inputs.map((input) => [
+        tryonFileUrlFromKey(input?.key),
+        HANDHELD_INPUT_LABELS[input?.role] || "参考",
+        HANDHELD_INPUT_LABELS[input?.role] || "参考图",
+      ]);
+    }
+    return [
+      [product?.url, "商品", "本张使用的商品"],
+      ...productAngles
+        .filter((item) => item.image)
+        .map((item) => [item.image, item.label, `商品${item.label}`]),
+      [modelImage, needsPerson ? "模特" : "手", "本张使用的手或模特"],
+      [sceneImage, "场景", "本张使用的场景"],
+    ];
+  };
+  const runTool = async (id, action) => {
+    if (toolBusy) return;
+    setToolBusy(id);
+    try {
+      await action();
+    } finally {
+      setToolBusy("");
+    }
+  };
 
   return (
     <div className="handheld-studio" aria-label="手持商品工作台">
@@ -1636,7 +1734,7 @@ export function HandheldStudio({
         <HandheldFlowGuides
           rootRef={outRef}
           running={running}
-          revision={`${posterRatio}-${pack}-${platform}-${shotCount}-${hasAnyResult ? 1 : 0}`}
+          revision={`${frameRatio}-${pack}-${platform}-${shotCount}-${hasAnyResult ? 1 : 0}-${productAngles.filter((item) => item.image).length}`}
         />
         {uploadNotice ? (
           <p
@@ -1710,6 +1808,54 @@ export function HandheldStudio({
             onClear={onClearScene}
             onSelect={onSelectScene}
           />
+          <div className="handheld-angles" role="group" aria-label="商品其他角度">
+            <span className="handheld-angles__label" title="同一件商品的其他角度，越全越不走样">
+              其他角度
+            </span>
+            {productAngles.map((item) =>
+              item.image ? (
+                <span key={item.role} className="handheld-angle has-image">
+                  <button
+                    type="button"
+                    className="handheld-angle__img"
+                    aria-label={`查看商品${item.label}`}
+                    title={item.label}
+                    onClick={(event) =>
+                      onPreview?.(event, {
+                        url: item.image,
+                        alt: `商品${item.label}`,
+                        title: `商品${item.label}`,
+                      })
+                    }
+                  >
+                    <AuthenticatedImage src={item.image} alt="" maxDimension={160} />
+                  </button>
+                  <button
+                    type="button"
+                    className="handheld-angle__clear"
+                    aria-label={`移除商品${item.label}`}
+                    disabled={running}
+                    onClick={() => onClearAngle?.(item.role)}
+                  >
+                    <i className="bi bi-x" aria-hidden="true" />
+                  </button>
+                </span>
+              ) : (
+                <button
+                  key={item.role}
+                  type="button"
+                  className="handheld-angle is-empty"
+                  aria-label={`上传商品${item.label}`}
+                  disabled={running || !product?.url}
+                  title={product?.url ? `补充${item.label}，减少 AI 猜测` : "先上传商品正面"}
+                  onClick={() => onUploadAngle?.(item.role)}
+                >
+                  <i className="bi bi-plus" aria-hidden="true" />
+                  {item.label}
+                </button>
+              ),
+            )}
+          </div>
         </div>
         <div className="handheld-brief handheld-brief--canvas">
           <div className="handheld-platform">
@@ -1870,8 +2016,8 @@ export function HandheldStudio({
         <div
           className="handheld-shots"
           data-count={canvasShots.length}
-          data-ratio={posterRatio}
-          style={ratioStyle}
+          data-ratio={frameRatio}
+          style={frameStyle}
         >
           {canvasShots.map((shot, index) => {
             const planIndex = Math.max(0, plannedShots.indexOf(shot));
@@ -1886,8 +2032,8 @@ export function HandheldStudio({
               >
               <div
                 className={`handheld-frame${shot.url && !shotRunning ? " has-image" : ""}${shotRunning ? " is-running" : ""}${shotFailed ? " is-failed" : ""}${selected ? " is-selected" : ""}`}
-                data-ratio={posterRatio}
-                style={ratioStyle}
+                data-ratio={frameRatio}
+                style={frameStyle}
               >
                 {shotRunning ? (
                   <HandheldGeneratingStage
@@ -1910,23 +2056,22 @@ export function HandheldStudio({
                     aria-pressed={selected}
                     onClick={(event) => {
                       onSelectHistory?.(shot.url);
-                      if (canvasShots.length === 1) {
-                        onPreview?.(event, {
-                          url: shot.url,
-                          alt: shot.label || "手持商品生成结果",
-                          title: shot.label || "生成结果",
-                        });
-                      }
+                      openViewer(shot.url, event);
                     }}
-                    onDoubleClick={(event) =>
-                      onPreview?.(event, {
-                        url: shot.url,
-                        alt: shot.label || "手持商品生成结果",
-                        title: shot.label || "生成结果",
-                      })
-                    }
                   >
                     <AuthenticatedImage
+                      key={shot.url}
+                      className="handheld-reveal"
+                      onLoad={(event) => {
+                        const w = event.currentTarget.naturalWidth;
+                        const h = event.currentTarget.naturalHeight;
+                        if (!w || !h) return;
+                        setImageSizes((current) =>
+                          current[shot.url]?.w === w && current[shot.url]?.h === h
+                            ? current
+                            : { ...current, [shot.url]: { w, h } },
+                        );
+                      }}
                       src={displayByUrl.get(shot.url) || shot.url}
                       fallbackSrc={shot.url}
                       alt={shot.label || "手持商品生成结果"}
@@ -1934,18 +2079,46 @@ export function HandheldStudio({
                       maxDimension={1600}
                     />
                   </button>
+                ) : !hasAnyResult ? (
+                  <div className="handheld-frame__status handheld-plan">
+                    <strong>还没有结果</strong>
+                    <span>本次会生成 {plannedShots.length} 张</span>
+                    <ol className="handheld-plan__shots">
+                      {plannedShots.map((item, at) => (
+                        <li key={item.id || at}>
+                          <em>{String(at + 1).padStart(2, "0")}</em>
+                          {item.label}
+                        </li>
+                      ))}
+                    </ol>
+                    {selectionSummary.length ? (
+                      <ul className="handheld-plan__chips" aria-label="已选设置">
+                        {selectionSummary.map(([key, value]) => (
+                          <li key={key}>
+                            <small>{key}</small>
+                            {value}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {conflicts.length ? (
+                      <ul className="handheld-conflicts" aria-label="设置提醒">
+                        {conflicts.map((item) => (
+                          <li key={item.id} className={item.level === "info" ? "is-info" : ""}>
+                            <i
+                              className={`bi ${item.level === "info" ? "bi-info-circle" : "bi-exclamation-triangle"}`}
+                              aria-hidden="true"
+                            />
+                            {item.message}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
                 ) : (
                   <div className="handheld-frame__status">
-                    <strong>
-                      {!hasAnyResult && index === 0
-                        ? "还没有结果"
-                        : shot.label || `第 ${index + 1} 张`}
-                    </strong>
-                    <span>
-                      {shot.label
-                        ? `${String(index + 1).padStart(2, "0")} · ${shot.label}`
-                        : "上传商品后点生成"}
-                    </span>
+                    <strong>{shot.label || `第 ${index + 1} 张`}</strong>
+                    <span>{`${String(index + 1).padStart(2, "0")} · ${shot.label || "等待生成"}`}</span>
                   </div>
                 )}
                 {shot.label ? (
@@ -2005,6 +2178,22 @@ export function HandheldStudio({
                     </button>
                   {shot.url && !shotRunning ? (
                     <>
+                    <button
+                      type="button"
+                      disabled={!onDownloadShot || Boolean(toolBusy)}
+                      onClick={() => runTool("one", () => onDownloadShot(shot.url))}
+                    >
+                      {toolBusy === "one" ? "下载中" : "下载"}
+                    </button>
+                    {readyShots.length > 1 && onDownloadGroup ? (
+                      <button
+                        type="button"
+                        disabled={Boolean(toolBusy)}
+                        onClick={() => runTool("all", () => onDownloadGroup(viewerRows))}
+                      >
+                        {toolBusy === "all" ? "打包中" : `打包 ${readyShots.length} 张`}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => {
@@ -2088,6 +2277,7 @@ export function HandheldStudio({
                               {String(thumbIndex + 1).padStart(2, "0")}
                             </span>
                           )}
+                          <small className="handheld-thumb-label">{item.label}</small>
                         </button>
                       );
                     })}
@@ -2100,7 +2290,20 @@ export function HandheldStudio({
         <aside className="handheld-history" aria-label="手持生成历史">
           <p className="handheld-history__label">历史</p>
           {historyGroups.length ? (
-            <div className="handheld-history__list" role="list">
+            <div
+              className="handheld-history__list"
+              role="list"
+              onScroll={(event) => {
+                const el = event.currentTarget;
+                if (
+                  historyHasMore &&
+                  !historyLoadingMore &&
+                  el.scrollTop + el.clientHeight >= el.scrollHeight - 160
+                ) {
+                  onLoadMoreHistory?.();
+                }
+              }}
+            >
               {historyGroups.map((group) => {
                 const cover = group.rows[0];
                 const count = Math.max(
@@ -2190,6 +2393,11 @@ export function HandheldStudio({
                   </button>
                 );
               })}
+              {historyHasMore ? (
+                <div className="handheld-history__more" aria-hidden="true">
+                  {historyLoadingMore ? <span className="handheld-frame__thumb-spin" /> : null}
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="handheld-history__empty">
@@ -2215,6 +2423,18 @@ export function HandheldStudio({
           onClose={() => setAnnotationOpen(false)}
         />
       </section>
+      {viewer ? (
+        <TryonGroupViewer
+          rows={viewerRows}
+          startUrl={viewer.startUrl}
+          originRect={viewer.originRect}
+          labelOf={(row) => row.label || "手持商品图"}
+          segmentLabelOf={() => ""}
+          inputsOf={inputsOfRow}
+          onDownload={(url) => onDownloadShot?.(url)}
+          onClose={() => setViewer(null)}
+        />
+      ) : null}
     </div>
   );
 }

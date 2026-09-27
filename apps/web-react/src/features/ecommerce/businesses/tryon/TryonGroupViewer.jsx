@@ -34,6 +34,11 @@ export function TryonGroupViewer({
   garmentOf,
   labelOf,
   referencesOf,
+  // 通用化：其他业务（如手持商品）直接给出本张输入图 [[src, 标签, alt]]
+  inputsOf,
+  segmentLabelOf,
+  useAsLabel = "设为模特",
+  useAsIcon = "bi-person-check",
   onClose,
   onDownload,
   onUseAsModel,
@@ -54,7 +59,7 @@ export function TryonGroupViewer({
   const swipeRef = useRef(null);
   const stripRef = useRef(null);
   const row = rows[index] || rows[0];
-  const refs = referencesOf(row);
+  const refs = referencesOf ? referencesOf(row) : null;
   const total = rows.length;
 
   const go = (step) => {
@@ -179,13 +184,15 @@ export function TryonGroupViewer({
   // 缩略条按件分段
   const segments = [];
   rows.forEach((item, at) => {
-    const garment = garmentOf(item);
+    const garment = garmentOf ? garmentOf(item) : 0;
     const last = segments[segments.length - 1];
     if (last && last.garment === garment) last.items.push({ item, at });
     else segments.push({ garment, items: [{ item, at }] });
   });
 
-  const inputs = refs
+  const inputs = inputsOf
+    ? inputsOf(row).filter((item) => item && item[0])
+    : refs
     ? [
         [refs.garment, refs.bottom ? "上装" : "衣服", "本张使用的衣服"],
         refs.bottom ? [refs.bottom, "下装", "本张使用的下装"] : null,
@@ -236,22 +243,26 @@ export function TryonGroupViewer({
             <i className="bi bi-download" aria-hidden="true" />
             <span>{t(downloading ? "下载中" : "下载")}</span>
           </button>
-          <button
-            type="button"
-            className="tryon-viewer__tool"
-            onClick={() => onUseAsModel?.(row.url)}
-          >
-            <i className="bi bi-person-check" aria-hidden="true" />
-            <span>{t("设为模特")}</span>
-          </button>
-          <button
-            type="button"
-            className="tryon-viewer__tool"
-            onClick={() => onShowOnCanvas?.(row.url)}
-          >
-            <i className="bi bi-easel2" aria-hidden="true" />
-            <span>{t("在画布查看")}</span>
-          </button>
+          {onUseAsModel ? (
+            <button
+              type="button"
+              className="tryon-viewer__tool"
+              onClick={() => onUseAsModel(row.url)}
+            >
+              <i className={`bi ${useAsIcon}`} aria-hidden="true" />
+              <span>{t(useAsLabel)}</span>
+            </button>
+          ) : null}
+          {onShowOnCanvas ? (
+            <button
+              type="button"
+              className="tryon-viewer__tool"
+              onClick={() => onShowOnCanvas(row.url)}
+            >
+              <i className="bi bi-easel2" aria-hidden="true" />
+              <span>{t("在画布查看")}</span>
+            </button>
+          ) : null}
           <span className="tryon-viewer__divider" aria-hidden="true" />
           <button
             type="button"
@@ -337,11 +348,19 @@ export function TryonGroupViewer({
         >
           {segments.map((segment) => (
             <div key={segment.garment} className="tryon-viewer__segment">
-              <span className="tryon-viewer__segment-label">
-                {t("第")}
-                {segment.garment + 1}
-                {t("件")}
-              </span>
+              {segmentLabelOf ? (
+                segmentLabelOf(segment.garment) ? (
+                  <span className="tryon-viewer__segment-label">
+                    {segmentLabelOf(segment.garment)}
+                  </span>
+                ) : null
+              ) : (
+                <span className="tryon-viewer__segment-label">
+                  {t("第")}
+                  {segment.garment + 1}
+                  {t("件")}
+                </span>
+              )}
               <div className="tryon-viewer__segment-items">
                 {segment.items.map(({ item, at }) => (
                   <button
