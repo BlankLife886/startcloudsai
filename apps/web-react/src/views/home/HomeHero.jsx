@@ -1,6 +1,7 @@
 import { Link, useSearchParams } from "react-router";
 import { ArrowDown, ArrowRight } from "lucide-react";
 import { HomeBannerCarousel } from "../../components/HomeBannerCarousel.jsx";
+import "./HomeHeroImmersive.css";
 
 const PREVIEW_SLIDES = [
   { id: "preview-creation", title: "星空云绘", subtitle: "让想象，成为作品。", imageUrl: "/sucai/studio-cover-t2i.webp", durationMs: 5000, linkUrl: "/studio", buttonText: "进入创作台" },

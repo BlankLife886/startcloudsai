@@ -132,6 +132,7 @@ const EN = {
   拼图: 'Collage',
   '连续对话 · 边聊边出图': 'Talk and make images',
   文字生成高清图像: 'Words to pictures',
+  '文字出图 · 上传参考图生图': 'Text to image · image to image',
   线稿智能上色: 'Color your sketches',
   界面与组件稿: 'App and web screens',
   多视角建模参考: 'Front, side, back views',

@@ -152,7 +152,7 @@
   min-height: 28px;
 }
 
-@media (max-width: 1400px) {
+@media (max-width: 1180px) {
   .site-header .account-menu .account-cluster__meta,
   .site-header .account-menu .account-cluster__value {
     display: grid;

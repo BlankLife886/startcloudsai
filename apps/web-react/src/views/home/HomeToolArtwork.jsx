@@ -2,11 +2,11 @@ import { HomeCoverImage } from "./HomeCoverImage";
 import "./HomeToolArtwork.css";
 
 const COVERS = {
-  creation: "/sucai/studio-cover-t2i.webp",
-  portrait: "/sucai/studio-cover-model.webp",
+  creation: "/sucai/covers/cover-t2i.webp",
+  portrait: "/sucai/covers/cover-model.webp",
   product: "/sucai/studio-cover-ecom-create.webp",
-  illustration: "/sucai/studio-cover-coloring.webp",
-  game: "/sucai/studio-cover-game.webp",
+  illustration: "/sucai/covers/cover-coloring.webp",
+  game: "/sucai/covers/cover-game.webp",
 };
 
 function ArtPhoto({ cover, className = "" }) {

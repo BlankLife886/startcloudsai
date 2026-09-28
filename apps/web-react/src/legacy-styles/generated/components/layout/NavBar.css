@@ -1514,7 +1514,7 @@ to {
 .nav-mobile-toggle {
   display: none;
 }
-@media (max-width: 1400px) {
+@media (max-width: 1180px) {
 .site-header {
     z-index: 1100;
 }
@@ -2649,14 +2649,14 @@ html.canvas-entry .site-header.is-mega-open {
   }
 }
 
-@media (min-width: 1401px) {
+@media (min-width: 1181px) {
   /* 桌面端隐藏旧的小浮动弹窗，统一由全景 Mega Drawer 承载 */
   .nav-dropdown-menu {
     display: none !important;
   }
 }
 
-@media (max-width: 1400px) {
+@media (max-width: 1180px) {
   /* 移动端/窄屏模式下由主导航抽屉承载，隐藏全景桌面抽屉 */
   .nav-mega-drawer,
   .nav-backdrop {

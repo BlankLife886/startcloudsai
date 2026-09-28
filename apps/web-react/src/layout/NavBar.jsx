@@ -31,6 +31,7 @@ import { REFERRALS_ENABLED } from "../config/referrals.js";
 import "@react/legacy-styles/generated/components/layout/NavBar.css";
 import "@react/legacy-styles/generated/components/layout/NavNotificationsMenu.css";
 import "./NavBar.account-menu.css";
+import "./NavBar.polish.css";
 gsap.registerPlugin(useGSAP);
 
 const imageLinks = [
@@ -39,7 +40,7 @@ const imageLinks = [
     to: "/assistant",
     label: "AI 助手",
     icon: "bi-chat-square-text-fill",
-    cover: "/sucai/studio-cover-assistant.webp",
+    cover: "/sucai/covers/cover-assistant.webp",
     tagline: "连续对话 · 边聊边出图",
     tag: "核心生成 · 连续对话",
     desc: "连续对话 · 边聊边出图。精准拆解你的构思，智能扩写提示词并给出专业风格推演。",
@@ -47,19 +48,19 @@ const imageLinks = [
   {
     id: "t2i",
     to: "/text-to-image",
-    label: "文生图 Studio",
+    label: "文生图",
     icon: "bi-stars",
-    cover: "/sucai/studio-cover-t2i.webp",
-    tagline: "文字生成高清艺术图像",
+    cover: "/sucai/covers/cover-t2i.webp",
+    tagline: "文字出图 · 上传参考图生图",
     tag: "核心生成 · 图像扩散",
-    desc: "文字生成高清图像。多模态扩散生成，精准理解中文意境与专业艺术画风。",
+    desc: "输入文字直接出图，也可上传参考图做图生图，精准理解中文意境与专业艺术画风。",
   },
   {
     id: "model",
     to: "/model-sheet",
     label: "模型设计",
     icon: "bi-person-bounding-box",
-    cover: "/sucai/studio-cover-model.webp",
+    cover: "/sucai/covers/cover-model.webp",
     tagline: "角色三视图 · 锁定一致形象",
     tag: "专业工坊 · 角色设定",
     desc: "角色三视图 · 锁定形象。高保真保持面部特征、发型与服饰细节一致性。",
@@ -69,7 +70,7 @@ const imageLinks = [
     to: "/ai-illustration-coloring",
     label: "插画染色",
     icon: "bi-brush-fill",
-    cover: "/sucai/studio-cover-coloring.webp",
+    cover: "/sucai/covers/cover-coloring.webp",
     tagline: "线稿上色 · 丰富多维风格",
     tag: "专业工坊 · 线稿上色",
     desc: "线稿上色 · 丰富风格。智能提取线稿黑白结构，一键赋予高精色彩与光影氛围。",
@@ -79,7 +80,7 @@ const imageLinks = [
     to: "/design-workshop",
     label: "UI 设计稿",
     icon: "bi-bezier2",
-    cover: "/sucai/studio-cover-ui.webp",
+    cover: "/sucai/covers/cover-ui.webp",
     tagline: "网页界面 · App 原型视觉",
     tag: "垂类工坊 · 界面原型",
     desc: "网页界面 · App 原型视觉。直接输出符合现代审美与交互规范的应用概念稿。",
@@ -89,7 +90,7 @@ const imageLinks = [
     to: "/game-art",
     label: "游戏设计",
     icon: "bi-controller",
-    cover: "/sucai/studio-cover-game.webp",
+    cover: "/sucai/covers/cover-game.webp",
     tagline: "游戏场景与道具设定原画",
     tag: "垂类工坊 · 游戏原画",
     desc: "游戏场景与道具原画。量身定制概念美术、武器道具与环境设定资产。",
@@ -222,8 +223,8 @@ const imageDesignGroups = [
 const toolGroups = [
   {
     id: "image-tools",
-    label: "图像处理",
-    description: "发丝级抠图与画质处理",
+    label: "媒体处理",
+    description: "抠图、压缩与 AI 媒体工具",
     items: [
       {
         id: "bg-remove",
@@ -233,7 +234,6 @@ const toolGroups = [
         icon: "bi-person-bounding-box",
         tag: "图像工具 · 智能抠图",
         desc: "毫秒级发丝与透明材质精细扣取，智能主体识别与一键更换透明背景。",
-        cover: "/sucai/canvas-hero.webp",
       },
       {
         id: "compress",
@@ -243,7 +243,6 @@ const toolGroups = [
         icon: "bi-file-zip",
         tag: "图像工具 · 无损压缩",
         desc: "保持晶莹画质的高压缩率处理，体积缩减 70% 依然细节分明。",
-        cover: "/sucai/community-gallery-atmosphere.webp",
       },
     ],
   },
@@ -260,7 +259,6 @@ const toolGroups = [
         icon: "bi-stars",
         tag: "创意玩法 · 3D 渲染",
         desc: "3D 镭射视差立体卡牌艺术，让图像呈现出精美实体闪卡与浮雕折射效果。",
-        cover: "/sucai/profile-hero-character.png",
       },
       {
         id: "puzzle",
@@ -270,7 +268,6 @@ const toolGroups = [
         icon: "bi-puzzle-fill",
         tag: "创意玩法 · 智能排版",
         desc: "多图色彩自动均衡与比例网格重构，批量将零散素材组合成规整海报。",
-        cover: "/sucai/canvas-hero.webp",
       },
     ],
   },
@@ -287,7 +284,6 @@ const toolGroups = [
         icon: "bi-columns-gap",
         tag: "星空云绘 · 创作者工坊",
         desc: "云上美术馆与全流程创作平台，连接创作者与前沿视觉生成技术。",
-        cover: "/sucai/community-gallery-atmosphere.webp",
       },
       {
         id: "updates",
@@ -297,11 +293,31 @@ const toolGroups = [
         icon: "bi-journal-text",
         tag: "系统演化 · 版本日志",
         desc: "定期迭代发布说明，持续提升多模态图像质量与创作者操作效率。",
-        cover: "/sucai/canvas-hero.webp",
+      },
+      {
+        id: "feedback",
+        to: "/feedback",
+        label: "问题反馈",
+        tagline: "遇到问题或有建议，告诉我们",
+        icon: "bi-chat-square-text",
+        tag: "星空云绘 · 用户反馈",
+        desc: "提交使用中遇到的问题或功能建议，我们会尽快跟进处理。",
       },
     ],
   },
 ];
+
+// 桌面大抽屉按后台页面开关过滤，并去掉过滤后为空的分组
+function visibleMegaGroups(groups, isEntryVisible) {
+  return groups
+    .map((group) => ({ ...group, items: group.items.filter((item) => isEntryVisible(item.to)) }))
+    .filter((group) => group.items.length > 0);
+}
+
+function megaPreviewItem(groups, selected) {
+  const items = groups.flatMap((group) => group.items);
+  return items.find((item) => item.id === selected?.id) || items[0] || null;
+}
 
 const baseTools = [
   ["/holo-card", "闪光卡", "bi-stars"],
@@ -414,6 +430,7 @@ export function NavBar() {
   const accountPinnedRef = useRef(false);
   const [activeDropdown, setActiveDropdown] = useState("");
   const dropdownCloseTimerRef = useRef(0);
+  const dropdownOpenTimerRef = useRef(0);
   const [ecomPreviewItem, setEcomPreviewItem] = useState(null);
   const [designPreviewItem, setDesignPreviewItem] = useState(null);
   const [toolsPreviewItem, setToolsPreviewItem] = useState(null);
@@ -480,6 +497,45 @@ export function NavBar() {
       }),
     [auth.isAuthenticated, isEntryVisible, resolvedNavItems],
   );
+
+  const megaCommerceGroups = useMemo(
+    () => visibleMegaGroups(commerceGroups, isEntryVisible),
+    [isEntryVisible],
+  );
+  const megaDesignGroups = useMemo(
+    () => visibleMegaGroups(imageDesignGroups, isEntryVisible),
+    [isEntryVisible],
+  );
+  // 后台配置的媒体工具（视频增强、去水印等）以前只出现在窄屏菜单里，桌面抽屉看不到
+  const megaToolGroups = useMemo(
+    () =>
+      visibleMegaGroups(
+        toolGroups.map((group) =>
+          group.id === "image-tools" && mediaTools.length
+            ? {
+                ...group,
+                items: [
+                  ...mediaTools.map((tool) => ({
+                    id: tool.to,
+                    to: tool.to,
+                    label: tool.label,
+                    tagline: "上传文件，一键处理",
+                    icon: tool.icon,
+                    tag: "媒体处理 · AI 工具",
+                    desc: `${tool.label}：上传图片或音视频文件，交给 AI 自动处理。`,
+                  })),
+                  ...group.items,
+                ],
+              }
+            : group,
+        ),
+        isEntryVisible,
+      ),
+    [isEntryVisible, mediaTools],
+  );
+  const ecomPreview = megaPreviewItem(megaCommerceGroups, ecomPreviewItem);
+  const designPreview = megaPreviewItem(megaDesignGroups, designPreviewItem);
+  const toolsPreview = megaPreviewItem(megaToolGroups, toolsPreviewItem);
 
   const isActive = (to) => {
     const targetPath = routePath(to);
@@ -567,7 +623,7 @@ export function NavBar() {
       const root = rootRef.current;
       if (!root) return undefined;
 
-      const mobileLayout = window.matchMedia?.("(max-width: 1400px)").matches;
+      const mobileLayout = window.matchMedia?.("(max-width: 1180px)").matches;
       const reduced = navMotionDisabled();
       const animatedTargets = [];
 
@@ -852,18 +908,26 @@ export function NavBar() {
       window.clearTimeout(notificationCloseTimerRef.current);
       window.clearTimeout(accountCloseTimerRef.current);
       window.clearTimeout(dropdownCloseTimerRef.current);
+      window.clearTimeout(dropdownOpenTimerRef.current);
       window.removeEventListener("starclouds:notifications-updated", onUpdated);
     };
   }, [auth.isAuthenticated, auth.user?.id]);
 
   function showMegaDropdown(name) {
     window.clearTimeout(dropdownCloseTimerRef.current);
-    closeAccountMenu();
-    setNotificationOpen(false);
-    setActiveDropdown(name);
+    window.clearTimeout(dropdownOpenTimerRef.current);
+    const open = () => {
+      closeAccountMenu();
+      setNotificationOpen(false);
+      setActiveDropdown(name);
+    };
+    // 鼠标只是划过菜单栏时不弹出大抽屉；已经展开时切换分组则立即响应
+    if (activeDropdown) open();
+    else dropdownOpenTimerRef.current = window.setTimeout(open, 90);
   }
 
   function scheduleMegaDropdownClose() {
+    window.clearTimeout(dropdownOpenTimerRef.current);
     window.clearTimeout(dropdownCloseTimerRef.current);
     dropdownCloseTimerRef.current = window.setTimeout(() => {
       setActiveDropdown("");
@@ -876,6 +940,7 @@ export function NavBar() {
 
   function toggleDropdown(name) {
     window.clearTimeout(dropdownCloseTimerRef.current);
+    window.clearTimeout(dropdownOpenTimerRef.current);
     setActiveDropdown((current) => (current === name ? "" : name));
   }
 
@@ -889,6 +954,7 @@ export function NavBar() {
   function showAccountMenu() {
     window.clearTimeout(accountCloseTimerRef.current);
     window.clearTimeout(dropdownCloseTimerRef.current);
+    window.clearTimeout(dropdownOpenTimerRef.current);
     setNotificationOpen(false);
     setActiveDropdown("");
     accountOpenRef.current = true;
@@ -905,6 +971,7 @@ export function NavBar() {
     event.stopPropagation();
     window.clearTimeout(accountCloseTimerRef.current);
     window.clearTimeout(dropdownCloseTimerRef.current);
+    window.clearTimeout(dropdownOpenTimerRef.current);
     setNotificationOpen(false);
     setActiveDropdown("");
     if (accountOpenRef.current && accountPinnedRef.current) {
@@ -918,6 +985,7 @@ export function NavBar() {
 
   function closeMenu() {
     window.clearTimeout(dropdownCloseTimerRef.current);
+    window.clearTimeout(dropdownOpenTimerRef.current);
     setActiveDropdown("");
     setMobileOpen(false);
     closeAccountMenu();
@@ -1028,6 +1096,106 @@ export function NavBar() {
         activeDropdown === "image-design" ||
         activeDropdown === "tools"),
   );
+  // 抽屉收起动画期间保留最后一个面板的内容，不然会先变空白再淡出
+  const lastMegaRef = useRef("");
+  if (isMegaOpen) lastMegaRef.current = activeDropdown;
+  const shownMega = isMegaOpen ? activeDropdown : lastMegaRef.current;
+
+  // 三个大抽屉共用同一套版式：左侧三列分组入口，右侧是跟随悬停项切换的预览。
+  function renderMegaPanel({ name, groups, preview, onPreview, action }) {
+    return (
+      <div className={`nav-mega-panel${shownMega === name ? "" : " is-hidden"}`}>
+        <div className="nav-mega-grid-left">
+          {groups.map((group) => (
+            <div key={group.id} className="nav-mega-col">
+              <div className="nav-mega-col-header">
+                <div className="nav-mega-col-title">{group.label}</div>
+                <div className="nav-mega-col-desc">{group.description}</div>
+              </div>
+              <div className="nav-mega-item-list">
+                {group.items.map((item) => (
+                  <Link
+                    key={item.id}
+                    to={item.to}
+                    className={`nav-mega-item-row${preview?.id === item.id ? " is-active" : ""}`}
+                    onMouseEnter={() => onPreview(item)}
+                    onFocus={() => onPreview(item)}
+                    onClick={(event) => openNavLink(event, item)}
+                  >
+                    {item.cover ? (
+                      <img src={item.cover} alt="" className="nav-mega-item-thumb" decoding="async" />
+                    ) : (
+                      <div className="nav-mega-item-icon-box">
+                        <i className={`bi ${item.icon}`} />
+                      </div>
+                    )}
+                    <div className="nav-mega-item-copy">
+                      <div className="nav-mega-item-title">{item.label}</div>
+                      <div className="nav-mega-item-tagline">{item.tagline}</div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {preview && (
+          <div className={`nav-mega-preview-stage${preview.cover ? "" : " is-icon-only"}`}>
+            <div className="nav-mega-preview-main">
+              <div className={`nav-mega-preview-img-box${preview.cover ? "" : " is-icon-art"}`}>
+                {preview.cover ? (
+                  <img key={preview.id} className="nav-mega-preview-photo" src={preview.cover} alt="" decoding="async" />
+                ) : (
+                  <i key={preview.id} className={`bi ${preview.icon}`} aria-hidden="true" />
+                )}
+              </div>
+              <div key={preview.id} className="nav-mega-preview-overlay">
+                <div className="nav-mega-preview-heading">{preview.label}</div>
+                <div className="nav-mega-preview-desc">{preview.desc || preview.tagline}</div>
+                <Link
+                  to={preview.to}
+                  className="nav-mega-preview-action"
+                  onClick={(event) => openNavLink(event, preview)}
+                >
+                  <span>{action}</span>
+                  <span className="nav-mega-preview-action-icon" aria-hidden="true">
+                    <i className="bi bi-arrow-right" />
+                  </span>
+                </Link>
+              </div>
+            </div>
+            {(() => {
+              // 同组的其它工具以方形缩略图竖排在大图右侧，悬停切换预览
+              const group = groups.find((entry) => entry.items.some((item) => item.id === preview.id));
+              if (!group || group.items.length < 2) return null;
+              return (
+                <div className="nav-mega-preview-rail">
+                  {group.items.map((item) => (
+                    <Link
+                      key={item.id}
+                      to={item.to}
+                      className={`nav-mega-preview-rail-item${item.id === preview.id ? " is-active" : ""}`}
+                      title={item.label}
+                      tabIndex={-1}
+                      onMouseEnter={() => onPreview(item)}
+                      onClick={(event) => openNavLink(event, item)}
+                    >
+                      {item.cover ? (
+                        <img src={item.cover} alt="" decoding="async" />
+                      ) : (
+                        <i className={`bi ${item.icon}`} aria-hidden="true" />
+                      )}
+                    </Link>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <header
@@ -1151,6 +1319,9 @@ export function NavBar() {
                                   decoding="async"
                                 />
                               </span>
+                              <span className="commerce-menu-card__icon" aria-hidden="true">
+                                <i className={`bi ${link.icon}`} />
+                              </span>
                               <span className="commerce-menu-card__copy">
                                 <strong>{link.shortLabel}</strong>
                               </span>
@@ -1179,7 +1350,10 @@ export function NavBar() {
                               <img src={link.cover} alt="" decoding="async" />
                             </span>
                             <span className="nav-bento-card__copy">
-                              <strong>{link.label}</strong>
+                              <strong>
+                                <i className={`bi ${link.icon}`} aria-hidden="true" />
+                                {link.label}
+                              </strong>
                             </span>
                           </Link>
                         ))}
@@ -1210,6 +1384,11 @@ export function NavBar() {
                 </div>
               ),
             )}
+            <div className="nav-mobile-prefs">
+              <span>外观与语言</span>
+              <ThemeSwitch />
+              <LocaleSwitcher />
+            </div>
           </nav>
 
           <div className="header-tools">
@@ -1556,210 +1735,38 @@ export function NavBar() {
 
       {/* 桌面端全景悬停大抽屉 */}
       <div
-        className={`nav-mega-drawer${activeDropdown && (activeDropdown === "ecommerce" || activeDropdown === "image-design" || activeDropdown === "tools") ? " is-open" : ""}`}
+        className={`nav-mega-drawer${isMegaOpen ? " is-open" : ""}`}
         onMouseEnter={cancelMegaDropdownClose}
         onMouseLeave={scheduleMegaDropdownClose}
       >
         <div className="nav-mega-drawer__shell">
-          {/* 1. AI 电商面板 */}
-          <div className={`nav-mega-panel${activeDropdown === "ecommerce" ? "" : " is-hidden"}`}>
-            <div className="nav-mega-grid-left">
-              {commerceGroups.map((group) => (
-                <div key={group.id} className="nav-mega-col">
-                  <div className="nav-mega-col-header">
-                    <div className="nav-mega-col-title">{group.label}</div>
-                    <div className="nav-mega-col-desc">{group.description}</div>
-                  </div>
-                  <div className="nav-mega-item-list">
-                    {group.items.map((item) => {
-                      const isSelected = (ecomPreviewItem?.id || commerceGroups[0].items[0].id) === item.id;
-                      return (
-                        <Link
-                          key={item.id}
-                          to={item.to}
-                          className={`nav-mega-item-row${isSelected ? " is-active" : ""}`}
-                          onMouseEnter={() => setEcomPreviewItem(item)}
-                          onClick={(event) => openNavLink(event, item)}
-                        >
-                          <img src={item.cover} alt="" className="nav-mega-item-thumb" decoding="async" />
-                          <div className="nav-mega-item-copy">
-                            <div className="nav-mega-item-title">{item.label}</div>
-                            <div className="nav-mega-item-tagline">{item.tagline}</div>
-                          </div>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* AI 电商专属右侧展签舞台 */}
-            {(() => {
-              const selected = ecomPreviewItem || commerceGroups[0].items[0];
-              return (
-                <div className="nav-mega-preview-stage">
-                  <div className="nav-mega-preview-top">
-                    <div className="nav-mega-preview-meta">
-                      <span className="nav-mega-preview-tag">{selected.tag || "服饰模特 · 核心工具"}</span>
-                      <span className="nav-mega-preview-badge">PREVIEW</span>
-                    </div>
-                    <div className="nav-mega-preview-img-box">
-                      <img key={selected.id || selected.to} src={selected.cover} alt="" decoding="async" />
-                    </div>
-                    <div key={selected.id || selected.to} className="nav-mega-preview-copy">
-                      <div className="nav-mega-preview-heading">{selected.label}</div>
-                      <div className="nav-mega-preview-desc">{selected.desc || selected.tagline}</div>
-                    </div>
-                  </div>
-                  <Link
-                    to={selected.to}
-                    className="nav-mega-preview-action"
-                    onClick={(event) => openNavLink(event, selected)}
-                  >
-                    <span>进入工作台</span>
-                    <i className="bi bi-arrow-right" />
-                  </Link>
-                </div>
-              );
-            })()}
-          </div>
-
-          {/* 2. 图片设计面板 */}
-          <div className={`nav-mega-panel${activeDropdown === "image-design" ? "" : " is-hidden"}`}>
-            <div className="nav-mega-grid-left">
-              {imageDesignGroups.map((group) => (
-                <div key={group.id} className="nav-mega-col">
-                  <div className="nav-mega-col-header">
-                    <div className="nav-mega-col-title">{group.label}</div>
-                    <div className="nav-mega-col-desc">{group.description}</div>
-                  </div>
-                  <div className="nav-mega-item-list">
-                    {group.items.map((item) => {
-                      const isSelected = (designPreviewItem?.id || imageDesignGroups[0].items[0].id) === item.id;
-                      return (
-                        <Link
-                          key={item.id}
-                          to={item.to}
-                          className={`nav-mega-item-row${isSelected ? " is-active" : ""}`}
-                          onMouseEnter={() => setDesignPreviewItem(item)}
-                          onClick={(event) => openNavLink(event, item)}
-                        >
-                          <img src={item.cover} alt="" className="nav-mega-item-thumb" decoding="async" />
-                          <div className="nav-mega-item-copy">
-                            <div className="nav-mega-item-title">{item.label}</div>
-                            <div className="nav-mega-item-tagline">{item.tagline}</div>
-                          </div>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* 图片设计专属右侧展签舞台 */}
-            {(() => {
-              const selected = designPreviewItem || imageDesignGroups[0].items[0];
-              return (
-                <div className="nav-mega-preview-stage">
-                  <div className="nav-mega-preview-top">
-                    <div className="nav-mega-preview-meta">
-                      <span className="nav-mega-preview-tag">{selected.tag || "核心生成 · 连续对话"}</span>
-                      <span className="nav-mega-preview-badge">STUDIO</span>
-                    </div>
-                    <div className="nav-mega-preview-img-box">
-                      <img key={selected.id || selected.to} src={selected.cover} alt="" decoding="async" />
-                    </div>
-                    <div key={selected.id || selected.to} className="nav-mega-preview-copy">
-                      <div className="nav-mega-preview-heading">{selected.label}</div>
-                      <div className="nav-mega-preview-desc">{selected.desc || selected.tagline}</div>
-                    </div>
-                  </div>
-                  <Link
-                    to={selected.to}
-                    className="nav-mega-preview-action"
-                    onClick={(event) => openNavLink(event, selected)}
-                  >
-                    <span>进入创作</span>
-                    <i className="bi bi-arrow-right" />
-                  </Link>
-                </div>
-              );
-            })()}
-          </div>
-
-          {/* 3. 工具面板 */}
-          <div className={`nav-mega-panel${activeDropdown === "tools" ? "" : " is-hidden"}`}>
-            <div className="nav-mega-grid-left">
-              {toolGroups.map((group) => (
-                <div key={group.id} className="nav-mega-col">
-                  <div className="nav-mega-col-header">
-                    <div className="nav-mega-col-title">{group.label}</div>
-                    <div className="nav-mega-col-desc">{group.description}</div>
-                  </div>
-                  <div className="nav-mega-item-list">
-                    {group.items.map((item) => {
-                      const isSelected = (toolsPreviewItem?.id || toolGroups[0].items[0].id) === item.id;
-                      return (
-                        <Link
-                          key={item.id}
-                          to={item.to}
-                          className={`nav-mega-item-row${isSelected ? " is-active" : ""}`}
-                          onMouseEnter={() => setToolsPreviewItem(item)}
-                          onClick={(event) => openNavLink(event, item)}
-                        >
-                          <div className="nav-mega-item-icon-box">
-                            <i className={`bi ${item.icon}`} />
-                          </div>
-                          <div className="nav-mega-item-copy">
-                            <div className="nav-mega-item-title">{item.label}</div>
-                            <div className="nav-mega-item-tagline">{item.tagline}</div>
-                          </div>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* 工具专属右侧展签舞台 */}
-            {(() => {
-              const selected = toolsPreviewItem || toolGroups[0].items[0];
-              return (
-                <div className="nav-mega-preview-stage">
-                  <div className="nav-mega-preview-top">
-                    <div className="nav-mega-preview-meta">
-                      <span className="nav-mega-preview-tag">{selected.tag || "图像工具 · 智能抠图"}</span>
-                      <span className="nav-mega-preview-badge">UTILITY</span>
-                    </div>
-                    <div className="nav-mega-preview-img-box">
-                      <img key={selected.id || selected.to} src={selected.cover} alt="" decoding="async" />
-                    </div>
-                    <div key={selected.id || selected.to} className="nav-mega-preview-copy">
-                      <div className="nav-mega-preview-heading">{selected.label}</div>
-                      <div className="nav-mega-preview-desc">{selected.desc || selected.tagline}</div>
-                    </div>
-                  </div>
-                  <Link
-                    to={selected.to}
-                    className="nav-mega-preview-action"
-                    onClick={(event) => openNavLink(event, selected)}
-                  >
-                    <span>立即使用</span>
-                    <i className="bi bi-arrow-right" />
-                  </Link>
-                </div>
-              );
-            })()}
-          </div>
+          {renderMegaPanel({
+            name: "ecommerce",
+            groups: megaCommerceGroups,
+            preview: ecomPreview,
+            onPreview: setEcomPreviewItem,
+            action: "进入工作台",
+          })}
+          {renderMegaPanel({
+            name: "image-design",
+            groups: megaDesignGroups,
+            preview: designPreview,
+            onPreview: setDesignPreviewItem,
+            action: "进入创作",
+          })}
+          {renderMegaPanel({
+            name: "tools",
+            groups: megaToolGroups,
+            preview: toolsPreview,
+            onPreview: setToolsPreviewItem,
+            action: "立即使用",
+          })}
         </div>
       </div>
 
       {/* 桌面端全景背景蒙层 */}
       <div
-        className={`nav-backdrop${activeDropdown && (activeDropdown === "ecommerce" || activeDropdown === "image-design" || activeDropdown === "tools") ? " is-active" : ""}`}
+        className={`nav-backdrop${isMegaOpen ? " is-active" : ""}`}
         onClick={closeMenu}
       />
       <TrialAccessDialog

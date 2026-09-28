@@ -86,7 +86,7 @@ const CREATION_ITEMS = [
     to: "/canvas",
     label: "无限画布",
     tagline: "节点工作流与自由画布创作",
-    cover: "/sucai/canvas-hero.webp",
+    cover: "/sucai/covers/cover-canvas-workflow.webp",
     feature: "ai.infiniteCanvas",
     taskType: "infinite_canvas",
   },

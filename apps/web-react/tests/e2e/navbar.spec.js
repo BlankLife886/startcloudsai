@@ -322,7 +322,7 @@ test('desktop navigation never overlaps brand or account tools at boundary width
     /router-link-exact-active/,
   )
 
-  for (const width of [1800, 1601, 1481, 1440, 1401]) {
+  for (const width of [1800, 1601, 1481, 1440, 1366, 1280, 1181]) {
     await page.setViewportSize({ width, height: 820 })
     await expect(page.locator('.nav-mobile-toggle')).toBeHidden()
     const [brand, navigation, tools, navigationItems] = await Promise.all([
