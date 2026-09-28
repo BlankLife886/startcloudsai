@@ -183,3 +183,69 @@ func containsCleanupKey(keys []string, want string) bool {
 	}
 	return false
 }
+
+// One batch mixes keys held by every kind of reference with free ones: the
+// batch-wide reference scan must keep each referenced key queued while still
+// releasing the rest in the same run.
+func TestObjectCleanupBatchKeepsEveryReferenceKind(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("batch-cleanup-%s@test.dev", uuid.NewString()[:8]), "cleanup", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := func(name string) string {
+		return fmt.Sprintf("tasks/%s/%s/%s.png", user.ID, uuid.NewString()[:8], name)
+	}
+	inputKey, maskKey, galleryKey := key("input"), key("mask"), key("gallery")
+	assistantKey, canvasKey := key("assistant"), key("canvas")
+	objectShapedKey, freeKey := key("object-shaped"), key("free")
+
+	taskID := uuid.New()
+	if _, err := st.Pool.Exec(ctx, `
+		INSERT INTO tasks (id, user_id, type, status, prompt, input_keys, params, cost_cents)
+		VALUES ($1, $2, 't2i', 'succeeded', 'cleanup', jsonb_build_array($3::text), jsonb_build_object('maskKey', $4::text), 0)`,
+		taskID, user.ID, inputKey, maskKey); err != nil {
+		t.Fatal(err)
+	}
+	// A key that only appears as an object field name is not an array element
+	// and has never counted as a task reference.
+	if _, err := st.Pool.Exec(ctx, `
+		INSERT INTO tasks (id, user_id, type, status, prompt, input_keys, cost_cents)
+		VALUES ($1, $2, 't2i', 'succeeded', 'cleanup', jsonb_build_object($3::text, 1), 0)`,
+		uuid.New(), user.ID, objectShapedKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InsertSubmission(ctx, st.Pool, user.ID, taskID, nil, nil, []string{galleryKey}, nil, "pending"); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := store.InsertAssistantConversation(ctx, st.Pool, uuid.New(), user.ID, "批量清理", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InsertAssistantMessage(ctx, st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "text", Status: "complete",
+		Metadata:  map[string]any{"proposal": map[string]any{"referenceImages": []map[string]any{{"fileKey": assistantKey}}}},
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool.Exec(ctx, `
+		INSERT INTO canvas_projects (user_id, title, document)
+		VALUES ($1, 'cleanup', jsonb_build_object('nodes', jsonb_build_array(jsonb_build_object('data', jsonb_build_object('src', '/media/' || $2::text)))))`,
+		user.ID, canvasKey); err != nil {
+		t.Fatal(err)
+	}
+
+	all := []string{inputKey, maskKey, galleryKey, assistantKey, canvasKey, objectShapedKey, freeKey}
+	if err := store.EnqueueObjectCleanup(ctx, st.Pool, all); err != nil {
+		t.Fatal(err)
+	}
+	locked, err := store.LockReadyObjectCleanupJobs(ctx, st.Pool, time.Now().UTC(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locked) != 2 || !containsCleanupKey(locked, objectShapedKey) || !containsCleanupKey(locked, freeKey) {
+		t.Fatalf("cleanup candidates = %#v, want only %q and %q", locked, objectShapedKey, freeKey)
+	}
+}

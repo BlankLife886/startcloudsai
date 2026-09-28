@@ -65,6 +65,11 @@ func LockObjectReferenceKeys(ctx context.Context, q Q, keys []string) error {
 // LockReadyObjectCleanupJobs locks a bounded batch for the caller's external
 // storage operation. Jobs with any current database reference are deliberately
 // left queued; a later run can retry after that reference is removed.
+//
+// Every reference table is read once for the whole batch, never once per key:
+// the per-key form rescanned tasks, assistant history and every canvas document
+// for each job and, with a hundred jobs, held the database at full CPU for many
+// minutes while generation tasks waited behind it.
 func LockReadyObjectCleanupJobs(ctx context.Context, q Q, now time.Time, limit int) ([]string, error) {
 	if limit <= 0 {
 		return []string{}, nil
@@ -73,134 +78,110 @@ func LockReadyObjectCleanupJobs(ctx context.Context, q Q, now time.Time, limit i
 		limit = maxObjectCleanupKeys
 	}
 	rows, err := q.Query(ctx, `
-			WITH candidates AS MATERIALIZED (
-				SELECT job.object_key, job.next_attempt_at, job.created_at
-				FROM object_cleanup_jobs job
-				WHERE job.next_attempt_at <= $1
-				ORDER BY job.next_attempt_at, job.created_at, job.object_key
-				LIMIT $2
-				FOR UPDATE SKIP LOCKED
-			), locked AS MATERIALIZED (
-				SELECT candidate.object_key, candidate.next_attempt_at, candidate.created_at
-				FROM candidates candidate
-				CROSS JOIN LATERAL (
-					SELECT pg_advisory_xact_lock(hashtextextended(candidate.object_key, 5))
-				) advisory_lock
-			)
-			SELECT locked.object_key
-			FROM locked
-			WHERE NOT EXISTS (
-				SELECT 1
-				FROM tasks task
-				WHERE EXISTS (
-				SELECT 1
-				FROM jsonb_array_elements_text(
-					CASE WHEN jsonb_typeof(task.input_keys) = 'array'
-						THEN task.input_keys ELSE '[]'::jsonb END
-				) AS input_key(value)
-						WHERE input_key.value = locked.object_key
-			)
-			OR EXISTS (
-				SELECT 1
-				FROM jsonb_array_elements_text(
-					CASE WHEN jsonb_typeof(task.output_keys) = 'array'
-						THEN task.output_keys ELSE '[]'::jsonb END
-				) AS output_key(value)
-						WHERE output_key.value = locked.object_key
-			)
-			OR EXISTS (
-				SELECT 1
-				FROM jsonb_array_elements_text(
-					CASE WHEN jsonb_typeof(task.thumbnail_keys) = 'array'
-						THEN task.thumbnail_keys ELSE '[]'::jsonb END
-				) AS thumbnail_key(value)
-						WHERE thumbnail_key.value = locked.object_key
-					)
-					OR task.params->>'maskKey' = locked.object_key
-					OR task.params->>'maskBaseKey' = locked.object_key
-				)
-			  AND NOT EXISTS (
-			SELECT 1
+		WITH candidates AS MATERIALIZED (
+			SELECT job.object_key, job.next_attempt_at, job.created_at
+			FROM object_cleanup_jobs job
+			WHERE job.next_attempt_at <= $1
+			ORDER BY job.next_attempt_at, job.created_at, job.object_key
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		), locked AS MATERIALIZED (
+			SELECT candidate.object_key, candidate.next_attempt_at, candidate.created_at
+			FROM candidates candidate
+			CROSS JOIN LATERAL (
+				SELECT pg_advisory_xact_lock(hashtextextended(candidate.object_key, 5))
+			) advisory_lock
+		), batch AS MATERIALIZED (
+			-- Built from locked, so every reference below is read after the
+			-- advisory locks are held.
+			SELECT COALESCE(array_agg(object_key), '{}'::text[]) AS keys FROM locked
+		), task_refs AS MATERIALIZED (
+			SELECT task.input_keys, task.output_keys, task.thumbnail_keys,
+				task.params->>'maskKey' AS mask_key, task.params->>'maskBaseKey' AS mask_base_key
+			FROM tasks task, batch
+			WHERE task.input_keys ?| batch.keys
+			   OR task.output_keys ?| batch.keys
+			   OR task.thumbnail_keys ?| batch.keys
+			   OR task.params->>'maskKey' = ANY(batch.keys)
+			   OR task.params->>'maskBaseKey' = ANY(batch.keys)
+		), gallery_refs AS MATERIALIZED (
+			SELECT submission.cover_key, submission.media_keys
+			FROM gallery_submissions submission, batch
+			WHERE submission.cover_key = ANY(batch.keys)
+			   OR submission.media_keys ?| batch.keys
+		), assistant_ref_keys AS MATERIALIZED (
+			SELECT image.value->>'fileKey' AS object_key
 			FROM assistant_messages message
-			WHERE EXISTS (
-				SELECT 1
-				FROM jsonb_array_elements(
+			CROSS JOIN LATERAL (
+				SELECT value FROM jsonb_array_elements(
 					CASE WHEN jsonb_typeof(message.metadata->'referenceImages') = 'array'
-						THEN message.metadata->'referenceImages' ELSE '[]'::jsonb END
-				) AS reference(value)
-						WHERE reference.value->>'fileKey' = locked.object_key
-			)
-			OR EXISTS (
-				SELECT 1
-				FROM jsonb_array_elements(
+						THEN message.metadata->'referenceImages' ELSE '[]'::jsonb END)
+				UNION ALL
+				SELECT value FROM jsonb_array_elements(
 					CASE WHEN jsonb_typeof(message.metadata->'proposal'->'referenceImages') = 'array'
-						THEN message.metadata->'proposal'->'referenceImages' ELSE '[]'::jsonb END
-				) AS proposal_reference(value)
-						WHERE proposal_reference.value->>'fileKey' = locked.object_key
-			)
-			OR EXISTS (
-				SELECT 1
-				FROM jsonb_array_elements(
+						THEN message.metadata->'proposal'->'referenceImages' ELSE '[]'::jsonb END)
+				UNION ALL
+				SELECT value FROM jsonb_array_elements(
 					CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
-						THEN message.metadata->'images' ELSE '[]'::jsonb END
-				) AS image(value)
-						WHERE image.value->>'fileKey' = locked.object_key
-			)
-			OR EXISTS (
-				SELECT 1
-				FROM jsonb_array_elements(
+						THEN message.metadata->'images' ELSE '[]'::jsonb END)
+				UNION ALL
+				SELECT value FROM jsonb_array_elements(
 					CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
-						THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END
-				) AS proposal_image(value)
-						WHERE proposal_image.value->>'fileKey' = locked.object_key
-			)
-		  )
-		  AND NOT EXISTS (
-			SELECT 1
+						THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+			) image
+			WHERE message.metadata ?| ARRAY['referenceImages', 'images', 'proposal']
+			  AND image.value->>'fileKey' = ANY((SELECT keys FROM batch)::text[])
+			UNION
+			SELECT reference.value->>'fileKey'
 			FROM assistant_runs run
-			WHERE EXISTS (
-				SELECT 1
-				FROM jsonb_array_elements(
-					CASE WHEN jsonb_typeof(run.params->'referenceImages') = 'array'
-						THEN run.params->'referenceImages' ELSE '[]'::jsonb END
-				) AS reference(value)
-						WHERE reference.value->>'fileKey' = locked.object_key
-			)
-		  )
-			  AND NOT EXISTS (
-				SELECT 1 FROM user_upload_references reference
-				WHERE reference.object_key = locked.object_key
-			  )
-			  AND NOT EXISTS (
-				SELECT 1
-				FROM gallery_submissions submission
-				WHERE submission.cover_key = locked.object_key
-			   OR EXISTS (
-					SELECT 1
-					FROM jsonb_array_elements_text(
-						CASE WHEN jsonb_typeof(submission.media_keys) = 'array'
-							THEN submission.media_keys ELSE '[]'::jsonb END
-					) AS media_key(value)
-						WHERE media_key.value = locked.object_key
-				)
-		  )
+			CROSS JOIN LATERAL jsonb_array_elements(
+				CASE WHEN jsonb_typeof(run.params->'referenceImages') = 'array'
+					THEN run.params->'referenceImages' ELSE '[]'::jsonb END) AS reference(value)
+			WHERE run.params ? 'referenceImages'
+			  AND reference.value->>'fileKey' = ANY((SELECT keys FROM batch)::text[])
+		), column_ref_keys AS MATERIALIZED (
+			SELECT reference.object_key FROM user_upload_references reference, batch
+			WHERE reference.object_key = ANY(batch.keys)
+			UNION
+			SELECT prompt.cover_key FROM prompt_library prompt, batch
+			WHERE prompt.cover_key = ANY(batch.keys)
+			UNION
+			SELECT item.cover_key FROM prompt_import_items item, batch
+			WHERE item.cover_key = ANY(batch.keys)
+			UNION
+			SELECT catalog.image_key FROM ecommerce_tryon_catalog catalog, batch
+			WHERE catalog.image_key = ANY(batch.keys)
+			UNION
+			SELECT template.cover_key FROM canvas_workflow_templates template, batch
+			WHERE template.cover_key = ANY(batch.keys)
+		), canvas_ref_keys AS MATERIALIZED (
+			-- OFFSET 0 keeps the document rendered to text once per project;
+			-- the keys are then matched against that single copy.
+			SELECT DISTINCT hit.object_key
+			FROM canvas_projects project
+			CROSS JOIN LATERAL (SELECT project.document::text AS document OFFSET 0) rendered
+			CROSS JOIN LATERAL unnest((SELECT keys FROM batch)) AS hit(object_key)
+			WHERE strpos(rendered.document, hit.object_key) > 0
+		)
+		SELECT locked.object_key
+		FROM locked
+		WHERE NOT EXISTS (
+			SELECT 1 FROM task_refs task
+			WHERE (jsonb_typeof(task.input_keys) = 'array' AND task.input_keys ? locked.object_key)
+			   OR (jsonb_typeof(task.output_keys) = 'array' AND task.output_keys ? locked.object_key)
+			   OR (jsonb_typeof(task.thumbnail_keys) = 'array' AND task.thumbnail_keys ? locked.object_key)
+			   OR task.mask_key = locked.object_key
+			   OR task.mask_base_key = locked.object_key
+		)
 		  AND NOT EXISTS (
-				SELECT 1 FROM prompt_library prompt WHERE prompt.cover_key = locked.object_key
-		  )
-		  AND NOT EXISTS (
-				SELECT 1 FROM prompt_import_items item WHERE item.cover_key = locked.object_key
-		  )
-		  AND NOT EXISTS (
-				SELECT 1 FROM ecommerce_tryon_catalog catalog WHERE catalog.image_key = locked.object_key
-		  )
-		  AND NOT EXISTS (
-				SELECT 1 FROM canvas_workflow_templates template WHERE template.cover_key = locked.object_key
-		  )
-		  AND NOT EXISTS (
-			SELECT 1 FROM canvas_projects project
-				WHERE project.document::text LIKE '%' || locked.object_key || '%'
-			  )
-			ORDER BY locked.next_attempt_at, locked.created_at, locked.object_key`, now, limit)
+			SELECT 1 FROM gallery_refs submission
+			WHERE submission.cover_key = locked.object_key
+			   OR (jsonb_typeof(submission.media_keys) = 'array' AND submission.media_keys ? locked.object_key)
+		)
+		  AND NOT EXISTS (SELECT 1 FROM assistant_ref_keys ref WHERE ref.object_key = locked.object_key)
+		  AND NOT EXISTS (SELECT 1 FROM column_ref_keys ref WHERE ref.object_key = locked.object_key)
+		  AND NOT EXISTS (SELECT 1 FROM canvas_ref_keys ref WHERE ref.object_key = locked.object_key)
+		ORDER BY locked.next_attempt_at, locked.created_at, locked.object_key`, now, limit)
 	if err != nil {
 		return nil, err
 	}

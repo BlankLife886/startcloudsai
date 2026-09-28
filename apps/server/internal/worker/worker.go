@@ -74,11 +74,17 @@ const (
 	userUploadRetention         = 7 * 24 * time.Hour
 	userUploadCleanupLimit      = 500
 	maxTaskImageObjectBytes     = 20 << 20
-	objectCleanupIdleLimit      = 100
+	objectCleanupIdleLimit      = 20
 	objectCleanupLowLoadLimit   = 1
 	objectCleanupRetryDelay     = 5 * time.Minute
 	objectCleanupMaxLowRunning  = 2
 	objectCleanupMaxLowWorkUnit = 4
+	// A cleanup run must end well inside its one-minute schedule: runs that
+	// outlived it stacked up (the unique lock only covers 50s) and several
+	// reference scans at once starved generation of database CPU.
+	objectCleanupTimeout          = 45 * time.Second
+	objectCleanupStatementTimeout = "30s"
+	objectCleanupLockTimeout      = "5s"
 )
 
 var errTaskProviderUnavailable = errors.New("task provider unavailable")
@@ -300,7 +306,8 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		periodicConfig("@every 30m", typeSyncPromptSources, 29*time.Minute, 0),
 		periodicConfig("@every 10m", typeBackfillPromptCovers, 9*time.Minute, 0),
 		periodicConfig("@every 1h", typeCleanupUserUploads, 59*time.Minute, 3),
-		periodicConfig("@every 1m", typeCleanupObjectJobs, 50*time.Second, 3),
+		// No retries: a failed run is simply picked up by the next minute's run.
+		periodicConfig("@every 1m", typeCleanupObjectJobs, 50*time.Second, 0, asynq.Timeout(objectCleanupTimeout)),
 		periodicConfig("@every 1h", typeCleanupCanvasRuns, 59*time.Minute, 0),
 		periodicConfig("@every 6h", typeCleanupTrashedAssets, 5*time.Hour+59*time.Minute, 1),
 		periodicConfig("@every 1m", typeEvaluateIncidents, 50*time.Second, 1),
@@ -364,11 +371,11 @@ func (w *Worker) handleEnqueueAllUserProfiles(ctx context.Context, _ *asynq.Task
 	return nil
 }
 
-func periodicConfig(cronspec, taskType string, uniqueFor time.Duration, maxRetry int) *asynq.PeriodicTaskConfig {
+func periodicConfig(cronspec, taskType string, uniqueFor time.Duration, maxRetry int, extra ...asynq.Option) *asynq.PeriodicTaskConfig {
 	return &asynq.PeriodicTaskConfig{
 		Cronspec: cronspec,
 		Task:     asynq.NewTask(taskType, nil),
-		Opts:     []asynq.Option{asynq.Unique(uniqueFor), asynq.MaxRetry(maxRetry)},
+		Opts:     append([]asynq.Option{asynq.Unique(uniqueFor), asynq.MaxRetry(maxRetry)}, extra...),
 	}
 }
 
@@ -3562,6 +3569,12 @@ func (w *Worker) handleCleanupObjectJobs(ctx context.Context, _ *asynq.Task) err
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = '"+objectCleanupStatementTimeout+"'"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '"+objectCleanupLockTimeout+"'"); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	pressure, err := store.GetTaskPressure(ctx, tx)
 	if err != nil {
