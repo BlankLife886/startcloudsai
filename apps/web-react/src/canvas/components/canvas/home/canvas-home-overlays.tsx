@@ -11,7 +11,7 @@ import { matchTemplate } from "./canvas-home-templates";
 
 function Portal({ children }: { children: ReactNode }) {
     // 画布样式限定在 .canvas-native-mount 内，浮层挂到画布专用的根节点上。
-    return createPortal(<div className="ch-theme">{children}</div>, getCanvasPortalRoot());
+    return createPortal(<div className="cvh-theme">{children}</div>, getCanvasPortalRoot());
 }
 
 const EXIT_MS = 200;
@@ -102,58 +102,58 @@ export function CanvasTemplatePreview({ template, color, full, busy, onClose, on
     const steps = (shown.deliverables?.length ? shown.deliverables : t("canvas.homePage.preview.defaultSteps").split("|")).slice(0, 6);
     return (
         <Portal>
-            <div className={`ch-overlay${closing ? " is-closing" : ""}`} onClick={onClose}>
-                <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={t("canvas.homePage.preview.label", { title: shown.title })} className="ch-preview outline-none" onClick={(event) => event.stopPropagation()}>
-                    <div className="ch-preview__cover">
+            <div className={`cvh-overlay${closing ? " is-closing" : ""}`} onClick={onClose}>
+                <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={t("canvas.homePage.preview.label", { title: shown.title })} className="cvh-preview outline-none" onClick={(event) => event.stopPropagation()}>
+                    <div className="cvh-preview__cover">
                         <TemplateCover template={shown} />
                     </div>
-                    <div className="ch-preview__body">
+                    <div className="cvh-preview__body">
                         <div className="flex items-center justify-between gap-3">
-                            <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold" style={{ background: "var(--ch-accent-soft)", color: "var(--ch-accent-text)" }}>
+                            <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold" style={{ background: "var(--cvh-accent-soft)", color: "var(--cvh-accent-text)" }}>
                                 <CategoryDot color={color} />
                                 {shown.categoryLabel}
                                 {shown.industry ? ` · ${shown.industry}` : ""}
                             </span>
-                            <button type="button" className="ch-ghost size-[34px] shrink-0 rounded-full" aria-label={t("canvas.homePage.common.close")} onClick={onClose}>
+                            <button type="button" className="cvh-ghost size-[34px] shrink-0 rounded-full" aria-label={t("canvas.homePage.common.close")} onClick={onClose}>
                                 <X className="size-4" />
                             </button>
                         </div>
                         <h2 className="m-0 text-[26px] font-extrabold leading-snug tracking-tight">{shown.title}</h2>
                         {shown.summary ? (
-                            <p className="m-0 text-sm leading-7" style={{ color: "var(--ch-muted)" }}>
+                            <p className="m-0 text-sm leading-7" style={{ color: "var(--cvh-muted)" }}>
                                 {shown.summary}
                             </p>
                         ) : null}
                         <div className="grid grid-cols-2 gap-2.5">
-                            <div className="ch-stat-box">
+                            <div className="cvh-stat-box">
                                 <span>{t("canvas.homePage.preview.nodes")}</span>
-                                <b className="ch-num">{shown.nodeCount}</b>
+                                <b className="cvh-num">{shown.nodeCount}</b>
                             </div>
-                            <div className="ch-stat-box">
+                            <div className="cvh-stat-box">
                                 <span>{t("canvas.homePage.preview.deliverables")}</span>
-                                <b className="ch-num">{shown.deliverables?.length || "—"}</b>
+                                <b className="cvh-num">{shown.deliverables?.length || "—"}</b>
                             </div>
                         </div>
                         {shown.platforms?.length ? (
                             <div className="flex flex-wrap items-center gap-2">
-                                <span className="mr-1 text-xs" style={{ color: "var(--ch-muted)" }}>
+                                <span className="mr-1 text-xs" style={{ color: "var(--cvh-muted)" }}>
                                     {t("canvas.homePage.preview.platforms")}
                                 </span>
                                 {shown.platforms.map((platform) => (
-                                    <span key={platform} className="ch-chip">
+                                    <span key={platform} className="cvh-chip">
                                         {platform}
                                     </span>
                                 ))}
                             </div>
                         ) : null}
                         <div>
-                            <span className="mb-2.5 block text-xs" style={{ color: "var(--ch-muted)" }}>
+                            <span className="mb-2.5 block text-xs" style={{ color: "var(--cvh-muted)" }}>
                                 {shown.deliverables?.length ? t("canvas.homePage.preview.outputs") : t("canvas.homePage.preview.workflow")}
                             </span>
                             <div className="flex flex-wrap gap-2">
                                 {steps.map((step, index) => (
-                                    <span key={step} className="ch-chip ch-anim-up" style={{ animationDelay: `${200 + index * 60}ms` }}>
-                                        <b className="ch-num text-[11px]" style={{ color: "var(--ch-accent-text)" }}>
+                                    <span key={step} className="cvh-chip cvh-anim-up" style={{ animationDelay: `${200 + index * 60}ms` }}>
+                                        <b className="cvh-num text-[11px]" style={{ color: "var(--cvh-accent-text)" }}>
                                             {index + 1}
                                         </b>
                                         {step}
@@ -161,12 +161,12 @@ export function CanvasTemplatePreview({ template, color, full, busy, onClose, on
                                 ))}
                             </div>
                         </div>
-                        <div className="ch-preview__actions">
+                        <div className="cvh-preview__actions">
                             <label className="flex min-w-[200px] flex-1 flex-col gap-1.5">
-                                <span className="text-xs" style={{ color: "var(--ch-muted)" }}>
+                                <span className="text-xs" style={{ color: "var(--cvh-muted)" }}>
                                     {t("canvas.homePage.preview.canvasName")}
                                 </span>
-                                <span className="ch-input h-12 rounded-[13px]">
+                                <span className="cvh-input h-12 rounded-[13px]">
                                     <input
                                         data-autofocus
                                         value={title}
@@ -184,7 +184,7 @@ export function CanvasTemplatePreview({ template, color, full, busy, onClose, on
                                     />
                                 </span>
                             </label>
-                            <button type="button" className="ch-primary h-12 rounded-[13px] px-6 text-[15px]" disabled={full || busy} onClick={(event) => onUse(shown, title, event)}>
+                            <button type="button" className="cvh-primary h-12 rounded-[13px] px-6 text-[15px]" disabled={full || busy} onClick={(event) => onUse(shown, title, event)}>
                                 {full ? t("canvas.homePage.preview.full") : busy ? t("canvas.homePage.preview.creating") : t("canvas.homePage.preview.create")}
                             </button>
                         </div>
@@ -277,11 +277,11 @@ export function CanvasCommandPalette({ open, projects, templates, full, onClose,
     if (!visible) return null;
     return (
         <Portal>
-            <div className={`ch-palette-overlay${closing ? " is-closing" : ""}`} onClick={onClose}>
-                <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={t("canvas.homePage.palette.label")} className="ch-palette" onClick={(event) => event.stopPropagation()}>
-                    <div className="ch-palette__inner">
-                        <div className="flex h-[62px] items-center gap-3 border-b px-5" style={{ borderColor: "var(--ch-line)" }}>
-                            <Search className="size-[18px]" style={{ color: "var(--ch-accent-text)" }} />
+            <div className={`cvh-palette-overlay${closing ? " is-closing" : ""}`} onClick={onClose}>
+                <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={t("canvas.homePage.palette.label")} className="cvh-palette" onClick={(event) => event.stopPropagation()}>
+                    <div className="cvh-palette__inner">
+                        <div className="flex h-[62px] items-center gap-3 border-b px-5" style={{ borderColor: "var(--cvh-line)" }}>
+                            <Search className="size-[18px]" style={{ color: "var(--cvh-accent-text)" }} />
                             <input
                                 autoFocus
                                 data-autofocus
@@ -306,47 +306,47 @@ export function CanvasCommandPalette({ open, projects, templates, full, onClose,
                                 aria-label={t("canvas.homePage.palette.inputLabel")}
                                 role="combobox"
                                 aria-expanded="true"
-                                aria-controls="ch-palette-list"
+                                aria-controls="cvh-palette-list"
                                 className="flex-1 border-0 bg-transparent text-base outline-none"
-                                style={{ color: "var(--ch-text)" }}
+                                style={{ color: "var(--cvh-text)" }}
                             />
-                            <span className="ch-kbd">Esc</span>
+                            <span className="cvh-kbd">Esc</span>
                         </div>
-                        <div ref={listRef} id="ch-palette-list" role="listbox" className="max-h-[380px] overflow-y-auto p-2">
+                        <div ref={listRef} id="cvh-palette-list" role="listbox" className="max-h-[380px] overflow-y-auto p-2">
                             {items.map((item, index) => (
                                 <div key={item.key}>
                                     {index === 0 || items[index - 1].group !== item.group ? (
-                                        <div className="px-3 pb-1.5 pt-2.5 text-[11px] font-semibold tracking-wider" style={{ color: "var(--ch-faint)" }}>
+                                        <div className="px-3 pb-1.5 pt-2.5 text-[11px] font-semibold tracking-wider" style={{ color: "var(--cvh-faint)" }}>
                                             {t(`canvas.homePage.palette.group${item.group === "actions" ? "Actions" : item.group === "canvases" ? "Canvases" : "Templates"}`)}
                                         </div>
                                     ) : null}
-                                    <button type="button" role="option" aria-selected={index === current} className="ch-palette__item" onMouseEnter={() => setActive(index)} onClick={item.run}>
-                                        <span className="ch-palette__icon">{item.image || item.icon}</span>
+                                    <button type="button" role="option" aria-selected={index === current} className="cvh-palette__item" onMouseEnter={() => setActive(index)} onClick={item.run}>
+                                        <span className="cvh-palette__icon">{item.image || item.icon}</span>
                                         <span className="min-w-0 flex-1">
                                             <span className="block truncate text-sm">{item.label}</span>
-                                            <span className="ch-num block truncate text-xs" style={{ color: "var(--ch-muted)" }}>
+                                            <span className="cvh-num block truncate text-xs" style={{ color: "var(--cvh-muted)" }}>
                                                 {item.hint}
                                             </span>
                                         </span>
-                                        {index === current ? <span className="ch-kbd">↵</span> : null}
+                                        {index === current ? <span className="cvh-kbd">↵</span> : null}
                                     </button>
                                 </div>
                             ))}
                             {!items.length ? (
-                                <div className="py-9 text-center text-[13px]" style={{ color: "var(--ch-muted)" }}>
+                                <div className="py-9 text-center text-[13px]" style={{ color: "var(--cvh-muted)" }}>
                                     {t("canvas.homePage.palette.noResult", { query })}
                                 </div>
                             ) : null}
                         </div>
-                        <div className="flex gap-4 border-t px-5 py-2.5 text-[11px]" style={{ borderColor: "var(--ch-line)", color: "var(--ch-faint)" }}>
+                        <div className="flex gap-4 border-t px-5 py-2.5 text-[11px]" style={{ borderColor: "var(--cvh-line)", color: "var(--cvh-faint)" }}>
                             <span>
-                                <span className="ch-kbd">↑</span> <span className="ch-kbd">↓</span> {t("canvas.homePage.palette.navigate")}
+                                <span className="cvh-kbd">↑</span> <span className="cvh-kbd">↓</span> {t("canvas.homePage.palette.navigate")}
                             </span>
                             <span>
-                                <span className="ch-kbd">↵</span> {t("canvas.homePage.palette.open")}
+                                <span className="cvh-kbd">↵</span> {t("canvas.homePage.palette.open")}
                             </span>
                             <span>
-                                <span className="ch-kbd">⌘</span> <span className="ch-kbd">K</span> {t("canvas.homePage.palette.anytime")}
+                                <span className="cvh-kbd">⌘</span> <span className="cvh-kbd">K</span> {t("canvas.homePage.palette.anytime")}
                             </span>
                         </div>
                     </div>
@@ -361,10 +361,10 @@ export function CanvasLaunchOverlay({ launch }: { launch: { x: number; y: number
     if (!launch) return null;
     return (
         <Portal>
-            <div className="ch-launch" role="status" aria-live="polite">
-                <span className="ch-launch__eyebrow">{t("canvas.homePage.launch.opening")}</span>
-                <span className="ch-launch__title">{launch.title}</span>
-                <span className="ch-launch__track" aria-hidden="true">
+            <div className="cvh-launch" role="status" aria-live="polite">
+                <span className="cvh-launch__eyebrow">{t("canvas.homePage.launch.opening")}</span>
+                <span className="cvh-launch__title">{launch.title}</span>
+                <span className="cvh-launch__track" aria-hidden="true">
                     <i />
                 </span>
             </div>

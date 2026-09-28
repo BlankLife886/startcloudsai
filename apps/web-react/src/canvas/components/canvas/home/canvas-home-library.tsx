@@ -87,21 +87,21 @@ export function CanvasHomeLibrary({ projects, hydrated, quota, onCreate, onExpor
     let running = 0;
 
     return (
-        <div className="ch-view">
+        <div className="cvh-view">
             <CanvasHomePageHead
                 title={t("canvas.homePage.library.title")}
                 stats={
                     <>
                         <span>
-                            <b className="ch-num">{projects.length}</b> {t("canvas.homePage.library.canvasUnit")}
+                            <b className="cvh-num">{projects.length}</b> {t("canvas.homePage.library.canvasUnit")}
                         </span>
                         <span title={t("canvas.homePage.library.totalHint")}>
-                            {t("canvas.homePage.library.totalPrefix")} <b className="ch-num">{totalBytes ? formatCanvasProjectBytes(totalBytes) : "0 KB"}</b>
+                            {t("canvas.homePage.library.totalPrefix")} <b className="cvh-num">{totalBytes ? formatCanvasProjectBytes(totalBytes) : "0 KB"}</b>
                         </span>
                         {quota ? (
                             <span>
-                                {t("canvas.homePage.library.quotaPrefix")} <b className="ch-num">{quota.used} / {quota.limit}</b>
-                                <span className={cn("ch-page-head__bar", quotaFull && "is-full")}>
+                                {t("canvas.homePage.library.quotaPrefix")} <b className="cvh-num">{quota.used} / {quota.limit}</b>
+                                <span className={cn("cvh-page-head__bar", quotaFull && "is-full")}>
                                     <span style={{ width: `${Math.min(100, Math.round((quota.used / Math.max(quota.limit, 1)) * 100))}%` }} />
                                 </span>
                             </span>
@@ -112,16 +112,16 @@ export function CanvasHomeLibrary({ projects, hydrated, quota, onCreate, onExpor
                     <>
                         <button
                             type="button"
-                            className="ch-ghost h-10 rounded-[11px] px-4 text-[13px]"
+                            className="cvh-ghost h-10 rounded-[11px] px-4 text-[13px]"
                             aria-pressed={selectMode}
-                            style={selectMode ? { borderColor: "var(--ch-accent-line)", background: "var(--ch-accent-soft)", color: "var(--ch-accent-text)", fontWeight: 600 } : undefined}
+                            style={selectMode ? { borderColor: "var(--cvh-accent-line)", background: "var(--cvh-accent-soft)", color: "var(--cvh-accent-text)", fontWeight: 600 } : undefined}
                             disabled={!projects.length}
                             onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}
                         >
                             <CheckSquare className="size-4" />
                             {selectMode ? t("canvas.homePage.library.cancelSelect") : t("canvas.homePage.library.select")}
                         </button>
-                        <button type="button" className="ch-primary h-10 rounded-[11px] px-4 text-[13px]" disabled={!hydrated} onClick={onCreate}>
+                        <button type="button" className="cvh-primary h-10 rounded-[11px] px-4 text-[13px]" disabled={!hydrated} onClick={onCreate}>
                             <Plus className="size-4" strokeWidth={2.4} />
                             {t("canvas.homePage.common.newCanvas")}
                         </button>
@@ -129,28 +129,28 @@ export function CanvasHomeLibrary({ projects, hydrated, quota, onCreate, onExpor
                 }
             />
 
-            <div className="ch-section flex flex-col gap-8 pb-36">
-                <div className="ch-libbar">
-                    <label className="ch-input w-[320px] max-w-full">
+            <div className="cvh-section flex flex-col gap-8 pb-36">
+                <div className="cvh-libbar">
+                    <label className="cvh-input w-[320px] max-w-full">
                         <Search className="size-3.5" />
                         <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("canvas.homePage.library.searchPlaceholder")} aria-label={t("canvas.homePage.library.searchLabel")} />
                         {query ? (
-                            <button type="button" className="ch-link" aria-label={t("canvas.homePage.common.clearSearch")} onClick={() => setQuery("")}>
+                            <button type="button" className="cvh-link" aria-label={t("canvas.homePage.common.clearSearch")} onClick={() => setQuery("")}>
                                 <X className="size-3.5" />
                             </button>
                         ) : null}
                     </label>
                     <span className="flex-1" />
-                    <div className="ch-segment hidden sm:flex" role="group" aria-label={t("canvas.homePage.library.sortLabel")}>
-                        <span className="ch-segment__thumb" style={{ left: 4 + sortIndex * 56, width: 56 }} />
+                    <div className="cvh-segment hidden sm:flex" role="group" aria-label={t("canvas.homePage.library.sortLabel")}>
+                        <span className="cvh-segment__thumb" style={{ left: 4 + sortIndex * 56, width: 56 }} />
                         {SORTS.map((item) => (
                             <button key={item.key} type="button" aria-pressed={sort === item.key} style={{ width: 56, padding: 0 }} onClick={() => setSort(item.key)}>
                                 {t(item.labelKey)}
                             </button>
                         ))}
                     </div>
-                    <div className="ch-segment" role="group" aria-label={t("canvas.homePage.library.viewLabel")}>
-                        <span className="ch-segment__thumb" style={{ left: layout === "grid" ? 4 : 44, width: 40 }} />
+                    <div className="cvh-segment" role="group" aria-label={t("canvas.homePage.library.viewLabel")}>
+                        <span className="cvh-segment__thumb" style={{ left: layout === "grid" ? 4 : 44, width: 40 }} />
                         <button type="button" aria-pressed={layout === "grid"} aria-label={t("canvas.homePage.library.gridView")} style={{ width: 40, padding: 0 }} onClick={() => setLayout("grid")}>
                             <LayoutGrid className="size-[15px]" />
                         </button>
@@ -161,51 +161,51 @@ export function CanvasHomeLibrary({ projects, hydrated, quota, onCreate, onExpor
                 </div>
 
                 {quotaFull && !selectMode ? (
-                    <div className="ch-notice" role="status">
+                    <div className="cvh-notice" role="status">
                         <AlertTriangle className="size-4 shrink-0" />
                         <span className="flex-1">{t("canvas.homePage.library.quotaFullNotice", { used: quota?.used, limit: quota?.limit })}</span>
-                        <button type="button" className="ch-link" onClick={() => setSelectMode(true)}>
+                        <button type="button" className="cvh-link" onClick={() => setSelectMode(true)}>
                             {t("canvas.homePage.library.cleanUp")}
                         </button>
                     </div>
                 ) : null}
 
                 {!hydrated ? (
-                    <div className="ch-empty">{t("canvas.homePage.library.loading")}</div>
+                    <div className="cvh-empty">{t("canvas.homePage.library.loading")}</div>
                 ) : !projects.length ? (
-                    <div className="ch-empty">
+                    <div className="cvh-empty">
                         <strong>{t("canvas.homePage.library.empty")}</strong>
                         <span>{t("canvas.homePage.library.emptyHint")}</span>
-                        <button type="button" className="ch-primary mt-1 h-10 rounded-[11px] px-5 text-[13px]" onClick={onCreate}>
+                        <button type="button" className="cvh-primary mt-1 h-10 rounded-[11px] px-5 text-[13px]" onClick={onCreate}>
                             <Plus className="size-4" />
                             {t("canvas.homePage.common.newCanvas")}
                         </button>
                     </div>
                 ) : !filtered.length ? (
-                    <div className="ch-empty">
+                    <div className="cvh-empty">
                         <strong>{t("canvas.homePage.library.notFound", { query })}</strong>
                         <span>{t("canvas.homePage.library.notFoundHint")}</span>
-                        <button type="button" className="ch-ghost mt-1 h-9 rounded-[10px] px-4 text-[13px]" onClick={() => setQuery("")}>
+                        <button type="button" className="cvh-ghost mt-1 h-9 rounded-[10px] px-4 text-[13px]" onClick={() => setQuery("")}>
                             {t("canvas.homePage.common.clearSearch")}
                         </button>
                     </div>
                 ) : (
                     groups.map((group, groupIndex) => (
                         <section key={group.key} className="flex flex-col gap-4" aria-label={group.label}>
-                            <div className="ch-group-head ch-anim-up" style={{ animationDelay: `${groupIndex * 80}ms` }}>
+                            <div className="cvh-group-head cvh-anim-up" style={{ animationDelay: `${groupIndex * 80}ms` }}>
                                 <span className="text-sm font-bold">{group.label}</span>
-                                <span className="ch-num text-xs" style={{ color: "var(--ch-faint)" }}>
+                                <span className="cvh-num text-xs" style={{ color: "var(--cvh-faint)" }}>
                                     {t("canvas.homePage.common.count", { count: group.items.length })}
                                 </span>
                             </div>
                             {layout === "grid" ? (
-                                <div className="ch-grid-cards">
+                                <div className="cvh-grid-cards">
                                     {group.items.map((project) => (
                                         <CanvasHomeProjectCard key={project.id} project={project} index={running++} selectMode={selectMode} selected={selectedIds.includes(project.id)} onToggleSelect={toggle} {...actions} />
                                     ))}
                                 </div>
                             ) : (
-                                <div className="ch-list">
+                                <div className="cvh-list">
                                     {group.items.map((project) => (
                                         <CanvasHomeProjectRow key={project.id} project={project} index={running++} maxBytes={maxBytes} selectMode={selectMode} selected={selectedIds.includes(project.id)} onToggleSelect={toggle} {...actions} />
                                     ))}
@@ -217,11 +217,11 @@ export function CanvasHomeLibrary({ projects, hydrated, quota, onCreate, onExpor
             </div>
 
             {selectMode ? (
-                <div className="ch-selectbar ch-glass" role="toolbar" aria-label={t("canvas.homePage.library.batchLabel")}>
-                    <span className="mr-2 whitespace-nowrap text-[13px]" style={{ color: "var(--ch-muted)" }}>
-                        {t("canvas.homePage.library.selectedPrefix")} <b className="ch-num text-[15px]" style={{ color: "var(--ch-text)" }}>{selected.length}</b> {t("canvas.homePage.library.selectedSuffix")}
+                <div className="cvh-selectbar cvh-glass" role="toolbar" aria-label={t("canvas.homePage.library.batchLabel")}>
+                    <span className="mr-2 whitespace-nowrap text-[13px]" style={{ color: "var(--cvh-muted)" }}>
+                        {t("canvas.homePage.library.selectedPrefix")} <b className="cvh-num text-[15px]" style={{ color: "var(--cvh-text)" }}>{selected.length}</b> {t("canvas.homePage.library.selectedSuffix")}
                     </span>
-                    <span className="h-[22px] w-px" style={{ background: "var(--ch-line2)" }} />
+                    <span className="h-[22px] w-px" style={{ background: "var(--cvh-line2)" }} />
                     <button type="button" onClick={() => setSelectedIds(allSelected ? [] : filtered.map((project) => project.id))}>
                         {allSelected ? t("canvas.homePage.library.unselectAll") : t("canvas.homePage.library.selectAll")}
                     </button>
@@ -234,7 +234,7 @@ export function CanvasHomeLibrary({ projects, hydrated, quota, onCreate, onExpor
                     <button type="button" className="is-danger" disabled={!selected.length} onClick={() => onDeleteMany(selected)}>
                         {t("canvas.homePage.common.delete")}
                     </button>
-                    <button type="button" className="ch-primary ml-1 h-10 rounded-[11px] px-[18px] text-[13px]" onClick={exitSelect}>
+                    <button type="button" className="cvh-primary ml-1 h-10 rounded-[11px] px-[18px] text-[13px]" onClick={exitSelect}>
                         {t("canvas.homePage.library.done")}
                     </button>
                 </div>

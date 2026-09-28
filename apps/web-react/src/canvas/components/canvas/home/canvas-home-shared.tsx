@@ -4,7 +4,7 @@ import { useEffect, useState, type CSSProperties, type ReactNode, type PointerEv
 import i18n from "@/i18n";
 import type { CanvasWorkflowTemplateSummary } from "@/services/canvas-workflow-template-api";
 
-/** 与 canvas-home.css 中 .ch-grid-cards 的断点保持一致。 */
+/** 与 canvas-home.css 中 .cvh-grid-cards 的断点保持一致。 */
 function gridColumnsFor(width: number) {
     if (width >= 2100) return 6;
     if (width >= 1680) return 5;
@@ -60,7 +60,7 @@ export function FadeImage({ src, alt = "", className, style }: { src: string; al
             alt={alt}
             loading="lazy"
             draggable={false}
-            className={`ch-img ${loaded ? "is-loaded" : ""} ${className || ""}`}
+            className={`cvh-img ${loaded ? "is-loaded" : ""} ${className || ""}`}
             style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", ...style }}
             onLoad={() => setLoaded(true)}
             onError={() => setLoaded(true)}
@@ -80,22 +80,22 @@ export function TemplateCover({ template, className }: { template: CanvasWorkflo
     if (!template.coverUrl || failedUrl === template.coverUrl) {
         const { eyebrow, name } = splitTemplateTitle(template.title);
         return (
-            <span className={`ch-template-placeholder ch-poster ${className || ""}`} style={{ "--tpl-accent": template.accent || "#6d4aff" } as CSSProperties} aria-hidden="true">
-                <span className="ch-poster__eyebrow">{template.categoryLabel}</span>
-                <span className="ch-poster__title">{template.industry || eyebrow || name}</span>
-                <span className="ch-poster__meta ch-num">{template.nodeCount} NODES · WORKFLOW</span>
+            <span className={`cvh-template-placeholder cvh-poster ${className || ""}`} style={{ "--tpl-accent": template.accent || "#6d4aff" } as CSSProperties} aria-hidden="true">
+                <span className="cvh-poster__eyebrow">{template.categoryLabel}</span>
+                <span className="cvh-poster__title">{template.industry || eyebrow || name}</span>
+                <span className="cvh-poster__meta cvh-num">{template.nodeCount} NODES · WORKFLOW</span>
             </span>
         );
     }
     return (
         <>
-            {loaded ? null : <span className="ch-img-skeleton" aria-hidden="true" />}
+            {loaded ? null : <span className="cvh-img-skeleton" aria-hidden="true" />}
             <img
                 src={template.coverUrl}
                 alt=""
                 loading="lazy"
                 draggable={false}
-                className={`ch-img ${loaded ? "is-loaded" : ""} ${className || ""}`}
+                className={`cvh-img ${loaded ? "is-loaded" : ""} ${className || ""}`}
                 style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
                 onLoad={() => setLoaded(true)}
                 onError={() => setFailedUrl(template.coverUrl || "")}
@@ -149,20 +149,20 @@ export function projectGroupOf(iso: string): ProjectGroupKey {
 /** 画布库、模板库共用的页面头部：标题、统计与右侧操作。 */
 export function CanvasHomePageHead({ title, stats, actions }: { title: string; stats?: ReactNode; actions?: ReactNode }) {
     return (
-        <header className="ch-page-head">
-            <div className="ch-section ch-page-head__inner">
+        <header className="cvh-page-head">
+            <div className="cvh-section cvh-page-head__inner">
                 <div className="min-w-0">
-                    <h1 className="ch-page-head__title ch-anim-up">
+                    <h1 className="cvh-page-head__title cvh-anim-up">
                         {title}
                     </h1>
                     {stats ? (
-                        <div className="ch-page-head__stats ch-anim-up" style={{ animationDelay: "100ms" }}>
+                        <div className="cvh-page-head__stats cvh-anim-up" style={{ animationDelay: "100ms" }}>
                             {stats}
                         </div>
                     ) : null}
                 </div>
                 {actions ? (
-                    <div className="ch-page-head__actions ch-anim-up" style={{ animationDelay: "140ms" }}>
+                    <div className="cvh-page-head__actions cvh-anim-up" style={{ animationDelay: "140ms" }}>
                         {actions}
                     </div>
                 ) : null}

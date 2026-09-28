@@ -48,7 +48,7 @@ function TemplateCard({ template, index, color, showCategory, onPreview, onUse }
     const { eyebrow, name } = splitTemplateTitle(template.title);
     return (
         <article
-            className="ch-tcard"
+            className="cvh-tcard"
             style={{ animationDelay: `${index * 45}ms`, "--tcard-color": color } as CSSProperties}
             tabIndex={0}
             role="button"
@@ -61,15 +61,15 @@ function TemplateCard({ template, index, color, showCategory, onPreview, onUse }
                 }
             }}
         >
-            <div className="ch-tcard__media">
+            <div className="cvh-tcard__media">
                 <TemplateCover template={template} />
                 {showCategory ? (
-                    <span className="ch-pill ch-pill--light ch-tcard__badge">
+                    <span className="cvh-pill cvh-pill--light cvh-tcard__badge">
                         <CategoryDot color={color} />
                         {template.categoryLabel}
                     </span>
                 ) : null}
-                <div className="ch-tcard__meta ch-num">
+                <div className="cvh-tcard__meta cvh-num">
                     <span>
                         <Workflow className="size-3" />
                         {t("canvas.homePage.common.nodes", { count: template.nodeCount })}
@@ -81,10 +81,10 @@ function TemplateCard({ template, index, color, showCategory, onPreview, onUse }
                         </span>
                     ) : null}
                 </div>
-                <div className="ch-tcard__actions">
+                <div className="cvh-tcard__actions">
                     <button
                         type="button"
-                        className="ch-tcard__use"
+                        className="cvh-tcard__use"
                         onClick={(event) => {
                             event.stopPropagation();
                             onUse(template, event);
@@ -94,7 +94,7 @@ function TemplateCard({ template, index, color, showCategory, onPreview, onUse }
                     </button>
                     <button
                         type="button"
-                        className="ch-tcard__peek"
+                        className="cvh-tcard__peek"
                         aria-label={t("canvas.homePage.common.preview")}
                         onClick={(event) => {
                             event.stopPropagation();
@@ -105,9 +105,9 @@ function TemplateCard({ template, index, color, showCategory, onPreview, onUse }
                     </button>
                 </div>
             </div>
-            <div className="ch-tcard__body">
-                <span className="ch-tcard__eyebrow">{eyebrow || template.industry || template.categoryLabel}</span>
-                <h3 className="ch-tcard__title">{name}</h3>
+            <div className="cvh-tcard__body">
+                <span className="cvh-tcard__eyebrow">{eyebrow || template.industry || template.categoryLabel}</span>
+                <h3 className="cvh-tcard__title">{name}</h3>
             </div>
         </article>
     );
@@ -211,33 +211,33 @@ export const CanvasHomeTemplates = forwardRef<HTMLElement, TemplatesProps>(funct
     };
 
     return (
-        <section ref={ref} className={cn("ch-section flex flex-col pb-14", hideTitle ? "pt-0" : "pt-11")} aria-labelledby={hideTitle ? undefined : "ch-templates-title"} aria-label={hideTitle ? t("canvas.homePage.templates.title") : undefined}>
+        <section ref={ref} className={cn("cvh-section flex flex-col pb-14", hideTitle ? "pt-0" : "pt-11")} aria-labelledby={hideTitle ? undefined : "cvh-templates-title"} aria-label={hideTitle ? t("canvas.homePage.templates.title") : undefined}>
             {hideTitle ? null : (
             <div className="flex items-baseline gap-2.5">
-                <h2 id="ch-templates-title" className="ch-section-title">
+                <h2 id="cvh-templates-title" className="cvh-section-title">
                     {t("canvas.homePage.templates.title")}
                 </h2>
-                <span className="ch-num text-[13px]" style={{ color: "var(--ch-muted)" }}>
+                <span className="cvh-num text-[13px]" style={{ color: "var(--cvh-muted)" }}>
                     {normalized || category !== "all" ? t("canvas.homePage.common.ratio", { shown: filtered.length, total: templates.length }) : t("canvas.homePage.common.count", { count: templates.length })}
                 </span>
             </div>
             )}
 
             <div ref={anchorRef} aria-hidden="true" />
-            <div ref={barRef} className={cn("ch-cats-bar", stuck && "is-stuck")}>
-                <div className={cn("ch-cats-wrap", edges.left && "fade-left", edges.right && "fade-right")}>
-                    <div ref={tabsRef} role="tablist" aria-label={t("canvas.homePage.templates.categories")} className="ch-cats">
-                        <span ref={thumbRef} className="ch-cats__thumb" aria-hidden="true" />
+            <div ref={barRef} className={cn("cvh-cats-bar", stuck && "is-stuck")}>
+                <div className={cn("cvh-cats-wrap", edges.left && "fade-left", edges.right && "fade-right")}>
+                    <div ref={tabsRef} role="tablist" aria-label={t("canvas.homePage.templates.categories")} className="cvh-cats">
+                        <span ref={thumbRef} className="cvh-cats__thumb" aria-hidden="true" />
                         {tabs.map((tab) => (
-                            <button key={tab.id} type="button" role="tab" className="ch-cat" aria-selected={category === tab.id} onClick={() => selectCategory(tab.id)}>
+                            <button key={tab.id} type="button" role="tab" className="cvh-cat" aria-selected={category === tab.id} onClick={() => selectCategory(tab.id)}>
                                 {tab.id === "all" ? null : <CategoryDot color={categoryColor(tab.id, categoryIds)} />}
                                 {tab.label}
-                                <span className="ch-cat__count ch-num">{tab.count}</span>
+                                <span className="cvh-cat__count cvh-num">{tab.count}</span>
                             </button>
                         ))}
                     </div>
                 </div>
-                <label className="ch-input ch-cats-search">
+                <label className="cvh-input cvh-cats-search">
                     <Search className="size-3.5" />
                     <input
                         type="search"
@@ -250,7 +250,7 @@ export const CanvasHomeTemplates = forwardRef<HTMLElement, TemplatesProps>(funct
                         aria-label={t("canvas.homePage.templates.filter")}
                     />
                     {query ? (
-                        <button type="button" className="ch-link" aria-label={t("canvas.homePage.templates.clearFilter")} onClick={() => setQuery("")}>
+                        <button type="button" className="cvh-link" aria-label={t("canvas.homePage.templates.clearFilter")} onClick={() => setQuery("")}>
                             <X className="size-3.5" />
                         </button>
                     ) : null}
@@ -258,30 +258,30 @@ export const CanvasHomeTemplates = forwardRef<HTMLElement, TemplatesProps>(funct
             </div>
 
             {loading && !templates.length ? (
-                <div className="ch-grid-cards" aria-busy="true">
+                <div className="cvh-grid-cards" aria-busy="true">
                     {Array.from({ length: pageSize }, (_, index) => (
-                        <div key={index} className="ch-tcard is-skeleton" style={{ animationDelay: `${index * 40}ms` }}>
-                            <div className="ch-tcard__media">
-                                <span className="ch-img-skeleton" />
+                        <div key={index} className="cvh-tcard is-skeleton" style={{ animationDelay: `${index * 40}ms` }}>
+                            <div className="cvh-tcard__media">
+                                <span className="cvh-img-skeleton" />
                             </div>
-                            <div className="ch-tcard__body">
-                                <span className="ch-skel-line" style={{ width: "30%" }} />
-                                <span className="ch-skel-line" style={{ width: "70%", height: 14 }} />
+                            <div className="cvh-tcard__body">
+                                <span className="cvh-skel-line" style={{ width: "30%" }} />
+                                <span className="cvh-skel-line" style={{ width: "70%", height: 14 }} />
                             </div>
                         </div>
                     ))}
                 </div>
             ) : error && !templates.length ? (
-                <div className="ch-empty">
+                <div className="cvh-empty">
                     <strong>{t("canvas.homePage.templates.loadFailed")}</strong>
                     <span>{error}</span>
                 </div>
             ) : !filtered.length ? (
-                <div className="ch-empty">
+                <div className="cvh-empty">
                     <strong>{t("canvas.homePage.templates.noMatch")}</strong>
                     <button
                         type="button"
-                        className="ch-ghost h-9 rounded-[10px] px-4 text-[13px]"
+                        className="cvh-ghost h-9 rounded-[10px] px-4 text-[13px]"
                         onClick={() => {
                             setQuery("");
                             selectCategory("all");
@@ -291,7 +291,7 @@ export const CanvasHomeTemplates = forwardRef<HTMLElement, TemplatesProps>(funct
                     </button>
                 </div>
             ) : (
-                <div key={`${category}:${normalized}`} className="ch-grid-cards">
+                <div key={`${category}:${normalized}`} className="cvh-grid-cards">
                     {visible.map((template, index) => (
                         <TemplateCard
                             key={template.id}
@@ -307,9 +307,9 @@ export const CanvasHomeTemplates = forwardRef<HTMLElement, TemplatesProps>(funct
             )}
 
             {filtered.length ? (
-                <div ref={sentinelRef} className="ch-load-end" aria-live="polite">
+                <div ref={sentinelRef} className="cvh-load-end" aria-live="polite">
                     {hasMore ? (
-                        <span className="ch-load-dots" role="status" aria-label={t("canvas.homePage.templates.loadingMore")}>
+                        <span className="cvh-load-dots" role="status" aria-label={t("canvas.homePage.templates.loadingMore")}>
                             <i />
                             <i />
                             <i />

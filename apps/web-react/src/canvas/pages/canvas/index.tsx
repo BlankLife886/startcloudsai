@@ -299,9 +299,9 @@ export default function CanvasPage() {
     const railActive: CanvasHomeRailTarget = paletteOpen ? "search" : view;
 
     return (
-        <div className="ch-theme ch-root">
+        <div className="cvh-theme cvh-root">
             <CanvasHomeRail active={railActive} projectCount={visibleProjects.length} templateCount={templates.length} quota={quota} isAuthenticated={isAuthenticated} onLogin={requestAuth} onNavigate={navigateRail} />
-            <main ref={mainRef} className="ch-main">
+            <main ref={mainRef} className="cvh-main">
                 {view === "library" ? (
                     <CanvasHomeLibrary
                         key="library"
@@ -315,17 +315,17 @@ export default function CanvasPage() {
                         {...projectActions}
                     />
                 ) : view === "templates" ? (
-                    <div key="templates" className="ch-view">
+                    <div key="templates" className="cvh-view">
                         <CanvasHomePageHead
                             title={t("canvas.homePage.templatesPage.title")}
                             stats={
                                 templates.length ? (
                                     <>
                                         <span>
-                                            <b className="ch-num">{templates.length}</b> {t("canvas.homePage.templatesPage.templateUnit")}
+                                            <b className="cvh-num">{templates.length}</b> {t("canvas.homePage.templatesPage.templateUnit")}
                                         </span>
                                         <span>
-                                            <b className="ch-num">{categoryIds.length}</b> {t("canvas.homePage.templatesPage.categoryUnit")}
+                                            <b className="cvh-num">{categoryIds.length}</b> {t("canvas.homePage.templatesPage.categoryUnit")}
                                         </span>
                                     </>
                                 ) : null
@@ -344,7 +344,7 @@ export default function CanvasPage() {
                         />
                     </div>
                 ) : (
-                    <div key="home" className="ch-view">
+                    <div key="home" className="cvh-view">
                         <CanvasHomeHero
                             scrollRef={mainRef}
                             templates={templates}
@@ -355,35 +355,35 @@ export default function CanvasPage() {
                             onUseTemplate={(template, event) => void useWorkflowTemplate(template, undefined, event)}
                         />
 
-                        <section className="ch-section flex flex-col gap-[18px] pt-2" aria-labelledby="ch-recent-title">
+                        <section className="cvh-section flex flex-col gap-[18px] pt-2" aria-labelledby="cvh-recent-title">
                             <div className="flex items-center justify-between gap-4">
                                 <div className="flex items-baseline gap-2.5">
-                                    <h2 id="ch-recent-title" className="ch-section-title">
+                                    <h2 id="cvh-recent-title" className="cvh-section-title">
                                         {t("canvas.homePage.recent.title")}
                                     </h2>
                                     {recentProjects.length ? (
-                                        <span className="text-[13px]" style={{ color: "var(--ch-muted)" }}>
+                                        <span className="text-[13px]" style={{ color: "var(--cvh-muted)" }}>
                                             {t("canvas.homePage.recent.latest", { count: Math.min(recentCount, recentProjects.length) })}
                                         </span>
                                     ) : null}
                                 </div>
-                                <button type="button" className="ch-ghost h-[34px] rounded-[10px] px-3.5 text-[13px]" onClick={() => setView("library")}>
-                                    {t("canvas.homePage.recent.library")} <span className="ch-num">{visibleProjects.length}</span>
+                                <button type="button" className="cvh-ghost h-[34px] rounded-[10px] px-3.5 text-[13px]" onClick={() => setView("library")}>
+                                    {t("canvas.homePage.recent.library")} <span className="cvh-num">{visibleProjects.length}</span>
                                     <ArrowRight className="size-3.5" />
                                 </button>
                             </div>
                             {!hydrated ? (
-                                <div className="ch-empty" style={{ minHeight: 200 }}>
+                                <div className="cvh-empty" style={{ minHeight: 200 }}>
                                     {t("canvas.loading")}
                                 </div>
                             ) : recentProjects.length ? (
-                                <div className="ch-grid-cards">
+                                <div className="cvh-grid-cards">
                                     {recentProjects.slice(0, recentCount).map((project, index) => (
                                         <CanvasHomeRecentCard key={project.id} project={project} index={index} onOpen={projectActions.onOpen} />
                                     ))}
                                 </div>
                             ) : (
-                                <div className="ch-empty" style={{ minHeight: 200 }}>
+                                <div className="cvh-empty" style={{ minHeight: 200 }}>
                                     <strong>{t("canvas.empty")}</strong>
                                     <span>{t("canvas.emptyDescription")}</span>
                                 </div>

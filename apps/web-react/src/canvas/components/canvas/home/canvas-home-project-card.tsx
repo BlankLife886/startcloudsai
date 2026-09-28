@@ -47,7 +47,7 @@ function ProjectMenu({ project, actions, onClose, className }: { project: Canvas
     useEffect(() => {
         const close = (event: PointerEvent) => {
             const target = event.target as Element | null;
-            if (ref.current?.contains(target) || target?.closest?.(`[data-ch-menu-anchor="${project.id}"]`)) return;
+            if (ref.current?.contains(target) || target?.closest?.(`[data-cvh-menu-anchor="${project.id}"]`)) return;
             onClose();
         };
         const escape = (event: KeyboardEvent) => {
@@ -66,7 +66,7 @@ function ProjectMenu({ project, actions, onClose, className }: { project: Canvas
         action();
     };
     return (
-        <div ref={ref} role="menu" className={cn("ch-menu", className)} onClick={(event) => event.stopPropagation()}>
+        <div ref={ref} role="menu" className={cn("cvh-menu", className)} onClick={(event) => event.stopPropagation()}>
             <button type="button" role="menuitem" onClick={(event) => run(event, () => actions.onOpen(project, event))}>
                 <FolderOpen className="size-4" />{t("canvas.homePage.common.open")}
             </button>
@@ -100,7 +100,7 @@ export function CanvasHomeProjectCard({ project, index, selectMode, selected, on
             ref={(node) => {
                 elementRef.current = node;
             }}
-            className={cn("ch-rcard", selected && "is-selected", menuOpen && "is-menu-open")}
+            className={cn("cvh-rcard", selected && "is-selected", menuOpen && "is-menu-open")}
             style={{ animationDelay: `${Math.min(index, 12) * 50}ms`, "--rc-hue": projectHue(project.id) } as CSSProperties}
             tabIndex={0}
             role="button"
@@ -118,15 +118,15 @@ export function CanvasHomeProjectCard({ project, index, selectMode, selected, on
         >
             <RecentCanvasContent project={project} />
             {selectMode ? (
-                <span className={cn("ch-check ch-rcard__check", selected && "is-on")} aria-hidden="true">
+                <span className={cn("cvh-check cvh-rcard__check", selected && "is-on")} aria-hidden="true">
                     <Check className="size-3.5" strokeWidth={3} />
                 </span>
             ) : (
                 <button
                     type="button"
-                    className="ch-more ch-rcard__more"
+                    className="cvh-more cvh-rcard__more"
                     aria-label={t("canvas.homePage.common.moreActions", { title: project.title })}
-                    data-ch-menu-anchor={project.id}
+                    data-cvh-menu-anchor={project.id}
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
                     onClick={(event) => {
@@ -152,7 +152,7 @@ export function CanvasHomeProjectRow({ project, index, selectMode, selected, onT
             ref={(node) => {
                 elementRef.current = node;
             }}
-            className={cn("ch-row", selected && "is-selected", menuOpen && "is-menu-open")}
+            className={cn("cvh-row", selected && "is-selected", menuOpen && "is-menu-open")}
             style={{ animationDelay: `${Math.min(index, 16) * 30}ms` }}
             tabIndex={0}
             role="button"
@@ -169,36 +169,36 @@ export function CanvasHomeProjectRow({ project, index, selectMode, selected, onT
             }}
         >
             {selectMode ? (
-                <span className={cn("ch-row__check", selected && "is-on")} aria-hidden="true">
+                <span className={cn("cvh-row__check", selected && "is-on")} aria-hidden="true">
                     <Check className="size-3" strokeWidth={3} />
                 </span>
             ) : null}
-            <span className="ch-row__thumb">
+            <span className="cvh-row__thumb">
                 <CanvasTopologyPreview project={project} />
             </span>
             <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-semibold">{project.title}</span>
-                <span className="ch-num mt-0.5 block text-xs" style={{ color: "var(--ch-muted)" }}>
+                <span className="cvh-num mt-0.5 block text-xs" style={{ color: "var(--cvh-muted)" }}>
                     {projectStats(project)}
                 </span>
             </span>
             <span className="hidden w-[120px] shrink-0 flex-col gap-1.5 sm:flex">
-                <span className="ch-num text-xs" style={{ color: "var(--ch-muted)" }}>
+                <span className="cvh-num text-xs" style={{ color: "var(--cvh-muted)" }}>
                     {bytes ? formatCanvasProjectBytes(bytes) : t("canvas.homePage.common.unsynced")}
                 </span>
-                <span className="ch-sizebar">
+                <span className="cvh-sizebar">
                     <span style={{ width: `${bytes ? Math.max(6, Math.round((bytes / Math.max(maxBytes, 1)) * 100)) : 0}%` }} />
                 </span>
             </span>
-            <span className="ch-num hidden w-[96px] shrink-0 text-xs md:block" style={{ color: "var(--ch-muted)" }}>
+            <span className="cvh-num hidden w-[96px] shrink-0 text-xs md:block" style={{ color: "var(--cvh-muted)" }}>
                 {formatProjectDate(project.updatedAt)}
             </span>
             {!selectMode ? (
                 <button
                     type="button"
-                    className="ch-more"
+                    className="cvh-more"
                     aria-label={t("canvas.homePage.common.moreActions", { title: project.title })}
-                    data-ch-menu-anchor={project.id}
+                    data-cvh-menu-anchor={project.id}
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
                     onClick={(event) => {
@@ -229,22 +229,22 @@ function RecentCanvasContent({ project }: { project: CanvasProject }) {
     return (
         <>
             {empty ? (
-                <span className="ch-rcard__blank">
+                <span className="cvh-rcard__blank">
                     <Plus className="size-3.5" />
                     {i18n.t("canvas.homePage.common.blankCanvas")}
                 </span>
             ) : (
-                <div className="ch-rcard__preview">
+                <div className="cvh-rcard__preview">
                     <CanvasTopologyPreview project={project} />
                 </div>
             )}
-            <span className="ch-rcard__time ch-num">
+            <span className="cvh-rcard__time cvh-num">
                 {projectGroupOf(project.updatedAt) === "today" ? <i aria-hidden="true" /> : null}
                 {formatProjectDate(project.updatedAt)}
             </span>
-            <div className="ch-rcard__info">
-                <span className="ch-rcard__title">{project.title}</span>
-                <span className="ch-rcard__meta ch-num">
+            <div className="cvh-rcard__info">
+                <span className="cvh-rcard__title">{project.title}</span>
+                <span className="cvh-rcard__meta cvh-num">
                     {stats}
                     {size}
                 </span>
@@ -261,7 +261,7 @@ export function CanvasHomeRecentCard({ project, index, onOpen }: { project: Canv
             ref={(node) => {
                 elementRef.current = node;
             }}
-            className="ch-rcard"
+            className="cvh-rcard"
             style={{ animationDelay: `${Math.min(index, 12) * 50}ms`, "--rc-hue": projectHue(project.id) } as CSSProperties}
             tabIndex={0}
             role="button"
