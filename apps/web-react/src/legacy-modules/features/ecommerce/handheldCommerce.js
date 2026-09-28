@@ -1,11 +1,8 @@
 const HANDHELD_MODE_PROMPT =
-  '把参考商品按真实毫米尺度、不变形地放进一只解剖学正确的手里。必须保持商品刚性外形、长宽厚比例、边角、孔位、包装、Logo、文字、颜色、材质和真实尺寸；商品身份面必须锐利清晰可读。手指骨骼、左右手、握持受力、透视、接触阴影与局部遮挡必须像实拍；手迁就商品，商品不得被手挤压变形。手可以挡住商品局部，但不得挡住关键品牌面，禁止六指、关节反折和手指穿透商品。禁止把场景或构图参考里的人物、原商品或品牌带入结果。'
+  '把参考商品按真实毫米尺度、不变形地放进一只解剖学正确的手里。必须保持商品刚性外形、长宽厚比例、边角、孔位、包装、Logo、文字、颜色、材质和真实尺寸；商品身份面必须锐利清晰可读，文字不得雾化、重绘或乱码。手指骨骼、左右手、握持受力、透视、接触阴影与局部遮挡必须像实拍；手迁就商品，商品不得被手挤压变形。手可以挡住商品局部，但不得挡住关键品牌面，禁止六指、关节反折和手指穿透商品，禁止 CG 感、塑料手和过白磨皮。禁止把场景或构图参考里的人物、原商品或品牌带入结果。'
 
 const HANDHELD_THREE_REF_LOCK =
   '三图身份锁：第 1 张是商品身份，锁定几何轮廓、长宽厚比例、边角锐度、包装、Logo、文字、颜色、材质和真实尺度，禁止拉伸或融化；第 2 张是模特身份，必须是同一人，锁定脸型、五官比例、肤色、年龄感、发型和体型，禁止生成另一个相似的人；第 3 张是唯一场景事实来源，必须保留同一空间结构、关键陈设、材质、色彩、主光方向和时间氛围，只排除场景图中的人物或商品。只允许改变握持动作、机位与构图，不得改商品外形。'
-
-const HANDHELD_QA_PROMPT =
-  '质检硬约束：对焦必须打在商品身份面，商品是画面中最锐利的物体，Logo 和包装文字必须比手指皮肤更清晰；禁止把自动对焦打在指节、指甲或人脸。商品不得变形、拉伸、挤压、弯曲、融化或比例失真；文字不得雾化、重绘或乱码。必须是五根手指、关节方向正确；禁止六指、融合指、穿模；尺度必须符合真人手掌；接触处要有阴影；输出必须是可上架的商业摄影，禁止裸露、色情、性暗示、暴力血腥、CG、塑料手和过白磨皮。'
 
 const HANDHELD_PRODUCT_FIDELITY_CONSTRAINTS = [
   '商品必须保持参考图的刚性外形，长宽厚比例、轮廓、边角、孔位、接缝和印刷位置不得拉伸、挤压、弯曲、融化或圆角化；手迁就商品，商品不得迁就手。',
@@ -42,13 +39,15 @@ const HANDHELD_SHOTS = [
     id: 'ugc',
     label: '种草近景',
     direction:
-      '生活化近景，适合社媒封面；对焦仍在商品，品牌面必须比手更清晰，不要做成自拍大头照，也不要用浅景深把商品拍虚。',
+      '生活化近景，适合社媒封面；必须和主图拉开差别：换成约 45° 斜侧或微俯机位，手的动作改成托在掌心、指尖捏住或正在使用，带出一点生活环境局部。对焦仍在商品，品牌面必须比手更清晰，不要做成自拍大头照，也不要用浅景深把商品拍虚。',
   },
   {
     id: 'story',
     label: '竖屏投放',
+    // 投放位固定竖屏：不管套图其他张用什么比例，这张都按 9:16 出
+    aspectRatio: '9:16',
     direction:
-      '9:16 或竖构图，主体偏中上，底部预留标题安全区，商品与手仍是第一视觉。',
+      '本张画面比例固定为 9:16 竖屏（优先于上文画面比例）。商品与手放在画面上方约三分之二内，下方约三分之一保持干净的背景作为标题安全区，不放手臂或杂物；构图要和主图明显不同，商品与手仍是第一视觉。',
   },
   {
     id: 'unbox',
@@ -70,7 +69,7 @@ const HANDHELD_FULL_BODY_SHOT_DIRECTIONS = {
   ugc:
     '生活化全身环境构图，人物从头顶到双脚完整入镜，保留真实场景和社媒种草感；商品清楚可读，不得做成自拍、胸像或半身裁切。',
   story:
-    '竖屏全身投放构图，人物从头顶到双脚完整入镜并位于画面中上区域，底部预留标题安全区；商品与握持手保持清楚可读。',
+    '本张画面比例固定为 9:16 竖屏（优先于上文画面比例）。竖屏全身投放构图，人物从头顶到双脚完整入镜并位于画面中上区域，底部预留标题安全区；商品与握持手保持清楚可读。',
   unbox:
     '人物从头顶到双脚完整入镜，在完整身体动作中展示包装和取出的同一件商品；两件身份准确，不得裁成桌面或手部局部画面。',
 }
@@ -200,6 +199,7 @@ export const HANDHELD_STYLE_OPTIONS = [
 export const HANDHELD_CATEGORY_OPTIONS = [
   {
     id: 'perfume',
+    sizeMm: [45, 30, 100],
     label: '香水/玻璃水剂',
     poseId: 'pinch',
     prompt:
@@ -207,36 +207,42 @@ export const HANDHELD_CATEGORY_OPTIONS = [
   },
   {
     id: 'skincare',
+    sizeMm: [45, 45, 130],
     label: '护肤瓶',
     poseId: 'grip',
     prompt: '品类：护肤瓶。泵头、盖子和瓶身比例准确，色号与包装文字保持原样。',
   },
   {
     id: 'lipstick',
+    sizeMm: [20, 20, 80],
     label: '口红唇釉',
     poseId: 'two-finger',
     prompt: '品类：口红或唇釉。两指捏持，膏管色号必须完整露出，尺度像真口红。',
   },
   {
     id: 'earbuds',
+    sizeMm: [50, 25, 50],
     label: '耳机/数码件',
     poseId: 'wear',
     prompt: '品类：耳机或小型数码件。腔体轮廓准确，禁止放大到不像真耳可戴。',
   },
   {
     id: 'powerbank',
+    sizeMm: [70, 15, 140],
     label: '充电宝/小家电',
     poseId: 'grip',
     prompt: '品类：充电宝或小家电。接口、按键和品牌面完整，握持要有重量感。',
   },
   {
     id: 'cup',
+    sizeMm: [80, 80, 110],
     label: '杯具',
     poseId: 'drink',
     prompt: '品类：杯具。杯口朝向合理，釉面或玻璃质感真实，手握杯身或杯把。',
   },
   {
     id: 'gift',
+    sizeMm: [180, 60, 240],
     label: '礼盒套装',
     poseId: 'two-hands',
     prompt: '品类：礼盒套装。盒与内件都要可识别，不要只剩一件。',
@@ -317,6 +323,8 @@ export const HANDHELD_PACK_STATE_OPTIONS = [
 export const HANDHELD_PLATFORM_OPTIONS = [
   {
     id: 'taobao',
+    packId: 'single',
+    styleId: 'listing',
     label: '淘宝/天猫主图',
     ratio: '1:1',
     hint: '无边框无水印，缩略图可认',
@@ -325,6 +333,8 @@ export const HANDHELD_PLATFORM_OPTIONS = [
   },
   {
     id: 'detail',
+    packId: 'listing',
+    styleId: 'listing',
     label: '详情页配图',
     ratio: '3:4',
     hint: '信息清楚，适合卖点模块',
@@ -332,6 +342,8 @@ export const HANDHELD_PLATFORM_OPTIONS = [
   },
   {
     id: 'xhs',
+    packId: 'social',
+    styleId: 'ugc',
     label: '小红书',
     ratio: '3:4',
     hint: '生活近景，保留可售身份',
@@ -339,21 +351,28 @@ export const HANDHELD_PLATFORM_OPTIONS = [
   },
   {
     id: 'douyin',
+    packId: 'social',
+    styleId: 'ugc',
     label: '抖音/信息流',
     ratio: '9:16',
     hint: '竖构图，底部留标题区',
     prompt: '平台：抖音或信息流。竖构图，中上主体，底部留标题安全区。',
   },
   {
+    // Amazon 主图只允许纯白底上的商品本身（不能有手），手持图只能放副图位
     id: 'amazon',
-    label: 'Amazon 主图',
+    packId: 'listing',
+    styleId: 'listing',
+    label: 'Amazon 副图',
     ratio: '1:1',
-    hint: '纯净背景，商品占 85%+',
+    hint: '主图须纯白无手，手持图用于副图',
     prompt:
-      '平台：Amazon 主图。纯净背景优先，商品占画面 85% 以上，无文字无道具抢戏。',
+      '平台：Amazon 副图（生活/使用场景图）。清楚展示商品在手中的真实大小和用法，商品占画面约 60% 以上；画面内不加文字、价格、促销标记、水印或边框。',
   },
   {
     id: 'shop',
+    packId: 'single',
+    styleId: 'premium',
     label: '独立站',
     ratio: '4:5',
     hint: '品牌干净，预留留白',
@@ -845,6 +864,83 @@ export function handheldCropNeedsPerson(crop) {
   return Boolean(handheldCropById(crop).needsPerson)
 }
 
+// 没手动选握法时按品类给默认握法（口红两指捏、杯具就口……）
+export function handheldEffectivePoseId(pose, category) {
+  const value = String(pose || '').trim()
+  if (value) return value
+  return handheldSelectedOptionById(HANDHELD_CATEGORY_OPTIONS, category)?.poseId || ''
+}
+
+// 没手动选风格时跟随投放渠道（小红书→种草风、独立站→高级感……）
+export function handheldEffectiveStyleId(style, platform) {
+  const value = String(style || '').trim()
+  if (value) return value
+  return handheldSelectedOptionById(HANDHELD_PLATFORM_OPTIONS, platform)?.styleId || ''
+}
+
+export function handheldDefaultSizeMm(category) {
+  const size = handheldSelectedOptionById(HANDHELD_CATEGORY_OPTIONS, category)?.sizeMm
+  return Array.isArray(size) ? { length: size[0], width: size[1], height: size[2] } : null
+}
+
+// 长宽高都填了且在 1–2000mm 之间才算有效，缺一项就不写进提示词
+export function normalizeHandheldSizeMm(size) {
+  if (!size || typeof size !== 'object') return null
+  const values = ['length', 'width', 'height'].map((key) => Number.parseFloat(size[key]))
+  if (!values.every((value) => Number.isFinite(value) && value >= 1 && value <= 2000)) return null
+  const [length, width, height] = values.map((value) => Math.round(value * 10) / 10)
+  return { length, width, height }
+}
+
+export function buildHandheldSizePrompt(size) {
+  const value = normalizeHandheldSizeMm(size)
+  if (!value) return ''
+  const dims = `${value.length}×${value.width}×${value.height} mm（长×宽×高）`
+  // 按品类预填的只是常见尺寸，和这件货的真实比例可能不一样：只拿来定大小，不拿来改形状
+  if (size?.auto) {
+    return `实物尺寸（按品类估计）：约 ${dims}，只用来判断商品在成人手中的大小（手掌宽约 80 mm）；商品外形和长宽比例一律以商品图为准，不得为了贴合这个尺寸拉伸或压扁。`
+  }
+  return `实物尺寸：约 ${dims}。按成年人手掌宽约 80 mm、食指长约 75 mm 的比例呈现商品大小，禁止放大或缩小。`
+}
+
+// 没给场景图时按风格用固定背景：卡片上告诉用户的就是这里写进提示词的
+const HANDHELD_SET_BACKDROPS = {
+  listing: { label: '浅灰白棚拍背景', prompt: '浅灰白无缝影棚背景，柔和均匀的正面光' },
+  natural: { label: '居家木桌与窗光', prompt: '明亮的居家木质桌面，侧窗自然光' },
+  premium: { label: '深色哑光台面', prompt: '低饱和深色哑光台面，克制的影棚侧光' },
+  ugc: { label: '温暖居家环境', prompt: '温暖明亮的居家环境，背景轻度虚化' },
+}
+
+function handheldBackdrop(style) {
+  return HANDHELD_SET_BACKDROPS[style] || HANDHELD_SET_BACKDROPS.listing
+}
+
+export function handheldAutoBackdropLabel(style, platform) {
+  return handheldBackdrop(handheldEffectiveStyleId(style, platform)).label
+}
+
+export function buildHandheldSetConsistencyPrompt({
+  multiShot = false,
+  style = '',
+  hasScene = false,
+  hasModel = false,
+  hasHand = false,
+} = {}) {
+  const parts = []
+  if (!hasScene) {
+    const backdrop = handheldBackdrop(style).prompt
+    parts.push(
+      multiShot
+        ? `整套统一背景：每张都用${backdrop}，不得一张棚拍、一张户外或换成别的环境。`
+        : `背景：${backdrop}。`,
+    )
+  }
+  if (multiShot && !hasModel && !hasHand) {
+    parts.push('整套使用同一只手：肤色、指甲、袖口和饰品每张一致（戴表就每张都戴，不戴就都不戴），不得换人。')
+  }
+  return parts.join('')
+}
+
 export function buildHandheldPosePrompt(pose) {
   const id = pose && typeof pose === 'object' ? pose.id : pose
   return handheldSelectedOptionById(HANDHELD_POSE_OPTIONS, id)?.prompt || ''
@@ -1022,7 +1118,10 @@ export function buildHandheldTaskPrompt({
   language = '',
   annotations = [],
   angleRoles = [],
+  sizeMm = null,
 } = {}) {
+  pose = handheldEffectivePoseId(pose, category)
+  style = handheldEffectiveStyleId(style, platform)
   const categoryOption = handheldSelectedOptionById(
     HANDHELD_CATEGORY_OPTIONS,
     category,
@@ -1076,6 +1175,7 @@ export function buildHandheldTaskPrompt({
       : '',
     buildHandheldAnnotationPrompt(annotations),
     categoryOption?.prompt,
+    buildHandheldSizePrompt(sizeMm),
     packStateOption?.prompt,
     buildHandheldPosePrompt(pose),
     handOption?.prompt,
@@ -1097,12 +1197,12 @@ export function buildHandheldTaskPrompt({
     cameraOption?.prompt,
     materialInteractionOption?.prompt,
     buildHandheldStylePrompt(style),
+    buildHandheldSetConsistencyPrompt({ multiShot, style, hasScene, hasModel, hasHand }),
     ...conflicts.map((item) => item.prompt),
     multiShot
       ? `${platformOption.prompt.replace(/。$/, '')}（主图位严格遵守；套图其他张保持同一风格，按各自职责构图）。`
       : platformOption.prompt,
     `画面比例：${aspectRatio}。`,
-    HANDHELD_QA_PROMPT,
   ]
     .filter(Boolean)
     .join('\n')
@@ -1137,6 +1237,8 @@ export function handheldSelectionSummary({
   pose, hand, crop, lens, light, camera, depth, style, category, packState, platform,
 } = {}) {
   const pick = (list, id) => handheldSelectedOptionById(list, id)?.label || ''
+  pose = handheldEffectivePoseId(pose, category)
+  style = handheldEffectiveStyleId(style, platform)
   const rows = [
     ['品类', pick(HANDHELD_CATEGORY_OPTIONS, category)],
     ['握持', pick(HANDHELD_POSE_OPTIONS, pose)],
@@ -1154,8 +1256,13 @@ export function handheldSelectionSummary({
 }
 
 // 3. 选项冲突：界面提示 + 提示词里写明谁让步，避免模型自己挑一个。
+// 套图缺场景或手的参考时，先出第 1 张，其余几张拿它当整套参考（统一背景、光线和手）
+export function handheldUseAnchorHero({ shotCount = 1, hasScene = false, hasPerson = false } = {}) {
+  return shotCount > 1 && !(hasScene && hasPerson)
+}
+
 export function handheldSelectionConflicts({
-  lens, depth, crop, pack, hasScene = false, angleRoles = [],
+  lens, depth, crop, pack, hasScene = false, hasPerson = false, angleRoles = [],
 } = {}) {
   const shotIds = handheldPackById(pack).shotIds
   const conflicts = []
@@ -1183,6 +1290,14 @@ export function handheldSelectionConflicts({
     conflicts.push({
       id: 'use-sharp',
       message: '「使用瞬间」那张要求整张清晰，浅景深/微距对它不生效',
+      prompt: '',
+    })
+  }
+  if (handheldUseAnchorHero({ shotCount: shotIds.length, hasScene, hasPerson })) {
+    conflicts.push({
+      id: 'anchor-hero',
+      level: 'info',
+      message: '先出第 1 张，其余几张照它统一背景和手，整套多等约半分钟',
       prompt: '',
     })
   }

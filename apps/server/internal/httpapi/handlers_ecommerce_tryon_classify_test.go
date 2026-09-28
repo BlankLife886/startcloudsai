@@ -71,8 +71,8 @@ func TestAdminEcommerceAIAssistsListsAssociations(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Data.Items) != 4 {
-		t.Fatalf("items = %d, want 4", len(resp.Data.Items))
+	if len(resp.Data.Items) != 5 {
+		t.Fatalf("items = %d, want 5", len(resp.Data.Items))
 	}
 	first := resp.Data.Items[0]
 	if first.ID != "tryon-garment-classify" || !first.Toggleable || !first.Enabled {

@@ -73,3 +73,88 @@ test('套图：平台主图规则只严格约束主图位', () => {
     /主图位严格遵守/,
   )
 })
+
+test('没选握法时按品类用默认握法，手动选的优先', () => {
+  assert.equal(m.handheldEffectivePoseId('', 'lipstick'), 'two-finger')
+  assert.equal(m.handheldEffectivePoseId('grip', 'lipstick'), 'grip')
+  assert.equal(m.handheldEffectivePoseId('', ''), '')
+  const prompt = m.buildHandheldTaskPrompt({ category: 'lipstick', pack: 'single', platform: 'taobao' })
+  assert.match(prompt, /握持姿势：两指捏/)
+  assert.match(prompt, /握持=两指捏/)
+})
+
+test('没选风格时跟随投放渠道', () => {
+  assert.equal(m.handheldEffectiveStyleId('', 'xhs'), 'ugc')
+  assert.equal(m.handheldEffectiveStyleId('premium', 'xhs'), 'premium')
+  assert.match(m.buildHandheldTaskPrompt({ platform: 'xhs', pack: 'social' }), /视觉风格：种草风/)
+})
+
+test('渠道都有推荐套图，且推荐的套图存在', () => {
+  for (const platform of m.HANDHELD_PLATFORM_OPTIONS) {
+    assert.ok(m.HANDHELD_PACK_OPTIONS.some((pack) => pack.id === platform.packId), platform.id)
+  }
+})
+
+test('实物尺寸：三项齐全才写进提示词', () => {
+  assert.deepEqual(m.handheldDefaultSizeMm('lipstick'), { length: 20, width: 20, height: 80 })
+  assert.equal(m.handheldDefaultSizeMm('other'), null)
+  assert.equal(m.normalizeHandheldSizeMm({ length: '20', width: '', height: '80' }), null)
+  assert.equal(m.normalizeHandheldSizeMm({ length: '0', width: '20', height: '80' }), null)
+  const prompt = m.buildHandheldTaskPrompt({
+    pack: 'single', platform: 'taobao',
+    sizeMm: { length: '20', width: '20', height: '80' },
+  })
+  assert.match(prompt, /实物尺寸：约 20×20×80 mm/)
+  assert.doesNotMatch(
+    m.buildHandheldTaskPrompt({ pack: 'single', platform: 'taobao', sizeMm: { length: '20' } }),
+    /实物尺寸/,
+  )
+})
+
+test('套图没给场景和手时，整套统一背景和同一只手', () => {
+  const prompt = m.buildHandheldTaskPrompt({ pack: 'listing', platform: 'taobao' })
+  assert.match(prompt, /整套统一背景：每张都用浅灰白无缝影棚背景/)
+  assert.match(prompt, /整套使用同一只手/)
+  const withRefs = m.buildHandheldTaskPrompt({ pack: 'listing', platform: 'taobao', hasScene: true, hasHand: true })
+  assert.doesNotMatch(withRefs, /整套统一背景|整套使用同一只手/)
+  assert.doesNotMatch(m.buildHandheldTaskPrompt({ pack: 'single', platform: 'taobao' }), /整套/)
+})
+
+test('竖屏投放那张固定 9:16', () => {
+  const story = m.handheldShotBlueprints('social').find((shot) => shot.id === 'story')
+  assert.equal(story.aspectRatio, '9:16')
+  assert.match(story.direction, /9:16/)
+  const fullBody = m.handheldShotBlueprints('social', { crop: 'full' }).find((shot) => shot.id === 'story')
+  assert.equal(fullBody.aspectRatio, '9:16')
+  assert.match(fullBody.direction, /9:16/)
+})
+
+test('Amazon 只做副图：不再引导生成违规的手持主图', () => {
+  const amazon = m.HANDHELD_PLATFORM_OPTIONS.find((item) => item.id === 'amazon')
+  assert.equal(amazon.label, 'Amazon 副图')
+  assert.doesNotMatch(amazon.prompt, /主图/)
+})
+
+test('按品类预填的尺寸只定大小，不改形状', () => {
+  const prompt = m.buildHandheldTaskPrompt({
+    pack: 'single', platform: 'taobao',
+    sizeMm: { length: '45', width: '45', height: '130', auto: true },
+  })
+  assert.match(prompt, /按品类估计/)
+  assert.match(prompt, /长宽比例一律以商品图为准/)
+})
+
+test('没传场景时，卡片上写的自动背景就是提示词里的背景', () => {
+  assert.equal(m.handheldAutoBackdropLabel('', 'taobao'), '浅灰白棚拍背景')
+  assert.equal(m.handheldAutoBackdropLabel('', 'xhs'), '温暖居家环境')
+  assert.equal(m.handheldAutoBackdropLabel('premium', 'xhs'), '深色哑光台面')
+  assert.match(m.buildHandheldTaskPrompt({ pack: 'single', platform: 'taobao' }), /背景：浅灰白无缝影棚背景/)
+  assert.doesNotMatch(
+    m.buildHandheldTaskPrompt({ pack: 'single', platform: 'taobao', hasScene: true }),
+    /背景：浅灰白/,
+  )
+})
+
+test('手持提示词不再带画面文字语言', () => {
+  assert.doesNotMatch(m.buildHandheldTaskPrompt({ pack: 'single', platform: 'taobao' }), /画面文案语言/)
+})

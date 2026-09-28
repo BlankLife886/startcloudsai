@@ -38,7 +38,6 @@ func TestEcommerceHandheldTaskStatusSync(t *testing.T) {
 			item := &store.EcommerceHandheldItem{
 				BatchID: batch.ID, UserID: user.ID, TaskID: &task.ID, ItemIndex: index,
 				Prompt: "test", ShotSpec: map[string]any{}, Status: "queued",
-				QAStatus: "pending", ReviewStatus: "unreviewed",
 			}
 			if err := store.InsertEcommerceHandheldItem(ctx, st.Pool, item); err != nil {
 				t.Fatal(err)
@@ -68,7 +67,7 @@ func TestEcommerceHandheldTaskStatusSync(t *testing.T) {
 		if _, err := st.Pool.Exec(ctx, `UPDATE tasks SET status='succeeded' WHERE id=$1`, tasks[1].ID); err != nil {
 			t.Fatal(err)
 		}
-		assertBatchStatus(t, batch.ID, "review_ready")
+		assertBatchStatus(t, batch.ID, "completed")
 		var itemStatus string
 		if err := st.Pool.QueryRow(ctx, `SELECT status FROM ecommerce_handheld_items WHERE task_id=$1`, tasks[0].ID).Scan(&itemStatus); err != nil {
 			t.Fatal(err)
@@ -136,24 +135,14 @@ func TestRetryEcommerceHandheldItemReusesBatchAndItem(t *testing.T) {
 		item := &store.EcommerceHandheldItem{
 			BatchID: batch.ID, UserID: user.ID, TaskID: &task.ID, ItemIndex: index,
 			Prompt: "test", ShotSpec: map[string]any{}, Status: "queued",
-			QAStatus: "pending", ReviewStatus: "unreviewed",
 		}
 		if err := store.InsertEcommerceHandheldItem(ctx, st.Pool, item); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.InsertEcommerceHandheldQualityReport(ctx, st.Pool, item.ID); err != nil {
 			t.Fatal(err)
 		}
 		oldTasks = append(oldTasks, task)
 		items = append(items, item)
 	}
 	if _, err := st.Pool.Exec(ctx, `UPDATE tasks SET status=CASE WHEN id=$1 THEN 'succeeded' ELSE 'failed' END WHERE id=ANY($2)`, oldTasks[0].ID, []uuid.UUID{oldTasks[0].ID, oldTasks[1].ID}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.Pool.Exec(ctx, `UPDATE ecommerce_handheld_items SET qa_status='failed',review_status='rejected',review_note='old' WHERE id=$1`, items[1].ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.Pool.Exec(ctx, `UPDATE ecommerce_handheld_quality_reports SET status='failed',detector='test',checks='[{"ok":false}]',score=12,summary='old' WHERE item_id=$1`, items[1].ID); err != nil {
 		t.Fatal(err)
 	}
 	newTask, err := store.InsertTask(ctx, st.Pool, store.NewTask{
@@ -192,17 +181,6 @@ func TestRetryEcommerceHandheldItemReusesBatchAndItem(t *testing.T) {
 	}
 	if succeededTaskID != oldTasks[0].ID || retriedTaskID != newTask.ID {
 		t.Fatalf("task links = succeeded:%s retried:%s", succeededTaskID, retriedTaskID)
-	}
-	var qaStatus, reviewStatus, reviewNote, reportStatus, detector, summary string
-	var score *float64
-	if err := st.Pool.QueryRow(ctx, `SELECT qa_status,review_status,review_note FROM ecommerce_handheld_items WHERE id=$1`, items[1].ID).Scan(&qaStatus, &reviewStatus, &reviewNote); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Pool.QueryRow(ctx, `SELECT status,detector,score,summary FROM ecommerce_handheld_quality_reports WHERE item_id=$1`, items[1].ID).Scan(&reportStatus, &detector, &score, &summary); err != nil {
-		t.Fatal(err)
-	}
-	if qaStatus != "pending" || reviewStatus != "unreviewed" || reviewNote != "" || reportStatus != "pending" || detector != "manual_required" || score != nil || summary != "等待视觉检测器" {
-		t.Fatalf("retry state not reset: qa=%s review=%s note=%q report=%s detector=%s score=%v summary=%q", qaStatus, reviewStatus, reviewNote, reportStatus, detector, score, summary)
 	}
 	if _, updated, err := store.RetryEcommerceHandheldItem(ctx, st.Pool, user.ID, items[1].ID, oldTasks[1].ID, uuid.New(), 7); err != nil || updated {
 		t.Fatalf("duplicate retry updated=%v err=%v", updated, err)

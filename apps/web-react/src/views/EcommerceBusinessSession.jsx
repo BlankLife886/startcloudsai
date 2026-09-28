@@ -69,6 +69,11 @@ import {
   handheldCategoryById,
   handheldCropById,
   handheldCropNeedsPerson,
+  handheldDefaultSizeMm,
+  handheldEffectivePoseId,
+  handheldUseAnchorHero,
+  handheldAutoBackdropLabel,
+  normalizeHandheldSizeMm,
   handheldEffectiveArchitecture,
   handheldArchitectureById,
   handheldCameraById,
@@ -113,7 +118,9 @@ import {
   generateListingPlan,
   listTryonCatalog,
 } from "@react/legacy-modules/services/ecommerceApi.js";
+import { downloadHandheldPlatformImages } from "../features/ecommerce/handheld/handheldExport.js";
 import {
+  classifyHandheldProduct,
   createHandheldProject,
   listHandheldCatalog,
   quoteHandheldJob,
@@ -1171,6 +1178,10 @@ export function EcommerceBusinessSession({
     setHandheldPromptEdits,
     handheldSku,
     setHandheldSku,
+    handheldSizeMm,
+    setHandheldSizeMm,
+    handheldShotRegen,
+    setHandheldShotRegen,
   } = useHandheldBusinessState();
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [platform, setPlatform] = useState("Amazon");
@@ -1342,6 +1353,13 @@ export function EcommerceBusinessSession({
   const [loaded, setLoaded] = useState(new Set());
   const [sessionCount, setSessionCount] = useState(0);
   const [sessionBatchId, setSessionBatchId] = useState("");
+  // 手持：换了商品/套图/渠道，画布先给「本次会生成什么」，不再停在上一件货的结果上
+  const [handheldPlanning, setHandheldPlanning] = useState(false);
+  // 手持：上传商品后自动识别品类与尺寸 { status: idle|busy|done|error, label }
+  const [handheldProductDetect, setHandheldProductDetect] = useState({
+    status: "idle",
+  });
+  const handheldDetectFileRef = useRef(null);
   const currentModeIdRef = useRef(mode.id);
   const sessionBatchIdRef = useRef(sessionBatchId);
   currentModeIdRef.current = mode.id;
@@ -2041,6 +2059,7 @@ export function EcommerceBusinessSession({
             setHandheldArchitecture(handheldDraft.architectureId);
           }
           if (handheldDraft.sku) setHandheldSku(handheldDraft.sku);
+          if (handheldDraft.sizeMm) setHandheldSizeMm(handheldDraft.sizeMm);
           if (
             catalogOptionById(handheldModels, handheldDraft.featuredModelId)
           ) {
@@ -2252,6 +2271,30 @@ export function EcommerceBusinessSession({
     };
   }, [auth.isAuthenticated]);
   useEffect(() => {
+    setHandheldSizeMm((current) => {
+      if (current && current.auto === false) return current;
+      if (current?.categoryFor && current.categoryFor === handheldCategory) {
+        return current;
+      }
+      const size = handheldDefaultSizeMm(handheldCategory);
+      return size
+        ? {
+            length: String(size.length),
+            width: String(size.width),
+            height: String(size.height),
+            auto: true,
+            categoryFor: handheldCategory,
+          }
+        : { length: "", width: "", height: "", auto: true };
+    });
+  }, [handheldCategory, setHandheldSizeMm]);
+  useEffect(() => {
+    if (!handheldShotRegen) return;
+    setHandheldShotRegen(null);
+    void generate({ onlyShotIndex: handheldShotRegen.index });
+    // generate 每次渲染都会重建，这里只跟随请求本身触发
+  }, [handheldShotRegen]);
+  useEffect(() => {
     if (!handheldDraftReady) return undefined;
     const timer = window.setTimeout(() => {
       void saveHandheldDraft({
@@ -2276,6 +2319,7 @@ export function EcommerceBusinessSession({
         packStateId: handheldPackState,
         architectureId: handheldArchitecture,
         sku: handheldSku,
+        sizeMm: handheldSizeMm,
         featuredModelId: featuredHandheldModelId,
         featuredHandId: featuredHandheldHandId,
         featuredSceneId: featuredHandheldSceneId,
@@ -2307,6 +2351,7 @@ export function EcommerceBusinessSession({
     handheldPackState,
     handheldArchitecture,
     handheldSku,
+    handheldSizeMm,
     featuredHandheldModelId,
     featuredHandheldHandId,
     featuredHandheldSceneId,
@@ -2662,6 +2707,7 @@ export function EcommerceBusinessSession({
     crop: handheldCrop,
     pack: handheldPack,
     hasScene: Boolean(handheldSlots.scene?.file),
+    hasPerson: handheldHasHandOrModel,
     angleRoles: handheldAngleRoles,
   });
   const handheldRoles = handheldReferenceLabels({
@@ -2679,6 +2725,7 @@ export function EcommerceBusinessSession({
         productName,
         sellingPoints,
         sku: handheldSku,
+        sizeMm: handheldSizeMm,
         category: handheldCategory,
         packState: handheldPackState,
         pose: handheldPose,
@@ -2699,7 +2746,6 @@ export function EcommerceBusinessSession({
         hasScene: handheldHasScene,
         hasLayout: handheldHasLayout,
         aspectRatio,
-        language: handheldLanguage,
         annotations: handheldAnnotations,
         angleRoles: handheldAngleRoles,
       })
@@ -2913,7 +2959,11 @@ export function EcommerceBusinessSession({
     : tryonPlanBase;
   function handheldPromptForShot(shot, index) {
     const shotId = String(shot?.id || `shot-${index + 1}`);
-    const basePrompt = String(generationPlan[index]?.prompt || "").trim();
+    // 单张重画的批次里只有一张，按镜头 id 找回它在套图里的提示词
+    const planIndex = handheldBlueprints.findIndex((item) => item.id === shot?.id);
+    const basePrompt = String(
+      generationPlan[planIndex >= 0 ? planIndex : index]?.prompt || "",
+    ).trim();
     const edit = handheldPromptEdits[shotId];
     return {
       basePrompt,
@@ -3152,8 +3202,12 @@ export function EcommerceBusinessSession({
   const handheldHistoryShots = Array.isArray(handheldDisplaySpec?.shots)
     ? handheldDisplaySpec.shots
     : [];
+  // 「只改这张」出的批次只有一张，但套餐是多张：仍按批次里记录的那一张展示
+  const handheldSingleRegen =
+    handheldHistoryShots.length === 1 &&
+    handheldPackById(handheldDisplaySpec?.pack).shotIds.length > 1;
   const handheldViewBlueprints =
-    handheldHistoryShots.length > 1
+    handheldHistoryShots.length > 1 || handheldSingleRegen
       ? handheldHistoryShots
       : liveGroup.length > 1
         ? liveGroup.map((row, index) => ({
@@ -3280,6 +3334,10 @@ export function EcommerceBusinessSession({
     handheldSessionTasks.some((task) =>
       ["queued", "running", "waiting_provider"].includes(task.status),
     );
+  const handheldPlanningView = handheldPlanning && !handheldBusy;
+  const handheldStageBlueprints = handheldPlanningView
+    ? handheldBlueprints
+    : handheldViewBlueprints;
   const handheldSessionOutputs = modeRows.filter(
     (row) => row.groupId === sessionBatchId && row.url,
   );
@@ -3308,7 +3366,7 @@ export function EcommerceBusinessSession({
   const handheldFirstReturnedUrl = firstReturnedOutputUrl(
     handheldSessionOutputs,
   );
-  const handheldResultUrl = handheldRunFailed
+  const handheldResultUrl = handheldRunFailed || handheldPlanningView
     ? ""
     : handheldBusy
       ? activeUrl || handheldFirstReturnedUrl
@@ -3337,7 +3395,9 @@ export function EcommerceBusinessSession({
   )?.aspectRatio;
   const shotRatio = String(
     mode.id === "handheld"
-      ? handheldBusy
+      ? handheldPlanningView
+        ? aspectRatio || "4:5"
+        : handheldBusy
         ? handheldSessionResultRatio || aspectRatio || "4:5"
         : currentRow?.aspectRatio ||
           handheldHistorySpec?.aspectRatio ||
@@ -3601,6 +3661,57 @@ export function EcommerceBusinessSession({
       setTryonGarmentDetect({ status: "error", file });
     }
   }
+  async function detectHandheldProduct(file) {
+    handheldDetectFileRef.current = file;
+    if (!auth.isAuthenticated) {
+      setHandheldProductDetect({ status: "idle" });
+      return;
+    }
+    setHandheldProductDetect({ status: "busy" });
+    try {
+      const inputKey = await prefetchSlotUpload(
+        "product",
+        file,
+        setHandheldSlots,
+      );
+      if (!inputKey) throw new Error("商品图上传失败");
+      const result = await classifyHandheldProduct({ inputKey });
+      if (handheldDetectFileRef.current !== file) return;
+      const category = HANDHELD_CATEGORY_OPTIONS.some(
+        (item) => item.id === result?.category,
+      )
+        ? result.category
+        : "";
+      if (!category) throw new Error("未识别出品类");
+      setHandheldCategory(category);
+      const size = normalizeHandheldSizeMm(result?.sizeMm);
+      // 识别出的尺寸按图中比例估计，比品类默认值更贴近这件货；用户改过的尺寸不覆盖
+      setHandheldSizeMm((current) =>
+        current?.auto === false
+          ? current
+          : size
+            ? {
+                length: String(size.length),
+                width: String(size.width),
+                height: String(size.height),
+                auto: true,
+                categoryFor: category,
+                detected: true,
+              }
+            : current,
+      );
+      setHandheldProductDetect({
+        status: "done",
+        label: String(result?.label || ""),
+      });
+    } catch (error) {
+      if (handheldDetectFileRef.current !== file) return;
+      // 后台关闭了识别：静默跳过，由用户手选
+      setHandheldProductDetect({
+        status: error?.code === "feature_disabled" ? "idle" : "error",
+      });
+    }
+  }
   function commitHandheldSlot(role, file) {
     handheldClearedRef.current[role] = false;
     const url = URL.createObjectURL(file);
@@ -3618,7 +3729,11 @@ export function EcommerceBusinessSession({
     if (role === "scene") setScene("自定义场景");
     setSelectedProduct(null);
     if (role === "product") {
+      setHandheldPlanning(true);
       setHandheldAnnotations([]);
+      setHandheldCategory("");
+      setHandheldSizeMm({ length: "", width: "", height: "", auto: true });
+      void detectHandheldProduct(file);
       // 换了商品，旧商品的侧面/背面不能再当同一件货
       setHandheldSlots((current) => ({
         ...current,
@@ -4633,7 +4748,11 @@ export function EcommerceBusinessSession({
     if (run) await run();
     else finishTaskLaunch();
   }
-  async function generate() {
+  async function generate(options) {
+    // 「只改这张」：只重画套图里的这一张；按钮点击传进来的是事件对象，不算
+    const onlyShotIndex = Number.isInteger(options?.onlyShotIndex)
+      ? options.onlyShotIndex
+      : null;
     if (requestAuth({ featureLabel: "AI 电商" })) return;
     if (!canGenerate) return;
     if (!beginTaskLaunch()) return;
@@ -4650,13 +4769,13 @@ export function EcommerceBusinessSession({
           modelId,
           aspectRatio,
           inputCount: productInputs + reservedRoles,
-          itemCount: generationPlan.length,
+          itemCount: onlyShotIndex === null ? generationPlan.length : 1,
         });
         const quotedUnit = Number(quote?.unitPriceCents);
         if (Number.isFinite(quotedUnit)) setUnitPrice(quotedUnit);
         await requestCostThenRun(
-          executeGenerate,
-          generationPlan.length,
+          () => executeGenerate({ onlyShotIndex }),
+          onlyShotIndex === null ? generationPlan.length : 1,
           Number.isFinite(quotedUnit) ? quotedUnit : unitPrice,
           true,
         );
@@ -4898,7 +5017,6 @@ export function EcommerceBusinessSession({
       pack: handheldPack,
       platform: handheldPlatform,
       aspectRatio,
-      ...(handheldLanguage ? { language: handheldLanguage } : {}),
       ...(normalizeHandheldAnnotations(handheldAnnotations).length
         ? {
             annotations: normalizeHandheldAnnotations(handheldAnnotations),
@@ -4926,8 +5044,18 @@ export function EcommerceBusinessSession({
         : {}),
       ...(handheldStyle ? { style: handheldStyle } : {}),
       ...(handheldSku ? { sku: handheldSku } : {}),
+      ...(normalizeHandheldSizeMm(handheldSizeMm)
+        ? { sizeMm: normalizeHandheldSizeMm(handheldSizeMm) }
+        : {}),
       ...(productName.trim() ? { productName: productName.trim() } : {}),
       ...(sellingPoints.trim() ? { sellingPoints: sellingPoints.trim() } : {}),
+      ...(handheldUseAnchorHero({
+        shotCount: shots.length,
+        hasScene: Boolean(resolved.slots.scene?.file),
+        hasPerson: Boolean(resolved.includeModel && resolved.slots.model?.file),
+      })
+        ? { anchorHero: true }
+        : {}),
       shots,
     };
     let projectId = handheldProjectId;
@@ -4949,9 +5077,12 @@ export function EcommerceBusinessSession({
       spec: handheldSpec,
     };
   }
-  async function executeGenerate({ expectedUnitPriceCents = null } = {}) {
+  async function executeGenerate({
+    expectedUnitPriceCents = null,
+    onlyShotIndex = null,
+  } = {}) {
     const batchId = crypto.randomUUID();
-    const count = generationPlan.length;
+    const count = onlyShotIndex === null ? generationPlan.length : 1;
     setSubmitError("");
     jobs.clearError();
     setSessionBatchId(batchId);
@@ -4961,19 +5092,22 @@ export function EcommerceBusinessSession({
     setActiveUrl("");
     if (mode.id === "tryon") setTryonStarting(true);
     if (mode.id === "handheld") {
+      setHandheldPlanning(false);
       setHandheldRetryingByIndex({});
       setHandheldStarting(true);
     }
     try {
       if (mode.id === "handheld") {
         const prepared = await prepareHandheldBatchRequest(
-          handheldBlueprints.map((shot, index) => ({
-            id: shot.id || `shot-${index + 1}`,
-            label: shot.label || `手持商品图 ${index + 1}`,
-            direction: shot.direction || "",
-            aspectRatio,
-            prompt: handheldPromptForShot(shot, index).prompt,
-          })),
+          handheldBlueprints
+            .map((shot, index) => ({
+              id: shot.id || `shot-${index + 1}`,
+              label: shot.label || `手持商品图 ${index + 1}`,
+              direction: shot.direction || "",
+              aspectRatio: shot.aspectRatio || aspectRatio,
+              prompt: handheldPromptForShot(shot, index).prompt,
+            }))
+            .filter((_, index) => onlyShotIndex === null || index === onlyShotIndex),
         );
         const result = await jobs.createHandheldBatch({
           ...prepared,
@@ -5196,6 +5330,7 @@ export function EcommerceBusinessSession({
   }
   function selectHandheldHistory(url) {
     if (!url) return;
+    setHandheldPlanning(false);
     setActiveUrl(url);
     const row = modeRows.find((item) => item.url === url);
     if (row?.groupId) {
@@ -5229,6 +5364,15 @@ export function EcommerceBusinessSession({
     if (spec.hand) setHandheldHand(handheldHandById(spec.hand).id);
     if (spec.category)
       setHandheldCategory(handheldCategoryById(spec.category).id);
+    if (normalizeHandheldSizeMm(spec.sizeMm)) {
+      const size = normalizeHandheldSizeMm(spec.sizeMm);
+      setHandheldSizeMm({
+        length: String(size.length),
+        width: String(size.width),
+        height: String(size.height),
+        auto: false,
+      });
+    }
     if (spec.lens) setHandheldLens(handheldLensById(spec.lens).id);
     if (spec.light) setHandheldLight(handheldLightById(spec.light).id);
     if (spec.camera) setHandheldCamera(handheldCameraById(spec.camera).id);
@@ -5356,6 +5500,30 @@ export function EcommerceBusinessSession({
     const item = generationPlan[index];
     if (!item || jobs.running) return;
     await requestCostThenRun(() => executeRetrySlot(index), 1);
+  }
+  async function tweakHandheldShot(index, change, shotId = "") {
+    if (handheldCurrentRunning || !change) return;
+    const byId = shotId
+      ? handheldBlueprints.findIndex((shot) => shot.id === shotId)
+      : -1;
+    const target = byId >= 0 ? byId : index;
+    if (!(target >= 0 && target < handheldBlueprints.length)) return;
+    try {
+      if (change.kind === "pose") setHandheldPose(change.id);
+      else if (change.kind === "person") {
+        if (handheldCropNeedsPerson(handheldCrop)) {
+          await applyBuiltinHandheldModel(change.option);
+        } else {
+          await applyBuiltinHandheldHand(change.option);
+        }
+      } else if (change.kind === "scene") {
+        await applyBuiltinHandheldScene(change.option);
+      }
+    } catch (error) {
+      setSubmitError(error?.message || "素材读取失败，请重试");
+      return;
+    }
+    setHandheldShotRegen({ index: target, token: Date.now() });
   }
   async function retryHandheldShot(index) {
     const failedTask = handheldSessionTasks.find(
@@ -6179,25 +6347,17 @@ export function EcommerceBusinessSession({
               onChangeHand={(id) =>
                 setHandheldHand((current) => (current === id ? "" : id))
               }
+              autoPoseLabel={
+                handheldCategory && !handheldPose
+                  ? HANDHELD_POSE_OPTIONS.find(
+                      (item) =>
+                        item.id ===
+                        handheldEffectivePoseId("", handheldCategory),
+                    )?.label || ""
+                  : ""
+              }
               disabled={handheldCurrentRunning}
             />
-            <div className="commerce-header__language">
-              <CommerceSelect
-                value={handheldLanguage}
-                options={[
-                  { value: "", label: "多国语言" },
-                  ...HANDHELD_LANGUAGE_OPTIONS.map((item) => ({
-                    value: item.id,
-                    label: item.label,
-                  })),
-                ]}
-                onChange={setHandheldLanguage}
-                ariaLabel="选择画面文案语言"
-                menuMinWidth={160}
-                treatEmptyAsPlaceholder
-                disabled={handheldCurrentRunning}
-              />
-            </div>
             <button
               type="button"
               className={`commerce-header__guide${handheldGuideOpen ? " is-open" : ""}`}
@@ -7204,23 +7364,60 @@ export function EcommerceBusinessSession({
               onChangeCrop={setHandheldCrop}
               pack={handheldPack}
               packOptions={HANDHELD_PACK_OPTIONS}
-              onChangePack={setHandheldPack}
+              onChangePack={(id) => {
+                setHandheldPack(id);
+                setHandheldPlanning(true);
+              }}
+              recommendedPack={handheldPlatformById(handheldPlatform).packId}
               platform={handheldPlatform}
               platformOptions={HANDHELD_PLATFORM_OPTIONS}
               onChangePlatform={(id) => {
                 setHandheldPlatform(id);
                 const option = handheldPlatformById(id);
                 if (option.ratio) setAspectRatio(option.ratio);
+                // 换渠道时套图跟着换成推荐的，用户仍可再改
+                if (option.packId) setHandheldPack(option.packId);
+                setHandheldPlanning(true);
               }}
+              category={handheldCategory}
+              categoryOptions={HANDHELD_CATEGORY_OPTIONS}
+              onChangeCategory={(id) =>
+                setHandheldCategory((current) => (current === id ? "" : id))
+              }
+              sizeMm={handheldSizeMm}
+              onChangeSizeMm={setHandheldSizeMm}
+              productDetect={handheldProductDetect}
+              nextStep={
+                !auth.isAuthenticated
+                  ? null
+                  : !handheldSlots.product
+                    ? { kind: "product", label: "上传商品图" }
+                    : handheldCropNeedsPerson(handheldCrop) && !handheldHasModel
+                      ? { kind: "model", label: "选择模特" }
+                      : null
+              }
+              autoBackdropLabel={handheldAutoBackdropLabel(
+                handheldStyle,
+                handheldPlatform,
+              )}
+              pose={handheldEffectivePoseId(handheldPose, handheldCategory)}
+              poseOptions={HANDHELD_POSE_OPTIONS}
+              onTweakShot={(index, change, shotId) =>
+                void tweakHandheldShot(index, change, shotId)
+              }
               aspectRatio={shotRatio}
               ratioStyle={shotRatioStyle}
               resultUrl={handheldResultUrl}
-              shots={handheldViewBlueprints.map((shot, index) => {
+              shots={handheldStageBlueprints.map((shot, index) => {
                 const promptRules = handheldPromptForShot(shot, index);
-                const row = liveGroup.find((item) => item.index === index);
-                const task = handheldSessionTasks.find(
-                  (item) => Number(item.batchIndex) === index,
-                );
+                const row = handheldPlanningView
+                  ? null
+                  : liveGroup.find((item) => item.index === index);
+                const task = handheldPlanningView
+                  ? null
+                  : handheldSessionTasks.find(
+                      (item) => Number(item.batchIndex) === index,
+                    );
                 const status = String(task?.status || "").toLowerCase();
                 const slotFailed = ["failed", "canceled", "cancelled"].includes(
                   status,
@@ -7333,16 +7530,22 @@ export function EcommerceBusinessSession({
                 packState: handheldPackState,
                 platform: handheldPlatform,
               })}
-              onDownloadShot={(url) =>
-                downloadOutput(rowsByUrl.get(url) || { url })
+              onDownloadShot={(url, options) =>
+                options?.mode === "platform"
+                  ? downloadHandheldPlatformImages([{ url, ...options }], {
+                      productName,
+                    })
+                  : downloadOutput(rowsByUrl.get(url) || { url })
               }
-              onDownloadGroup={(rows) =>
-                downloadHistoryImagesAsZip(
-                  rows.map((row, index) => ({
-                    url: row.url,
-                    filename: `手持商品-${String(index + 1).padStart(2, "0")}-${row.label || "图"}`,
-                  })),
-                )
+              onDownloadGroup={(rows, options) =>
+                options?.mode === "platform"
+                  ? downloadHandheldPlatformImages(rows, { productName })
+                  : downloadHistoryImagesAsZip(
+                      rows.map((row, index) => ({
+                        url: row.url,
+                        filename: `手持商品-${String(index + 1).padStart(2, "0")}-${row.label || "图"}`,
+                      })),
+                    )
               }
               historyHasMore={jobs.historyHasMore}
               historyLoadingMore={jobs.historyLoading && modeRows.length > 0}

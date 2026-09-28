@@ -177,9 +177,6 @@ type EcommerceHandheldItem struct {
 	Prompt       string
 	ShotSpec     map[string]any
 	Status       string
-	QAStatus     string
-	ReviewStatus string
-	ReviewNote   string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -192,18 +189,6 @@ type EcommerceHandheldInput struct {
 	ObjectKey string
 	Ordinal   int
 	CreatedAt time.Time
-}
-
-type EcommerceHandheldQualityReport struct {
-	ID        uuid.UUID
-	ItemID    uuid.UUID
-	Status    string
-	Detector  string
-	Checks    []map[string]any
-	Score     *float64
-	Summary   string
-	CreatedAt time.Time
-	UpdatedAt time.Time
 }
 
 var EcommerceHandheldCatalogKinds = []string{"model", "scene", "hand"}

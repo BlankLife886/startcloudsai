@@ -55,31 +55,39 @@ type handheldAnnotationIn struct {
 	Y    float64 `json:"y"`
 	Text string  `json:"text"`
 }
+type handheldSizeIn struct {
+	Length float64 `json:"length"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
 type handheldSpecIn struct {
-	Pose                string                 `json:"pose"`
-	Hand                string                 `json:"hand"`
-	Crop                string                 `json:"crop"`
-	Pack                string                 `json:"pack"`
-	PackState           string                 `json:"packState"`
-	Platform            string                 `json:"platform"`
-	Lens                string                 `json:"lens"`
-	Light               string                 `json:"light"`
-	Camera              string                 `json:"camera"`
-	Depth               string                 `json:"depth"`
-	Focus               string                 `json:"focus"`
-	MaterialInteraction string                 `json:"materialInteraction"`
-	Architecture        string                 `json:"architecture"`
-	Category            string                 `json:"category"`
-	Style               string                 `json:"style"`
-	AspectRatio         string                 `json:"aspectRatio"`
-	SKU                 string                 `json:"sku"`
-	ProductName         string                 `json:"productName"`
-	SellingPoints       string                 `json:"sellingPoints"`
-	Language            string                 `json:"language"`
-	Colorways           []string               `json:"colorways"`
-	Annotations         []handheldAnnotationIn `json:"annotations"`
-	Inputs              []handheldInputIn      `json:"inputs"`
-	Shots               []handheldShotIn       `json:"shots"`
+	Pose                string          `json:"pose"`
+	Hand                string          `json:"hand"`
+	Crop                string          `json:"crop"`
+	Pack                string          `json:"pack"`
+	PackState           string          `json:"packState"`
+	Platform            string          `json:"platform"`
+	Lens                string          `json:"lens"`
+	Light               string          `json:"light"`
+	Camera              string          `json:"camera"`
+	Depth               string          `json:"depth"`
+	Focus               string          `json:"focus"`
+	MaterialInteraction string          `json:"materialInteraction"`
+	Architecture        string          `json:"architecture"`
+	Category            string          `json:"category"`
+	Style               string          `json:"style"`
+	AspectRatio         string          `json:"aspectRatio"`
+	SKU                 string          `json:"sku"`
+	ProductName         string          `json:"productName"`
+	SellingPoints       string          `json:"sellingPoints"`
+	Language            string          `json:"language"`
+	SizeMm              *handheldSizeIn `json:"sizeMm"`
+	// 先出第 1 张，其余几张以它为整套参考（统一背景、光线和手）
+	AnchorHero  bool                   `json:"anchorHero"`
+	Colorways   []string               `json:"colorways"`
+	Annotations []handheldAnnotationIn `json:"annotations"`
+	Inputs      []handheldInputIn      `json:"inputs"`
+	Shots       []handheldShotIn       `json:"shots"`
 }
 type handheldJobIn struct {
 	IdempotencyKey string         `json:"idempotencyKey"`
@@ -167,6 +175,13 @@ func validateHandheldSpec(spec *handheldSpecIn) error {
 	spec.Language = strings.TrimSpace(spec.Language)
 	if spec.Language != "" && !store.Contains(handheldEnums["language"], spec.Language) {
 		return apperr.E("validation_error", "language: 无效语言", 422)
+	}
+	if size := spec.SizeMm; size != nil {
+		for _, v := range []float64{size.Length, size.Width, size.Height} {
+			if v < 1 || v > 2000 {
+				return apperr.E("validation_error", "sizeMm: 长宽高须在 1-2000 毫米之间", 422)
+			}
+		}
 	}
 	if spec.AspectRatio == "" {
 		spec.AspectRatio = "4:5"
@@ -424,7 +439,7 @@ func compileHandheldPrompt(snapshot map[string]any, spec handheldSpecIn, shot ha
 		{"品类", firstNonEmpty(value("category"), spec.Category)},
 		{"材质", value("material")},
 		{"颜色", value("color")},
-		{"真实尺寸", value("dimensions")},
+		{"真实尺寸", firstNonEmpty(value("dimensions"), handheldSizeLabel(spec.SizeMm))},
 	} {
 		if strings.TrimSpace(entry.value) != "" && entry.value != "未填写" {
 			productFacts = append(productFacts, entry.label+"="+entry.value)
@@ -483,7 +498,7 @@ func compileHandheldPrompt(snapshot map[string]any, spec handheldSpecIn, shot ha
 		}(),
 		fmt.Sprintf("本张：%s。%s", shot.Label, shot.Direction),
 		"手部硬约束：五指、骨骼与关节方向正确，握持受力合理，禁止多指、融合指、反折、穿模；接触阴影、遮挡、透视与反光必须一致；手指不得遮住关键品牌面。",
-		"商业质检约束：商品不得变形、拉伸、挤压或融化；Logo 与包装文字锐利清晰准确；商品身份面对焦优先于人脸和背景；尺度符合真人手掌；严禁裸露、色情、性暗示、暴力血腥及其他不宜上架内容；输出可直接进入电商审核。不得把场景或构图参考中的原商品、人物或品牌带入结果。",
+		"商业上架约束：商品不得变形、拉伸、挤压或融化；Logo 与包装文字锐利清晰准确；商品身份面对焦优先于人脸和背景；尺度符合真人手掌；严禁裸露、色情、性暗示、暴力血腥及其他不宜上架内容；输出可直接进入电商审核。不得把场景或构图参考中的原商品、人物或品牌带入结果。",
 	}
 	filtered := parts[:0]
 	for _, part := range parts {
@@ -492,6 +507,13 @@ func compileHandheldPrompt(snapshot map[string]any, spec handheldSpecIn, shot ha
 		}
 	}
 	return appendHandheldExecutionConstraints(strings.Join(filtered, "\n"), spec, shot)
+}
+
+func handheldSizeLabel(size *handheldSizeIn) string {
+	if size == nil {
+		return ""
+	}
+	return fmt.Sprintf("约 %g×%g×%g mm（长×宽×高）", size.Length, size.Width, size.Height)
 }
 
 func firstNonEmpty(values ...string) string {
@@ -661,6 +683,12 @@ func handheldSpecMap(spec handheldSpecIn) map[string]any {
 	if len(spec.Colorways) > 0 {
 		result["colorways"] = spec.Colorways
 	}
+	if spec.SizeMm != nil {
+		result["sizeMm"] = spec.SizeMm
+	}
+	if spec.AnchorHero {
+		result["anchorHero"] = true
+	}
 	if len(spec.Annotations) > 0 {
 		result["annotations"] = spec.Annotations
 	}
@@ -681,6 +709,9 @@ func handheldGenerationParams(base map[string]any, modelID, aspectRatio string, 
 		}
 		switch key {
 		case "aspectRatio", "quality", "inputFidelity", "moderationLevel", "outputFormat", "resolution", "resolutionScale", "size", "outputSize", "transparentPngEnabled", "transparentBackground":
+			continue
+		case handheldAnchorResolvedParam:
+			// 重试时重新取一次主图参考：新任务的输入和提示词都来自原始批次
 			continue
 		}
 		params[key] = value
@@ -810,7 +841,7 @@ func (s *Server) handheldBatchResponse(c *gin.Context, b *store.EcommerceHandhel
 	}
 	rows := make([]gin.H, 0, len(items))
 	for _, item := range items {
-		row := gin.H{"id": item.ID.String(), "batchId": item.BatchID.String(), "index": item.ItemIndex, "label": item.Label, "shotSpec": item.ShotSpec, "status": item.Status, "qaStatus": item.QAStatus}
+		row := gin.H{"id": item.ID.String(), "batchId": item.BatchID.String(), "index": item.ItemIndex, "label": item.Label, "shotSpec": item.ShotSpec, "status": item.Status}
 		if item.TaskID != nil {
 			row["taskId"] = item.TaskID.String()
 			if task := taskMap[*item.TaskID]; task != nil {
@@ -891,7 +922,7 @@ func (s *Server) getHandheldJob(c *gin.Context) {
 	if active > 0 {
 		status = "generating"
 	} else if len(items) > 0 && succeeded == len(items) {
-		status = "review_ready"
+		status = "completed"
 	} else if succeeded > 0 {
 		status = "partial"
 	} else if canceled == len(items) {
@@ -996,7 +1027,7 @@ func (s *Server) cancelHandheldJob(c *gin.Context) {
 	if active > 0 {
 		status = "generating"
 	} else if len(items) > 0 && succeeded == len(items) {
-		status = "review_ready"
+		status = "completed"
 	} else if succeeded > 0 {
 		status = "partial"
 	} else if canceled == len(items) {
@@ -1108,9 +1139,6 @@ func (s *Server) retryHandheldItem(c *gin.Context) {
 	}
 	item.TaskID = &task.ID
 	item.Status = task.Status
-	item.QAStatus = "pending"
-	item.ReviewStatus = "unreviewed"
-	item.ReviewNote = ""
 	batch.Status = "generating"
 	batch.TotalCostCents += task.CostCents
 	if s.Queue != nil {

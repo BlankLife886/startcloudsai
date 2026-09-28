@@ -95,6 +95,17 @@ export async function loadHandheldDraft() {
     packStateId: String(meta.packStateId || ''),
     architectureId: String(meta.architectureId || ''),
     sku: String(meta.sku || ''),
+    sizeMm:
+      meta.sizeMm && typeof meta.sizeMm === 'object'
+        ? {
+            length: String(meta.sizeMm.length ?? ''),
+            width: String(meta.sizeMm.width ?? ''),
+            height: String(meta.sizeMm.height ?? ''),
+            auto: meta.sizeMm.auto !== false,
+            categoryFor: String(meta.sizeMm.categoryFor || ''),
+            detected: meta.sizeMm.detected === true,
+          }
+        : null,
     featuredModelId: String(meta.featuredModelId || ''),
     featuredHandId: String(meta.featuredHandId || ''),
     featuredSceneId: String(meta.featuredSceneId || ''),
@@ -137,6 +148,7 @@ export async function saveHandheldDraft(draft = {}) {
     packStateId: draft.packStateId || '',
     architectureId: draft.architectureId || '',
     sku: draft.sku || '',
+    sizeMm: draft.sizeMm && typeof draft.sizeMm === 'object' ? draft.sizeMm : null,
     featuredModelId: draft.featuredModelId || '',
     featuredHandId: draft.featuredHandId || '',
     featuredSceneId: draft.featuredSceneId || '',

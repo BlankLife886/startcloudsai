@@ -1097,11 +1097,15 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   ).toHaveCount(0);
 
   await expect(page.getByLabel("手持商品工作台")).toBeVisible();
-  await expect(page.getByText("商品图", { exact: true })).toBeVisible();
+  await expect(page.locator(".handheld-product .handheld-ref-card__tag")).toContainText("商品图");
   // 商品下方可补同一件商品的其他角度，没传正面前不可用
   await expect(page.getByRole("button", { name: "上传商品侧面" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "上传商品背面" })).toBeVisible();
   await expect(page.getByRole("button", { name: "上传商品Logo" })).toBeVisible();
+  // 品类与实物尺寸角标在上传商品后才出现
+  await expect(
+    page.getByRole("button", { name: "填写品类与实物尺寸" }),
+  ).toHaveCount(0);
   await expect(page.locator(".handheld-out .handheld-product")).toBeVisible();
   await expect(page.locator(".handheld-pane .handheld-product")).toHaveCount(0);
   await expect(page.locator(".handheld-out .handheld-scene")).toBeVisible();
@@ -1110,15 +1114,24 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   await expect(page.locator(".handheld-out .handheld-brief")).toBeVisible();
   await expect(page.locator(".handheld-out .handheld-pack")).toBeVisible();
   await expect(page.locator(".handheld-pane .handheld-pack")).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "选择出镜范围" }),
-  ).toBeVisible();
+  await expect(page.getByRole("radiogroup", { name: "出镜范围" })).toBeVisible();
   await expect(page.locator(".handheld-out .handheld-hand")).toBeVisible();
   await expect(page.locator(".handheld-pane .handheld-hand")).toHaveCount(0);
   await expect(page.getByText("握持姿势", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "更多商品图" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "清空商品图" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "上传商品图" })).toBeVisible();
+  await expect(
+    page.locator(".handheld-product").getByRole("button", { name: "上传商品图" }),
+  ).toBeVisible();
+  // 必填/选填写在卡片上，选填卡片写明不传会怎样
+  await expect(page.locator(".handheld-product .handheld-ref-card__tag")).toContainText("必填");
+  await expect(page.locator(".handheld-scene .handheld-ref-card__tag")).toContainText("选填");
+  await expect(page.locator(".handheld-scene")).toContainText("自动：浅灰白棚拍背景");
+  await expect(page.locator(".handheld-hand")).toContainText("自动：AI 生成手");
+  // 生成按钮直接告诉用户还差哪一步
+  await expect(page.locator(".handheld-submit")).toHaveAccessibleName("上传商品图");
+  await expect(page.locator(".handheld-submit")).toContainText("完成后即可生成");
+  await expect(page.getByLabel("选择画面文案语言")).toHaveCount(0);
   // 没有结果时画布先告诉用户这次会出什么
   await expect(page.getByText("还没有结果")).toBeVisible();
   await expect(page.getByText("本次会生成 1 张")).toBeVisible();
@@ -1148,13 +1161,13 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   ).toHaveCount(0);
 
   await expect(
-    page.getByRole("button", { name: "画面方案", exact: true }),
+    page.getByRole("button", { name: "高级", exact: true }),
   ).toBeVisible();
   await expect(page.getByLabel("选择画面方案")).toBeHidden();
   await expect(page.getByLabel("选择景深与距离")).toBeHidden();
-  await page.getByRole("button", { name: "画面方案", exact: true }).click();
+  await page.getByRole("button", { name: "高级", exact: true }).click();
   await expect(
-    page.getByRole("dialog", { name: "画面方案选项" }),
+    page.getByRole("dialog", { name: "高级选项" }),
   ).toBeVisible();
   await expect(page.getByLabel("选择画面方案")).toBeVisible();
   await expect(page.getByRole("radio", { name: /商品主图/ })).not.toBeChecked();
@@ -1163,15 +1176,19 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   await expect(
     page.getByRole("radio", { name: /材质特写 突出工艺/ }),
   ).toBeVisible();
-  await expect(page.getByLabel("选择景深与距离")).toBeVisible();
   await expect(page.getByLabel("选择视觉风格")).toBeVisible();
+  // 焦段、景深等摄影参数默认收在「更多参数」里
+  await expect(page.getByLabel("选择景深与距离")).toHaveCount(0);
+  await page.getByRole("button", { name: /更多参数/ }).click();
+  await expect(page.getByLabel("选择景深与距离")).toBeVisible();
   await expect(page.getByLabel("选择镜头")).toBeVisible();
   await expect(page.getByLabel("选择机位")).toBeVisible();
   await expect(page.getByLabel("选择光影")).toBeVisible();
   await expect(page.getByLabel("选择视觉焦点")).toBeVisible();
-  await expect(page.getByLabel("选择生成方式")).toBeVisible();
+  // 「生成方式」只是一句提示词，不再作为选项
+  await expect(page.getByLabel("选择生成方式")).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog", { name: "画面方案选项" })).toHaveCount(
+  await expect(page.getByRole("dialog", { name: "高级选项" })).toHaveCount(
     0,
   );
 
@@ -1185,20 +1202,16 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   await expect(page.getByRole("radio", { name: /复刻构图/ })).toHaveCount(0);
   await expect(page.locator(".handheld-pack-summary")).toHaveCount(0);
 
-  await expect(
-    page.getByRole("button", { name: "选择出镜范围" }),
-  ).toBeVisible();
+  const cropSwitch = page.getByRole("radiogroup", { name: "出镜范围" });
+  await expect(cropSwitch).toBeVisible();
   await expect(page.locator(".handheld-out .handheld-crop")).toBeVisible();
   await expect(page.locator(".handheld-pane .handheld-crop")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "选择出镜范围" }),
-  ).toContainText("手腕特写");
-  await page.getByRole("button", { name: "选择出镜范围" }).click();
-  await expect(page.getByRole("option", { name: "手腕特写" })).toBeVisible();
-  await expect(page.getByRole("option", { name: "手指特写" })).toBeVisible();
-  await expect(page.getByRole("option", { name: "半身出镜" })).toBeVisible();
-  await expect(page.getByRole("option", { name: "全身出镜" })).toBeVisible();
-  await expect(page.getByRole("option", { name: "半身禁脸" })).toBeVisible();
+    cropSwitch.getByRole("radio", { name: "手腕", exact: true }),
+  ).toBeChecked();
+  for (const name of ["手指", "手腕", "禁脸", "半身", "全身"]) {
+    await expect(cropSwitch.getByRole("radio", { name, exact: true })).toBeVisible();
+  }
 
   await expect(page.locator(".handheld-out .handheld-hand")).toBeVisible();
   await expect(page.locator(".handheld-out .handheld-model")).toHaveCount(0);
@@ -1206,20 +1219,19 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   await expect(page.getByRole("button", { name: "上传模特模板" })).toHaveCount(
     0,
   );
-  await page.getByRole("option", { name: "半身出镜" }).click();
+  await cropSwitch.getByRole("radio", { name: "半身", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "选择出镜范围" }),
-  ).toContainText("半身出镜");
+    cropSwitch.getByRole("radio", { name: "半身", exact: true }),
+  ).toBeChecked();
   await expect(page.locator(".handheld-out .handheld-model")).toBeVisible();
   await expect(page.locator(".handheld-out .handheld-hand")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "上传模特模板" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "选择出镜范围" }).click();
-  await page.getByRole("option", { name: "手腕特写" }).click();
+  await cropSwitch.getByRole("radio", { name: "手腕", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "选择出镜范围" }),
-  ).toContainText("手腕特写");
+    cropSwitch.getByRole("radio", { name: "手腕", exact: true }),
+  ).toBeChecked();
   await expect(page.locator(".handheld-out .handheld-hand")).toBeVisible();
   await expect(page.getByRole("button", { name: "上传手指图" })).toBeVisible();
 
@@ -1271,9 +1283,9 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   await expect(page.getByLabel("选择生成张数")).toHaveCount(0);
   await expect(page.getByText("补充要求")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "画面方案", exact: true }).click();
+  await page.getByRole("button", { name: "高级", exact: true }).click();
   await expect(
-    page.getByRole("dialog", { name: "画面方案选项" }),
+    page.getByRole("dialog", { name: "高级选项" }),
   ).toBeVisible();
   await expect(page.getByLabel("选择视觉风格")).toBeVisible();
   await expect(
@@ -1287,7 +1299,7 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   await expect(page.getByRole("radio", { name: "使用动作" })).toBeChecked();
   await expect(page.getByRole("radio", { name: "现场光" })).toBeChecked();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog", { name: "画面方案选项" })).toHaveCount(
+  await expect(page.getByRole("dialog", { name: "高级选项" })).toHaveCount(
     0,
   );
   await expect(page.getByLabel("选择场景", { exact: true })).toBeVisible();
@@ -1312,13 +1324,10 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   );
   await expect(page.getByRole("button", { name: "上传手指图" })).toBeVisible();
   await expect(page.getByRole("button", { name: "上传场景" })).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: /生成手持商品图/ }),
-  ).toBeVisible();
   await expect(page.locator(".handheld-submit--dock")).toHaveCount(0);
   await expect(page.locator(".handheld-frame .handheld-submit")).toBeVisible();
   await expect(page.locator(".handheld-submit")).toHaveCount(1);
-  await expect(page.locator(".handheld-submit")).toContainText("1张");
+  await expect(page.getByText("本次会生成 1 张")).toBeVisible();
   await expect(page.locator(".handheld-shots")).toHaveAttribute(
     "data-count",
     "1",
@@ -1330,7 +1339,7 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
     .getByRole("radio", { name: /详情套图/ })
     .click();
   await expect(page.locator(".handheld-submit")).toHaveCount(1);
-  await expect(page.locator(".handheld-submit")).toContainText("4张");
+  await expect(page.getByText("本次会生成 4 张")).toBeVisible();
   await expect(page.locator(".handheld-shots")).toHaveAttribute(
     "data-count",
     "1",
@@ -1347,24 +1356,19 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
     .getByRole("radio", { name: /单张主图/ })
     .click();
   await expect(page.locator(".handheld-submit")).toHaveCount(1);
-  await expect(page.locator(".handheld-submit")).toContainText("1张");
+  await expect(page.getByText("本次会生成 1 张")).toBeVisible();
   await expect(page.locator(".handheld-shots")).toHaveAttribute(
     "data-count",
     "1",
   );
   await expect(page.locator(".handheld-frame")).toHaveCount(1);
   await expect(page.locator(".handheld-frame__thumbs")).toHaveCount(0);
-  await expect(page.locator(".handheld-out .handheld-layout")).toBeVisible();
-  await expect(page.locator(".handheld-pane .handheld-layout")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "更多构图参考" })).toHaveCount(
-    0,
-  );
+  // 构图参考是进阶选项：收在商品下方的补图栏里，不再占一整张卡片
+  await expect(page.locator(".handheld-layout")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "清空构图参考" }),
+    page.locator(".handheld-angles").getByRole("button", { name: "上传构图参考" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "上传构图参考" }),
-  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "清空构图参考" })).toHaveCount(0);
   await expect(page.getByLabel("手持生成历史")).toBeVisible();
   await expect(page.locator(".handheld-history__empty")).toContainText(
     "暂无记录",
@@ -1390,6 +1394,11 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
     });
   await expect(page.locator(".handheld-product.has-file")).toBeVisible();
   await expect(
+    page.getByRole("button", { name: "填写品类与实物尺寸" }),
+  ).toBeVisible();
+  // 商品到位后，按钮回到「生成」
+  await expect(page.locator(".handheld-submit")).toHaveAccessibleName(/生成手持商品图/);
+  await expect(
     page.getByRole("button", { name: "查看商品大图" }),
   ).toBeVisible();
   await expect(page.locator(".handheld-pane__notice")).toHaveCount(0);
@@ -1408,6 +1417,134 @@ test("handheld product uses a setup board instead of the try-on stage", async ({
   await expect(page.getByRole("button", { name: "查看商品侧面" })).toBeVisible();
   await page.getByRole("button", { name: "移除商品侧面" }).click();
   await expect(page.getByRole("button", { name: "上传商品侧面" })).toBeVisible();
+});
+
+test("handheld result: 只改这张 redraws one shot with one change", async ({
+  page,
+}) => {
+  const jobBodies = [];
+  const quoteBodies = [];
+  await page.route("**/api/v1/commerce/handheld/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith("/handheld/product-classifications")) {
+      await fulfill(route, {
+        category: "cup",
+        label: "白色马克杯",
+        sizeMm: { length: 80, width: 80, height: 95 },
+      });
+      return;
+    }
+    if (path.endsWith("/handheld/quotes")) {
+      quoteBodies.push(request.postDataJSON());
+      await fulfill(route, { unitPriceCents: 3, itemCount: 1, authoritative: true });
+      return;
+    }
+    if (path.endsWith("/handheld/projects") && request.method() === "POST") {
+      await fulfill(route, { id: "e2e-handheld-project" });
+      return;
+    }
+    if (path.endsWith("/handheld/jobs") && request.method() === "POST") {
+      const body = request.postDataJSON();
+      jobBodies.push(body);
+      const imageUrl = "/api/v1/files/mock-product.png?handheld=regen";
+      await fulfill(route, {
+        id: "e2e-handheld-regen",
+        status: "completed",
+        items: [
+          {
+            task: {
+              id: "e2e-handheld-regen-task",
+              type: "ecommerce_design",
+              status: "succeeded",
+              prompt: body.spec.shots[0].prompt,
+              params: {
+                _kind: "ui-design-ecommerce-handheld-generation",
+                aspectRatio: "1:1",
+                batchId: "e2e-handheld-regen",
+                batchIndex: 0,
+                batchSize: 1,
+                batchCreatedAt: "2026-01-01T00:05:00.000Z",
+                handheldSpec: body.spec,
+              },
+              count: 1,
+              originalUrls: [imageUrl],
+              outputUrls: [imageUrl],
+              createdAt: "2026-01-01T00:05:00.000Z",
+              finishedAt: "2026-01-01T00:06:00.000Z",
+            },
+          },
+        ],
+      });
+      return;
+    }
+    await fulfill(route, {});
+  });
+  await page.goto("/ecommerce-design?tool=handheld&seedResult=handheld");
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles({
+      name: "product.jpg",
+      mimeType: "image/jpeg",
+      buffer: Buffer.from(
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wAAAAD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAP/2Q==",
+        "base64",
+      ),
+    });
+  await expect(page.locator(".handheld-product.has-file")).toBeVisible();
+  // 上传后自动识别品类与尺寸，握法跟着品类走
+  await expect(
+    page.getByRole("button", { name: "实物尺寸 80×80×95mm，点击修改" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "握持姿势" })).toContainText("就口");
+  await page
+    .getByLabel("手持生成历史")
+    .locator("button")
+    .first()
+    .click();
+  await expect(page.getByLabel("本次套图")).toBeVisible();
+  await page
+    .getByLabel("本次套图")
+    .getByRole("listitem", { name: "使用瞬间" })
+    .click();
+
+  const tweak = page.getByRole("button", { name: "只改这张" });
+  await expect(tweak).toBeEnabled();
+  await tweak.click();
+  const menu = page.getByRole("dialog", { name: "只改「使用瞬间」" });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("button", { name: /设置不变，再来一张/ })).toBeVisible();
+  await expect(menu.getByRole("group", { name: "换握法" })).toBeVisible();
+  // 口红默认两指捏，菜单里标出当前握法
+  await expect(
+    menu.getByRole("button", { name: "两指捏", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(menu.getByRole("button", { name: "都市街头" })).toBeVisible();
+
+  await menu.getByRole("button", { name: "三指捏", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "确认生成费用" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator(".ai-cost-confirm-total")).toContainText("× 1 张");
+  await page.locator(".ai-cost-confirm-btn.primary").click();
+
+  await expect.poll(() => jobBodies.length).toBe(1);
+  expect(quoteBodies.at(-1).itemCount).toBe(1);
+  const spec = jobBodies[0].spec;
+  expect(spec.pack).toBe("listing");
+  expect(spec.pose).toBe("pinch");
+  expect(spec.shots.map((shot) => shot.id)).toEqual(["use"]);
+  expect(spec.shots[0].prompt).toContain("握持姿势：三指捏");
+  expect(spec.sizeMm).toEqual({ length: 20, width: 20, height: 80 });
+  // 这一批只有重画的那一张：画布显示它本身，不会把它当成整套的第 1 张
+  await expect(page.locator(".handheld-frame__label")).toHaveText("使用瞬间");
+  await expect(page.getByLabel("本次套图")).toHaveCount(0);
+
+  // 下载默认按投放平台尺寸导出，也可以下原图
+  await page.getByRole("button", { name: "下载", exact: true }).click();
+  const downloadMenu = page.getByRole("menu", { name: "下载" });
+  await expect(downloadMenu.getByRole("menuitem", { name: /按淘宝尺寸/ })).toBeVisible();
+  await expect(downloadMenu.getByRole("menuitem", { name: /原图/ })).toBeVisible();
 });
 
 test("accessory mode exposes commercial wearing controls and a four-shot PDP pack", async ({
@@ -2406,6 +2543,48 @@ async function mockEcommerceApis(page) {
       if (seedResult === "runningTryon") runningTryonSeeded = true;
       if (runningTryonSeeded) {
         await fulfill(route, { items: [runningTryonTask()], nextCursor: null });
+        return;
+      }
+      if (seedResult === "handheld") {
+        const shots = [
+          { id: "hero", label: "手持主图" },
+          { id: "present", label: "递出展示" },
+          { id: "use", label: "使用瞬间" },
+          { id: "detail", label: "材质特写" },
+        ];
+        await fulfill(route, {
+          items: shots.map((shot, index) => {
+            const imageUrl = `/api/v1/files/mock-product.png?handheld=${index + 1}`;
+            return {
+              id: `e2e-handheld-task-${index + 1}`,
+              type: "ecommerce_design",
+              status: "succeeded",
+              prompt: "测试手持商品结果",
+              params: {
+                _kind: "ui-design-ecommerce-handheld-generation",
+                aspectRatio: "1:1",
+                batchId: "e2e-handheld-batch-1",
+                batchIndex: index,
+                batchSize: shots.length,
+                batchCreatedAt: "2026-01-01T00:00:00.000Z",
+                handheldSpec: {
+                  crop: "wrist",
+                  pack: "listing",
+                  platform: "taobao",
+                  aspectRatio: "1:1",
+                  category: "lipstick",
+                  shots,
+                },
+              },
+              count: 1,
+              originalUrls: [imageUrl],
+              outputUrls: [imageUrl],
+              createdAt: "2026-01-01T00:00:00.000Z",
+              finishedAt: "2026-01-01T00:01:00.000Z",
+            };
+          }),
+          nextCursor: null,
+        });
         return;
       }
       if (seedResult === "1" || seedResult === "multi") {

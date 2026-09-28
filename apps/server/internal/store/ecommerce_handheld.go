@@ -113,7 +113,7 @@ func InsertEcommerceHandheldItem(ctx context.Context, q Q, item *EcommerceHandhe
 	if item.ID == uuid.Nil {
 		item.ID = uuid.New()
 	}
-	return q.QueryRow(ctx, `INSERT INTO ecommerce_handheld_items (id,batch_id,user_id,task_id,parent_item_id,item_index,label,prompt,shot_spec,status,qa_status,review_status,review_note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING created_at,updated_at`, item.ID, item.BatchID, item.UserID, item.TaskID, item.ParentItemID, item.ItemIndex, item.Label, item.Prompt, jsonMap(item.ShotSpec), item.Status, item.QAStatus, item.ReviewStatus, item.ReviewNote).Scan(&item.CreatedAt, &item.UpdatedAt)
+	return q.QueryRow(ctx, `INSERT INTO ecommerce_handheld_items (id,batch_id,user_id,task_id,parent_item_id,item_index,label,prompt,shot_spec,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING created_at,updated_at`, item.ID, item.BatchID, item.UserID, item.TaskID, item.ParentItemID, item.ItemIndex, item.Label, item.Prompt, jsonMap(item.ShotSpec), item.Status).Scan(&item.CreatedAt, &item.UpdatedAt)
 }
 
 func AttachEcommerceHandheldItemTask(ctx context.Context, q Q, userID, itemID, taskID uuid.UUID) error {
@@ -130,9 +130,6 @@ func RetryEcommerceHandheldItem(ctx context.Context, q Q, userID, itemID, expect
 		UPDATE ecommerce_handheld_items AS item
 		   SET task_id=$4,
 		       status='queued',
-		       qa_status='pending',
-		       review_status='unreviewed',
-		       review_note='',
 		       updated_at=now()
 		  FROM tasks AS previous
 		 WHERE item.id=$1
@@ -146,13 +143,6 @@ func RetryEcommerceHandheldItem(ctx context.Context, q Q, userID, itemID, expect
 		return uuid.Nil, false, nil
 	}
 	if err != nil {
-		return uuid.Nil, false, err
-	}
-	if _, err := q.Exec(ctx, `
-		UPDATE ecommerce_handheld_quality_reports
-		   SET status='pending', detector='manual_required', checks='[]'::jsonb,
-		       score=NULL, summary='等待视觉检测器', updated_at=now()
-		 WHERE item_id=$1`, itemID); err != nil {
 		return uuid.Nil, false, err
 	}
 	if _, err := q.Exec(ctx, `
@@ -171,11 +161,6 @@ func InsertEcommerceHandheldInput(ctx context.Context, q Q, input *EcommerceHand
 	return q.QueryRow(ctx, `INSERT INTO ecommerce_handheld_inputs (id,batch_id,item_id,role,object_key,ordinal) VALUES ($1,$2,$3,$4,$5,$6) RETURNING created_at`, input.ID, input.BatchID, input.ItemID, input.Role, input.ObjectKey, input.Ordinal).Scan(&input.CreatedAt)
 }
 
-func InsertEcommerceHandheldQualityReport(ctx context.Context, q Q, itemID uuid.UUID) error {
-	_, err := q.Exec(ctx, `INSERT INTO ecommerce_handheld_quality_reports (id,item_id,status,detector,checks,summary) VALUES ($1,$2,'pending','manual_required','[]','等待视觉检测器') ON CONFLICT (item_id) DO NOTHING`, uuid.New(), itemID)
-	return err
-}
-
 func GetEcommerceHandheldBatch(ctx context.Context, q Q, userID, id uuid.UUID) (*EcommerceHandheldBatch, error) {
 	b := &EcommerceHandheldBatch{}
 	var snapshot, spec []byte
@@ -192,7 +177,7 @@ func GetEcommerceHandheldBatch(ctx context.Context, q Q, userID, id uuid.UUID) (
 }
 
 func ListEcommerceHandheldItems(ctx context.Context, q Q, userID, batchID uuid.UUID) ([]*EcommerceHandheldItem, error) {
-	rows, err := q.Query(ctx, `SELECT id,batch_id,user_id,task_id,parent_item_id,item_index,label,prompt,shot_spec,status,qa_status,review_status,review_note,created_at,updated_at FROM ecommerce_handheld_items WHERE batch_id=$1 AND user_id=$2 ORDER BY item_index,id`, batchID, userID)
+	rows, err := q.Query(ctx, `SELECT id,batch_id,user_id,task_id,parent_item_id,item_index,label,prompt,shot_spec,status,created_at,updated_at FROM ecommerce_handheld_items WHERE batch_id=$1 AND user_id=$2 ORDER BY item_index,id`, batchID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +186,7 @@ func ListEcommerceHandheldItems(ctx context.Context, q Q, userID, batchID uuid.U
 	for rows.Next() {
 		i := &EcommerceHandheldItem{}
 		var spec []byte
-		if err := rows.Scan(&i.ID, &i.BatchID, &i.UserID, &i.TaskID, &i.ParentItemID, &i.ItemIndex, &i.Label, &i.Prompt, &spec, &i.Status, &i.QAStatus, &i.ReviewStatus, &i.ReviewNote, &i.CreatedAt, &i.UpdatedAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.BatchID, &i.UserID, &i.TaskID, &i.ParentItemID, &i.ItemIndex, &i.Label, &i.Prompt, &spec, &i.Status, &i.CreatedAt, &i.UpdatedAt); err != nil {
 			return nil, err
 		}
 		i.ShotSpec = scanJSONMap(spec)
@@ -230,7 +215,7 @@ func ListEcommerceHandheldInputs(ctx context.Context, q Q, batchID uuid.UUID) ([
 func GetEcommerceHandheldItem(ctx context.Context, q Q, userID, id uuid.UUID) (*EcommerceHandheldItem, error) {
 	i := &EcommerceHandheldItem{}
 	var spec []byte
-	err := q.QueryRow(ctx, `SELECT id,batch_id,user_id,task_id,parent_item_id,item_index,label,prompt,shot_spec,status,qa_status,review_status,review_note,created_at,updated_at FROM ecommerce_handheld_items WHERE id=$1 AND user_id=$2`, id, userID).Scan(&i.ID, &i.BatchID, &i.UserID, &i.TaskID, &i.ParentItemID, &i.ItemIndex, &i.Label, &i.Prompt, &spec, &i.Status, &i.QAStatus, &i.ReviewStatus, &i.ReviewNote, &i.CreatedAt, &i.UpdatedAt)
+	err := q.QueryRow(ctx, `SELECT id,batch_id,user_id,task_id,parent_item_id,item_index,label,prompt,shot_spec,status,created_at,updated_at FROM ecommerce_handheld_items WHERE id=$1 AND user_id=$2`, id, userID).Scan(&i.ID, &i.BatchID, &i.UserID, &i.TaskID, &i.ParentItemID, &i.ItemIndex, &i.Label, &i.Prompt, &spec, &i.Status, &i.CreatedAt, &i.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -244,4 +229,28 @@ func GetEcommerceHandheldItem(ctx context.Context, q Q, userID, id uuid.UUID) (*
 func UpdateEcommerceHandheldBatchStatus(ctx context.Context, q Q, userID, batchID uuid.UUID, status string) error {
 	_, err := q.Exec(ctx, `UPDATE ecommerce_handheld_batches SET status=$3,updated_at=now() WHERE id=$1 AND user_id=$2`, batchID, userID, status)
 	return err
+}
+
+// 手持套图：其余几张记下主图任务，Worker 执行前据此等待并把主图加为整套参考
+const (
+	HandheldAnchorTaskParam     = "handheldAnchorTaskId"
+	HandheldAnchorResolvedParam = "handheldAnchorResolved"
+)
+
+// ResolveHandheldAnchorTask 只对仍在排队、还没处理过主图参考的任务生效：
+// anchorKey 非空时把主图追加为最后一张参考图并补上说明；为空时只标记已处理。
+func ResolveHandheldAnchorTask(ctx context.Context, q Q, taskID uuid.UUID, anchorKey, promptSuffix string) (bool, error) {
+	tag, err := q.Exec(ctx, `
+		UPDATE tasks
+		   SET input_keys = CASE WHEN $2 = '' THEN input_keys ELSE COALESCE(input_keys, '[]'::jsonb) || to_jsonb($2::text) END,
+		       prompt = CASE WHEN $2 = '' THEN prompt ELSE prompt || $3 END,
+		       params = COALESCE(params, '{}'::jsonb) || jsonb_build_object($4::text, true)
+		 WHERE id = $1
+		   AND status = 'queued'
+		   AND COALESCE((params->>$4)::boolean, false) = false`,
+		taskID, anchorKey, promptSuffix, HandheldAnchorResolvedParam)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }

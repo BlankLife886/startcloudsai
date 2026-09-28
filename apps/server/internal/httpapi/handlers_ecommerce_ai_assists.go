@@ -85,6 +85,20 @@ func (s *Server) adminListEcommerceAIAssists(c *gin.Context, _ *store.User) {
 			OffBehavior: "关闭后上传服装不再识别，品类保持用户手动选择，不影响生成",
 		},
 		{
+			ID:          "handheld-product-classify",
+			Name:        "手持商品识别",
+			Tool:        "手持商品",
+			Description: "识别商品品类（决定默认握法），并按图中比例估计实物尺寸，用来预填品类与尺寸。",
+			Trigger:     "用户在手持商品上传商品图后自动调用",
+			Endpoint:    "POST /api/v1/commerce/handheld/product-classifications",
+			ModelSource: ecommerceAnalysisModelSource,
+			RateLimit:   "每人每分钟 30 次（独立计数）；全局同时最多 6 个分析请求（与其他电商分析共用）",
+			Billing:     "不扣用户积分；每次调用消耗一次商品分析模型的上游额度",
+			Toggleable:  true,
+			Enabled:     s.handheldProductClassifyEnabled(c),
+			OffBehavior: "关闭后上传商品不再识别，品类与尺寸保持用户手动选择，不影响生成",
+		},
+		{
 			ID:          "product-brief",
 			Name:        "AI 商品识别",
 			Tool:        "商拍 / 套图 / 营销图等",
@@ -134,7 +148,11 @@ type ecommerceAIAssistUpdate struct {
 
 func (s *Server) adminUpdateEcommerceAIAssist(c *gin.Context, _ *store.User) {
 	id := strings.TrimSpace(c.Param("id"))
-	if id != "tryon-garment-classify" {
+	settingKey := map[string]string{
+		"tryon-garment-classify":    tryonGarmentClassifySettingKey,
+		"handheld-product-classify": handheldProductClassifySettingKey,
+	}[id]
+	if settingKey == "" {
 		fail(c, apperr.E("not_toggleable", "该功能暂不支持开关", http.StatusBadRequest))
 		return
 	}
@@ -148,7 +166,7 @@ func (s *Server) adminUpdateEcommerceAIAssist(c *gin.Context, _ *store.User) {
 		return
 	}
 	raw, _ := json.Marshal(*body.Enabled)
-	if err := settings.Set(c.Request.Context(), s.St.Pool, tryonGarmentClassifySettingKey, raw); err != nil {
+	if err := settings.Set(c.Request.Context(), s.St.Pool, settingKey, raw); err != nil {
 		fail(c, err)
 		return
 	}

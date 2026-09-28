@@ -35,6 +35,24 @@ func TestValidateHandheldSpecRejectsTryonRoles(t *testing.T) {
 	}
 }
 
+func TestValidateHandheldSpecSizeMm(t *testing.T) {
+	spec := validHandheldSpec()
+	spec.SizeMm = &handheldSizeIn{Length: 20, Width: 20, Height: 80}
+	if err := validateHandheldSpec(&spec); err != nil {
+		t.Fatalf("valid size rejected: %v", err)
+	}
+	if got := handheldSpecMap(spec)["sizeMm"]; got != spec.SizeMm {
+		t.Fatalf("sizeMm not stored in spec map: %v", got)
+	}
+	if prompt := compileHandheldPrompt(map[string]any{}, spec, handheldShotIn{Label: "手持主图"}); !strings.Contains(prompt, "约 20×20×80 mm") {
+		t.Fatalf("fallback prompt missing size: %s", prompt)
+	}
+	spec.SizeMm = &handheldSizeIn{Length: 20, Width: 0, Height: 80}
+	if err := validateHandheldSpec(&spec); err == nil {
+		t.Fatal("expected zero width to be rejected")
+	}
+}
+
 func TestValidateHandheldSpecOrdersProductReferencesFirst(t *testing.T) {
 	spec := validHandheldSpec()
 	spec.Inputs = []handheldInputIn{

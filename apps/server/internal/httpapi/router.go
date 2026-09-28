@@ -390,6 +390,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/commerce/tryon-catalog", s.publicTryonCatalog)
 	api.GET("/commerce/handheld/catalog", s.publicHandheldCatalog)
 	api.POST("/commerce/handheld/quotes", s.quoteHandheldJob)
+	api.POST("/commerce/handheld/product-classifications", s.classifyHandheldProduct)
 	api.GET("/commerce/handheld/projects", s.listHandheldProjects)
 	api.POST("/commerce/handheld/projects", s.createHandheldProject)
 	api.GET("/commerce/handheld/projects/:id", s.getHandheldProject)

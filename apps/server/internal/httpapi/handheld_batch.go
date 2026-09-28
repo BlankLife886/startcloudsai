@@ -75,6 +75,12 @@ func loadHandheldBatchResult(ctx context.Context, q store.Q, userID, batchID uui
 	return result, nil
 }
 
+// 套图其余几张记下主图任务：Worker 等主图出来后把它加为整套参考再生成
+const (
+	handheldAnchorTaskParam     = store.HandheldAnchorTaskParam
+	handheldAnchorResolvedParam = store.HandheldAnchorResolvedParam
+)
+
 func (s *Server) createHandheldBatchAtomic(ctx context.Context, batch *store.EcommerceHandheldBatch, spec handheldSpecIn, requestHash string) (*handheldBatchResult, error) {
 	var result *handheldBatchResult
 	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
@@ -107,19 +113,23 @@ func (s *Server) createHandheldBatchAtomic(ctx context.Context, batch *store.Eco
 		if batch.ProductID != nil {
 			productID = batch.ProductID.String()
 		}
+		anchorTaskID := ""
 		for index, shot := range spec.Shots {
 			prompt := compileHandheldPrompt(batch.ProductSnapshot, spec, shot)
 			item := &store.EcommerceHandheldItem{
 				ID:      uuid.NewSHA1(batch.ID, []byte(fmt.Sprintf("item:%d", index))),
 				BatchID: batch.ID, UserID: batch.UserID, ItemIndex: index, Label: shot.Label,
 				Prompt: prompt, ShotSpec: map[string]any{"id": shot.ID, "label": shot.Label, "direction": shot.Direction, "aspectRatio": shot.AspectRatio, "prompt": prompt},
-				Status: "queued", QAStatus: "pending", ReviewStatus: "unreviewed",
+				Status: "queued",
 			}
 			if err := store.InsertEcommerceHandheldItem(ctx, tx, item); err != nil {
 				return err
 			}
 			idem := "handheld:" + item.ID.String()
 			params := handheldGenerationParams(nil, batch.ModelID, shot.AspectRatio, batch.ID, item.ID, index, len(spec.Shots), productID, batch.ProductSnapshot, batch.JobSpec, spec.Inputs)
+			if anchorTaskID != "" {
+				params[handheldAnchorTaskParam] = anchorTaskID
+			}
 			task, _, err := taskflow.CreateTaskInTx(ctx, tx, batch.UserID, taskflow.CreateInput{
 				Type: "ecommerce_design", Prompt: prompt, Params: params, InputKeys: keys, Count: 1, IdempotencyKey: &idem,
 			}, nil)
@@ -127,10 +137,10 @@ func (s *Server) createHandheldBatchAtomic(ctx context.Context, batch *store.Eco
 				return err
 			}
 			item.TaskID = &task.ID
-			if err := store.AttachEcommerceHandheldItemTask(ctx, tx, batch.UserID, item.ID, task.ID); err != nil {
-				return err
+			if index == 0 && spec.AnchorHero && len(spec.Shots) > 1 {
+				anchorTaskID = task.ID.String()
 			}
-			if err := store.InsertEcommerceHandheldQualityReport(ctx, tx, item.ID); err != nil {
+			if err := store.AttachEcommerceHandheldItemTask(ctx, tx, batch.UserID, item.ID, task.ID); err != nil {
 				return err
 			}
 			batch.TotalCostCents += task.CostCents

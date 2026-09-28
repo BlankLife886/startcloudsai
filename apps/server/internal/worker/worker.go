@@ -1907,6 +1907,11 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("bad task_id: %w", err)
 	}
 
+	if waiting, err := w.waitForHandheldAnchor(ctx, taskID); err != nil {
+		return err
+	} else if waiting {
+		return nil
+	}
 	task, deferReason, err := w.claimTask(ctx, taskID)
 	if err != nil {
 		if errors.Is(err, store.ErrExecutionBatchTooLarge) {

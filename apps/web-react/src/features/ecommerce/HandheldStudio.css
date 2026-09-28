@@ -2821,3 +2821,299 @@ html.settings-no-animations .handheld-reveal {
   min-height: 28px;
   place-items: center;
 }
+
+/* ---- 画面方案：专业参数折叠 ---- */
+.handheld-tune__more {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--commerce-ink);
+  background: var(--commerce-settings-control);
+  border: 1px solid var(--commerce-line);
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.handheld-tune__more small {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--commerce-muted);
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.handheld-tune__hint {
+  margin: 0;
+  color: var(--commerce-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* ---- 商品图右上角：品类与尺寸 ---- */
+.handheld-ref-card__size {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 3;
+}
+.handheld-ref-card__size button {
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  color: var(--commerce-ink);
+  background: rgb(255 255 255 / 90%);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: var(--commerce-shadow-control);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.handheld-ref-card__size button:not(.is-empty) {
+  padding: 0 6px;
+}
+.handheld-ref-card__size button.is-empty {
+  color: var(--commerce-accent-ink);
+}
+.handheld-ref-card__size button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+html.color-scheme-dark .handheld-ref-card__size button {
+  background: rgb(22 20 34 / 78%);
+}
+.handheld-size-inputs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.handheld-size-inputs label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--commerce-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.handheld-size-inputs input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  color: #17131f;
+  background: #f3f1f8;
+  border: 1px solid #e4e3ec;
+  border-radius: 8px;
+  font-size: 13px;
+}
+html.color-scheme-dark .handheld-size-inputs input {
+  color: #f4f1fb;
+  background: #241e32;
+  border-color: #3a3943;
+}
+
+/* ---- 手/模特卡片上方：出镜范围 ---- */
+.handheld-crop--canvas {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+.handheld-crop--canvas > .handheld-ref-card {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.handheld-crop-switch {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 3px;
+  background: var(--commerce-panel);
+  border-radius: 10px;
+  box-shadow: var(--commerce-shadow-card);
+}
+.handheld-crop-switch button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 26px;
+  padding: 0 2px;
+  overflow: hidden;
+  color: var(--commerce-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.handheld-crop-switch button:hover:not(:disabled):not(.is-active) {
+  color: var(--commerce-ink);
+  background: var(--commerce-settings-control);
+}
+.handheld-crop-switch button.is-active {
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+}
+.handheld-crop-switch button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* ---- 套图：渠道推荐 ---- */
+.handheld-packs > button {
+  position: relative;
+}
+.handheld-packs__tip {
+  position: absolute;
+  top: -6px;
+  right: -4px;
+  padding: 0 5px;
+  color: #fff;
+  background: var(--commerce-accent);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 15px;
+}
+
+/* ---- 结果图：只改这张 ---- */
+.handheld-tweak-menu__head {
+  display: grid;
+  gap: 2px;
+}
+.handheld-tweak-menu__head strong {
+  font-size: 13px;
+}
+.handheld-tweak-menu__head small {
+  color: var(--commerce-muted);
+  font-size: 11px;
+}
+.handheld-tweak-menu__again {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  color: #fff;
+  background: var(--commerce-accent, #6d5cff);
+  border: 0;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.handheld-tweak-menu__grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.handheld-tweak-menu__grid button {
+  display: grid;
+  gap: 3px;
+  padding: 0;
+  color: var(--commerce-ink);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.handheld-tweak-menu__grid img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border: 2px solid transparent;
+  border-radius: 8px;
+}
+.handheld-tweak-menu__grid button:hover img,
+.handheld-tweak-menu__grid button:focus-visible img {
+  border-color: var(--commerce-accent-line);
+}
+.handheld-tweak-menu__grid span {
+  overflow: hidden;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.handheld-ref-card__size-spin {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: handheld-size-spin 0.8s linear infinite;
+}
+@keyframes handheld-size-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .handheld-ref-card__size-spin {
+    animation: none;
+  }
+}
+
+/* ---- 下载：平台尺寸 / 原图 ---- */
+.handheld-download-menu {
+  gap: 4px;
+  padding: 6px;
+}
+.handheld-download-menu > button {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  color: var(--commerce-ink);
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+.handheld-download-menu > button:hover,
+.handheld-download-menu > button:focus-visible {
+  background: var(--commerce-settings-control);
+}
+.handheld-download-menu strong {
+  font-size: 13px;
+}
+.handheld-download-menu small {
+  color: var(--commerce-muted);
+  font-size: 11px;
+}
+
+/* ---- 卡片：必填/选填与"不传会怎样" ---- */
+.handheld-ref-card__tag em {
+  margin-left: 5px;
+  padding: 0 5px;
+  color: var(--commerce-muted);
+  background: color-mix(in srgb, var(--commerce-ink) 6%, transparent);
+  border-radius: 6px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 16px;
+}
+.handheld-ref-card__tag em.is-required {
+  color: #fff;
+  background: var(--commerce-accent);
+}
+.handheld-ref-card__hint {
+  max-width: 88%;
+  color: var(--commerce-muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: center;
+}

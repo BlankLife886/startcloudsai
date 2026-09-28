@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
@@ -47,10 +48,6 @@ func (s *Server) classifyTryonGarment(c *gin.Context) {
 	if !s.enforceUsageLimit(c, "ecommerce-tryon-classify-minute", user.ID.String(), tryonGarmentClassifyPerMinute, 1, time.Minute) {
 		return
 	}
-	if s.Storage == nil {
-		fail(c, apperr.E("storage_unavailable", "图片存储服务暂不可用", http.StatusServiceUnavailable))
-		return
-	}
 	var body tryonGarmentClassifyIn
 	if err := bindJSON(c, &body); err != nil {
 		fail(c, err)
@@ -59,32 +56,6 @@ func (s *Server) classifyTryonGarment(c *gin.Context) {
 	key := strings.TrimSpace(body.InputKey)
 	if key == "" {
 		fail(c, apperr.E("validation_error", "请先上传服装图", 422))
-		return
-	}
-	inspect := func(ctx context.Context, key string, maxBytes int64) (int64, error) {
-		return s.inspectOwnedTaskImage(ctx, user.ID, key, maxBytes)
-	}
-	if err := validateTaskImageKeys(c.Request.Context(), user.ID, "inputKey", []string{key}, 1, s.Cfg.UploadMaxBytes, 24<<20, inspect, isAllowedTaskInputImageKey); err != nil {
-		fail(c, err)
-		return
-	}
-	// 直接读取图片内容，以 data URL 发给模型：预签名链接在本地环境是 127.0.0.1，
-	// 远端模型服务访问不到，会导致识别必然失败（与后台素材自动命名的做法一致）
-	data, err := s.Storage.GetBytesLimit(c.Request.Context(), key, tryonGarmentClassifyMaxBytes)
-	if err != nil || len(data) == 0 {
-		log.Printf("tryon garment classify: read %s: %v", key, err)
-		fail(c, apperr.E("image_read_failed", "服装图片读取失败，请重新上传", 422))
-		return
-	}
-	contentType := http.DetectContentType(data)
-	if !strings.HasPrefix(contentType, "image/") {
-		fail(c, apperr.E("image_read_failed", "服装图片格式无效，请重新上传", 422))
-		return
-	}
-	imageURL := "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data)
-	client, err := s.ecommerceAnalysisClient(c.Request.Context())
-	if err != nil {
-		fail(c, err)
 		return
 	}
 	prompt := `你是服装电商归类助手。判断图片中的服装应以哪种方式穿到模特身上。
@@ -96,18 +67,8 @@ apparel 只能是以下之一：
 
 label 用 2-10 个汉字描述真实可见的款式与颜色，例如"深蓝蕾丝长礼服"，不得虚构品牌。
 只返回 JSON，不要 Markdown 或解释：{"apparel":"...","label":"..."}`
-
-	if !ecommerceBriefSemaphore.TryAcquire(1) {
-		fail(c, apperr.E("busy", "当前分析请求过多，请稍后再试", 429))
-		return
-	}
-	defer ecommerceBriefSemaphore.Release(1)
-	llmCtx, cancel := context.WithTimeout(c.Request.Context(), ecommerceBriefTimeout)
-	defer cancel()
-	reply, err := client.ChatTextWithImages(llmCtx, []sub2api.Message{{Role: "user", Content: prompt}}, []string{imageURL}, nil)
-	if err != nil {
-		log.Printf("tryon garment classify: upstream error: %v", err)
-		fail(c, assistantUpstreamError(err))
+	reply, done := s.askEcommerceAnalysisAboutImage(c, user.ID, key, tryonGarmentClassifyMaxBytes, prompt, "tryon garment classify", "服装")
+	if !done {
 		return
 	}
 	result, err := decodeTryonGarmentClassification(reply)
@@ -117,6 +78,55 @@ label 用 2-10 个汉字描述真实可见的款式与颜色，例如"深蓝蕾�
 		return
 	}
 	ok(c, result)
+}
+
+// askEcommerceAnalysisAboutImage 把用户自己上传的一张图交给商品分析模型，返回模型原文。
+// 失败时已写好响应，调用方直接 return。
+func (s *Server) askEcommerceAnalysisAboutImage(c *gin.Context, userID uuid.UUID, key string, maxBytes int64, prompt, logTag, subject string) (string, bool) {
+	if s.Storage == nil {
+		fail(c, apperr.E("storage_unavailable", "图片存储服务暂不可用", http.StatusServiceUnavailable))
+		return "", false
+	}
+	inspect := func(ctx context.Context, key string, maxBytes int64) (int64, error) {
+		return s.inspectOwnedTaskImage(ctx, userID, key, maxBytes)
+	}
+	if err := validateTaskImageKeys(c.Request.Context(), userID, "inputKey", []string{key}, 1, s.Cfg.UploadMaxBytes, 24<<20, inspect, isAllowedTaskInputImageKey); err != nil {
+		fail(c, err)
+		return "", false
+	}
+	// 直接读取图片内容，以 data URL 发给模型：预签名链接在本地环境是 127.0.0.1，
+	// 远端模型服务访问不到，会导致识别必然失败（与后台素材自动命名的做法一致）
+	data, err := s.Storage.GetBytesLimit(c.Request.Context(), key, maxBytes)
+	if err != nil || len(data) == 0 {
+		log.Printf("%s: read %s: %v", logTag, key, err)
+		fail(c, apperr.E("image_read_failed", subject+"图片读取失败，请重新上传", 422))
+		return "", false
+	}
+	contentType := http.DetectContentType(data)
+	if !strings.HasPrefix(contentType, "image/") {
+		fail(c, apperr.E("image_read_failed", subject+"图片格式无效，请重新上传", 422))
+		return "", false
+	}
+	imageURL := "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data)
+	client, err := s.ecommerceAnalysisClient(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return "", false
+	}
+	if !ecommerceBriefSemaphore.TryAcquire(1) {
+		fail(c, apperr.E("busy", "当前分析请求过多，请稍后再试", 429))
+		return "", false
+	}
+	defer ecommerceBriefSemaphore.Release(1)
+	llmCtx, cancel := context.WithTimeout(c.Request.Context(), ecommerceBriefTimeout)
+	defer cancel()
+	reply, err := client.ChatTextWithImages(llmCtx, []sub2api.Message{{Role: "user", Content: prompt}}, []string{imageURL}, nil)
+	if err != nil {
+		log.Printf("%s: upstream error: %v", logTag, err)
+		fail(c, assistantUpstreamError(err))
+		return "", false
+	}
+	return reply, true
 }
 
 func decodeTryonGarmentClassification(raw string) (*tryonGarmentClassification, error) {

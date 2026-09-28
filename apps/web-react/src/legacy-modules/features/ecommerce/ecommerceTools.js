@@ -1206,6 +1206,13 @@ export {
   handheldSelectionConflicts,
   handheldSelectionSummary,
   handheldAngleCoveragePrompt,
+  handheldEffectivePoseId,
+  handheldUseAnchorHero,
+  handheldAutoBackdropLabel,
+  handheldEffectiveStyleId,
+  handheldDefaultSizeMm,
+  normalizeHandheldSizeMm,
+  buildHandheldSizePrompt,
   HANDHELD_PRODUCT_ANGLE_SLOTS,
 } from "./handheldCommerce.js";
 

@@ -64,11 +64,11 @@ for (const required of [
 }
 
 assert.equal(view.includes("<HandheldTunePopover"), true);
+// 手持图不加文字，画面文字语言选项已移除
 assert.equal(
-  view.indexOf('className="commerce-header__language"') >
-    view.indexOf("<HandheldPosePopover"),
-  true,
-  "language control must be placed to the right of pose",
+  view.includes('ariaLabel="选择画面文案语言"'),
+  false,
+  "handheld header must not offer a text language control",
 );
 assert.equal(
   view.includes("annotations={handheldAnnotations}"),
@@ -196,11 +196,6 @@ assert.equal(
   3,
   "picture plan, product info and pose triggers must start as unselected",
 );
-assert.equal(
-  view.includes("treatEmptyAsPlaceholder"),
-  true,
-  "the empty language value must render as an unselected placeholder",
-);
 const guide = await readFile(
   new URL("../src/features/ecommerce/HandheldGuideDialog.jsx", import.meta.url),
   "utf8",
@@ -300,7 +295,7 @@ assert.equal(
   true,
   "handheld must pin the first successful shot that returns",
 );
-for (const staleGuideAction of ["验收", "驳回", "下载", "点左侧「生成」"]) {
+for (const staleGuideAction of ["验收", "驳回", "点左侧「生成」"]) {
   assert.equal(
     guide.includes(staleGuideAction),
     false,

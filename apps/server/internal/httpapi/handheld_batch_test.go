@@ -301,3 +301,32 @@ func TestHandheldAtomicHTTPReplayKeepsOriginalInputsAndBilling(t *testing.T) {
 		t.Fatalf("wallet=%+v", funds)
 	}
 }
+
+func TestHandheldAnchorHeroMarksFollowerTasks(t *testing.T) {
+	for _, anchor := range []bool{true, false} {
+		server, user, body := handheldAtomicFixture(t, 100000)
+		body.Spec.AnchorHero = anchor
+		batch, hash := atomicHandheldInput(t, user.ID, body)
+		result, err := server.createHandheldBatchAtomic(context.Background(), batch, body.Spec, hash)
+		if err != nil {
+			t.Fatalf("anchor=%v create: %v", anchor, err)
+		}
+		if len(result.tasks) != 2 {
+			t.Fatalf("tasks = %d", len(result.tasks))
+		}
+		hero, follower := result.tasks[0], result.tasks[1]
+		if _, ok := hero.Params[store.HandheldAnchorTaskParam]; ok {
+			t.Fatalf("hero must not wait for itself: %v", hero.Params)
+		}
+		got, _ := follower.Params[store.HandheldAnchorTaskParam].(string)
+		if anchor && got != hero.ID.String() {
+			t.Fatalf("follower anchor = %q, want %s", got, hero.ID)
+		}
+		if !anchor && got != "" {
+			t.Fatalf("anchor off but follower waits for %q", got)
+		}
+		if _, stored := result.batch.JobSpec["anchorHero"]; stored != anchor {
+			t.Fatalf("anchor=%v but job spec anchorHero stored=%v", anchor, stored)
+		}
+	}
+}

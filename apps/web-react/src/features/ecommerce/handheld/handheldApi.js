@@ -20,6 +20,13 @@ function normalizeCatalogItems(items) {
     .filter((item) => item.id && item.label && item.image);
 }
 
+export function classifyHandheldProduct(payload, { signal } = {}) {
+  return apiPost("/commerce/handheld/product-classifications", payload, {
+    signal,
+    fallbackMessage: "商品识别失败",
+  });
+}
+
 export async function listHandheldCatalog({ signal } = {}) {
   const data = await apiGet("/commerce/catalog", {
     signal,

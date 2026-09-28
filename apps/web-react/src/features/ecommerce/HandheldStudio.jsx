@@ -6,8 +6,8 @@ import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
 import { RegenerateIcon } from "../../components/common/RegenerateIcon.jsx";
 import { useIsDark } from "../../hooks/useIsDark.js";
 import { DialogMotion } from "../../components/motion/DialogMotion.jsx";
-import { CommerceSelect } from "./CommerceSelect.jsx";
 import { handheldShotBlueprints } from "./ecommerceTools.js";
+import { handheldExportSize } from "./handheld/handheldExport.js";
 import { TryonGroupViewer } from "./businesses/tryon/TryonGroupViewer.jsx";
 import { tryonFileUrlFromKey } from "./businesses/tryon/tryonCustomPicks.js";
 import "./HandheldStudio.css";
@@ -84,6 +84,67 @@ function groupHandheldHistory(history) {
   return groups;
 }
 
+// 锚定在触发按钮旁的浮层：定位、点外面关闭、Esc 关闭
+function useHandheldMenu({ width = 360, disabled = false } = {}) {
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [menuStyle, setMenuStyle] = useState({});
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const position = () => {
+      if (!triggerRef.current) return;
+      const rect = triggerRef.current.getBoundingClientRect();
+      const gap = 8;
+      const padding = 10;
+      const menuWidth = Math.min(width, window.innerWidth - padding * 2);
+      const maxHeight = Math.min(560, window.innerHeight - padding * 2);
+      const below = window.innerHeight - rect.bottom - padding;
+      const placeAbove = below < 260 && rect.top > below;
+      setMenuStyle({
+        left: Math.min(
+          Math.max(padding, rect.left),
+          window.innerWidth - menuWidth - padding,
+        ),
+        top: placeAbove
+          ? Math.max(padding, rect.top - Math.min(maxHeight, rect.top - padding) - gap)
+          : rect.bottom + gap,
+        width: menuWidth,
+        maxHeight: placeAbove ? Math.min(maxHeight, rect.top - padding - gap) : Math.min(maxHeight, below - gap),
+      });
+    };
+    position();
+    const closeOutside = (event) => {
+      if (
+        !triggerRef.current?.contains(event.target) &&
+        !menuRef.current?.contains(event.target)
+      ) {
+        setOpen(false);
+      }
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    document.addEventListener("pointerdown", closeOutside, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+      document.removeEventListener("pointerdown", closeOutside, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, width]);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  return { triggerRef, menuRef, open, setOpen, menuStyle };
+}
+
 function TuneField({ label, children }) {
   return (
     <div className="handheld-tune__field">
@@ -127,6 +188,16 @@ export function HandheldTunePopover({
   const menuRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [menuStyle, setMenuStyle] = useState({});
+  // 焦段、景深这类摄影参数默认收起，由风格和渠道自动决定；有指定值时自动展开
+  const advancedCount = [
+    lens,
+    camera,
+    depth,
+    light,
+    focus,
+    materialInteraction,
+  ].filter((value) => String(value || "").trim()).length;
+  const [moreOpen, setMoreOpen] = useState(advancedCount > 0);
   const hasSelection = [
     style,
     lens,
@@ -201,10 +272,10 @@ export function HandheldTunePopover({
         disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label="画面方案"
+        aria-label="高级"
         onClick={() => setOpen((current) => !current)}
       >
-        <span>画面方案</span>
+        <span>高级</span>
         <i className="bi bi-chevron-down" aria-hidden="true" />
       </button>
       {open
@@ -214,7 +285,7 @@ export function HandheldTunePopover({
               className="handheld-tune-menu"
               style={menuStyle}
               role="dialog"
-              aria-label="画面方案选项"
+              aria-label="高级选项"
             >
               <div
                 className="handheld-presets"
@@ -260,6 +331,23 @@ export function HandheldTunePopover({
                   allowEmpty
                 />
               </TuneField>
+              <button
+                type="button"
+                className="handheld-tune__more"
+                aria-expanded={moreOpen}
+                onClick={() => setMoreOpen((current) => !current)}
+              >
+                <span>更多参数</span>
+                <small>
+                  {advancedCount ? `已指定 ${advancedCount} 项` : "焦段、景深、光影等，默认自动"}
+                </small>
+                <i
+                  className={`bi ${moreOpen ? "bi-chevron-up" : "bi-chevron-down"}`}
+                  aria-hidden="true"
+                />
+              </button>
+              {moreOpen ? (
+              <>
               <TuneField label="焦段">
                 <ChipGroup
                   label="选择镜头"
@@ -320,16 +408,8 @@ export function HandheldTunePopover({
                   allowEmpty
                 />
               </TuneField>
-              <TuneField label="生成方式">
-                <ChipGroup
-                  label="选择生成方式"
-                  value={architecture}
-                  options={architectureOptions}
-                  onChange={onChangeArchitecture}
-                  disabled={disabled}
-                  allowEmpty
-                />
-              </TuneField>
+              </>
+              ) : null}
             </div>,
             document.body,
           )
@@ -510,6 +590,7 @@ export function HandheldPosePopover({
   hand,
   handOptions = [],
   onChangeHand,
+  autoPoseLabel = "",
   disabled = false,
 }) {
   const triggerRef = useRef(null);
@@ -519,6 +600,8 @@ export function HandheldPosePopover({
   const hasSelection = [pose, hand].some((value) =>
     String(value || "").trim(),
   );
+  const poseLabel =
+    poseOptions.find((item) => item.id === pose)?.label || autoPoseLabel;
 
   function positionMenu() {
     if (!triggerRef.current) return;
@@ -585,7 +668,9 @@ export function HandheldPosePopover({
         aria-label="握持姿势"
         onClick={() => setOpen((current) => !current)}
       >
-        <span>握持姿势</span>
+        <span title={poseLabel ? `握持姿势：${poseLabel}` : undefined}>
+          {poseLabel || "握持姿势"}
+        </span>
         <i className="bi bi-chevron-down" aria-hidden="true" />
       </button>
       {open
@@ -597,6 +682,11 @@ export function HandheldPosePopover({
               role="dialog"
               aria-label="握持姿势选项"
             >
+              {!pose && autoPoseLabel ? (
+                <p className="handheld-tune__hint">
+                  未指定时按品类使用「{autoPoseLabel}」，点下面的握法可以改
+                </p>
+              ) : null}
               <TuneField label="姿势">
                 <ChipGroup
                   label="选择握持姿势"
@@ -1044,6 +1134,11 @@ export function HandheldRefCard({
   showMore = true,
   showClear = true,
   overlay = null,
+  // 空着时补一句"不传会怎样"；requirement 为 required/optional 时在角标上注明
+  emptyHint = "",
+  requirement = "",
+  // 数值变化时打开素材弹窗（生成按钮提示"选择模特"时用）
+  openSignal = 0,
 }) {
   const isDark = useIsDark();
   const popupRootRef = useRef(null);
@@ -1072,6 +1167,10 @@ export function HandheldRefCard({
   useEffect(() => {
     if (disabled) closePopup();
   }, [disabled, closePopup]);
+
+  useEffect(() => {
+    if (openSignal) openPopup();
+  }, [openSignal, openPopup]);
 
   useGSAP(
     (context, contextSafe) => {
@@ -1156,7 +1255,14 @@ export function HandheldRefCard({
       onDrop={handleDrop}
     >
       {overlay}
-      <span className="handheld-ref-card__tag">{tag}</span>
+      <span className="handheld-ref-card__tag">
+        {tag}
+        {hasImage ? null : requirement === "required" ? (
+          <em className="is-required">必填</em>
+        ) : requirement === "optional" ? (
+          <em>选填</em>
+        ) : null}
+      </span>
       {hasImage ? (
         <button
           type="button"
@@ -1182,6 +1288,9 @@ export function HandheldRefCard({
         >
           <i className={`bi ${emptyIcon}`} />
           <span>{emptyLabel}</span>
+          {emptyHint ? (
+            <small className="handheld-ref-card__hint">{emptyHint}</small>
+          ) : null}
         </button>
       )}
       <div className="handheld-ref-card__actions" role="group" aria-label={groupAria}>
@@ -1519,6 +1628,335 @@ function HandheldAnnotationDialog({
   );
 }
 
+const HANDHELD_SIZE_FIELDS = [
+  ["length", "长"],
+  ["width", "宽"],
+  ["height", "高"],
+];
+
+function handheldSizeText(size) {
+  const values = HANDHELD_SIZE_FIELDS.map(([key]) => String(size?.[key] ?? "").trim());
+  return values.every(Boolean) ? `${values.join("×")}mm` : "";
+}
+
+// 卡片很窄，角标用厘米显示（20×20×80mm → 2×2×8cm）
+function handheldSizeBadge(size) {
+  const values = HANDHELD_SIZE_FIELDS.map(([key]) => Number.parseFloat(size?.[key]));
+  if (!values.every((value) => Number.isFinite(value) && value > 0)) return "";
+  return `${values.map((value) => Math.round(value) / 10).join("×")}cm`;
+}
+
+// 商品图右上角：品类 + 实物尺寸。尺寸决定商品在手里有多大
+function HandheldSizeChip({
+  category,
+  categoryOptions = [],
+  onChangeCategory,
+  sizeMm,
+  onChangeSizeMm,
+  detect = null,
+  disabled = false,
+}) {
+  const detecting = detect?.status === "busy";
+  const { triggerRef, menuRef, open, setOpen, menuStyle } = useHandheldMenu({
+    width: 360,
+    disabled,
+  });
+  const sizeText = handheldSizeText(sizeMm);
+  const categoryLabel = categoryOptions.find((item) => item.id === category)?.label || "";
+  return (
+    <div className="handheld-ref-card__size">
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`${sizeText ? "" : "is-empty"}${detecting ? " is-busy" : ""}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={sizeText ? `实物尺寸 ${sizeText}，点击修改` : "填写品类与实物尺寸"}
+        title="品类与实物尺寸：决定商品在手里有多大"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {detecting ? (
+          <span className="handheld-ref-card__size-spin" aria-hidden="true" />
+        ) : sizeText ? null : (
+          <i className="bi bi-rulers" aria-hidden="true" />
+        )}
+        <span>{detecting ? "识别中" : handheldSizeBadge(sizeMm) || "尺寸"}</span>
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className="handheld-tune-menu handheld-size-menu"
+              style={menuStyle}
+              role="dialog"
+              aria-label="品类与实物尺寸"
+            >
+              <TuneField label="品类">
+                <ChipGroup
+                  label="选择商品品类"
+                  value={category}
+                  options={categoryOptions}
+                  onChange={onChangeCategory}
+                  disabled={disabled}
+                  allowEmpty
+                />
+              </TuneField>
+              <TuneField label="实物尺寸（毫米）">
+                <div className="handheld-size-inputs">
+                  {HANDHELD_SIZE_FIELDS.map(([key, label]) => (
+                    <label key={key}>
+                      <span>{label}</span>
+                      <input
+                        className="handheld-input"
+                        inputMode="decimal"
+                        value={sizeMm?.[key] ?? ""}
+                        placeholder="—"
+                        disabled={disabled}
+                        aria-label={`${label}（毫米）`}
+                        onChange={(event) =>
+                          onChangeSizeMm?.({
+                            ...sizeMm,
+                            [key]: event.target.value.replace(/[^\d.]/g, "").slice(0, 6),
+                            auto: false,
+                            detected: false,
+                          })
+                        }
+                      />
+                    </label>
+                  ))}
+                </div>
+              </TuneField>
+              {detect?.status === "done" && detect.label ? (
+                <p className="handheld-tune__hint">
+                  已识别为「{detect.label}」，品类和尺寸已自动填好，不对可以直接改
+                </p>
+              ) : detect?.status === "error" ? (
+                <p className="handheld-tune__hint">没能自动识别，请手动选择品类</p>
+              ) : null}
+              <p className="handheld-tune__hint">
+                {sizeMm?.detected && sizeText
+                  ? "尺寸按图中商品比例估计，和实物不同请改成实测值"
+                  : sizeMm?.auto && sizeText
+                  ? `已按「${categoryLabel || "品类"}」预填常见尺寸，和实物不同请改成实测值`
+                  : "三项都填才生效；按成人手掌比例控制商品大小，避免拿成手电筒或矿泉水瓶"}
+              </p>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
+// 下载：默认按投放平台尺寸导出 JPG，另可下载原图
+function HandheldDownloadMenu({
+  label,
+  busyLabel,
+  busy = false,
+  disabled = false,
+  platformLabel = "",
+  sizeText = "",
+  onPlatform,
+  onOriginal,
+}) {
+  const { triggerRef, menuRef, open, setOpen, menuStyle } = useHandheldMenu({
+    width: 260,
+    disabled,
+  });
+  const run = (action) => {
+    setOpen(false);
+    action?.();
+  };
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {busy ? busyLabel : label}
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className="handheld-tune-menu handheld-download-menu"
+              style={menuStyle}
+              role="menu"
+              aria-label={label}
+            >
+              <button type="button" role="menuitem" onClick={() => run(onPlatform)}>
+                <strong>按{platformLabel}尺寸</strong>
+                <small>{sizeText ? `${sizeText} JPG` : "JPG"}，文件名带商品与镜头</small>
+              </button>
+              <button type="button" role="menuitem" onClick={() => run(onOriginal)}>
+                <strong>原图</strong>
+                <small>生成时的原始尺寸</small>
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+const HANDHELD_CROP_SHORT = {
+  hand: "手指",
+  wrist: "手腕",
+  noface: "禁脸",
+  bust: "半身",
+  full: "全身",
+};
+
+// 手/模特卡片上方：出镜范围分段按钮，选半身/全身时卡片自动换成模特
+function HandheldCropSwitch({ crop, cropOptions = [], onChangeCrop, disabled = false }) {
+  return (
+    <div className="handheld-crop-switch" role="radiogroup" aria-label="出镜范围">
+      {cropOptions.map((item) => {
+        const active = crop === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            className={active ? "is-active" : ""}
+            title={`${item.label}：${item.hint || ""}`}
+            disabled={disabled}
+            onClick={() => onChangeCrop?.(item.id)}
+          >
+            {HANDHELD_CROP_SHORT[item.id] || item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// 结果图上的「只改这张」：只重画这一张，改一处，其余设置不动
+function HandheldShotTweak({
+  index,
+  shotId = "",
+  label = "",
+  needsPerson = false,
+  pose = "",
+  poseOptions = [],
+  handCatalog = [],
+  modelCatalog = [],
+  sceneCatalog = [],
+  costLabel = "",
+  disabled = false,
+  onTweak,
+}) {
+  const { triggerRef, menuRef, open, setOpen, menuStyle } = useHandheldMenu({
+    width: 420,
+    disabled,
+  });
+  const people = needsPerson ? modelCatalog : handCatalog;
+  const run = (change) => {
+    setOpen(false);
+    onTweak?.(index, change, shotId);
+  };
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        disabled={disabled || !onTweak}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <i className="bi bi-arrow-repeat" aria-hidden="true" />
+        只改这张
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className="handheld-tune-menu handheld-tweak-menu"
+              style={menuStyle}
+              role="dialog"
+              aria-label={`只改「${label || "这张"}」`}
+            >
+              <div className="handheld-tweak-menu__head">
+                <strong>只改「{label || "这张"}」</strong>
+                <small>
+                  只重画这一张{costLabel ? `（${costLabel}）` : ""}，改一处，其余设置不动
+                </small>
+              </div>
+              <button
+                type="button"
+                className="handheld-tweak-menu__again"
+                onClick={() => run({ kind: "again" })}
+              >
+                <i className="bi bi-arrow-clockwise" aria-hidden="true" />
+                设置不变，再来一张
+              </button>
+              <TuneField label="换握法">
+                <div className="handheld-picks" role="group" aria-label="换握法">
+                  {poseOptions.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={pose === item.id ? "is-active" : ""}
+                      aria-pressed={pose === item.id}
+                      onClick={() => run({ kind: "pose", id: item.id })}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </TuneField>
+              {people.length ? (
+                <TuneField label={needsPerson ? "换模特" : "换手"}>
+                  <div className="handheld-tweak-menu__grid">
+                    {people.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        aria-label={option.label}
+                        title={option.label}
+                        onClick={() => run({ kind: "person", option })}
+                      >
+                        <img src={option.image} alt="" />
+                        <span>{option.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </TuneField>
+              ) : null}
+              {sceneCatalog.length ? (
+                <TuneField label="换背景">
+                  <div className="handheld-tweak-menu__grid">
+                    {sceneCatalog.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        aria-label={option.label}
+                        title={option.label}
+                        onClick={() => run({ kind: "scene", option })}
+                      >
+                        <img src={option.image} alt="" />
+                        <span>{option.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </TuneField>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
 export function HandheldStudio({
   product,
   layout,
@@ -1590,7 +2028,22 @@ export function HandheldStudio({
   historyHasMore = false,
   historyLoadingMore = false,
   onLoadMoreHistory,
+  category = "",
+  categoryOptions = [],
+  onChangeCategory,
+  sizeMm = null,
+  onChangeSizeMm,
+  pose = "",
+  poseOptions = [],
+  onTweakShot,
+  shotCostLabel = "",
+  recommendedPack = "",
+  productDetect = null,
+  // 还差哪一步才能生成：{ kind: "product" | "model", label }
+  nextStep = null,
+  autoBackdropLabel = "",
 }) {
+  const [modelOpenSignal, setModelOpenSignal] = useState(0);
   const [runSeconds, setRunSeconds] = useState(0);
   const [viewer, setViewer] = useState(null);
   const [toolBusy, setToolBusy] = useState("");
@@ -1622,21 +2075,6 @@ export function HandheldStudio({
     return () => window.clearInterval(timer);
   }, [running, taskStartedAt]);
 
-  const cropOverlay = (
-    <div className="handheld-ref-card__crop">
-      <CommerceSelect
-        value={crop}
-        options={cropOptions.map((item) => ({
-          value: item.id,
-          label: item.label,
-        }))}
-        onChange={onChangeCrop}
-        ariaLabel="选择出镜范围"
-        menuMinWidth={168}
-        disabled={running}
-      />
-    </div>
-  );
   const historyGroups = groupHandheldHistory(history);
   const waitSeconds = running ? runSeconds : elapsedSeconds;
   const posterRatio = String(aspectRatio || "4:5");
@@ -1679,6 +2117,9 @@ export function HandheldStudio({
   const hasAnyResult = plannedShots.some((item) => item.url);
   const packThumbs = plannedShots.length > 1 ? plannedShots : [];
   const readyShots = plannedShots.filter((item) => item.url);
+  const platformOfUrl = (url) =>
+    (history || []).find((entry) => entry.url === url)?.task?.params
+      ?.handheldSpec?.platform || platform;
   const viewerRows = readyShots.map((item) => {
     const row = (history || []).find((entry) => entry.url === item.url);
     return {
@@ -1687,6 +2128,8 @@ export function HandheldStudio({
       display: displayByUrl.get(item.url) || "",
       label: item.label || handheldRowLabel(row),
       task: row?.task,
+      platform: platformOfUrl(item.url),
+      index: Math.max(0, plannedShots.indexOf(item)),
     };
   });
   const openViewer = (startUrl, event) => {
@@ -1749,9 +2192,11 @@ export function HandheldStudio({
         <HandheldRefCard
           className="handheld-product handheld-product--canvas"
           tag="商品图"
+          requirement="required"
           image={product?.url || ""}
           emptyIcon="bi-image"
-          emptyLabel="拖拽或点击"
+          emptyLabel="拖拽或点击上传"
+          emptyHint="一张清楚的商品正面图"
           emptyAria="选择商品图片"
           previewAria="查看商品大图"
           previewAlt="商品参考图"
@@ -1761,6 +2206,18 @@ export function HandheldStudio({
           showMore={false}
           showClear={false}
           overlay={
+            <>
+            {product?.url ? (
+            <HandheldSizeChip
+              category={category}
+              categoryOptions={categoryOptions}
+              onChangeCategory={onChangeCategory}
+              sizeMm={sizeMm}
+              onChangeSizeMm={onChangeSizeMm}
+              detect={productDetect}
+              disabled={running}
+            />
+            ) : null}
             <div className="handheld-ref-card__annotation">
               <button
                 type="button"
@@ -1774,6 +2231,7 @@ export function HandheldStudio({
                 <span>标注{annotations.length ? ` ${annotations.length}` : ""}</span>
               </button>
             </div>
+            </>
           }
           disabled={running}
           onPreview={onPreview}
@@ -1783,9 +2241,11 @@ export function HandheldStudio({
           <HandheldRefCard
             className="handheld-scene handheld-scene--canvas"
             tag="场景"
+            requirement="optional"
             image={sceneImage}
             emptyIcon="bi-image"
-            emptyLabel="选择场景"
+            emptyLabel={`自动：${autoBackdropLabel || "干净背景"}`}
+            emptyHint="想换环境再上传或选场景"
             emptyAria="选择场景图片"
             previewAria="查看场景"
             previewAlt={featuredScene?.label || "场景"}
@@ -1809,8 +2269,8 @@ export function HandheldStudio({
             onSelect={onSelectScene}
           />
           <div className="handheld-angles" role="group" aria-label="商品其他角度">
-            <span className="handheld-angles__label" title="同一件商品的其他角度，越全越不走样">
-              其他角度
+            <span className="handheld-angles__label" title="同一件商品的其他角度越全越不走样；构图参考只借构图，不带入原图的人和货">
+              补图
             </span>
             {productAngles.map((item) =>
               item.image ? (
@@ -1854,6 +2314,45 @@ export function HandheldStudio({
                   {item.label}
                 </button>
               ),
+            )}
+            {layout?.url ? (
+              <span className="handheld-angle has-image" title="构图参考：只借构图">
+                <button
+                  type="button"
+                  className="handheld-angle__img"
+                  aria-label="查看构图参考"
+                  onClick={(event) =>
+                    onPreview?.(event, {
+                      url: layout.url,
+                      alt: "构图参考",
+                      title: "构图参考",
+                    })
+                  }
+                >
+                  <AuthenticatedImage src={layout.url} alt="" maxDimension={160} />
+                </button>
+                <button
+                  type="button"
+                  className="handheld-angle__clear"
+                  aria-label="清空构图参考"
+                  disabled={running}
+                  onClick={onClearLayout}
+                >
+                  <i className="bi bi-x" aria-hidden="true" />
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="handheld-angle is-empty"
+                aria-label="上传构图参考"
+                disabled={running}
+                title="选填：想模仿某张图的构图时上传，只借构图，不带入原图的人和货"
+                onClick={onUploadLayout}
+              >
+                <i className="bi bi-plus" aria-hidden="true" />
+                构图
+              </button>
             )}
           </div>
         </div>
@@ -1921,6 +2420,9 @@ export function HandheldStudio({
                   >
                     <strong>{item.label}</strong>
                     <em>{item.countLabel || `${item.shotIds?.length || 1}张`}</em>
+                    {recommendedPack === item.id ? (
+                      <small className="handheld-packs__tip">推荐</small>
+                    ) : null}
                   </button>
                 );
               })}
@@ -1929,35 +2431,23 @@ export function HandheldStudio({
         </div>
         </div>
         <div className="handheld-ref-stack">
-          <HandheldRefCard
-            className="handheld-layout handheld-layout--canvas"
-            tag="构图参考"
-            image={layout?.url || ""}
-            emptyIcon="bi-layout-wtf"
-            emptyLabel="只借构图"
-            emptyAria="选择构图参考"
-            previewAria="查看构图参考"
-            previewAlt="构图参考"
-            previewTitle="构图参考"
-            groupAria="构图参考操作"
-            uploadAria="上传构图参考"
-            showMore={false}
-            showClear
-            clearAria="清空构图参考"
-            disabled={running}
-            onPreview={onPreview}
-            onUpload={onUploadLayout}
-            onClear={onClearLayout}
-          />
           <div className="handheld-crop handheld-crop--canvas">
+            <HandheldCropSwitch
+              crop={crop}
+              cropOptions={cropOptions}
+              onChangeCrop={onChangeCrop}
+              disabled={running}
+            />
             {needsPerson ? (
               <HandheldRefCard
                 className="handheld-model"
                 tag="模特模板"
-                overlay={cropOverlay}
+                requirement="required"
+                openSignal={modelOpenSignal}
                 image={modelImage}
                 emptyIcon="bi-person"
                 emptyLabel="选择模特"
+                emptyHint="禁脸、半身、全身出镜需要模特"
                 emptyAria="选择模特图片"
                 previewAria="查看模特模板"
                 previewAlt={featuredModel?.label || "模特模板"}
@@ -1984,10 +2474,11 @@ export function HandheldStudio({
               <HandheldRefCard
                 className="handheld-hand"
                 tag="手指图"
-                overlay={cropOverlay}
+                requirement="optional"
                 image={modelImage}
                 emptyIcon="bi-hand-index"
-                emptyLabel="选择手指图"
+                emptyLabel="自动：AI 生成手"
+                emptyHint="想固定手型再上传或从素材选"
                 emptyAria="选择手指图片"
                 previewAria="查看手指图"
                 previewAlt={featuredHand?.label || "手指图"}
@@ -2135,30 +2626,46 @@ export function HandheldStudio({
                 <div className="handheld-actions">
                     <button
                       type="button"
-                      className={`handheld-submit handheld-submit--frame${running ? " is-running" : ""}${failed ? " is-failed" : ""}`}
-                      disabled={running || generateDisabled}
-                      title={generateHint}
+                      className={`handheld-submit handheld-submit--frame${running ? " is-running" : ""}${failed ? " is-failed" : ""}${nextStep && !running ? " is-next-step" : ""}`}
+                      disabled={running || (generateDisabled && !nextStep)}
+                      title={nextStep ? undefined : generateHint}
                       aria-label={
                         running
                           ? "正在生成"
-                          : failed
-                            ? `重试生成手持图（${shotCount}张）`
-                            : `生成手持商品图（${shotCount}张）`
+                          : nextStep
+                            ? nextStep.label
+                            : failed
+                              ? `重试生成手持图（${shotCount}张）`
+                              : `生成手持商品图（${shotCount}张）`
                       }
-                      onClick={onGenerate}
+                      onClick={() => {
+                        if (nextStep?.kind === "product") onUploadProduct?.();
+                        else if (nextStep?.kind === "model")
+                          setModelOpenSignal((value) => value + 1);
+                        else onGenerate?.();
+                      }}
                     >
                       {running ? (
                         <span className="handheld-submit__spinner" aria-hidden="true" />
+                      ) : nextStep ? (
+                        <i
+                          className={`bi ${nextStep.kind === "model" ? "bi-person-plus" : "bi-cloud-arrow-up"}`}
+                          aria-hidden="true"
+                        />
                       ) : failed ? (
                         <RegenerateIcon />
                       ) : (
                         <i className="bi bi-stars" aria-hidden="true" />
                       )}
-                      <span>{running ? "生成中" : failed ? "重试" : "生成"}</span>
+                      <span>
+                        {running ? "生成中" : nextStep ? nextStep.label : failed ? "重试" : "生成"}
+                      </span>
                       <small>
                         {running
                           ? generationStageLabel
-                          : `${shotCount}张${costLabel ? ` · ${costLabel}` : ""}`}
+                          : nextStep
+                            ? "完成后即可生成"
+                            : `${shotCount}张${costLabel ? ` · ${costLabel}` : ""}`}
                       </small>
                     </button>
                     <button
@@ -2178,21 +2685,66 @@ export function HandheldStudio({
                     </button>
                   {shot.url && !shotRunning ? (
                     <>
-                    <button
-                      type="button"
-                      disabled={!onDownloadShot || Boolean(toolBusy)}
-                      onClick={() => runTool("one", () => onDownloadShot(shot.url))}
-                    >
-                      {toolBusy === "one" ? "下载中" : "下载"}
-                    </button>
+                    <HandheldShotTweak
+                      index={planIndex}
+                      shotId={shot.id || ""}
+                      label={shot.label}
+                      needsPerson={needsPerson}
+                      pose={pose}
+                      poseOptions={poseOptions}
+                      handCatalog={handCatalog}
+                      modelCatalog={modelCatalog}
+                      sceneCatalog={sceneCatalog}
+                      costLabel={shotCostLabel}
+                      disabled={running || generateDisabled}
+                      onTweak={onTweakShot}
+                    />
+                    {(() => {
+                      const shotPlatform = platformOfUrl(shot.url);
+                      const measuredSize = imageSizes[shot.url];
+                      const exportSize = measuredSize
+                        ? handheldExportSize(shotPlatform, measuredSize.w, measuredSize.h)
+                        : null;
+                      const shotMeta = {
+                        platform: shotPlatform,
+                        label: shot.label,
+                        index: planIndex,
+                      };
+                      return (
+                        <HandheldDownloadMenu
+                          label="下载"
+                          busyLabel="下载中"
+                          busy={toolBusy === "one"}
+                          disabled={!onDownloadShot || Boolean(toolBusy)}
+                          platformLabel={PLATFORM_SHORT[shotPlatform] || "平台"}
+                          sizeText={exportSize ? `${exportSize.width}×${exportSize.height}` : ""}
+                          onPlatform={() =>
+                            runTool("one", () =>
+                              onDownloadShot(shot.url, { ...shotMeta, mode: "platform" }),
+                            )
+                          }
+                          onOriginal={() =>
+                            runTool("one", () =>
+                              onDownloadShot(shot.url, { ...shotMeta, mode: "original" }),
+                            )
+                          }
+                        />
+                      );
+                    })()}
                     {readyShots.length > 1 && onDownloadGroup ? (
-                      <button
-                        type="button"
+                      <HandheldDownloadMenu
+                        label={`打包 ${readyShots.length} 张`}
+                        busyLabel="打包中"
+                        busy={toolBusy === "all"}
                         disabled={Boolean(toolBusy)}
-                        onClick={() => runTool("all", () => onDownloadGroup(viewerRows))}
-                      >
-                        {toolBusy === "all" ? "打包中" : `打包 ${readyShots.length} 张`}
-                      </button>
+                        platformLabel={PLATFORM_SHORT[platformOfUrl(shot.url)] || "平台"}
+                        onPlatform={() =>
+                          runTool("all", () => onDownloadGroup(viewerRows, { mode: "platform" }))
+                        }
+                        onOriginal={() =>
+                          runTool("all", () => onDownloadGroup(viewerRows, { mode: "original" }))
+                        }
+                      />
                     ) : null}
                     <button
                       type="button"

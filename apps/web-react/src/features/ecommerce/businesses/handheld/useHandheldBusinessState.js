@@ -64,6 +64,15 @@ export function useHandheldBusinessState() {
   const [handheldArchitecture, setHandheldArchitecture] = useState("");
   const [handheldPromptEdits, setHandheldPromptEdits] = useState({});
   const [handheldSku, setHandheldSku] = useState("");
+  // 实物尺寸（毫米）；auto=true 表示按品类预填，换品类时跟着换
+  const [handheldSizeMm, setHandheldSizeMm] = useState({
+    length: "",
+    width: "",
+    height: "",
+    auto: true,
+  });
+  // 「只改这张」：{ index, token }，token 变化时只重画该张
+  const [handheldShotRegen, setHandheldShotRegen] = useState(null);
 
   return {
     handheldUploadNotice,
@@ -140,5 +149,9 @@ export function useHandheldBusinessState() {
     setHandheldPromptEdits,
     handheldSku,
     setHandheldSku,
+    handheldSizeMm,
+    setHandheldSizeMm,
+    handheldShotRegen,
+    setHandheldShotRegen,
   };
 }

@@ -459,7 +459,7 @@ const handheldSoloPlan = buildEcommerceGenerationPlan({
 })
 assert.equal(handheldSoloPlan.length, 1)
 assert.ok(handheldSoloPlan[0].prompt.includes('不要生成可识别人脸'))
-assert.ok(handheldSoloPlan[0].prompt.includes('质检硬约束'))
+assert.ok(!handheldSoloPlan[0].prompt.includes('质检'))
 assert.ok(handheldSoloPlan[0].prompt.includes('刚性外形'))
 assert.ok(handheldSoloPlan[0].prompt.includes('锐利清晰'))
 assert.ok(buildHandheldOutputConstraints({}).includes('手迁就商品'))
@@ -917,8 +917,9 @@ const handheldNoPicturePlanPrompt = buildHandheldTaskPrompt({
   platform: 'taobao',
   pack: 'single',
 })
+// 风格没选时跟随投放渠道（淘宝→电商主图），其余摄影参数仍不补写
+assert.ok(handheldNoPicturePlanPrompt.includes('视觉风格：电商主图'))
 for (const absent of [
-  '视觉风格：',
   '镜头：',
   '景深与距离：',
   '视觉焦点：',
