@@ -18,6 +18,8 @@ import "./home/HomeCatalogSections.css";
 import { HomeHero } from "./home/HomeHero.jsx";
 import { HomeCoverImage } from "./home/HomeCoverImage.jsx";
 import { useHomeMotion } from "./home/useHomeMotion.js";
+import { useFooterPullReveal } from "./home/useFooterPullReveal.js";
+import { createParticleWordmark } from "./home/footerParticles.js";
 import { HomeModelMarquee } from "./home/HomeModelMarquee.jsx";
 import { collectHomeModels } from "./home/homeModels.js";
 
@@ -55,6 +57,7 @@ const UPCOMING_ITEMS = [
     label: "苹果 App",
     tagline: "iOS 客户端，随行创作与灵感同步",
     badge: "内测就绪",
+    tone: "ready",
     Icon: Apple,
   },
   {
@@ -62,6 +65,7 @@ const UPCOMING_ITEMS = [
     label: "安卓 App",
     tagline: "Android 客户端，多端实时同步",
     badge: "内测就绪",
+    tone: "ready",
     Icon: Smartphone,
   },
   {
@@ -69,6 +73,7 @@ const UPCOMING_ITEMS = [
     label: "画布定时任务",
     tagline: "按计划自动化执行工作流",
     badge: "规划中",
+    tone: "planning",
     Icon: Clock3,
   },
   {
@@ -76,6 +81,7 @@ const UPCOMING_ITEMS = [
     label: "MCP 协议生态",
     tagline: "无缝接入 Agent 与开发工作流",
     badge: "首发支持",
+    tone: "first",
     Icon: Plug,
   },
 ];
@@ -95,9 +101,23 @@ const CREATION_ITEMS = [
 ];
 
 const FOOTER_GROUPS = [
-  { title: "开始创作", links: [["创作台", "/studio"], ["AI 助手", "/assistant"], ["无限画布", "/canvas"]] },
-  { title: "发现更多", links: [["技能库", "/skills"], ["提示词", "/prompts"], ["创作价格", "/pricing"]] },
-  { title: "我的空间", links: [["创作历史", "/history"], ["我的订单", "/orders"], ["账户设置", "/account"]] },
+  { title: "开始创作", links: [["创作台", "/studio"], ["AI 助手", "/assistant"], ["无限画布", "/canvas"], ["AI 电商", "/ecommerce-design"]] },
+  { title: "工具资源", links: [["全部工具", "/ai-tools"], ["技能库", "/skills"], ["提示词", "/prompts"], ["开发者 API", "/developer-api"]] },
+  { title: "社区活动", links: [["社区", "/share"], ["创作激励", "/incentive-plans"], ["创作价格", "/pricing"], ["更新说明", "/updates"]] },
+  { title: "我的空间", links: [["创作历史", "/history"], ["我的订单", "/orders"], ["我的钱包", "/wallet"], ["账户设置", "/account"]] },
+];
+
+const FOOTER_LEGAL_LINKS = [
+  ["关于我们", "/app-space"],
+  ["帮助与支持", "/support"],
+  ["问题反馈", "/feedback"],
+  ["用户协议", "/terms"],
+  ["隐私政策", "/privacy"],
+];
+
+const FOOTER_CTA_LINKS = [
+  ["开始创作", "/studio", "primary"],
+  ["查看价格", "/pricing", "ghost"],
 ];
 
 const COMMERCE_SUB_TAGS = {
@@ -329,11 +349,13 @@ function CompactCard({ item }) {
     <Link
       className={`home-compact ${blocked ? status.className : ""}`}
       data-tool={item.id}
+      data-spotlight
       to={item.to}
       aria-label={[item.label, blocked ? status.label : price].filter(Boolean).join("，")}
       data-home-item
       viewTransition
     >
+      <span className="home-spot-ring" aria-hidden="true" />
       <span className="home-compact__icon" aria-hidden="true">
         <Icon size={20} strokeWidth={1.6} />
       </span>
@@ -355,6 +377,15 @@ function CompactCard({ item }) {
   );
 }
 
+// 悬停聚光：把指针在卡片内的位置写进 --mx / --my，供边框光和点阵高亮使用
+function trackSpotlight(event) {
+  const card = event.target.closest?.("[data-spotlight]");
+  if (!card) return;
+  const rect = card.getBoundingClientRect();
+  card.style.setProperty("--mx", `${event.clientX - rect.left}px`);
+  card.style.setProperty("--my", `${event.clientY - rect.top}px`);
+}
+
 function HomeSection({ id, title, description, children }) {
   return (
     <section id={`home-${id}`} className={`home-section home-section--${id}`} aria-labelledby={`home-${id}-title`}>
@@ -373,6 +404,11 @@ export function CommercialHomeView() {
   const isDark = useIsDark();
   const { controls, controlForKey, isEntryVisible } = usePageControls();
   const rootRef = useRef(null);
+  const pullRef = useRef(null);
+  const ctaRef = useRef(null);
+  const particleCanvasRef = useRef(null);
+  const particlesRef = useRef(null);
+  const pullProgressRef = useRef(0);
   const [runtimeConfig, setRuntimeConfig] = useState(null);
   const [pricing, setPricing] = useState(null);
 
@@ -429,6 +465,54 @@ export function CommercialHomeView() {
 
   const models = useMemo(() => collectHomeModels(runtimeConfig), [runtimeConfig]);
   const motionOff = useHomeMotion(rootRef);
+  // 减少动态效果时不做聚合过程，大字一出现就是完整字形
+  const particleProgress = (progress) => (motionOff && progress > 0 ? 1 : progress);
+  useFooterPullReveal(pullRef, (progress) => {
+    pullProgressRef.current = progress;
+    particlesRef.current?.draw(particleProgress(progress));
+  });
+
+  // 号召区第一次进入视口时把绳线“画”出来，只播放一次
+  useEffect(() => {
+    const cta = ctaRef.current;
+    if (!cta || !("IntersectionObserver" in window)) {
+      cta?.classList.add("is-drawn");
+      return undefined;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      cta.classList.add("is-drawn");
+      observer.disconnect();
+    }, { threshold: 0.4 });
+    observer.observe(cta);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const canvas = particleCanvasRef.current;
+    if (!canvas) return undefined;
+    const wordmark = createParticleWordmark(canvas);
+    wordmark.setAlpha(isDark ? 0.8 : 0.7);
+    const redraw = () => {
+      wordmark.layout();
+      wordmark.draw(particleProgress(pullProgressRef.current));
+    };
+    particlesRef.current = wordmark;
+    redraw();
+    let timer = 0;
+    const onResize = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(redraw, 150);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", onResize);
+      particlesRef.current = null;
+    };
+    // particleProgress 只依赖 motionOff
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDark, motionOff]);
 
   useEffect(() => {
     const previousTitle = document.title;
@@ -483,7 +567,7 @@ export function CommercialHomeView() {
             title="实用工具"
             description="处理、压缩与拼贴"
           >
-            <div className="home-compact-grid" data-count={catalog.tools.length}>
+            <div className="home-compact-grid" data-count={catalog.tools.length} onPointerMove={trackSpotlight}>
               {catalog.tools.map((item) => (
                 <CompactCard key={item.id} item={item} />
               ))}
@@ -500,29 +584,20 @@ export function CommercialHomeView() {
               <p>跨端协同、自动化工作流与生态接入</p>
             </div>
           </header>
-          <div className="home-upcoming__items">{UPCOMING_ITEMS.map((item) => {
+          <div className="home-upcoming__items" onPointerMove={trackSpotlight}>{UPCOMING_ITEMS.map((item) => {
             const Icon = item.Icon;
             return (
-              <div key={item.id} className="home-upcoming__item" data-home-item>
+              <div key={item.id} className="home-upcoming__item" data-tone={item.tone} data-spotlight data-home-item>
+                <span className="home-spot-ring" aria-hidden="true" />
+                <span className="home-upcoming__ghost" aria-hidden="true"><Icon size={112} strokeWidth={1.1} /></span>
                 <div className="home-upcoming__top">
                   <span className="home-upcoming__icon" aria-hidden="true"><Icon size={20} strokeWidth={1.75} /></span>
-                  {item.badge ? (
-                    <span
-                      className="home-upcoming__badge"
-                      data-badge={
-                        item.badge === "内测就绪"
-                          ? "ready"
-                          : item.badge === "规划中"
-                          ? "planning"
-                          : "first"
-                      }
-                    >
-                      {item.badge}
-                    </span>
-                  ) : null}
+                  {item.badge ? <span className="home-upcoming__badge" data-badge={item.tone}>{item.badge}</span> : null}
                 </div>
-                <span className="home-upcoming__label">{item.label}</span>
-                <span className="home-upcoming__description">{item.tagline}</span>
+                <div className="home-upcoming__copy">
+                  <span className="home-upcoming__label">{item.label}</span>
+                  <span className="home-upcoming__description">{item.tagline}</span>
+                </div>
                 <small className="home-upcoming__status">
                   <span className="home-upcoming__dot" aria-hidden="true" />
                   敬请期待
@@ -534,13 +609,58 @@ export function CommercialHomeView() {
       </div>
 
       <footer className="home-footer">
-        <div className="home-shell home-footer__main">
-          <div className="home-footer__brand"><img src="/brand/starcloud-logo.svg" alt="" width="32" height="32" /><strong>星空云绘</strong></div>
-          {FOOTER_GROUPS.map(group => <nav key={group.title} aria-label={group.title}><h2>{group.title}</h2>
-            {group.links.filter(([, to]) => isEntryVisible(to)).map(([label, to]) => <Link key={to} to={to} viewTransition>{label}<ArrowUpRight size={13} aria-hidden="true" /></Link>)}
-          </nav>)}
+        <div ref={ctaRef} className="home-shell home-footer__cta">
+          <div className="home-footer__cta-copy">
+            <h2>
+              以<em>星</em>为墨，以<em>云</em>为纸。落笔生花，绘梦成真。
+              <svg className="home-footer__rope" viewBox="0 0 1200 60" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                  <linearGradient id="home-footer-rope" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0" stopColor="#ffd6a5" />
+                    <stop offset="1" stopColor="#ff8a5b" />
+                  </linearGradient>
+                </defs>
+                {/* 手绘绳线：从「落笔」下起笔，在逗号处绕一个绳结，落成「绘梦成真」的下划线 */}
+                <path pathLength="1" d="M 606 20 C 660 34, 760 36, 836 26 C 880 18, 916 2, 896 -4 C 874 -10, 850 12, 870 30 C 892 48, 980 40, 1040 32 C 1080 28, 1110 30, 1136 22" />
+              </svg>
+            </h2>
+            <p>让想象落地成画，一个平台完成从灵感到成片。</p>
+          </div>
+          <div className="home-footer__cta-actions">
+            {FOOTER_CTA_LINKS.filter(([, to]) => isEntryVisible(to)).map(([label, to, tone]) => (
+              <Link key={to} className={`home-footer__cta-link is-${tone}`} to={to} viewTransition>{label}<ArrowUpRight size={16} aria-hidden="true" /></Link>
+            ))}
+          </div>
         </div>
-        <div className="home-shell home-footer__bottom"><span>创作，不止于想象。</span><a href="#home-top">回到顶部<ArrowUp size={13} aria-hidden="true" /></a></div>
+        <div className="home-shell home-footer__main">
+          <div className="home-footer__identity">
+            <div className="home-footer__brand"><img src="/brand/starcloud-logo.svg" alt="" width="32" height="32" /><strong>星空云绘</strong></div>
+            <p className="home-footer__pitch">创作，不止于想象。</p>
+            <a className="home-footer__apps" href="#home-upcoming-title">
+              <span><Apple size={14} aria-hidden="true" /><Smartphone size={14} aria-hidden="true" /></span>
+              iOS 与安卓客户端即将上线
+            </a>
+          </div>
+          {FOOTER_GROUPS.map(group => {
+            const links = group.links.filter(([, to]) => isEntryVisible(to));
+            return links.length ? <nav key={group.title} aria-label={group.title}><h2>{group.title}</h2>
+              {links.map(([label, to]) => <Link key={to} to={to} viewTransition>{label}<ArrowUpRight size={13} aria-hidden="true" /></Link>)}
+            </nav> : null;
+          })}
+        </div>
+        <div className="home-shell home-footer__bottom">
+          <span className="home-footer__rule" aria-hidden="true" />
+          <span className="home-footer__copyright">© {new Date().getFullYear()} 星空云绘</span>
+          <div className="home-footer__legal">
+            {FOOTER_LEGAL_LINKS.filter(([, to]) => isEntryVisible(to)).map(([label, to]) => <Link key={to} to={to} viewTransition>{label}</Link>)}
+          </div>
+          <a className="home-footer__top" href="#home-top">回到顶部<ArrowUp size={13} aria-hidden="true" /></a>
+        </div>
+        <div ref={pullRef} className="home-pullmark" aria-hidden="true">
+          <div className="home-shell">
+            <canvas ref={particleCanvasRef} className="home-pullmark__canvas" />
+          </div>
+        </div>
       </footer>
     </div>
   );

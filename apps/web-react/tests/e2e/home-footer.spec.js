@@ -11,7 +11,7 @@ test('footer omits the email-sharing form and keeps brand and navigation', async
   await expect(footer.locator('.home-footer-mail, form, input, textarea, a[href^="mailto:"]')).toHaveCount(0)
   await expect(footer).not.toContainText(/邮件分享|收件邮箱|撰写邮件|附言/)
   await expect(footer.locator('.home-footer__brand')).toHaveText('星空云绘')
-  await expect(footer.getByRole('navigation')).toHaveCount(3)
+  await expect(footer.getByRole('navigation')).toHaveCount(4)
   await expect(footer.getByRole('link', { name: '回到顶部', exact: true })).toBeVisible()
 })
 
@@ -41,5 +41,5 @@ test('footer grid and navigation follow the dark theme', async ({ page }) => {
   await page.goto('/')
   await expect(page.locator('.home-catalog')).toHaveClass(/is-dark/)
   await expect(page.locator('.home-footer')).toHaveCSS('background-color', 'rgb(12, 10, 18)')
-  await expect(page.locator('.home-footer').getByRole('navigation')).toHaveCount(3)
+  await expect(page.locator('.home-footer').getByRole('navigation')).toHaveCount(4)
 })

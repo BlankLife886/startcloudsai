@@ -371,6 +371,37 @@ test('pending banners never flash the default image and returning home reuses re
   await expectSkeletonHero(page)
 })
 
+test('returning home after the cache window paints known banners without the skeleton', async ({ page }) => {
+  let release = () => {}
+  let gate = Promise.resolve()
+  await page.route('**/api/v1/home-banners', async route => {
+    await gate
+    await fulfillJson(route, { items: slides })
+  })
+  await page.goto('/')
+  const hero = page.locator('.home-hero')
+  await expect(hero).toHaveAttribute('data-banners-source', 'configured')
+  await expect(hero).toHaveAttribute('aria-busy', 'false')
+
+  gate = new Promise(resolve => { release = resolve })
+  await page.locator('.home-compact[href="/tools/image-compress"]').click()
+  await expect(page).toHaveURL(/\/tools\/image-compress$/)
+  await page.clock.setSystemTime(new Date('2026-08-11T12:05:00+08:00'))
+  const skeletonSeen = page.evaluate(() => new Promise(resolve => {
+    const observer = new MutationObserver(() => {
+      if (document.querySelector('.home-hero__skeleton')) { observer.disconnect(); resolve(true) }
+    })
+    observer.observe(document.body, { childList: true, subtree: true })
+    setTimeout(() => { observer.disconnect(); resolve(false) }, 1500)
+  }))
+  await page.goBack()
+  await expect(hero).toHaveAttribute('data-banners-source', 'configured')
+  await expect(hero).toHaveAttribute('aria-busy', 'false')
+  await expect(hero.locator('.home-banner__slide.is-active img')).toHaveAttribute('src', slides[0].imageUrl)
+  expect(await skeletonSeen).toBe(false)
+  release()
+})
+
 test('skeleton animates until the first image loads and respects reduced motion', async ({ page }) => {
   let release
   const gate = new Promise(resolve => { release = resolve })

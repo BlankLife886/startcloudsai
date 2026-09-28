@@ -140,12 +140,27 @@
   --capsule-hover-bg: #27272a;
   --capsule-hover-disc-bg: #3f3f46;
   --capsule-hover-shadow: 0 8px 22px -2px rgba(0, 0, 0, 0.6);
-  background: #16141f;
+  /* 有封面图的卡片不铺底色：底色比页面亮，会从图片圆角的抗锯齿边缘漏出一圈浅边 */
+  background: transparent;
   box-shadow: 0 16px 36px rgb(0 0 0 / 35%);
 }
+.home-catalog.is-dark .home-card.is-icon,
+:is(.dark, .color-scheme-dark) .home-card.is-icon {
+  background: #16141f;
+}
+/* 卡片内的小元素不使用 backdrop-filter：它会把元素提升为独立合成层，
+   Chrome 用 GPU 裁剪圆角时会在卡片边缘留下一圈亮边 / 锯齿。改用更不透明的底色保证可读性 */
+.home-card :is(.home-card__subtag, .home-card__status, .home-card__price) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.home-card .home-card__subtag { background: rgb(20 16 30 / 42%); }
+.home-card .home-card__status { background: rgb(18 14 12 / 80%); }
+.home-card .home-card__price { background: rgba(15, 12, 22, 0.8); }
+/* 无边框：半透明白描边压在图片圆角上会产生白边锯齿 */
 .home-catalog.is-dark .home-card::after,
 :is(.dark, .color-scheme-dark) .home-card::after {
-  border: 1px solid rgb(255 255 255 / 10%);
+  border: 0;
 }
 .home-catalog.is-dark .home-card:is(:hover, :focus-visible),
 :is(.dark, .color-scheme-dark) .home-card:is(:hover, :focus-visible) {
@@ -172,6 +187,8 @@
 .home-card:active {
   box-shadow: 0 8px 20px -2px rgba(0, 0, 0, 0.12);
 }
+/* 卡片只在最外层裁一次圆角：图片层与压暗层不再各自裁剪，
+   否则两层在圆角边缘的抗锯齿像素里会透出亮色，形成一圈发白的锯齿 */
 .home-card__media {
   position: absolute;
   z-index: -1;
@@ -180,28 +197,32 @@
   place-items: center;
   width: 100%;
   height: 100%;
-  overflow: hidden;
-  border-radius: inherit;
 }
 .home-card__media img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  border-radius: inherit;
 }
+/* 底部压暗不再用叠在图片上的深色遮罩层（两层叠放时圆角边缘会漏出亮色图片）：
+   改为图片自身向下渐隐，露出卡片的深色底色，边缘只剩深色，不会出现亮边 */
+#home-directory .home-card:not(.is-icon) { background: rgb(8 6 16); }
+.home-card__media :is(img, .home-cover-fallback) {
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 32%, rgb(0 0 0 / 52%) 64%, rgb(0 0 0 / 14%) 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 32%, rgb(0 0 0 / 52%) 64%, rgb(0 0 0 / 14%) 100%);
+}
+/* 悬停时图片略提亮，替代原来遮罩变淡的反馈 */
+.home-card .home-card__media img { transition: filter var(--home-duration, 420ms) var(--home-ease, cubic-bezier(0.22, 1, 0.36, 1)); }
+.home-card:is(:hover, :focus-visible) .home-card__media img { filter: brightness(1.08); }
 .home-card__veil {
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  border-radius: inherit;
-  background: linear-gradient(180deg, transparent 0%, transparent 32%, rgb(10 8 18 / 48%) 64%, rgb(8 6 16 / 86%));
+  background: none;
   opacity: 1;
   transition: opacity var(--home-duration, 420ms) var(--home-ease, cubic-bezier(0.22, 1, 0.36, 1));
 }
-.home-card:is(:hover, :focus-visible) .home-card__veil { opacity: .65; }
-.home-card:active .home-card__veil { opacity: .88; }
 .home-card__body {
   position: relative;
   z-index: 1;
@@ -302,7 +323,10 @@
 .home-card__body small.home-card__description { color: #f0d8af; }
 .home-card.is-featured { --card-inset: 24px; min-height: 448px; }
 .home-card.is-featured .home-card__media img { object-position: center; }
-.home-card.is-featured .home-card__veil { background: linear-gradient(180deg, transparent 0%, transparent 32%, rgb(10 8 18 / 40%) 66%, rgb(8 6 16 / 86%)); }
+.home-card.is-featured .home-card__media :is(img, .home-cover-fallback) {
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 32%, rgb(0 0 0 / 60%) 66%, rgb(0 0 0 / 14%) 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 32%, rgb(0 0 0 / 60%) 66%, rgb(0 0 0 / 14%) 100%);
+}
 .home-card.is-featured .home-card__body { padding-top: 96px; row-gap: 10px; }
 .home-card.is-featured .home-card__heading strong { font-size: 32px; line-height: 42px; }
 .home-card.is-featured .home-card__description { height: 44px; font-size: 15px; line-height: 22px; color: rgb(255 255 255 / 84%); }
@@ -364,13 +388,14 @@
 }
 .home-catalog.is-dark .home-section--commerce .home-card,
 :is(.dark, .color-scheme-dark) .home-section--commerce .home-card {
-  background: linear-gradient(180deg, #161224 0%, #0e0c18 100%);
+  background: transparent;
   box-shadow: 0 16px 36px -6px rgb(0 0 0 / 45%);
 }
+/* 电商卡片不加半透明白描边：它压在图片圆角的抗锯齿边缘上会形成一圈发白的锯齿 */
 .home-catalog.is-dark .home-section--commerce .home-card::after,
 :is(.dark, .color-scheme-dark) .home-section--commerce .home-card::after {
-  border: 1px solid rgb(255 255 255 / 10%);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 15%);
+  border: 0;
+  box-shadow: none;
 }
 .home-section--commerce .home-card:is(:hover, :focus-visible) {
   box-shadow: 0 16px 32px -4px rgba(0, 0, 0, 0.18);
@@ -539,18 +564,23 @@
   --tool-color: #6f58c4;
   --tool-tint: rgb(124 92 255 / 14%);
   position: relative;
+  isolation: isolate;
   display: grid;
   flex: 1 1 calc(33.333% - 11px);
-  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto 1fr auto;
   grid-template-areas:
-    "icon title action"
-    "icon desc price";
-  align-items: center;
+    "icon action"
+    "title title"
+    "desc desc"
+    "price price";
+  align-items: start;
   column-gap: 14px;
-  row-gap: 6px;
+  row-gap: 4px;
   min-width: 0;
-  min-height: 112px;
-  padding: 18px 20px;
+  min-height: 176px;
+  padding: 20px 20px 18px;
+  overflow: hidden;
   border: 1px solid var(--home-line);
   border-radius: 14px;
   color: var(--home-text);
@@ -564,6 +594,9 @@
 }
 .home-compact-grid:is([data-count="4"], [data-count="7"], [data-count="8"]) .home-compact {
   flex-basis: calc(25% - 11px);
+}
+.home-compact-grid:is([data-count="5"], [data-count="10"]) .home-compact {
+  flex-basis: calc(20% - 13px);
 }
 .home-compact[data-tool="skills"] { --tool-color: #7c3aed; --tool-tint: rgb(124 58 237 / 14%); --tool-glow: rgb(124 58 237 / 15%); }
 .home-compact[data-tool="psd-decompose"] { --tool-color: #2563eb; --tool-tint: rgb(37 99 235 / 14%); --tool-glow: rgb(37 99 235 / 15%); }
@@ -582,29 +615,32 @@
 .home-catalog.is-dark .home-compact[data-tool="puzzle"] { --tool-color: #fbbf24; --tool-tint: rgb(251 191 36 / 18%); }
 .home-catalog.is-dark .home-compact:is([data-tool*="upscale"], [data-tool*="media"]) { --tool-color: #f472b6; --tool-tint: rgb(244 114 182 / 18%); }
 
+/* 点阵纹理：细线边框 + 右上角渐隐的主题色点阵 */
 .home-compact::before {
   content: "";
   position: absolute;
-  top: 0;
-  left: 20px;
-  right: 20px;
-  height: 2px;
-  border-radius: 99px;
-  background: linear-gradient(90deg, transparent, var(--tool-color), transparent);
-  opacity: 0;
-  transition: opacity 280ms ease, left 280ms ease, right 280ms ease;
+  z-index: -1;
+  inset: 0;
+  border-radius: inherit;
+  background-image: radial-gradient(color-mix(in srgb, var(--tool-color) 30%, transparent) 1px, transparent 1.4px);
+  background-size: 10px 10px;
+  background-position: right 4px top 4px;
+  -webkit-mask-image: radial-gradient(90% 110% at 100% 0%, #000 0%, rgb(0 0 0 / 45%) 40%, transparent 72%);
+  mask-image: radial-gradient(90% 110% at 100% 0%, #000 0%, rgb(0 0 0 / 45%) 40%, transparent 72%);
+  opacity: 0.8;
+  transition: opacity 280ms ease;
   pointer-events: none;
 }
-.home-compact:hover::before {
+.home-compact:is(:hover, :focus-visible)::before {
   opacity: 1;
-  left: 12px;
-  right: 12px;
+  -webkit-mask-image: radial-gradient(150px circle at var(--mx, 70%) var(--my, 30%), #000, transparent 75%), radial-gradient(90% 110% at 100% 0%, #000 0%, rgb(0 0 0 / 45%) 40%, transparent 72%);
+  mask-image: radial-gradient(150px circle at var(--mx, 70%) var(--my, 30%), #000, transparent 75%), radial-gradient(90% 110% at 100% 0%, #000 0%, rgb(0 0 0 / 45%) 40%, transparent 72%);
 }
-
+.home-catalog.is-dark 
 .home-compact:is(:hover, :focus-visible) {
   color: var(--home-text);
   background-color: var(--home-soft);
-  border-color: var(--tool-color);
+  border-color: color-mix(in srgb, var(--tool-color) 22%, var(--home-line));
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 20%), 0 18px 38px -8px rgb(24 16 45 / 10%), 0 0 26px var(--tool-glow, rgb(124 92 255 / 14%));
 }
 .home-compact:active {
@@ -615,8 +651,9 @@
   align-self: start;
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 12px;
   border-radius: 12px;
   color: var(--tool-color);
   background: linear-gradient(145deg, var(--tool-tint), color-mix(in srgb, var(--tool-tint) 50%, transparent));
@@ -625,13 +662,13 @@
   transition: transform var(--home-duration-fast) var(--home-ease), box-shadow var(--home-duration-fast) var(--home-ease);
 }
 .home-compact:hover .home-compact__icon {
-  transform: scale(1.09) rotate(3deg);
+  transform: translateY(-2px) scale(1.08);
   box-shadow: inset 0 1px 2px rgb(255 255 255 / 60%), 0 5px 16px var(--tool-tint);
 }
-.home-compact__icon svg { display: block; width: 19px; height: 19px; }
+.home-compact__icon svg { display: block; width: 21px; height: 21px; }
 .home-compact__heading { grid-area: title; min-width: 0; }
-.home-compact__heading strong { display: block; min-width: 0; color: var(--home-text); font-size: 15px; font-weight: 700; line-height: 22px; overflow-wrap: anywhere; }
-.home-compact__description { grid-area: desc; min-width: 0; overflow: hidden; color: var(--home-muted); font-size: 12px; line-height: 18px; white-space: nowrap; text-overflow: ellipsis; }
+.home-compact__heading strong { display: block; min-width: 0; color: var(--home-text); font-size: 16px; font-weight: 700; line-height: 24px; overflow-wrap: anywhere; }
+.home-compact__description { grid-area: desc; display: -webkit-box; min-width: 0; overflow: hidden; color: var(--home-muted); font-size: 12.5px; line-height: 19px; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .home-compact .home-card__price,
 .home-compact .home-card__status {
   grid-area: price;
@@ -639,9 +676,11 @@
   top: auto;
   right: auto;
   left: auto;
-  justify-self: end;
+  justify-self: start;
+  align-self: end;
   align-items: baseline;
   max-width: 100%;
+  margin-top: 14px;
 }
 .home-compact .home-card__price {
   height: auto;
@@ -708,7 +747,8 @@
 
 @media (max-width: 1100px) {
   .home-compact,
-  .home-compact-grid:is([data-count="4"], [data-count="7"], [data-count="8"]) .home-compact { flex-basis: calc(50% - 7px); }
+  .home-compact-grid:is([data-count="4"], [data-count="5"], [data-count="7"], [data-count="8"], [data-count="10"]) .home-compact { flex-basis: calc(50% - 8px); }
+  .home-compact-grid[data-count="5"] .home-compact { flex-basis: calc(33.333% - 11px); }
   .home-creation-layout { grid-template-columns: minmax(0, 1fr); }
   .home-creation-layout > .is-featured { min-height: 310px; }
   .home-creation-support { min-height: 0; }
@@ -727,14 +767,28 @@
 
 @media (max-width: 640px) {
   .home-compact,
-  .home-compact-grid:is([data-count="4"], [data-count="7"], [data-count="8"]) .home-compact { flex-basis: 100%; }
+  .home-compact-grid:is([data-count="4"], [data-count="5"], [data-count="7"], [data-count="8"], [data-count="10"]) .home-compact { flex-basis: 100%; }
+  .home-compact {
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    grid-template-areas:
+      "icon title action"
+      "icon desc price";
+    align-items: center;
+    row-gap: 4px;
+    min-height: 0;
+  }
+  .home-compact__icon { margin-bottom: 0; }
+  .home-compact__description { -webkit-line-clamp: 1; }
+  .home-compact .home-card__price,
+  .home-compact .home-card__status { justify-self: end; align-self: center; margin-top: 0; }
   .home-card-grid > .home-card { flex-basis: 100%; min-height: 320px; }
   .home-section--commerce .home-card { --card-inset: 20px; }
   .home-section--commerce .home-card__heading strong { font-size: 23px; }
 }
 
 @media (max-width: 520px) {
-  .home-compact { min-height: 100px; padding: 16px; }
+  .home-compact { padding: 16px; }
   .home-catalog__content { padding-block: 32px 44px; gap: 36px; }
   .home-section__head { gap: 14px; margin-bottom: 16px; }
   .home-section h2, .home-upcoming h2 { font-size: 21px; line-height: 28px; }

@@ -11,8 +11,10 @@ import "./HomeBannerCarousel.css";
 
 gsap.registerPlugin(useGSAP);
 
+// Survive route changes so returning to the home page paints the last known
+// banners and already-decoded hero images immediately, then revalidates.
 let bannerSnapshot = null;
-const BANNER_CACHE_MS = 60000;
+const loadedHeroImages = new Set();
 
 function BannerSkeleton() {
   return <div className="home-hero__skeleton" aria-hidden="true">
@@ -23,9 +25,7 @@ function BannerSkeleton() {
 
 export function HomeBannerCarousel({ hero = false, fallbackSlide = null, previewItems = null, renderContent }) {
   const { isEntryVisible } = usePageControls();
-  const [items, setItems] = useState(() =>
-    bannerSnapshot && Date.now() - bannerSnapshot.savedAt < BANNER_CACHE_MS
-      ? bannerSnapshot.items : null);
+  const [items, setItems] = useState(() => bannerSnapshot?.items ?? null);
   const [selected, setSelected] = useState(0);
   const [paused, setPaused] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -99,7 +99,7 @@ export function HomeBannerCarousel({ hero = false, fallbackSlide = null, preview
   const slides = configured.length ? configured : !loading && fallbackSlide ? [configureLink({ ...fallbackSlide, imageUrl: failed[fallbackImage] ? "" : fallbackImage })] : [];
   const index = selected % Math.max(1, slides.length);
   const current = slides[index];
-  const imagePending = hero && Boolean(current?.imageUrl) && !hasLoadedHero;
+  const imagePending = hero && Boolean(current?.imageUrl) && !hasLoadedHero && !loadedHeroImages.has(current.imageUrl);
   const motionEnabled = hero && !reduced && !motionDisabled;
   const slideSignature = JSON.stringify(slides.map(slide => [slide.id, slide.imageUrl]));
   const playing = slides.length > 1 && !imagePending && !transitioning && (hero || !paused) && !hovered && !focused && !hidden && !reduced && !motionDisabled;
@@ -235,7 +235,7 @@ export function HomeBannerCarousel({ hero = false, fallbackSlide = null, preview
     const href = slide.isLinkVisible ? slide.linkUrl : "";
     const linkBody = <>{slide.buttonText || "查看详情"}<ArrowRight size={17} aria-hidden="true" /></>;
     return <article key={slide.id} data-banner-slide={slide.id} className={`home-banner__slide${active ? " is-active" : ""}`} aria-hidden={hero || !active} inert={hero || !active} role="group" aria-roledescription="幻灯片" aria-label={slide.title ? `${slideIndex + 1} / ${slides.length}：${slide.title}` : `第 ${slideIndex + 1} 张轮播图`}>
-      {slide.imageUrl && <img className={`home-banner__image${hero ? " home-hero__image" : ""}`} src={active || hasLoadedHero || !hero ? slide.imageUrl : undefined} alt="" loading={active ? "eager" : "lazy"} fetchPriority={active ? "high" : "low"} decoding="async" onLoad={() => { if (active) setHasLoadedHero(true); }} onError={() => setFailed(previous => ({...previous, [slide.imageUrl]: true}))} />}
+      {slide.imageUrl && <img className={`home-banner__image${hero ? " home-hero__image" : ""}`} src={active || hasLoadedHero || !hero || loadedHeroImages.has(slide.imageUrl) ? slide.imageUrl : undefined} alt="" loading={active ? "eager" : "lazy"} fetchPriority={active ? "high" : "low"} decoding="async" onLoad={() => { loadedHeroImages.add(slide.imageUrl); if (active) setHasLoadedHero(true); }} onError={() => setFailed(previous => ({...previous, [slide.imageUrl]: true}))} />}
       {!hero && <><div className="home-banner__shade" />
         <div className="home-banner__copy">{slide.title && <h2 style={slide.title.length > 30 ? {fontSize:24} : undefined}>{slide.title}</h2>}{slide.subtitle && <p>{slide.subtitle}</p>}
           {href && (href.startsWith("/") && !slide.newTab ? <Link className="home-banner__cta" to={href}>{linkBody}</Link> : <a className="home-banner__cta" href={href} target={slide.newTab ? "_blank" : undefined} rel="noopener noreferrer">{linkBody}</a>)}
