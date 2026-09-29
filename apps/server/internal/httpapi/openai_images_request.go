@@ -14,7 +14,13 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 )
 
-const openAIImageInputBytes = 32 << 20
+// /v1/images/edits reference images are spooled to temporary files and
+// streamed to the upstream, so their size is bounded only by this request body
+// ceiling (a guard against filling the disk) and their count by the model.
+const (
+	openAIImageEditMaxBodyBytes = 512 << 20
+	openAIImageEditMemoryBytes  = 1 << 20
+)
 
 type openAIImageRequest struct {
 	Model          string `json:"model"`
@@ -49,14 +55,14 @@ var openAIImageFields = map[string]bool{
 }
 
 func unsupportedImageField(field string) error {
-	return &openAIParameterError{Param: field, Message: fmt.Sprintf("Unsupported parameter: %s", field), Code: "unsupported_parameter"}
+	return &openAIParameterError{Param: field, Message: fmt.Sprintf("不支持的参数：%s", field), Code: "unsupported_parameter"}
 }
 
 func decodeOpenAIImageJSON(request *http.Request) (openAIImageRequest, error) {
 	var result openAIImageRequest
 	contentType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || contentType != "application/json" {
-		return result, imageParameterError("Content-Type", "Use application/json for image generation.")
+		return result, imageParameterError("Content-Type", "生成图片请使用 Content-Type: application/json")
 	}
 	decoder := json.NewDecoder(request.Body)
 	var fields map[string]json.RawMessage
@@ -64,13 +70,13 @@ func decodeOpenAIImageJSON(request *http.Request) (openAIImageRequest, error) {
 		return result, imageBodyError(err)
 	}
 	if fields == nil {
-		return result, imageParameterError("body", "The request body must be a JSON object.")
+		return result, imageParameterError("body", "请求体必须是 JSON 对象")
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		if err != nil {
 			return result, imageBodyError(err)
 		}
-		return result, imageParameterError("body", "Send one JSON object per request.")
+		return result, imageParameterError("body", "每个请求只能发送一个 JSON 对象")
 	}
 	for field := range fields {
 		if !openAIImageFields[field] {
@@ -81,12 +87,12 @@ func decodeOpenAIImageJSON(request *http.Request) (openAIImageRequest, error) {
 	if err := json.Unmarshal(encoded, &result); err != nil {
 		var fieldError *json.UnmarshalTypeError
 		if errors.As(err, &fieldError) {
-			return result, imageParameterError(fieldError.Field, "Invalid parameter type: "+fieldError.Field)
+			return result, imageParameterError(fieldError.Field, fieldError.Field+" 的类型不正确，请对照文档检查")
 		}
-		return result, imageParameterError("body", "Invalid image request.")
+		return result, imageParameterError("body", "请求参数无效，请对照文档检查字段类型")
 	}
 	if value, exists := fields["n"]; exists && string(value) != "null" && result.N == 0 {
-		return result, imageParameterError("n", "n must be an integer between 1 and 10.")
+		return result, imageParameterError("n", "n 必须是 1 到 10 的整数")
 	}
 	return normalizeOpenAIImageRequest(result)
 }
@@ -96,16 +102,16 @@ func imageBodyError(err error) error {
 	if errors.As(err, &tooLarge) {
 		return err
 	}
-	return imageParameterError("body", "Invalid or incomplete request body.")
+	return imageParameterError("body", "请求体无效或不完整")
 }
 
-func decodeOpenAIImageMultipart(request *http.Request, maxFileBytes int64) (openAIImageRequest, []*multipart.FileHeader, error) {
+func decodeOpenAIImageMultipart(request *http.Request) (openAIImageRequest, []*multipart.FileHeader, error) {
 	var result openAIImageRequest
 	contentType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || contentType != "multipart/form-data" {
-		return result, nil, imageParameterError("Content-Type", "Use multipart/form-data and upload image files for image editing.")
+		return result, nil, imageParameterError("Content-Type", "编辑图片请使用 multipart/form-data 上传图片文件")
 	}
-	if err := request.ParseMultipartForm(8 << 20); err != nil {
+	if err := request.ParseMultipartForm(openAIImageEditMemoryBytes); err != nil {
 		return result, nil, imageBodyError(err)
 	}
 	fields := make(map[string]json.RawMessage, len(request.MultipartForm.Value))
@@ -114,14 +120,14 @@ func decodeOpenAIImageMultipart(request *http.Request, maxFileBytes int64) (open
 			return result, nil, unsupportedImageField(field)
 		}
 		if len(values) != 1 {
-			return result, nil, imageParameterError(field, "Repeated parameter: "+field)
+			return result, nil, imageParameterError(field, "参数重复："+field)
 		}
 		value := values[0]
 		switch field {
 		case "n":
 			n, err := strconv.Atoi(value)
 			if err != nil || n < 1 {
-				return result, nil, imageParameterError(field, "n must be an integer between 1 and 10.")
+				return result, nil, imageParameterError(field, "n 必须是 1 到 10 的整数")
 			}
 			fields[field], _ = json.Marshal(n)
 		case "stream":
@@ -148,18 +154,8 @@ func decodeOpenAIImageMultipart(request *http.Request, maxFileBytes int64) (open
 	}
 	files := append([]*multipart.FileHeader(nil), request.MultipartForm.File["image"]...)
 	files = append(files, request.MultipartForm.File["image[]"]...)
-	if len(files) < 1 || len(files) > maxTaskInputImages {
-		return result, nil, imageParameterError("image", fmt.Sprintf("Upload between 1 and %d images.", maxTaskInputImages))
-	}
-	var total int64
-	for _, file := range files {
-		if file.Size <= 0 || file.Size > maxFileBytes {
-			return result, nil, imageParameterError("image", "An input image is empty or exceeds the upload size limit.")
-		}
-		total += file.Size
-		if total > openAIImageInputBytes {
-			return result, nil, imageParameterError("image", "Input images must not exceed 32 MiB in total.")
-		}
+	if len(files) == 0 {
+		return result, nil, imageParameterError("image", "至少上传一张参考图（字段名 image 或 image[]）")
 	}
 	return result, files, nil
 }
@@ -171,7 +167,7 @@ func normalizeOpenAIImageRequest(request openAIImageRequest) (openAIImageRequest
 		return request, &openAIParameterError{Param: "model", Message: "model is required. Choose an ID returned by GET /v1/models.", Code: "missing_required_parameter"}
 	}
 	if len(request.Model) > 128 {
-		return request, imageParameterError("model", "model is too long.")
+		return request, imageParameterError("model", "model 太长")
 	}
 	if request.Prompt == "" || len([]rune(request.Prompt)) > maxTaskPromptRunes {
 		return request, imageParameterError("prompt", fmt.Sprintf("prompt must contain between 1 and %d characters.", maxTaskPromptRunes))
@@ -180,13 +176,13 @@ func normalizeOpenAIImageRequest(request openAIImageRequest) (openAIImageRequest
 		request.N = 1
 	}
 	if request.N < 1 || request.N > 10 {
-		return request, imageParameterError("n", "n must be an integer between 1 and 10.")
+		return request, imageParameterError("n", "n 必须是 1 到 10 的整数")
 	}
 	if request.Stream {
 		return request, unsupportedImageField("stream")
 	}
 	if len([]rune(request.User)) > 256 {
-		return request, imageParameterError("user", "user must not exceed 256 characters.")
+		return request, imageParameterError("user", "user 不能超过 256 个字符")
 	}
 	defaults := map[*string]string{&request.Size: "auto", &request.Quality: "auto", &request.ResponseFormat: "b64_json", &request.Background: "auto"}
 	for field, fallback := range defaults {
@@ -198,19 +194,19 @@ func normalizeOpenAIImageRequest(request openAIImageRequest) (openAIImageRequest
 	request.OutputFormat = strings.ToLower(strings.TrimSpace(request.OutputFormat))
 	request.Moderation = strings.ToLower(strings.TrimSpace(request.Moderation))
 	if request.ResponseFormat != "b64_json" && request.ResponseFormat != "url" {
-		return request, imageParameterError("response_format", "response_format must be b64_json or url.")
+		return request, imageParameterError("response_format", "response_format 只支持 b64_json 或 url")
 	}
 	if !imageStringIn([]string{"auto", "opaque", "transparent"}, request.Background) {
-		return request, imageParameterError("background", "background must be auto, opaque or transparent.")
+		return request, imageParameterError("background", "background 只支持 auto、opaque、transparent")
 	}
 	if !imageStringIn([]string{"auto", "low", "medium", "high", "standard", "hd"}, request.Quality) {
-		return request, imageParameterError("quality", "Unsupported image quality.")
+		return request, imageParameterError("quality", "quality 只支持 auto、low、medium、high（standard、hd 分别视为 medium、high）")
 	}
 	if request.OutputFormat != "" && !imageStringIn(modelconfig.ImageOutputFormats, request.OutputFormat) {
-		return request, imageParameterError("output_format", "output_format must be png, jpeg or webp.")
+		return request, imageParameterError("output_format", "output_format 只支持 png、jpeg、webp")
 	}
 	if request.Moderation != "" && !imageStringIn(modelconfig.ImageModerationLevels, request.Moderation) {
-		return request, imageParameterError("moderation", "moderation must be auto or low.")
+		return request, imageParameterError("moderation", "moderation 只支持 auto 或 low")
 	}
 	return request, nil
 }
@@ -226,24 +222,24 @@ func imageStringIn(values []string, wanted string) bool {
 
 func openAIImageParams(request openAIImageRequest, model modelconfig.Model, references int) (map[string]any, error) {
 	if request.N > model.GenerationMaxImages() {
-		return nil, imageParameterError("n", fmt.Sprintf("This model allows at most %d images per request.", model.GenerationMaxImages()))
+		return nil, imageParameterError("n", fmt.Sprintf("所选模型单次最多生成 %d 张，n 请不超过这个数", model.GenerationMaxImages()))
 	}
 	if references > model.MaxReferenceImages {
-		return nil, imageParameterError("image", fmt.Sprintf("This model allows at most %d input images.", model.MaxReferenceImages))
+		return nil, imageParameterError("image", fmt.Sprintf("所选模型最多接受 %d 张参考图，本次上传了 %d 张", model.MaxReferenceImages, references))
 	}
 	params := map[string]any{"modelId": model.ID, "_source": "open_api"}
 	if request.Size != "auto" {
 		parts := strings.Split(request.Size, "x")
 		if len(parts) != 2 {
-			return nil, imageParameterError("size", "size must be auto or WIDTHxHEIGHT in pixels.")
+			return nil, imageParameterError("size", "size 须为 auto 或“宽x高”像素，例如 1024x1024")
 		}
 		width, werr := strconv.Atoi(parts[0])
 		height, herr := strconv.Atoi(parts[1])
 		if werr != nil || herr != nil || width <= 0 || height <= 0 || fmt.Sprintf("%dx%d", width, height) != request.Size {
-			return nil, imageParameterError("size", "size must be auto or WIDTHxHEIGHT in pixels.")
+			return nil, imageParameterError("size", "size 须为 auto 或“宽x高”像素，例如 1024x1024")
 		}
 		if err := modelconfig.ValidateExactImageSize(model, width, height); err != nil {
-			return nil, imageParameterError("size", err.Error()+"; use size=auto for the model's native size.")
+			return nil, imageParameterError("size", err.Error()+"；也可以用 size=auto 使用模型原生尺寸")
 		}
 		params["sizeMode"], params["exactWidth"], params["exactHeight"] = "exact", width, height
 	}
@@ -256,22 +252,30 @@ func openAIImageParams(request openAIImageRequest, model modelconfig.Model, refe
 	}
 	if quality != "auto" {
 		if !imageStringIn(model.Qualities, quality) {
-			return nil, imageParameterError("quality", "The selected model does not support this quality.")
+			return nil, imageParameterError("quality", fmt.Sprintf("所选模型不支持 quality=%s，可用：%s", quality, strings.Join(model.Qualities, "、")))
 		}
 		params["quality"] = quality
 	}
-	if request.OutputFormat != "" {
-		if !imageStringIn(model.OutputFormats, request.OutputFormat) {
-			return nil, imageParameterError("output_format", "The selected model does not support this output format.")
+	// An empty OutputFormats list means the admin turned the format selector
+	// off and the model returns its native format. OpenAI SDKs and tools often
+	// send output_format by default, so drop it there like the canvas does
+	// instead of rejecting the request.
+	outputFormat := request.OutputFormat
+	if len(model.OutputFormats) == 0 {
+		outputFormat = ""
+	}
+	if outputFormat != "" {
+		if !imageStringIn(model.OutputFormats, outputFormat) {
+			return nil, imageParameterError("output_format", fmt.Sprintf("所选模型不支持 output_format=%s，可用：%s", outputFormat, strings.Join(model.OutputFormats, "、")))
 		}
-		params["outputFormat"] = request.OutputFormat
+		params["outputFormat"] = outputFormat
 	}
 	if request.Background == "transparent" {
 		if !model.TransparentBackground {
-			return nil, imageParameterError("background", "The selected model does not support transparent backgrounds.")
+			return nil, imageParameterError("background", "所选模型不支持透明背景")
 		}
-		if request.OutputFormat == "jpeg" {
-			return nil, imageParameterError("output_format", "JPEG does not support transparent backgrounds.")
+		if outputFormat == "jpeg" {
+			return nil, imageParameterError("output_format", "JPEG 不支持透明背景，请改用 png 或 webp")
 		}
 		params["transparentPngEnabled"] = true
 	}
@@ -280,7 +284,7 @@ func openAIImageParams(request openAIImageRequest, model modelconfig.Model, refe
 	}
 	if request.Moderation != "" {
 		if !imageStringIn(model.ModerationLevels, request.Moderation) {
-			return nil, imageParameterError("moderation", "The selected model does not support this moderation setting.")
+			return nil, imageParameterError("moderation", fmt.Sprintf("所选模型不支持 moderation=%s，可用：%s", request.Moderation, strings.Join(model.ModerationLevels, "、")))
 		}
 		params["moderationLevel"] = request.Moderation
 	}

@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"log"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -16,8 +18,6 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
-	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
-	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
 )
@@ -25,12 +25,7 @@ import (
 const (
 	ctxOpenAPIKey  = "openAPIKey"
 	ctxOpenAPIUser = "openAPIUser"
-	ctxOpenAPI     = "openAPIRequest"
 )
-
-var allowedOpenAPIScopes = map[string]bool{
-	"models:read": true, "files:write": true, "tasks:write": true, "tasks:read": true,
-}
 
 func hashAPISecret(secret string) string {
 	sum := sha256.Sum256([]byte(secret))
@@ -45,34 +40,17 @@ func newAPISecret() (string, error) {
 	return "sk-sc-" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func apiKeyHasScope(key *store.UserAPIKey, scope string) bool {
-	for _, item := range key.Scopes {
-		if item == scope {
-			return true
-		}
-	}
-	return false
-}
-
-func openAPIModelItems(cfg modelconfig.Config, allowedModelIDs []string) []gin.H {
-	allowed := map[string]bool{}
-	for _, id := range allowedModelIDs {
-		allowed[id] = true
-	}
-	items := make([]gin.H, 0)
-	for _, model := range cfg.Models {
-		if !model.Enabled || !model.Public {
-			continue
-		}
-		if len(allowed) > 0 && !allowed[model.ID] {
-			continue
-		}
+// developerModelItems is the console view of the /v1 catalog. `model` is the
+// exact value /v1 accepts; `id` is only used as the value of a Key's model
+// allowlist and is never shown to integrators.
+func developerModelItems(cfg modelconfig.Config) []gin.H {
+	models := openAIDeveloperModels(cfg, nil)
+	items := make([]gin.H, 0, len(models))
+	for _, model := range models {
 		items = append(items, gin.H{
-			"id": model.ID, "name": model.Name, "kind": model.Kind, "tool": model.Tool,
+			"id": model.ID, "model": openAIPublicModelID(model), "name": model.Name, "kind": model.Kind,
 			"priceCents": modelconfig.EffectivePrice(model), "maxImages": model.GenerationMaxImages(),
 			"maxReferenceImages": model.MaxReferenceImages, "resolutions": model.Resolutions,
-			"aspectRatios": model.AspectRatios, "qualities": model.Qualities,
-			"supportsExactSize": model.SupportsExactSize, "exactSizeLimits": model.ExactSizeRules(),
 		})
 	}
 	return items
@@ -80,10 +58,8 @@ func openAPIModelItems(cfg modelconfig.Config, allowedModelIDs []string) []gin.H
 
 func normalizeOpenAPIModelIDs(cfg modelconfig.Config, values []string) ([]string, error) {
 	available := map[string]bool{}
-	for _, model := range cfg.Models {
-		if model.Enabled && model.Public {
-			available[model.ID] = true
-		}
+	for _, model := range openAIDeveloperModels(cfg, nil) {
+		available[model.ID] = true
 	}
 	seen := map[string]bool{}
 	result := make([]string, 0, len(values))
@@ -103,7 +79,7 @@ func normalizeOpenAPIModelIDs(cfg modelconfig.Config, values []string) ([]string
 	return result, nil
 }
 
-func (s *Server) openAPIOnly(scope string, handler gin.HandlerFunc) gin.HandlerFunc {
+func (s *Server) openAPIOnly(handler gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !s.developerAPIEnabled(c) {
 			return
@@ -115,7 +91,7 @@ func (s *Server) openAPIOnly(scope string, handler gin.HandlerFunc) gin.HandlerF
 		}
 		secret := strings.TrimSpace(authorization[7:])
 		if !strings.HasPrefix(secret, "sk-sc-") || len(secret) > 128 {
-			fail(c, apperr.E("api_key_invalid", "API Key 无效", 401))
+			fail(c, apperr.E("api_key_invalid", "API Key 格式不正确：应以 sk-sc- 开头，请检查是否完整复制", 401))
 			return
 		}
 		key, err := store.GetUserAPIKeyByHash(c.Request.Context(), s.St.Pool, hashAPISecret(secret))
@@ -124,12 +100,8 @@ func (s *Server) openAPIOnly(scope string, handler gin.HandlerFunc) gin.HandlerF
 			return
 		}
 		now := time.Now().UTC()
-		if key == nil || key.Status != "active" || (key.ExpiresAt != nil && !key.ExpiresAt.After(now)) {
-			fail(c, apperr.E("api_key_invalid", "API Key 已失效", 401))
-			return
-		}
-		if !apiKeyHasScope(key, scope) {
-			fail(c, apperr.E("api_key_scope_denied", "API Key 缺少 "+scope+" 权限", 403))
+		if err := apiKeyUsableError(key, now); err != nil {
+			fail(c, err)
 			return
 		}
 		clientIP := strings.TrimSpace(c.ClientIP())
@@ -168,7 +140,6 @@ func (s *Server) openAPIOnly(scope string, handler gin.HandlerFunc) gin.HandlerF
 		}
 		c.Set(ctxOpenAPIKey, key)
 		c.Set(ctxOpenAPIUser, user)
-		c.Set(ctxOpenAPI, true)
 		c.Request = c.Request.WithContext(wallet.WithSubscriptionScope(c.Request.Context(), "api", ""))
 		handler(c)
 		statusCode := c.Writer.Status()
@@ -178,7 +149,7 @@ func (s *Server) openAPIOnly(scope string, handler gin.HandlerFunc) gin.HandlerF
 				s.freezeAPIKeyForRisk(c, key, "API Key 单日传输字节额度已用完")
 			}
 		}
-		if statusCode >= 500 && s.UsageLimiter != nil {
+		if apiKeyServerErrorCountsAsAbuse(statusCode, c.GetString(ctxPlatformErrorKey)) && s.UsageLimiter != nil {
 			if _, allowed, _ := s.UsageLimiter.Take(c.Request.Context(), "api-key-server-errors", key.ID.String(), 10, 1, 10*time.Minute); !allowed {
 				s.freezeAPIKeyForRisk(c, key, "API Key 在短时间内触发过多服务端失败")
 			}
@@ -192,6 +163,37 @@ func (s *Server) openAPIOnly(scope string, handler gin.HandlerFunc) gin.HandlerF
 				method, route, statusCode, requestBytes, responseBytes)
 		}()
 	}
+}
+
+// apiKeyUsableError explains why a Key cannot authenticate. A frozen or
+// expired Key gets its own code so the owner knows to unfreeze or rotate it
+// rather than assuming the secret was mistyped.
+func apiKeyUsableError(key *store.UserAPIKey, now time.Time) error {
+	switch {
+	case key == nil || key.Status == "revoked":
+		return apperr.E("api_key_invalid", "API Key 不存在或已被撤销，请在控制台确认这把 Key 是否仍可用", 401)
+	case key.Status == "frozen":
+		message := "API Key 已被风控冻结，请在开发者控制台查看原因并申请解冻"
+		if key.FreezeReason != nil && strings.TrimSpace(*key.FreezeReason) != "" {
+			message += "（原因：" + strings.TrimSpace(*key.FreezeReason) + "）"
+		}
+		return apperr.E("api_key_frozen", message, 403)
+	case key.Status != "active":
+		return apperr.E("api_key_invalid", "API Key 已失效", 401)
+	case key.ExpiresAt != nil && !key.ExpiresAt.After(now):
+		return apperr.E("api_key_expired", "API Key 已过期，请创建或轮换新的 Key", 401)
+	}
+	return nil
+}
+
+// apiKeyServerErrorCountsAsAbuse limits the automatic freeze to failures the
+// caller can plausibly provoke. Upstream outages, upstream timeouts and our own
+// dependency failures are not the Key owner's behaviour and must not freeze it.
+func apiKeyServerErrorCountsAsAbuse(status int, code string) bool {
+	if status != http.StatusInternalServerError {
+		return false
+	}
+	return code == "" || code == "internal_error"
 }
 
 func (s *Server) handleAPIKeyAbuse(c *gin.Context, key *store.UserAPIKey, reason string) {
@@ -227,11 +229,18 @@ func openAPIKeyFromContext(c *gin.Context) *store.UserAPIKey {
 	return key
 }
 
+// apiKeyDisplayPrefix keeps "sk-sc-" plus four secret characters: enough to
+// tell keys apart without echoing a long slice of the secret back to clients.
+func apiKeyDisplayPrefix(stored string) string {
+	const visible = len("sk-sc-") + 4
+	return stored[:min(visible, len(stored))]
+}
+
 func userAPIKeyDict(key *store.UserAPIKey, usage store.APIKeyUsageSummary) gin.H {
 	return gin.H{
-		"id": key.ID.String(), "prefix": key.KeyPrefix, "label": key.Label, "status": key.Status,
-		"scopes": key.Scopes, "allowedModelIds": key.AllowedModelIDs,
-		"dailyTaskLimit": key.DailyTaskLimit, "monthlyTaskLimit": key.MonthlyTaskLimit,
+		"id": key.ID.String(), "prefix": apiKeyDisplayPrefix(key.KeyPrefix), "label": key.Label, "status": key.Status,
+		"allowedModelIds": key.AllowedModelIDs,
+		"dailyTaskLimit":  key.DailyTaskLimit, "monthlyTaskLimit": key.MonthlyTaskLimit,
 		"dailySpendLimitCents": key.DailySpendLimitCents, "monthlySpendLimitCents": key.MonthlySpendLimitCents,
 		"ipAllowlist": key.IPAllowlist, "rateLimitPerMinute": key.RateLimitPerMinute,
 		"dailyByteLimit": key.DailyByteLimit, "autoFrozenAt": iso(key.AutoFrozenAt), "freezeReason": key.FreezeReason,
@@ -274,7 +283,6 @@ func (s *Server) myAPIKeys(c *gin.Context) {
 
 type createAPIKeyInput struct {
 	Label                  string   `json:"label"`
-	Scopes                 []string `json:"scopes"`
 	AllowedModelIDs        []string `json:"allowedModelIds"`
 	DailyTaskLimit         int      `json:"dailyTaskLimit"`
 	MonthlyTaskLimit       int      `json:"monthlyTaskLimit"`
@@ -318,13 +326,15 @@ func (s *Server) createMyAPIKey(c *gin.Context) {
 	}
 	key, err := store.InsertUserAPIKey(c.Request.Context(), s.St.Pool, &store.UserAPIKey{
 		UserID: user.ID, KeyPrefix: secret[:min(18, len(secret))], KeyHash: hashAPISecret(secret), Label: settings.Label,
-		Scopes: settings.Scopes, AllowedModelIDs: settings.AllowedModelIDs, DailyTaskLimit: settings.DailyTaskLimit,
+		AllowedModelIDs: settings.AllowedModelIDs, DailyTaskLimit: settings.DailyTaskLimit,
 		MonthlyTaskLimit: settings.MonthlyTaskLimit, DailySpendLimitCents: settings.DailySpendLimitCents,
 		MonthlySpendLimitCents: settings.MonthlySpendLimitCents, IPAllowlist: settings.IPAllowlist,
 		RateLimitPerMinute: settings.RateLimitPerMinute, DailyByteLimit: settings.DailyByteLimit, ExpiresAt: settings.ExpiresAt,
 	})
 	if err != nil {
-		fail(c, apperr.E("validation_error", err.Error(), 422))
+		// Database errors carry table and constraint names; keep them in the log.
+		log.Printf("developer API key insert failed user_id=%s: %v", user.ID, err)
+		fail(c, apperr.E("validation_error", "API Key 设置无效，请检查额度、有效期和白名单后重试", 422))
 		return
 	}
 	data := userAPIKeyDict(key, store.APIKeyUsageSummary{})
@@ -354,7 +364,7 @@ func (s *Server) patchMyAPIKey(c *gin.Context) {
 		return
 	}
 	key, err := store.UpdateUserAPIKey(c.Request.Context(), s.St.Pool, user.ID, id, &store.UserAPIKey{
-		Label: settings.Label, Scopes: settings.Scopes, AllowedModelIDs: settings.AllowedModelIDs,
+		Label: settings.Label, AllowedModelIDs: settings.AllowedModelIDs,
 		DailyTaskLimit: settings.DailyTaskLimit, MonthlyTaskLimit: settings.MonthlyTaskLimit,
 		DailySpendLimitCents: settings.DailySpendLimitCents, MonthlySpendLimitCents: settings.MonthlySpendLimitCents,
 		IPAllowlist: settings.IPAllowlist, RateLimitPerMinute: settings.RateLimitPerMinute,
@@ -378,7 +388,6 @@ func (s *Server) patchMyAPIKey(c *gin.Context) {
 
 type apiKeySettings struct {
 	Label                  string
-	Scopes                 []string
 	AllowedModelIDs        []string
 	DailyTaskLimit         int
 	MonthlyTaskLimit       int
@@ -394,21 +403,6 @@ func (s *Server) parseAPIKeySettings(c *gin.Context, body *createAPIKeyInput) (*
 	body.Label = strings.TrimSpace(body.Label)
 	if body.Label == "" || len([]rune(body.Label)) > 80 {
 		return nil, apperr.E("validation_error", "label: 须为 1-80 个字符", 422)
-	}
-	if len(body.Scopes) == 0 {
-		body.Scopes = []string{"models:read", "files:write", "tasks:write", "tasks:read"}
-	}
-	seenScopes := map[string]bool{}
-	scopes := make([]string, 0, len(body.Scopes))
-	for _, raw := range body.Scopes {
-		scope := strings.TrimSpace(raw)
-		if !allowedOpenAPIScopes[scope] {
-			return nil, apperr.E("validation_error", "scopes: 包含不支持的权限", 422)
-		}
-		if !seenScopes[scope] {
-			seenScopes[scope] = true
-			scopes = append(scopes, scope)
-		}
 	}
 	var expiresAt *time.Time
 	if body.ExpiresAt != nil && strings.TrimSpace(*body.ExpiresAt) != "" {
@@ -476,7 +470,7 @@ func (s *Server) parseAPIKeySettings(c *gin.Context, body *createAPIKeyInput) (*
 		return nil, err
 	}
 	return &apiKeySettings{
-		Label: body.Label, Scopes: scopes, AllowedModelIDs: allowedModelIDs,
+		Label: body.Label, AllowedModelIDs: allowedModelIDs,
 		DailyTaskLimit: body.DailyTaskLimit, MonthlyTaskLimit: body.MonthlyTaskLimit,
 		DailySpendLimitCents: body.DailySpendLimitCents, MonthlySpendLimitCents: body.MonthlySpendLimitCents,
 		IPAllowlist: allowlist, RateLimitPerMinute: body.RateLimitPerMinute,
@@ -544,7 +538,7 @@ func (s *Server) rotateMyAPIKey(c *gin.Context) {
 		var insertErr error
 		replacement, insertErr = store.InsertUserAPIKey(c.Request.Context(), tx, &store.UserAPIKey{
 			UserID: existing.UserID, KeyPrefix: secret[:min(18, len(secret))], KeyHash: hashAPISecret(secret),
-			Label: existing.Label, Scopes: existing.Scopes, AllowedModelIDs: existing.AllowedModelIDs,
+			Label: existing.Label, AllowedModelIDs: existing.AllowedModelIDs,
 			DailyTaskLimit: existing.DailyTaskLimit, MonthlyTaskLimit: existing.MonthlyTaskLimit,
 			DailySpendLimitCents: existing.DailySpendLimitCents, MonthlySpendLimitCents: existing.MonthlySpendLimitCents,
 			IPAllowlist: existing.IPAllowlist, RateLimitPerMinute: existing.RateLimitPerMinute,
@@ -565,35 +559,6 @@ func (s *Server) rotateMyAPIKey(c *gin.Context) {
 	respondCreated(c, data)
 }
 
-func (s *Server) openAPIModels(c *gin.Context) {
-	key := openAPIKeyFromContext(c)
-	cfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	ok(c, gin.H{"items": openAPIModelItems(cfg, key.AllowedModelIDs)})
-}
-
-func (s *Server) openAPIUsage(c *gin.Context) {
-	key := openAPIKeyFromContext(c)
-	if key == nil {
-		fail(c, apperr.E("api_key_required", "需要 API Key", 401))
-		return
-	}
-	now := time.Now().UTC()
-	usage, err := store.GetAPIKeyUsageSummary(c.Request.Context(), s.St.Pool, key.ID, now)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	c.Header("Cache-Control", "no-store")
-	ok(c, gin.H{"keyId": key.ID, "usage": usage, "timezone": "UTC", "spendBasis": "submitted_reserved_credits",
-		"dailyResetAt": day.AddDate(0, 0, 1), "monthlyResetAt": time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC),
-		"limits": gin.H{"dailyTasks": key.DailyTaskLimit, "monthlyTasks": key.MonthlyTaskLimit, "dailyPoints": key.DailySpendLimitCents, "monthlyPoints": key.MonthlySpendLimitCents, "dailyBytes": key.DailyByteLimit, "requestsPerMinute": key.RateLimitPerMinute}})
-}
-
 func (s *Server) myOpenAPIModels(c *gin.Context) {
 	if _, err := s.requireUser(c); err != nil {
 		fail(c, err)
@@ -604,237 +569,5 @@ func (s *Server) myOpenAPIModels(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"items": openAPIModelItems(cfg, nil)})
-}
-
-var allowedWebhookEvents = map[string]bool{
-	"task.succeeded": true, "task.failed": true, "task.canceled": true,
-}
-
-func webhookEndpointDict(endpoint *store.APIWebhookEndpoint) gin.H {
-	return gin.H{
-		"id": endpoint.ID.String(), "label": endpoint.Label, "url": endpoint.URL,
-		"events": endpoint.Events, "enabled": endpoint.Enabled,
-		"createdAt": isoValue(endpoint.CreatedAt), "updatedAt": isoValue(endpoint.UpdatedAt),
-	}
-}
-
-func normalizeWebhookEvents(values []string) ([]string, error) {
-	if len(values) == 0 {
-		values = []string{"task.succeeded", "task.failed", "task.canceled"}
-	}
-	seen := map[string]bool{}
-	result := make([]string, 0, len(values))
-	for _, raw := range values {
-		value := strings.TrimSpace(raw)
-		if !allowedWebhookEvents[value] {
-			return nil, apperr.E("validation_error", "events: 包含不支持的事件", 422)
-		}
-		if !seen[value] {
-			seen[value] = true
-			result = append(result, value)
-		}
-	}
-	return result, nil
-}
-
-func (s *Server) myWebhooks(c *gin.Context) {
-	user, err := s.requireUser(c)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	items, err := store.ListAPIWebhookEndpoints(c.Request.Context(), s.St.Pool, user.ID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	result := make([]gin.H, 0, len(items))
-	for _, item := range items {
-		result = append(result, webhookEndpointDict(item))
-	}
-	ok(c, gin.H{"items": result})
-}
-
-type webhookInput struct {
-	Label        string   `json:"label"`
-	URL          string   `json:"url"`
-	Events       []string `json:"events"`
-	Enabled      *bool    `json:"enabled"`
-	RotateSecret bool     `json:"rotateSecret"`
-}
-
-func validateWebhookInput(body webhookInput) (string, string, []string, error) {
-	label, target := strings.TrimSpace(body.Label), strings.TrimSpace(body.URL)
-	if label == "" || len([]rune(label)) > 80 {
-		return "", "", nil, apperr.E("validation_error", "label: 须为 1-80 个字符", 422)
-	}
-	if len(target) > 2000 || netguard.ValidateURL(target, false, true) != nil {
-		return "", "", nil, apperr.E("validation_error", "url: 必须是公网 HTTPS 地址", 422)
-	}
-	events, err := normalizeWebhookEvents(body.Events)
-	return label, target, events, err
-}
-
-func (s *Server) createMyWebhook(c *gin.Context) {
-	user, err := s.requireUser(c)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	var body webhookInput
-	if err := bindJSON(c, &body); err != nil {
-		fail(c, err)
-		return
-	}
-	count, err := store.CountAPIWebhookEndpoints(c.Request.Context(), s.St.Pool, user.ID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if count >= 10 {
-		fail(c, apperr.E("webhook_limit", "每个账号最多配置 10 个 Webhook", 422))
-		return
-	}
-	label, target, events, err := validateWebhookInput(body)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	secret, err := newAPISecret()
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	encrypted, err := settings.EncryptSecret(secret, s.Cfg.AppSecret)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	enabled := true
-	if body.Enabled != nil {
-		enabled = *body.Enabled
-	}
-	endpoint, err := store.InsertAPIWebhookEndpoint(c.Request.Context(), s.St.Pool, &store.APIWebhookEndpoint{
-		UserID: user.ID, Label: label, URL: target, SecretEncrypted: encrypted, Events: events, Enabled: enabled,
-	})
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	data := webhookEndpointDict(endpoint)
-	data["secret"] = secret
-	respondCreated(c, data)
-}
-
-func (s *Server) patchMyWebhook(c *gin.Context) {
-	user, err := s.requireUser(c)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		fail(c, apperr.E("validation_error", "id: 无效", 422))
-		return
-	}
-	var body webhookInput
-	if err := bindJSON(c, &body); err != nil {
-		fail(c, err)
-		return
-	}
-	label, target, events, err := validateWebhookInput(body)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	enabled := true
-	if body.Enabled != nil {
-		enabled = *body.Enabled
-	}
-	secret, encrypted := "", ""
-	if body.RotateSecret {
-		secret, err = newAPISecret()
-		if err == nil {
-			encrypted, err = settings.EncryptSecret(secret, s.Cfg.AppSecret)
-		}
-		if err != nil {
-			fail(c, err)
-			return
-		}
-	}
-	endpoint, err := store.UpdateAPIWebhookEndpoint(c.Request.Context(), s.St.Pool, user.ID, id, label, target, encrypted, events, enabled)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if endpoint == nil {
-		fail(c, apperr.E("webhook_not_found", "Webhook 不存在", 404))
-		return
-	}
-	data := webhookEndpointDict(endpoint)
-	if secret != "" {
-		data["secret"] = secret
-	}
-	ok(c, data)
-}
-
-func (s *Server) deleteMyWebhook(c *gin.Context) {
-	user, err := s.requireUser(c)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		fail(c, apperr.E("validation_error", "id: 无效", 422))
-		return
-	}
-	changed, err := store.DeleteAPIWebhookEndpoint(c.Request.Context(), s.St.Pool, user.ID, id)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if !changed {
-		fail(c, apperr.E("webhook_not_found", "Webhook 不存在", 404))
-		return
-	}
-	respondNoContent(c)
-}
-
-func (s *Server) myWebhookDeliveries(c *gin.Context) {
-	user, err := s.requireUser(c)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	items, err := store.ListAPIWebhookDeliveries(c.Request.Context(), s.St.Pool, user.ID, 100)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	ok(c, gin.H{"items": items})
-}
-
-func (s *Server) retryMyWebhookDelivery(c *gin.Context) {
-	user, err := s.requireUser(c)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		fail(c, apperr.E("validation_error", "id: 无效", 422))
-		return
-	}
-	changed, err := store.RetryAPIWebhookDelivery(c.Request.Context(), s.St.Pool, user.ID, id, time.Now().UTC())
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if !changed {
-		fail(c, apperr.E("webhook_delivery_not_retryable", "投递记录不存在或当前无需重试", 404))
-		return
-	}
-	ok(c, gin.H{"status": "pending"})
+	ok(c, gin.H{"items": developerModelItems(cfg)})
 }

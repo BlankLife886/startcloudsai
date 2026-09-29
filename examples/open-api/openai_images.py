@@ -24,9 +24,8 @@ def arguments():
     commands.add_parser("models", help="只读取可用模型，不创建图片任务")
     for name in ("generate", "edit"):
         command = commands.add_parser(name, help="请求一张图片，会按站内价格消耗积分")
-        command.add_argument("--model", required=True, help="模型目录返回的真实 ID")
+        command.add_argument("--model", required=True, help="模型名（models 命令的输出）")
         command.add_argument("--prompt", required=True)
-        command.add_argument("--idempotency-key", required=True, help="提前保存的请求唯一编号；同一请求重试时复用")
         command.add_argument("--output", type=Path, default=Path("result.png"))
         if name == "edit":
             command.add_argument("--image", type=Path, action="append", required=True, help="本地图片；多图重复此选项")
@@ -41,25 +40,22 @@ def main():
         parser.error("请设置 STAR_CLOUD_API_KEY 和 STAR_CLOUD_BASE_URL（以 /v1 结尾）")
     location = urlparse(base_url)
     if location.path != "/v1" or not location.hostname or location.username or location.password or location.query or location.fragment:
-        parser.error("Base URL 应为 https://你的域名/v1，不能使用 /api/open/v1")
+        parser.error("Base URL 应为 https://你的域名/v1")
     if location.scheme != "https" and not (location.scheme == "http" and location.hostname in ("localhost", "127.0.0.1", "::1")):
         parser.error("远程调用必须使用 HTTPS，本机测试可用 HTTP")
     if api_key.startswith("demo_"):
         parser.error("演示 Key 不能调用真实 API；请在真实控制台创建测试 Key")
 
     if args.command != "models":
-        if not args.prompt.strip() or not args.idempotency_key.strip():
-            parser.error("提示词与幂等键不能为空")
+        if not args.prompt.strip():
+            parser.error("提示词不能为空")
         if not args.output.parent.is_dir():
             parser.error("输出目录不存在，请先创建目录")
         # Check all supported extensions before making a paid request. Never overwrite.
         if any(path.exists() for path in {args.output, *(args.output.with_suffix(ext) for ext in (".png", ".jpg", ".webp"))}):
-            parser.error("输出图片已存在，请选择新的输出名称；重复下载仍须复用原幂等键")
-        if args.command == "edit":
-            if len(args.image) > 6 or any(not path.is_file() for path in args.image):
-                parser.error("需要 1 至 6 张存在的本地图片，且不得超过模型参考图上限")
-            if sum(path.stat().st_size for path in args.image) > 32 * 1024 * 1024:
-                parser.error("参考图文件合计不能超过 32 MiB")
+            parser.error("输出图片已存在，请选择新的输出名称")
+        if args.command == "edit" and any(not path.is_file() for path in args.image):
+            parser.error("参考图文件不存在；张数以模型的参考图上限为准")
 
     try:
         from openai import APIConnectionError, APIStatusError, OpenAI
@@ -76,8 +72,7 @@ def main():
                     print("当前 Key 暂无可用图片模型，请检查模型开放状态和 Key 白名单")
                 return
 
-            print("请求编号:", args.idempotency_key, flush=True)
-            print("请求会直接转发到图片上游；重试时复用同一幂等键。", flush=True)
+            print("请求会直接转发到图片上游；失败不扣费，网关和本脚本都不会重试。", flush=True)
             payload = dict(
                 model=args.model,
                 prompt=args.prompt,
@@ -85,7 +80,6 @@ def main():
                 size="auto",
                 quality="auto",
                 response_format="b64_json",
-                extra_headers={"Idempotency-Key": args.idempotency_key},
             )
             with ExitStack() as stack:
                 if args.command == "edit":
@@ -104,11 +98,11 @@ def main():
     except APIStatusError as error:
         print("HTTP:", error.status_code)
         print(error.message)
-        if error.status_code == 504:
-            print("直连上游等待超时；不要更换幂等键盲目重试。")
+        if error.status_code in (502, 504):
+            print("上游失败或超时，本次不扣费；需要时重新运行即可。")
         parser.exit(1)
     except APIConnectionError:
-        parser.exit(1, "连接中断或超时。上游是否已生成无法确认；重试时复用原幂等键和全部参数，不要更换请求编号。\n")
+        parser.exit(1, "连接中断或超时，本次不扣费；需要时重新运行即可。\n")
     except (OSError, ValueError) as error:
         parser.exit(1, f"{error}\n")
 

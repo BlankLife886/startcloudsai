@@ -35,7 +35,7 @@
 
 外部依赖包括 `chatgpt2api`/OpenAI 兼容模型服务、Sub2API 对话服务、CRUN 图片工具、S3 兼容对象存储（部署示例使用阿里云香港 OSS）、SMTP 邮件和可选蓝鲸支付。站内创作由 Worker 异步执行，私有图片通过站内鉴权文件接口交付。一体化 Compose 额外部署 ChatGPT2API，并使用 PostgreSQL 18；根 Compose 使用 PostgreSQL 17。
 
-开发者接口有两条不同链路：`/api/open/v1/tasks` 复用站内任务、队列与文件持久化；标准 `/v1/images/generations` 和 `/v1/images/edits` 在鉴权计费后直接请求配置的 OpenAI 兼容上游，不创建站内任务，也不保存输入、输出图片。Responses 支持的子集见 [开放 API 文档](docs/OPEN_API.md)。
+开发者 API 只有 OpenAI 兼容的 `/v1`（模型、生图、编辑、Chat Completions 对话）：鉴权计费后直接请求配置的 OpenAI 兼容上游，同步返回结果，不创建站内任务，也不保存输入、输出图片。详见 [开放 API 文档](docs/OPEN_API.md)。
 
 ## Docker 本地启动
 

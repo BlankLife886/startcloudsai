@@ -10,8 +10,8 @@
 | --- | --- | --- | --- |
 | 公开/用户站内 API | `/api/v1` | 公开或 `sc_session` | 登录、用户资料、任务、助手、画布、电商、资产、支付和公共内容 |
 | 管理 API | `/api/v1/admin` | `sc_admin_session` | 运营、任务、模型、内容、财务、质量、日志和安全管理 |
-| 开放 API | `/api/open/v1` | `Authorization: Bearer sk-sc-...` | 外部系统上传文件、创建任务、查询结果和接收 Webhook |
-| OpenAI 兼容 API | `/v1` | Bearer API Key | 模型目录、标准图片直通和 Responses 子集；使用兼容响应信封 |
+| 开放 API | `/v1` | `Authorization: Bearer sk-sc-...` | OpenAI 兼容：模型、生图、编辑、Chat Completions 对话，同步返回 |
+| OpenAI 兼容 API | `/v1` | Bearer API Key | 模型目录、标准图片直通和对话直通；使用兼容响应信封 |
 | 图片技能授权 | `/oauth` | 用户授权与 PKCE | 动态客户端注册、授权码与专用 API Key 签发 |
 | 内部回调 | `/internal/c2a` | 内部回调签名/网络边界 | ChatGPT2API/C2A 向本站推送图片任务事件 |
 
@@ -36,7 +36,7 @@
 - 未知路由返回 404 `not_found`，已知路由的错误方法返回 405 `bad_request`。
 - 创建资源成功返回 `201 Created`；读取和带响应表示的更新返回 `200 OK`；无响应体的删除或更新返回 `204 No Content`。
 
-对外集成使用独立的 `/api/open/v1` 前缀和 Bearer API Key，不使用浏览器 Cookie。开放接口、权限、幂等与 Webhook 签名契约见 [StarClouds Open API](OPEN_API.md)。
+对外集成使用 OpenAI 兼容的 `/v1` 前缀和 Bearer API Key，不使用浏览器 Cookie。接口、幂等与错误码见 [StarClouds API](OPEN_API.md)。
 
 用户对象：
 
@@ -89,7 +89,7 @@
 | PATCH  | `/api/v1/me/profile`                  | 更新 `{username?,avatarUrl?,studioFigureUrl?,bio?,location?,websiteUrl?,requireCostConfirm?,assistantAutoApprove?,assistantAutoApproveBudgetCents?}`；简介上限 280 字、所在地 80 字、网站仅允许完整 http/https 地址，头像与形象图只能引用本人站内上传；用户端不支持密码 |
 | GET    | `/api/v1/me/overview`                 | 钱包、任务汇总/分类型统计、未读数和最近任务                                                                                                                                                                      |
 | GET    | `/api/v1/me/wallet`                   | `{availableCents,balanceCents,frozenCents,totalCents,...}`；`balanceCents` 是 `availableCents` 的兼容别名，禁止再次减去冻结额                                                                                   |
-| GET    | `/api/v1/me/wallet/entries`            | 当前用户账本 cursor 分页                                                                                                                                                                                         |
+| GET    | `/api/v1/me/wallet/entries`            | 当前用户账本 cursor 分页（不含开发者 API 调用，见 `/me/api-calls`）                                                                                                                                                                                         |
 | POST   | `/api/v1/me/wallet/redemptions`            | `{code}`，兑换成功返回 `{grantCents,balanceCents}`                                                                                                                                                               |
 | GET    | `/api/v1/trial-access-campaign`             | 当前唯一且未过期的体验活动，包含 `expiresAt` 与 `remainingSeconds`；无可用活动时 `campaign:null`                                                                                                                   |
 | GET    | `/api/v1/me/trial-access-application`       | 当前用户在当前启用活动中的申请；无启用活动或未申请时 `application:null`                                                                                                                                           |
@@ -130,14 +130,11 @@
 | PATCH  | `/api/v1/me/asset-groups/{id}`        | 更新 `{name?,sort?}`                                                                                                                                                                                             |
 | DELETE | `/api/v1/me/asset-groups/{id}`        | 删除分组；组内素材 `group_id` 置空                                                                                                                                                                               |
 | GET    | `/api/v1/me/api-models`               | 当前可授权给 API Key 的开放模型                                                                                                                                                                                   |
+| GET    | `/api/v1/me/api-calls`                | 本人 `/v1` 调用记录：`?page=&limit=&key=`，返回 `{items,page,pageSize,total,totalCapped}`；每项含时间、接口、模型名、Key 名称与短前缀、用量、扣费积分、状态与原因，不含内部 id |
 | GET/POST | `/api/v1/me/api-keys`               | 查询或创建 API Key；明文仅在创建响应返回一次                                                                                                                                                                      |
 | PATCH | `/api/v1/me/api-keys/{id}`             | 更新本人 Key 的可编辑配置；仍受权限、模型白名单及额度范围校验 |
 | POST | `/api/v1/me/api-keys/{id}/rotate`       | 轮换本人 Key；新明文只返回一次，旧 Key 不再可用 |
 | DELETE | `/api/v1/me/api-keys/{id}`             | 撤销当前用户的 API Key                                                                                                                                                                                            |
-| GET/POST | `/api/v1/me/webhooks`               | 查询或创建 Webhook endpoint                                                                                                                                                                                       |
-| PATCH/DELETE | `/api/v1/me/webhooks/{id}`      | 编辑、轮换 Secret 或删除 Webhook                                                                                                                                                                                   |
-| GET    | `/api/v1/me/webhook-deliveries`       | 最近 100 条 Webhook 投递记录                                                                                                                                                                                       |
-| POST   | `/api/v1/me/webhook-deliveries/{id}/retry` | 将当前用户自己的 dead 投递重新加入队列                                                                                                                                                                         |
 
 账本条目包含 `{id,kind,deltaCents,balanceAfterCents,sourceType,sourceId,reason,createdAt}`。
 
@@ -724,6 +721,8 @@ SSE 使用 `text/event-stream`。客户端收到终态后应停止重连；断�
 | GET | `/api/v1/admin/statistics` | 后台首页统计：任务、系统、文本/图片用量、利润、Agent/Open API/OSS 质量摘要。 |
 | GET | `/api/v1/admin/system/metrics` | 当前 CPU、内存、Go、数据库、Redis、队列和 Worker 运行指标。 |
 | GET | `/api/v1/admin/profitability` | `dimension=model\|provider\|route\|workspace\|user&days=7\|30`；返回周期汇总和最多 50 个维度项。 |
+| GET | `/api/v1/admin/developer-api/calls` | 全站 `/v1` 调用记录；筛选 `createdFrom`、`createdTo`（北京时间日期）、`kind=image\|chat`、`status=charged\|refunded\|pending`、`model`（模型 ID）、`user`（邮箱/用户名/ID）、`key`（Key 名称或前缀），`page`/`limit` 分页，`nextCursor` 为下一页页码。每项含计费单号、用户、Key、模型、服务商与线路、用量、实收、上游成本、错误码与原因。 |
+| GET | `/api/v1/admin/developer-api/summary` | 与调用记录同筛选的汇总：调用、扣费、退回、进行中、实收、上游成本、毛利、用户数、Key 数、调用最多的 20 个模型，以及可筛选的模型列表。 |
 | GET | `/api/v1/admin/user-analytics` | 返回全站用户生命周期、风险、价值、活跃、留存和业务使用聚合。 |
 | POST | `/api/v1/admin/users/{id}/profile/refresh` | 立即重新计算单个用户画像并返回新结果。 |
 | GET | `/api/v1/admin/tasks/{id}/timeline` | 返回任务阶段事件、创建/开始/结束时间，用于拆分排队、上游、拉取和保存耗时。 |
@@ -777,29 +776,16 @@ SSE 使用 `text/event-stream`。客户端收到终态后应停止重连；断�
 
 ## 开放 API 路由总表
 
-开放 API 是否可用同时受全局 `developer_api` 页面开关、API Key 状态、Scope、模型白名单、IP 白名单、速率和日/月额度控制。
+开放 API 只有 OpenAI 兼容的 `/v1`，是否可用同时受全局 `developer_api` 页面开关、API Key 状态、可用模型、IP 白名单、速率和日/月额度控制。Key 没有按接口划分的权限；旧任务 API `/api/open/v1/*` 与 Webhook 已于 2026-09-29 移除。
 
-| 方法 | 路径 | Scope | 说明 |
-| --- | --- | --- | --- |
-| GET | `/api/open/v1/models` | `models:read` | 返回该 Key 可用的公开模型 ID、名称、价格和能力。 |
-| GET | `/api/open/v1/usage` | `tasks:read` | 当前 Key 的调用数、提交预算和限额。 |
-| POST | `/api/open/v1/tasks/quote` | `tasks:write` | 报价，不冻结积分、不创建任务。 |
-| POST | `/api/open/v1/uploads` | `files:write` | multipart `file` 上传参考文件；返回所属 Key 用户的对象 key 和鉴权 URL。 |
-| GET | `/api/open/v1/files/*key` | `tasks:read` | 读取属于该 Key 用户的输入或任务文件。 |
-| POST | `/api/open/v1/tasks` | `tasks:write` | 创建图片任务；支持 `Idempotency-Key` Header，复用站内计费、并发和队列。 |
-| GET | `/api/open/v1/tasks/{id}` | `tasks:read` | 查询属于该 Key 用户的任务、真实失败信息和输出 URL。 |
-
-Open API 不接受浏览器 Cookie 代替 Bearer Key。Key 明文只在创建/轮换响应出现；数据库只保存哈希。完整请求、错误码、Webhook 事件和验签示例见 [OPEN_API.md](OPEN_API.md)。
-
-| 方法 | OpenAI 兼容路径 | 说明 |
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/v1/models`、`/v1/models/{model}` | `models:read`，当前 Key 可用的公开图片/对话模型名称。 |
-| POST | `/v1/images/generations` | `tasks:write`，标准图片直通，不创建站内任务或保存图片。 |
-| POST | `/v1/images/edits` | `tasks:write` 加 `files:write`，multipart 直通编辑。 |
-| POST | `/v1/responses` | `tasks:write`，对话/图片工具兼容子集，支持对应 SSE 流。 |
-| GET | `/v1/responses` | Responses WebSocket 入口，升级连接时校验凭据。 |
+| GET | `/v1/models`、`/v1/models/{model}` | 当前 Key 可用的图片/对话模型，`id` 即模型名。 |
+| POST | `/v1/images/generations` | 标准图片直通，不创建站内任务或保存图片。 |
+| POST | `/v1/images/edits` | multipart 直通编辑。 |
+| POST | `/v1/chat/completions` | 对话直通：原样转发给上游，只替换模型名，支持 SSE。 |
 
-标准图片直通不占站内任务队列/执行槽，仍校验 Key 配额、模型价格和钱包。没有 task ID、站内结果恢复或任务 Webhook；请求超时的处理见 [开放 API](OPEN_API.md)。另外注册 `GET /.well-known/oauth-authorization-server`、`POST /oauth/register`、`GET/POST /oauth/authorize`、`POST /oauth/token`，用于图片技能 OAuth 2.0/PKCE 授权；不是用户第三方登录。
+`/v1` 不接受浏览器 Cookie 代替 Bearer Key。Key 明文只在创建/轮换响应出现；数据库只保存哈希。标准直通不占站内任务队列/执行槽，仍校验 Key 配额、模型价格和钱包；请求超时与幂等重试见 [OPEN_API.md](OPEN_API.md)。另外注册 `GET /.well-known/oauth-authorization-server`、`POST /oauth/register`、`GET/POST /oauth/authorize`、`POST /oauth/token`，用于图片技能 OAuth 2.0/PKCE 授权；不是用户第三方登录。
 
 ## 内部回调
 

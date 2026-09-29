@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Restrict the compatibility envelope to its own namespace. The existing
-// /api/open/v1 contract and all application routes keep their original shape.
+// Restrict the OpenAI error envelope to the developer API namespace; all
+// application routes keep their original shape.
 func isOpenAICompatPath(path string) bool {
 	return path == "/v1" || strings.HasPrefix(path, "/v1/")
 }
@@ -38,10 +38,9 @@ func openAICompatRequestMiddleware(c *gin.Context) {
 		// Request IDs are part of the public API even when platform logging is off.
 		ensureOpenAIRequestID(c)
 		if c.Request.Method == http.MethodPost &&
-			(c.Request.URL.Path == "/v1/images/generations" || c.Request.URL.Path == "/v1/images/edits" || c.Request.URL.Path == "/v1/responses") &&
-			strings.TrimSpace(c.GetHeader("Idempotency-Key")) == "" {
-			// A client cannot safely replay a paid POST using an ID generated
-			// only in the previous response. OpenAI SDKs honor this retry hint.
+			(c.Request.URL.Path == "/v1/images/generations" || c.Request.URL.Path == "/v1/images/edits" || c.Request.URL.Path == "/v1/chat/completions") {
+			// Paid requests are never retried: a failure is final and released,
+			// and a blind SDK retry would start a second paid request.
 			c.Header("X-Should-Retry", "false")
 		}
 	}
@@ -66,6 +65,15 @@ func openAIErrorType(status int) string {
 // failOpenAI writes the error object expected by OpenAI-compatible clients.
 // An empty param is serialized as null; handlers can identify a rejected input
 // with failOpenAI(c, err, "model") without changing shared business errors.
+// openAIExplainedServerErrors are 5xx codes whose messages the developer API
+// writes itself (see developerUpstreamError) and that are safe to show.
+var openAIExplainedServerErrors = map[string]bool{
+	"upstream_error": true, "upstream_unreachable": true, "upstream_misconfigured": true,
+	"request_timeout": true, "provider_misconfigured": true, "image_result_unavailable": true,
+	"model_zero_price_blocked": true, "model_price_inverted": true, "security_limit_unavailable": true,
+	"billing_settlement_failed": true, "open_api_disabled": true, "developer_api_disabled": true,
+}
+
 func failOpenAI(c *gin.Context, err error, param string) {
 	if errors.Is(err, context.Canceled) ||
 		(c.Request != nil && errors.Is(c.Request.Context().Err(), context.Canceled)) {
@@ -79,7 +87,7 @@ func failOpenAI(c *gin.Context, err error, param string) {
 	case errors.As(err, &tooLarge):
 		status, code, message = http.StatusRequestEntityTooLarge, "request_too_large", "请求体超过允许的大小"
 	case errors.Is(err, context.DeadlineExceeded):
-		status, code, message = http.StatusGatewayTimeout, "request_timeout", "请求处理超时，请使用同一 Idempotency-Key 重试"
+		status, code, message = http.StatusGatewayTimeout, "request_timeout", "请求处理超时，本次请求不扣费"
 	default:
 		if appErr, ok := apperr.As(err); ok {
 			status, code, message = appErr.Status, appErr.Code, appErr.Message
@@ -93,11 +101,13 @@ func failOpenAI(c *gin.Context, err error, param string) {
 		}
 	}
 	if status >= http.StatusInternalServerError {
-		// Never expose database, provider response bodies, URLs, or credentials.
-		message = "服务器暂时无法处理请求，请稍后重试"
-		if code == "image_generation_timeout" {
-			message = "图片任务仍在处理，请用同一 Idempotency-Key 重试，任务 ID 见 X-Task-ID"
+		// Only the developer API's own server-side errors explain themselves;
+		// shared code may build messages from provider or database text, so
+		// everything else is generic. The request ID locates the logged cause.
+		if !openAIExplainedServerErrors[code] {
+			message = "服务器内部错误"
 		}
+		message += "（请求 ID：" + c.GetString(ctxRequestIDKey) + "）"
 		log.Printf("OpenAI-compatible request failed request_id=%s status=%d code=%s", c.GetString(ctxRequestIDKey), status, code)
 	}
 	var field any

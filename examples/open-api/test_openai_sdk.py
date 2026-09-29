@@ -110,13 +110,11 @@ class OpenAIImagesSDKContractTest(unittest.TestCase):
             size="auto",
             quality="auto",
             response_format="b64_json",
-            extra_headers={"Idempotency-Key": "sdk-generation-001"},
         )
         request = self.requests[0]
         self.assertEqual(request.method, "POST")
         self.assertEqual(request.url.path, "/v1/images/generations")
         self.assertEqual(request.headers["content-type"], "application/json")
-        self.assertEqual(request.headers["idempotency-key"], "sdk-generation-001")
         self.assertEqual(json.loads(request.content), {
             "model": MODEL_ID,
             "prompt": "窗边的橘猫",
@@ -135,11 +133,9 @@ class OpenAIImagesSDKContractTest(unittest.TestCase):
             model=MODEL_ID,
             prompt="raw response test",
             response_format="b64_json",
-            extra_headers={"Idempotency-Key": "sdk-raw-001"},
         )
         self.assertEqual(raw.status_code, 200)
         self.assertEqual(raw.parse().data[0].b64_json, PNG_B64)
-        self.assertEqual(self.requests[0].headers["idempotency-key"], "sdk-raw-001")
 
     def assert_edit_fields(self, request, parts):
         self.assertEqual(request.method, "POST")
@@ -164,7 +160,6 @@ class OpenAIImagesSDKContractTest(unittest.TestCase):
             size="auto",
             quality="auto",
             response_format="b64_json",
-            extra_headers={"Idempotency-Key": "sdk-edit-001"},
         )
 
     def test_edit_single_image_uses_the_image_multipart_field(self):
@@ -191,7 +186,6 @@ class OpenAIImagesSDKContractTest(unittest.TestCase):
         self.assertEqual([part["name"] for part in files], ["image[]", "image[]"])
         self.assertEqual([part["filename"] for part in files], ["front.png", "side.png"])
         self.assertTrue(all(part["content_type"] == "image/png" and part["data"] == PNG for part in files))
-        self.assertEqual(request.headers["idempotency-key"], "sdk-edit-001")
 
     def test_400_error_envelope_maps_to_sdk_error_fields(self):
         error_body = {"error": {
@@ -227,7 +221,6 @@ class OpenAIImagesSDKContractTest(unittest.TestCase):
             client.images.generate(
                 model=MODEL_ID,
                 prompt="test",
-                extra_headers={"Idempotency-Key": "sdk-failure-001"},
             )
         self.assertEqual(client.max_retries, 2)
         self.assertEqual(len(self.requests), 1, "SDK must not retry when the gateway says not to retry")

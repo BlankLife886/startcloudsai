@@ -2,8 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"context"
-	"encoding/base64"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -11,12 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
-	"github.com/BlankLife886/startcloudsai/server/internal/store"
-	"github.com/google/uuid"
 )
 
 func imageRequestForTest(body string) *http.Request {
@@ -115,21 +109,20 @@ func TestOpenAIImageMultipartContract(t *testing.T) {
 		name   string
 		fields [][2]string
 		files  []string
-		max    int64
 		param  string
 	}{
-		{"SDK single image", base, []string{"image"}, 1024, ""},
-		{"SDK image array", base, []string{"image[]", "image[]"}, 1024, ""},
-		{"mask must not be ignored", base, []string{"image", "mask"}, 1024, "mask"},
-		{"URL is not upload", append(base, [2]string{"image", "https://example.com/image.png"}), nil, 1024, "image"},
-		{"no image", base, nil, 1024, "image"},
-		{"model duplicated", append(base, [2]string{"model", "another-model"}), []string{"image"}, 1024, "model"},
-		{"per image size bound", base, []string{"image"}, 4, "image"},
-		{"reference count bound", base, repeatedImageFields(maxTaskInputImages + 1), 1024, "image"},
-		{"count fractional", append(base, [2]string{"n", "1.5"}), []string{"image"}, 1024, "n"},
+		{"SDK single image", base, []string{"image"}, ""},
+		{"SDK image array", base, []string{"image[]", "image[]"}, ""},
+		// The count is the model's reference-image limit, checked with the model.
+		{"no fixed image count", base, repeatedImageFields(maxTaskInputImages + 1), ""},
+		{"mask must not be ignored", base, []string{"image", "mask"}, "mask"},
+		{"URL is not upload", append(base, [2]string{"image", "https://example.com/image.png"}), nil, "image"},
+		{"no image", base, nil, "image"},
+		{"model duplicated", append(base, [2]string{"model", "another-model"}), []string{"image"}, "model"},
+		{"count fractional", append(base, [2]string{"n", "1.5"}), []string{"image"}, "n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, files, err := decodeOpenAIImageMultipart(multipartImageRequestForTest(t, tt.fields, tt.files), tt.max)
+			_, files, err := decodeOpenAIImageMultipart(multipartImageRequestForTest(t, tt.fields, tt.files))
 			if tt.param == "" {
 				if err != nil || len(files) != len(tt.files) {
 					t.Fatalf("files=%d err=%v", len(files), err)
@@ -171,6 +164,19 @@ func TestOpenAIImageCapabilityMapping(t *testing.T) {
 			r.Background = "transparent"
 			m.TransparentBackground = false
 		}, 1},
+		{"format outside declared list", "output_format", func(r *openAIImageRequest, m *modelconfig.Model) {
+			r.OutputFormat = "webp"
+			m.OutputFormats = []string{"png", "jpeg"}
+		}, 0},
+		{"format selector off uses native format", "", func(r *openAIImageRequest, m *modelconfig.Model) {
+			r.OutputFormat = "png"
+			m.OutputFormats = []string{}
+		}, 0},
+		{"format selector off ignores jpeg for transparency", "", func(r *openAIImageRequest, m *modelconfig.Model) {
+			r.Background = "transparent"
+			r.OutputFormat = "jpeg"
+			m.OutputFormats = []string{}
+		}, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			request, candidate := base, model
@@ -186,6 +192,11 @@ func TestOpenAIImageCapabilityMapping(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if len(candidate.OutputFormats) == 0 {
+				if _, ok := params["outputFormat"]; ok {
+					t.Fatalf("format forwarded for a model without a format selector: %#v", params)
+				}
+			}
 			if request.Size == "auto" {
 				if _, ok := params["exactWidth"]; ok {
 					t.Fatal("native size was changed")
@@ -195,95 +206,5 @@ func TestOpenAIImageCapabilityMapping(t *testing.T) {
 				t.Fatalf("exact mapping changed: %#v", params)
 			}
 		})
-	}
-}
-
-func TestOpenAIImageWaitUsesTerminalState(t *testing.T) {
-	taskID, userID := uuid.New(), uuid.New()
-	states := []store.Task{{ID: taskID, UserID: userID, Status: "running", OutputKeys: []string{"partial"}}, {ID: taskID, UserID: userID, Status: "succeeded", Count: 2, OutputKeys: []string{"partial"}}}
-	reads := 0
-	result, err := waitOpenAIImageTask(context.Background(), &store.Task{ID: taskID, Status: "queued"}, time.Millisecond, func(context.Context) (*store.Task, error) { item := states[reads]; reads++; return &item, nil })
-	if err != nil || reads != 2 || result.Status != "succeeded" || len(result.OutputKeys) != 1 {
-		t.Fatalf("returned before terminal delivery: %+v reads=%d err=%v", result, reads, err)
-	}
-	for _, status := range []string{"failed", "canceled"} {
-		_, err := waitOpenAIImageTask(context.Background(), &store.Task{Status: status, OutputKeys: []string{"partial"}}, time.Millisecond, nil)
-		if err == nil {
-			t.Errorf("%s was returned as success", status)
-		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-	defer cancel()
-	_, err = waitOpenAIImageTask(ctx, &store.Task{Status: "running"}, time.Second, func(context.Context) (*store.Task, error) { t.Fatal("read after cancellation"); return nil, nil })
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("deadline lost: %v", err)
-	}
-}
-
-func TestOpenAIImageResultsUseOwnedOriginals(t *testing.T) {
-	task := &store.Task{ID: uuid.New(), UserID: uuid.New(), Status: "succeeded", Count: 2, CreatedAt: time.Unix(1786406400, 0)}
-	original := "tasks/" + task.UserID.String() + "/" + task.ID.String() + "/original/0.png"
-	task.OutputKeys = []string{original}
-	task.ThumbnailKeys = []string{"thumbnail-must-not-be-returned"}
-	// A supported PNG header suffices for this delivery contract; full image validation belongs to uploads/worker.
-	data := []byte{137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13}
-	read := func(_ context.Context, key string, _ int64) ([]byte, error) {
-		if key != original {
-			t.Fatalf("read unexpected key %q", key)
-		}
-		return data, nil
-	}
-	result, err := openAIImageResult(context.Background(), task, "b64_json", read, nil)
-	if err != nil || len(result.Data) != 1 || result.Data[0].B64JSON != base64.StdEncoding.EncodeToString(data) || result.Created != task.CreatedAt.Unix() {
-		t.Fatalf("wrong original response: %+v %v", result, err)
-	}
-	result, err = openAIImageResult(context.Background(), task, "url", nil, func(_ context.Context, key string) (string, error) {
-		if key != original {
-			t.Fatal(key)
-		}
-		return "https://storage.example.com/object?signed=short-lived", nil
-	})
-	if err != nil || result.Data[0].URL == "" || result.Data[0].B64JSON != "" {
-		t.Fatalf("signed delivery: %+v %v", result, err)
-	}
-	task.OutputKeys = []string{"tasks/" + uuid.NewString() + "/" + task.ID.String() + "/0.png"}
-	_, err = openAIImageResult(context.Background(), task, "b64_json", read, nil)
-	if err == nil {
-		t.Fatal("another user's file was exposed")
-	}
-	task.OutputKeys = []string{original}
-	_, err = openAIImageResult(context.Background(), task, "b64_json", func(context.Context, string, int64) ([]byte, error) { return []byte("<html>failure</html>"), nil }, nil)
-	if err == nil {
-		t.Fatal("non-image data was returned as an image")
-	}
-}
-
-func TestOpenAIImageIdempotencyFingerprint(t *testing.T) {
-	request, _ := normalizeOpenAIImageRequest(openAIImageRequest{Model: "image", Prompt: "cat"})
-	hash := openAIImageFingerprint(request, true, []string{"image-sha"})
-	request.ResponseFormat = "url"
-	if hash != openAIImageFingerprint(request, true, []string{"image-sha"}) {
-		t.Fatal("delivery format would cause a duplicate paid task")
-	}
-	if hash == openAIImageFingerprint(request, true, []string{"different-image-sha"}) {
-		t.Fatal("image changes escaped conflict detection")
-	}
-	if hash == openAIImageFingerprint(request, false, []string{"image-sha"}) {
-		t.Fatal("operation changes escaped conflict detection")
-	}
-	keyID := uuid.New()
-	input := openAIImageTaskInput(request, map[string]any{"modelId": "image", "_source": "open_api"}, nil, keyID, "client-request-1", hash)
-	other := openAIImageTaskInput(request, input.Params, nil, uuid.New(), "client-request-1", hash)
-	if *input.IdempotencyKey == *other.IdempotencyKey || len(*input.IdempotencyKey) > 128 {
-		t.Fatal("API Key idempotency namespace is not isolated")
-	}
-	task := &store.Task{Params: input.TrustedParams}
-	if err := checkOpenAIImageReplay(task, keyID, hash); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkOpenAIImageReplay(task, keyID, "changed"); err == nil {
-		t.Fatal("mismatched replay accepted")
-	} else if app, ok := apperr.As(err); !ok || app.Status != 409 {
-		t.Fatal(err)
 	}
 }

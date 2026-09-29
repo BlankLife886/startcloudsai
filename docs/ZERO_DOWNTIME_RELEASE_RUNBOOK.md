@@ -590,7 +590,7 @@ echo "PUBLIC TRAFFIC -> 8081: OK"
 
 Nginx reload 会让旧 worker 进程继续处理已有连接，新请求进入 `8081`。
 
-外层代理还需要转发 `/v1/responses` 的 WebSocket Upgrade，SSE 保持关闭缓冲；当前配置示例见 [部署手册](DEPLOYMENT.md)。
+`/v1/chat/completions` 的流式输出是 SSE，外层代理需保持关闭缓冲；当前配置示例见 [部署手册](DEPLOYMENT.md)。
 
 ## 13. 候选环境业务验收
 

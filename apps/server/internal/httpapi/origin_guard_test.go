@@ -78,3 +78,29 @@ func TestOriginGuardAcceptsAPIOrigin(t *testing.T) {
 		})
 	}
 }
+
+func TestOriginGuardSkipsDeveloperAPI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	server := &Server{Cfg: &config.Config{AllowedOrigins: "http://127.0.0.1:3105"}}
+	engine := gin.New()
+	engine.Use(server.originGuard)
+	for _, path := range []string{"/v1/images/generations", "/api/v1/tasks", "/v1x"} {
+		engine.POST(path, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	}
+
+	for path, want := range map[string]int{
+		"/v1/images/generations": http.StatusNoContent,
+		"/api/v1/tasks":          http.StatusForbidden,
+		"/v1x":                   http.StatusForbidden,
+	} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, path, nil)
+			request.Header.Set("Origin", "http://localhost:5173")
+			response := httptest.NewRecorder()
+			engine.ServeHTTP(response, request)
+			if response.Code != want {
+				t.Fatalf("cross-origin POST %s returned %d, want %d: %s", path, response.Code, want, response.Body.String())
+			}
+		})
+	}
+}

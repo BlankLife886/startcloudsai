@@ -1,6 +1,6 @@
 # 图片目录、上传、存储与下载全链路
 
-核对日期：2026-09-22。下文运行时图片持久化主要指站内任务、助手和上传接口，以及 `/api/open/v1/tasks`。标准 `/v1/images/*` 和 Responses 图片直通不会在本站保存输入/输出对象，返回上游 Base64 或 URL，由调用方保存；没有站内任务文件或 Webhook。Bucket、存储厂商和本地 MinIO 可用性以目标环境配置为准，文中路径/部署示例不代表本轮实测。
+核对日期：2026-09-22。下文运行时图片持久化主要指站内任务、助手和上传接口。标准 `/v1/images/*` 直通不会在本站保存输入/输出对象，返回上游 Base64 或 URL，由调用方保存；没有站内任务文件或 Webhook。Bucket、存储厂商和本地 MinIO 可用性以目标环境配置为准，文中路径/部署示例不代表本轮实测。
 
 本文按当前代码说明 StarCloudsAI 中图片放在哪里、从哪里上传、从哪里下载、数据库记录什么，以及删除后如何清理。本文同时区分：
 
@@ -81,7 +81,6 @@ uploads/用户ID/original/文件ID.png
 入口：
 
 - 用户端：`POST /api/v1/uploads`
-- 开放 API：`POST /api/open/v1/uploads`
 - 表单字段：`file`
 - 单文件上限：15 MB
 - 图片格式：PNG、JPEG、WebP
@@ -261,12 +260,6 @@ canvas-template-assets/{templateId}/{contentHash}.{ext}
 
 ```text
 GET /api/v1/files/{objectKey}
-```
-
-开放 API 访问：
-
-```text
-GET /api/open/v1/files/{objectKey}
 ```
 
 管理后台访问：

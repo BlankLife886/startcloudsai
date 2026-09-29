@@ -7,7 +7,7 @@
 | 组件 | 技术 | 职责 |
 | --- | --- | --- |
 | `apps/web-react` | React 19、Vite、Zustand、React Router | 桌面 Web 创作、社区、技能、素材、账户和开发者控制台；`src/canvas` 内置无限画布 |
-| `apps/admin` | Vue 3、TypeScript、Pinia、Element Plus | 任务、用户、内容、模型、账务、成本利润、Agent 质量、日志和安全运营 |
+| `apps/admin` | Vue 3、TypeScript、Pinia、Element Plus | 任务、用户、内容、模型、账务（财务中心含创作成本）、开发者 API、Agent 质量、日志和安全运营 |
 | `apps/mobile` | Flutter、Riverpod、Dio、GoRouter | 独立移动客户端；复用站内 API，独立构建和商店发布 |
 | Go API | Gin、pgx | 鉴权、业务事务、模型路由、文件交付、实时事件和队列投递 |
 | Go Worker | Asynq | 图片、聊天/Agent、附件、异步轮询与后台维护 |
@@ -42,11 +42,11 @@ API 与 Worker 使用同一份 Go 源码，可分别构建镜像。`cmd/server/m
 
 | 入口 | 执行方式 | 结果与计费 |
 | --- | --- | --- |
-| `/api/v1/tasks`、`/api/open/v1/tasks` | 创建站内任务，经 Asynq、Worker 和模型线路调度 | 保存产物与缩略图；钱包冻结、结算或释放 |
+| `/api/v1/tasks` | 创建站内任务，经 Asynq、Worker 和模型线路调度 | 保存产物与缩略图；钱包冻结、结算或释放 |
 | `/api/v1/assistant/runs` | 保存对话/run，经聊天、Agent 或图片执行链；支持工具与附件 | 消息和产物持久化；独立助手计费及取消规则 |
 | `/v1/images/generations`、`/v1/images/edits` | API 校验后直连配置的 OpenAI 兼容上游 | 不创建站内任务、不进站内队列、不保存图片；仍受鉴权、计费、限流及幂等记录约束 |
 
-`/v1/responses` 提供对话流式及图片工具子集，另有 WebSocket 入口。不能把它理解为完整 OpenAI 协议，也不能将 Images 直通的“不存图”推广到所有 Responses 路径；详见 [开放 API](OPEN_API.md)。
+`/v1/chat/completions` 把对话请求原样转发给配置的 OpenAI 兼容上游（只替换模型名），同样不创建站内任务；详见 [开放 API](OPEN_API.md)。
 
 旧 `/api/v1/assistant/chat`、`/api/v1/assistant/images` 免费直连入口已停止注册。站内助手不再是“登录即可无限免费代理”。
 

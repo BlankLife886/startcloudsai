@@ -1,6 +1,7 @@
 package c2a
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -223,7 +224,7 @@ func TestGenerateImagesStandardPreservesURLResponse(t *testing.T) {
 	defer server.Close()
 
 	client := NewWithPolicy(server.URL, "test-key", 30, true).WithStandardImages()
-	response, err := client.GenerateImagesStandard(context.Background(), "url-request", "draw a cat", "gpt-image-2", 1, "", ImageOptions{ResponseFormat: "url", User: "client-user"})
+	response, err := client.GenerateImagesStandard(context.Background(), "draw a cat", "gpt-image-2", 1, "", ImageOptions{ResponseFormat: "url", User: "client-user"})
 	if err != nil || response.Created != 123 || len(response.Data) != 1 || response.Data[0].URL != "https://cdn.example.test/image.png" {
 		t.Fatalf("response=%#v err=%v", response, err)
 	}
@@ -261,25 +262,57 @@ func TestStandardImagesUsePublicEditContract(t *testing.T) {
 	}
 }
 
-func TestEditImagesStandardPreservesURLResponse(t *testing.T) {
+func TestEditImagesStandardStreamSendsEveryImageAndKeepsURLResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/edits" {
+			t.Fatalf("path = %q, want /v1/images/edits", r.URL.Path)
+		}
+		if got := r.Header.Get("Idempotency-Key"); got != "" {
+			t.Errorf("Idempotency-Key = %q, want omitted", got)
+		}
 		if err := r.ParseMultipartForm(8 << 20); err != nil {
 			t.Fatal(err)
 		}
-		values := r.MultipartForm.Value["response_format"]
-		if len(values) != 1 || values[0] != "url" {
+		if values := r.MultipartForm.Value["response_format"]; len(values) != 1 || values[0] != "url" {
 			t.Fatalf("response_format = %#v, want one url field", values)
+		}
+		files := r.MultipartForm.File["image[]"]
+		if len(files) != 2 {
+			t.Fatalf("image[] files = %d, want 2", len(files))
+		}
+		for _, file := range files {
+			reader, _ := file.Open()
+			data, _ := io.ReadAll(reader)
+			reader.Close()
+			if !bytes.Equal(data, png1x1()) || file.Header.Get("Content-Type") != "image/png" {
+				t.Fatalf("streamed image %q changed: %d bytes, type %q", file.Filename, len(data), file.Header.Get("Content-Type"))
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"url":"https://cdn.example.test/edited.png"}]}`))
 	}))
 	defer server.Close()
 
+	open := func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(png1x1())), nil }
+	images := []StreamImage{{ContentType: "image/png", Open: open}, {ContentType: "image/png", Open: open}}
 	client := NewWithPolicy(server.URL, "test-key", 30, true).WithStandardImages()
-	response, err := client.EditImagesStandard(context.Background(), "url-edit", "refine", "gpt-image-2", 1,
-		[]string{base64.StdEncoding.EncodeToString(png1x1())}, "", ImageOptions{ResponseFormat: "url"})
+	response, err := client.EditImagesStandardStream(context.Background(), "refine", "gpt-image-2", 1, images, "", ImageOptions{ResponseFormat: "url"})
 	if err != nil || len(response.Data) != 1 || response.Data[0].URL != "https://cdn.example.test/edited.png" {
 		t.Fatalf("response=%#v err=%v", response, err)
+	}
+}
+
+func TestEditImagesStandardStreamSurfacesSourceErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	failing := []StreamImage{{ContentType: "image/png", Open: func() (io.ReadCloser, error) { return nil, errors.New("spool file gone") }}}
+	client := NewWithPolicy(server.URL, "test-key", 30, true).WithStandardImages()
+	if _, err := client.EditImagesStandardStream(context.Background(), "refine", "gpt-image-2", 1, failing, "", ImageOptions{}); err == nil {
+		t.Fatal("a reference image that cannot be read must fail the request")
 	}
 }
 

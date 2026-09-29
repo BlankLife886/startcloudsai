@@ -84,18 +84,23 @@ export default defineConfig({
         timeout: 300_000,
         proxyTimeout: 300_000,
         configure(proxy) {
-          proxy.on("error", (_error, _request, response) => {
+          proxy.on("error", (error, _request, response) => {
             if (typeof response.writeHead !== "function" || response.headersSent || response.writableEnded) return;
+            const target = process.env.VITE_API_PROXY_TARGET || "http://localhost:8000";
+            // Nothing reached the API, so a retry is safe once it is back up.
+            const unreachable = ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH"].includes(error?.code);
             response.writeHead(502, {
               "Content-Type": "application/json",
               "X-Request-ID": randomUUID(),
-              "X-Should-Retry": "false",
+              "X-Should-Retry": unreachable ? "true" : "false",
             });
             response.end(JSON.stringify({ error: {
-              message: "图片服务暂时不可用；如需重试，请使用同一 Idempotency-Key",
+              message: unreachable
+                ? `开发代理无法连接本地 API（${target}），请确认后端 serve 已启动`
+                : `开发代理与本地 API 的连接中断（${error?.code || "unknown"}），本次不扣费`,
               type: "server_error",
               param: null,
-              code: "bad_gateway",
+              code: unreachable ? "api_unreachable" : "bad_gateway",
             } }));
           });
         },

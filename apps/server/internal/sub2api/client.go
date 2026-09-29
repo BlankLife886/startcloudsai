@@ -39,11 +39,13 @@ type Client struct {
 	httpClient        *http.Client
 	webSearchHTTP     *http.Client
 	visionHTTP        *http.Client
+	passthroughHTTP   *http.Client
 	webSearchModel    string
 	streamIdleTimeout time.Duration
 	maxOutputTokens   int
 	parallelToolCalls bool
 	suppressReasoning bool
+	noRetry           bool
 }
 
 // WithoutReasoning 用于意图判定这类只需要一两个词的内部调用。让模型为一个单词的输出
@@ -57,6 +59,24 @@ func (c *Client) WithoutReasoning() *Client {
 	clone.reasoningEffort = ""
 	clone.suppressReasoning = true
 	return &clone
+}
+
+// WithoutRetry 让对话请求失败就直接返回，不再对“还没收到任何输出”的瞬时错误重发一次。
+// 开发者 API 按“失败就是失败”计费：失败不扣费，由调用方自己决定要不要发新请求。
+func (c *Client) WithoutRetry() *Client {
+	if c == nil {
+		return nil
+	}
+	clone := *c
+	clone.noRetry = true
+	return &clone
+}
+
+func (c *Client) chatAttempts() int {
+	if c.noRetry {
+		return 1
+	}
+	return chatStreamAttempts
 }
 
 // WithParallelToolCalls 允许上游在一轮里返回多个工具调用。默认关闭：调用方必须自己
@@ -225,6 +245,11 @@ func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Clien
 	// 带参考图的对话要等上游下载/编码完所有图片才开始流式返回，多图时首包常超过 30 秒。
 	visionTransport := transport.Clone()
 	visionTransport.ResponseHeaderTimeout = min(timeout, visionResponseHeaderTimeout)
+	// A non-streamed completion only sends headers once the whole answer exists,
+	// so the passthrough waits up to the provider timeout for them. The caller's
+	// context bounds the request as a whole.
+	passthroughTransport := transport.Clone()
+	passthroughTransport.ResponseHeaderTimeout = timeout
 	return &Client{
 		baseURL:           baseURL,
 		apiKey:            strings.TrimSpace(apiKey),
@@ -233,6 +258,7 @@ func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Clien
 		httpClient:        &http.Client{Timeout: timeout, Transport: transport},
 		webSearchHTTP:     &http.Client{Timeout: min(timeout, 90*time.Second), Transport: webSearchTransport},
 		visionHTTP:        &http.Client{Timeout: timeout, Transport: visionTransport},
+		passthroughHTTP:   &http.Client{Transport: passthroughTransport},
 		webSearchModel:    "gpt-5-search-api",
 		streamIdleTimeout: idleTimeout,
 	}, nil
@@ -684,13 +710,13 @@ func (c *Client) ChatTextWithImages(ctx context.Context, messages []Message, ima
 
 func (c *Client) CompleteChatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onUpdate func(text, reasoning string) error) (ChatCompletion, error) {
 	var lastErr error
-	for attempt := 0; attempt < chatStreamAttempts; attempt++ {
+	for attempt := 0; attempt < c.chatAttempts(); attempt++ {
 		result, receivedOutput, err := c.chatTextWithImages(ctx, messages, imageURLs, onUpdate)
 		if err == nil {
 			return result, nil
 		}
 		lastErr = err
-		if receivedOutput || !transientChatError(ctx, err) || attempt == chatStreamAttempts-1 {
+		if receivedOutput || !transientChatError(ctx, err) || attempt == c.chatAttempts()-1 {
 			return result, err
 		}
 		timer := time.NewTimer(chatStreamRetryDelay)
@@ -864,13 +890,13 @@ func (c *Client) ChatAgentWithTools(
 		}
 	}
 	var lastErr error
-	for attempt := 0; attempt < chatStreamAttempts; attempt++ {
+	for attempt := 0; attempt < c.chatAttempts(); attempt++ {
 		result, receivedOutput, err := c.chatAgentWithPayload(ctx, payload, onUpdate)
 		if err == nil {
 			return result, nil
 		}
 		lastErr = err
-		if receivedOutput || !transientChatError(ctx, err) || attempt == chatStreamAttempts-1 {
+		if receivedOutput || !transientChatError(ctx, err) || attempt == c.chatAttempts()-1 {
 			return result, err
 		}
 		timer := time.NewTimer(chatStreamRetryDelay)
@@ -1636,6 +1662,32 @@ func (c *Client) chatStreamWithPayload(ctx context.Context, payload map[string]a
 	}
 	streamClient.Timeout = 0
 	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		return nil, decodeUpstreamError(resp)
+	}
+	return resp, nil
+}
+
+// PostChatCompletions forwards an already-prepared /v1/chat/completions body
+// to the upstream and hands the successful response back for relaying,
+// streamed or not. A non-2xx upstream response is returned as *UpstreamError.
+func (c *Client) PostChatCompletions(ctx context.Context, body []byte) (*http.Response, error) {
+	if !c.Configured() {
+		return nil, errors.New("Sub2API API key is not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	c.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream, application/json")
+	req.Header.Set("User-Agent", "StarCloudsAI/1.0")
+	resp, err := c.passthroughHTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}

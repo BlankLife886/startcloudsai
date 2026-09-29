@@ -1,8 +1,8 @@
 # HTTP 路由清单
 
-核对日期：2026-09-22。由当前工作区 [router.go](../apps/server/internal/httpapi/router.go) 中实际启用的路由注册整理，共 366 条方法/路径组合；不含已注释端点、NoRoute/NoMethod 或前端 SPA 路由。接口请求体、业务状态和示例见 [API 契约](API_CONTRACT.md)，开放模型接口见 [OPEN_API.md](OPEN_API.md)。
+核对日期：2026-09-22（2026-09-29 移除旧任务 API 与 Webhook 路由）。由当前工作区 [router.go](../apps/server/internal/httpapi/router.go) 中实际启用的路由注册整理，共 352 条方法/路径组合；不含已注释端点、NoRoute/NoMethod 或前端 SPA 路由。接口请求体、业务状态和示例见 [API 契约](API_CONTRACT.md)，开放模型接口见 [OPEN_API.md](OPEN_API.md)。
 
-表中保留 Gin 的 `:id` 和 `*key` 参数语法。注册表达式展示直接包装器，不等于完整权限契约：Server 全局中间件、组级审计以及 handler 内的鉴权、页面开关、账户/模型权限和额度检查仍生效。接口注册不代表线上可用。`/internal/` 被公网网关拒绝，图片技能 OAuth 不是用户第三方登录，`/v1/responses` 的 GET 为 WebSocket 入口。
+表中保留 Gin 的 `:id` 和 `*key` 参数语法。注册表达式展示直接包装器，不等于完整权限契约：Server 全局中间件、组级审计以及 handler 内的鉴权、页面开关、账户/模型权限和额度检查仍生效。接口注册不代表线上可用。`/internal/` 被公网网关拒绝，图片技能 OAuth 不是用户第三方登录，
 
 每次修改 `Router()` 应同时更新本清单；计数仅用于核对当前源码快照，不代表这些接口本轮全部通过了请求测试。
 
@@ -84,12 +84,7 @@
 | POST | `/api/v1/me/api-keys/:id/rotate` | `s.developerAPIOnly(s.rotateMyAPIKey)` |
 | DELETE | `/api/v1/me/api-keys/:id` | `s.developerAPIOnly(s.revokeMyAPIKey)` |
 | GET | `/api/v1/me/api-models` | `s.developerAPIOnly(s.myOpenAPIModels)` |
-| GET | `/api/v1/me/webhooks` | `s.developerAPIOnly(s.myWebhooks)` |
-| POST | `/api/v1/me/webhooks` | `s.developerAPIOnly(s.createMyWebhook)` |
-| PATCH | `/api/v1/me/webhooks/:id` | `s.developerAPIOnly(s.patchMyWebhook)` |
-| DELETE | `/api/v1/me/webhooks/:id` | `s.developerAPIOnly(s.deleteMyWebhook)` |
-| GET | `/api/v1/me/webhook-deliveries` | `s.developerAPIOnly(s.myWebhookDeliveries)` |
-| POST | `/api/v1/me/webhook-deliveries/:id/retry` | `s.developerAPIOnly(s.retryMyWebhookDelivery)` |
+| GET | `/api/v1/me/api-calls` | `s.developerAPIOnly(s.myDeveloperAPICalls)` |
 | POST | `/api/v1/me/assets` | `s.createUserAsset` |
 | PATCH | `/api/v1/me/assets/:id` | `s.updateUserAsset` |
 | DELETE | `/api/v1/me/assets/:id` | `s.deleteUserAsset` |
@@ -192,6 +187,8 @@
 | GET | `/api/v1/admin/badge-counts` | `s.adminOnly(s.adminBadgeCounts)` |
 | GET | `/api/v1/admin/statistics` | `s.adminOnly(s.adminStats)` |
 | GET | `/api/v1/admin/profitability` | `s.adminOnly(s.adminProfitability)` |
+| GET | `/api/v1/admin/developer-api/calls` | `s.adminOnly(s.adminDeveloperAPICalls)` |
+| GET | `/api/v1/admin/developer-api/summary` | `s.adminOnly(s.adminDeveloperAPISummary)` |
 | GET | `/api/v1/admin/agent-quality` | `s.adminOnly(s.adminAgentQualityOverview)` |
 | GET | `/api/v1/admin/agent-quality/traces/:id` | `s.adminOnly(s.adminAgentTrace)` |
 | PATCH | `/api/v1/admin/agent-quality/eval-cases/:id` | `s.adminOnly(s.adminPatchAgentEvalCase)` |
@@ -363,28 +360,15 @@
 | PUT | `/api/v1/admin/ecommerce/tryon-catalog/:id/image` | `s.adminOnly(s.adminUploadTryonCatalogImage)` |
 | DELETE | `/api/v1/admin/ecommerce/tryon-catalog/:id` | `s.adminOnly(s.adminDeleteTryonCatalog)` |
 
-## 开放任务 API
+## 开发者 API（OpenAI 兼容 /v1）
 
 | 方法 | 路径 | 注册表达式 |
 | --- | --- | --- |
-| GET | `/api/open/v1/models` | `s.openAPIOnly("models:read", s.openAPIModels)` |
-| GET | `/api/open/v1/usage` | `s.openAPIOnly("tasks:read", s.openAPIUsage)` |
-| POST | `/api/open/v1/tasks/quote` | `s.openAPIOnly("tasks:write", s.quoteTask)` |
-| POST | `/api/open/v1/uploads` | `s.openAPIOnly("files:write", s.upload)` |
-| GET | `/api/open/v1/files/*key` | `s.openAPIOnly("tasks:read", s.getFile)` |
-| POST | `/api/open/v1/tasks` | `s.openAPIOnly("tasks:write", s.createTask)` |
-| GET | `/api/open/v1/tasks/:id` | `s.openAPIOnly("tasks:read", s.getTask)` |
-
-## OpenAI 兼容子集
-
-| 方法 | 路径 | 注册表达式 |
-| --- | --- | --- |
-| GET | `/v1/models` | `s.openAPIOnly("models:read", s.openAIModels)` |
-| GET | `/v1/models/:model` | `s.openAPIOnly("models:read", s.openAIModel)` |
-| POST | `/v1/responses` | `s.openAPIOnly("tasks:write", s.openAIResponses)` |
-| GET | `/v1/responses` | `s.openAIResponsesWebSocket` |
-| POST | `/v1/images/generations` | `s.openAPIOnly("tasks:write", s.openAIGenerateImage)` |
-| POST | `/v1/images/edits` | `s.openAPIOnly("tasks:write", s.openAIEditImage)` |
+| GET | `/v1/models` | `s.openAPIOnly(s.openAIModels)` |
+| GET | `/v1/models/:model` | `s.openAPIOnly(s.openAIModel)` |
+| POST | `/v1/chat/completions` | `s.openAPIOnly(s.openAIChatCompletions)` |
+| POST | `/v1/images/generations` | `s.openAPIOnly(s.openAIGenerateImage)` |
+| POST | `/v1/images/edits` | `s.openAPIOnly(s.openAIEditImage)` |
 
 ## 内部回调与图片技能 OAuth
 

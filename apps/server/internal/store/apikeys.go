@@ -23,7 +23,6 @@ type UserAPIKey struct {
 	KeyHash                string
 	Label                  string
 	Status                 string
-	Scopes                 []string
 	AllowedModelIDs        []string
 	DailyTaskLimit         int
 	MonthlyTaskLimit       int
@@ -43,7 +42,7 @@ type UserAPIKey struct {
 }
 
 // #nosec G101 -- this is a list of SQL column names, not credential values.
-const userAPIKeyCols = `id,user_id,key_prefix,key_hash,label,status,scopes,allowed_model_ids,
+const userAPIKeyCols = `id,user_id,key_prefix,key_hash,label,status,allowed_model_ids,
 	daily_task_limit,monthly_task_limit,daily_spend_limit_cents,monthly_spend_limit_cents,
 	ip_allowlist,rate_limit_per_minute,daily_byte_limit,auto_frozen_at,freeze_reason,
 	expires_at,last_used_at,last_used_ip,last_error,created_at,updated_at`
@@ -51,7 +50,7 @@ const userAPIKeyCols = `id,user_id,key_prefix,key_hash,label,status,scopes,allow
 func scanUserAPIKey(row pgx.Row) (*UserAPIKey, error) {
 	var key UserAPIKey
 	err := row.Scan(&key.ID, &key.UserID, &key.KeyPrefix, &key.KeyHash, &key.Label, &key.Status,
-		&key.Scopes, &key.AllowedModelIDs, &key.DailyTaskLimit, &key.MonthlyTaskLimit,
+		&key.AllowedModelIDs, &key.DailyTaskLimit, &key.MonthlyTaskLimit,
 		&key.DailySpendLimitCents, &key.MonthlySpendLimitCents, &key.IPAllowlist,
 		&key.RateLimitPerMinute, &key.DailyByteLimit, &key.AutoFrozenAt, &key.FreezeReason, &key.ExpiresAt,
 		&key.LastUsedAt, &key.LastUsedIP, &key.LastError, &key.CreatedAt, &key.UpdatedAt)
@@ -75,10 +74,10 @@ func InsertUserAPIKey(ctx context.Context, q Q, key *UserAPIKey) (*UserAPIKey, e
 		key.IPAllowlist = []string{}
 	}
 	return scanUserAPIKey(q.QueryRow(ctx, `INSERT INTO user_api_keys (
-		id,user_id,key_prefix,key_hash,label,scopes,allowed_model_ids,daily_task_limit,monthly_task_limit,
+		id,user_id,key_prefix,key_hash,label,allowed_model_ids,daily_task_limit,monthly_task_limit,
 		daily_spend_limit_cents,monthly_spend_limit_cents,ip_allowlist,rate_limit_per_minute,daily_byte_limit,expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING `+userAPIKeyCols,
-		key.ID, key.UserID, key.KeyPrefix, key.KeyHash, key.Label, key.Scopes, key.AllowedModelIDs,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING `+userAPIKeyCols,
+		key.ID, key.UserID, key.KeyPrefix, key.KeyHash, key.Label, key.AllowedModelIDs,
 		key.DailyTaskLimit, key.MonthlyTaskLimit, key.DailySpendLimitCents, key.MonthlySpendLimitCents,
 		key.IPAllowlist, key.RateLimitPerMinute, key.DailyByteLimit, key.ExpiresAt))
 }
@@ -124,12 +123,12 @@ func UpdateUserAPIKey(ctx context.Context, q Q, userID, id uuid.UUID, key *UserA
 		key.AllowedModelIDs = []string{}
 	}
 	item, err := scanUserAPIKey(q.QueryRow(ctx, `UPDATE user_api_keys SET
-		label=$3,scopes=$4,allowed_model_ids=$5,daily_task_limit=$6,monthly_task_limit=$7,
-		daily_spend_limit_cents=$8,monthly_spend_limit_cents=$9,ip_allowlist=$10,
-		rate_limit_per_minute=$11,daily_byte_limit=$12,expires_at=$13,updated_at=now()
+		label=$3,allowed_model_ids=$4,daily_task_limit=$5,monthly_task_limit=$6,
+		daily_spend_limit_cents=$7,monthly_spend_limit_cents=$8,ip_allowlist=$9,
+		rate_limit_per_minute=$10,daily_byte_limit=$11,expires_at=$12,updated_at=now()
 		WHERE id=$1 AND user_id=$2 AND status IN ('active','frozen')
 		RETURNING `+userAPIKeyCols,
-		id, userID, key.Label, key.Scopes, key.AllowedModelIDs, key.DailyTaskLimit, key.MonthlyTaskLimit,
+		id, userID, key.Label, key.AllowedModelIDs, key.DailyTaskLimit, key.MonthlyTaskLimit,
 		key.DailySpendLimitCents, key.MonthlySpendLimitCents, key.IPAllowlist,
 		key.RateLimitPerMinute, key.DailyByteLimit, key.ExpiresAt))
 	return nilOnNoRows(item, err)
@@ -161,26 +160,28 @@ func LockUserAPIKeyForUsage(ctx context.Context, q Q, apiKeyID, userID uuid.UUID
 }
 
 func RecordAPIKeyTaskCreation(ctx context.Context, q Q, apiKeyID, userID, taskID uuid.UUID, modelID string, reservedCents int64, now time.Time) error {
-	return recordAPIKeyUsage(ctx, q, apiKeyID, userID, &taskID, modelID, reservedCents, now)
+	_, err := recordAPIKeyUsage(ctx, q, apiKeyID, userID, &taskID, modelID, reservedCents, now)
+	return err
 }
 
 // RecordAPIKeyRequest records a billable developer-API call without creating
 // a site task. task_id is intentionally NULL because the standard direct
-// proxy is not backed by the site's task lifecycle.
-func RecordAPIKeyRequest(ctx context.Context, q Q, apiKeyID, userID uuid.UUID, modelID string, reservedCents int64, now time.Time) error {
+// proxy is not backed by the site's task lifecycle. The returned event id lets
+// the caller withdraw the event when the request definitely failed.
+func RecordAPIKeyRequest(ctx context.Context, q Q, apiKeyID, userID uuid.UUID, modelID string, reservedCents int64, now time.Time) (uuid.UUID, error) {
 	return recordAPIKeyUsage(ctx, q, apiKeyID, userID, nil, modelID, reservedCents, now)
 }
 
-func recordAPIKeyUsage(ctx context.Context, q Q, apiKeyID, userID uuid.UUID, taskID *uuid.UUID, modelID string, reservedCents int64, now time.Time) error {
+func recordAPIKeyUsage(ctx context.Context, q Q, apiKeyID, userID uuid.UUID, taskID *uuid.UUID, modelID string, reservedCents int64, now time.Time) (uuid.UUID, error) {
 	key, err := scanUserAPIKey(q.QueryRow(ctx, `SELECT `+userAPIKeyCols+` FROM user_api_keys WHERE id=$1 AND user_id=$2 FOR UPDATE`, apiKeyID, userID))
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return ErrAPIKeyInactive
+			return uuid.Nil, ErrAPIKeyInactive
 		}
-		return err
+		return uuid.Nil, err
 	}
 	if key.Status != "active" || (key.ExpiresAt != nil && !key.ExpiresAt.After(now)) {
-		return ErrAPIKeyInactive
+		return uuid.Nil, ErrAPIKeyInactive
 	}
 	if len(key.AllowedModelIDs) > 0 {
 		allowed := false
@@ -191,7 +192,7 @@ func recordAPIKeyUsage(ctx context.Context, q Q, apiKeyID, userID uuid.UUID, tas
 			}
 		}
 		if !allowed {
-			return ErrAPIKeyModelDenied
+			return uuid.Nil, ErrAPIKeyModelDenied
 		}
 	}
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
@@ -205,21 +206,25 @@ func recordAPIKeyUsage(ctx context.Context, q Q, apiKeyID, userID uuid.UUID, tas
 		FROM api_key_usage_events WHERE api_key_id=$1`, apiKeyID, dayStart, monthStart).Scan(
 		&dayTasks, &monthTasks, &daySpend, &monthSpend)
 	if err != nil {
-		return err
+		return uuid.Nil, err
 	}
 	if dayTasks+1 > key.DailyTaskLimit || daySpend+reservedCents > key.DailySpendLimitCents {
-		return ErrAPIKeyDailyLimit
+		return uuid.Nil, ErrAPIKeyDailyLimit
 	}
 	if monthTasks+1 > key.MonthlyTaskLimit || monthSpend+reservedCents > key.MonthlySpendLimitCents {
-		return ErrAPIKeyMonthlyLimit
+		return uuid.Nil, ErrAPIKeyMonthlyLimit
 	}
 	var taskIDValue any
 	if taskID != nil {
 		taskIDValue = *taskID
 	}
-	_, err = q.Exec(ctx, `INSERT INTO api_key_usage_events (api_key_id,user_id,task_id,model_id,reserved_cents,created_at)
-		VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (task_id) DO NOTHING`, apiKeyID, userID, taskIDValue, modelID, max(reservedCents, 0), now)
-	return err
+	var eventID uuid.UUID
+	err = q.QueryRow(ctx, `INSERT INTO api_key_usage_events (api_key_id,user_id,task_id,model_id,reserved_cents,created_at)
+		VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (task_id) DO NOTHING RETURNING id`, apiKeyID, userID, taskIDValue, modelID, max(reservedCents, 0), now).Scan(&eventID)
+	if err == pgx.ErrNoRows {
+		return uuid.Nil, nil
+	}
+	return eventID, err
 }
 
 type APIKeyUsageSummary struct {

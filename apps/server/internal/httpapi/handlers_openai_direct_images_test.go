@@ -1,10 +1,8 @@
 package httpapi
 
 import (
-	"context"
 	"testing"
 
-	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 )
 
@@ -29,22 +27,5 @@ func TestDirectOpenAIImageResponseRejectsMissingRequestedRepresentation(t *testi
 	}
 	if _, err := directOpenAIImageResponse(c2a.StandardImageResponse{Data: []c2a.StandardImageData{{B64JSON: "encoded"}}}, "url"); err == nil {
 		t.Fatal("expected url response mismatch to fail")
-	}
-}
-
-func TestDirectImageErrorAmbiguityKeepsBillingOpen(t *testing.T) {
-	for name, err := range map[string]error{
-		"deadline":       context.DeadlineExceeded,
-		"network":        &c2a.NetworkError{Message: "connection reset"},
-		"upstream 502":   &c2a.UpstreamError{StatusCode: 502},
-		"gateway 504":    &c2a.UpstreamError{StatusCode: 504},
-		"bad request":    &c2a.UpstreamError{StatusCode: 400},
-		"rate limited":   &c2a.UpstreamError{StatusCode: 429},
-		"validation 400": apperr.E("invalid_request", "invalid", 400),
-	} {
-		want := name != "bad request" && name != "rate limited" && name != "validation 400"
-		if got := directImageErrorAmbiguous(err); got != want {
-			t.Errorf("%s: ambiguous=%t, want %t", name, got, want)
-		}
 	}
 }

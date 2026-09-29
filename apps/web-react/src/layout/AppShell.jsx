@@ -130,7 +130,7 @@ export function AppShell() {
     mainClasses.push("main--settings-console");
   if (location.pathname === "/skills")
     mainClasses.push("main--skills");
-  if (location.pathname === "/developer-api" || location.pathname === "/developer-api/demo")
+  if (location.pathname === "/developer-api")
     mainClasses.push("main--developer-console");
   if (location.pathname === "/updates")
     mainClasses.push("main--updates-gallery");

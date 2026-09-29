@@ -116,8 +116,6 @@ interface DashboardQualitySummary {
 		enabled: boolean
 		activeKeys: number
 		requests24Hours: number
-		pendingWebhooks: number
-		deadWebhooks: number
 	}
 	objectCleanup: {
 		pending: number
@@ -715,7 +713,6 @@ const qualityMetrics = computed(() => {
 	const openApi = quality?.openApi
 	const cleanup = quality?.objectCleanup
 	const agentIssues = (agent?.failedSteps || 0) + (agent?.unfinishedSteps || 0)
-	const webhookIssues = (openApi?.pendingWebhooks || 0) + (openApi?.deadWebhooks || 0)
 	return [
 		{
 			label: '近 7 日 Agent 质量',
@@ -732,7 +729,7 @@ const qualityMetrics = computed(() => {
 		{
 			label: '开放 API 状态',
 			value: openApi?.enabled ? `${formatCount(openApi.activeKeys)} Key` : '已关闭',
-			tone: (openApi?.deadWebhooks || 0) > 0 ? 'is-bad' : webhookIssues > 0 ? 'is-warn' : '',
+			tone: '',
 			hint: '开放 API 的启用状态与当前有效密钥数量',
 		},
 		{
@@ -941,7 +938,7 @@ onBeforeUnmount(() => {
 			</div>
 			<div>
 			  <dt>开放 API</dt>
-			  <dd>用户入口开关、有效 Key、近 24 小时请求量和 Webhook 异常。</dd>
+			  <dd>用户入口开关、有效 Key 和近 24 小时请求量。</dd>
 			</div>
 			<div>
 			  <dt>OSS 清理</dt>

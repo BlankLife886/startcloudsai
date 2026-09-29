@@ -33,13 +33,16 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 	limit := int64(1 << 20)
 	switch {
 	case path == "/v1/images/edits":
-		// Up to 32 MiB of image files plus multipart metadata. Each file is
-		// additionally checked against UploadMaxBytes by the image handler.
-		return 33 << 20
+		// Reference images spool to disk and stream to the upstream; this only
+		// guards the disk. The model's reference-image limit bounds the count.
+		return openAIImageEditMaxBodyBytes
+	case path == "/v1/chat/completions":
+		// Messages may carry Base64 images next to the conversation.
+		return openAIChatMaxRequestBytes
 	case path == "/api/v1/canvas/html-shares":
 		// A shared page carries its images inline; the handler caps the page itself at 3 MiB.
 		return 4 << 20
-	case path == "/api/v1/uploads" || path == "/api/open/v1/uploads":
+	case path == "/api/v1/uploads":
 		return uploadMaxBytes + (1 << 20)
 	case strings.HasPrefix(path, "/api/v1/assistant/"):
 		return 20 << 20
@@ -333,12 +336,7 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/me/api-keys/:id/rotate", s.developerAPIOnly(s.rotateMyAPIKey))
 	api.DELETE("/me/api-keys/:id", s.developerAPIOnly(s.revokeMyAPIKey))
 	api.GET("/me/api-models", s.developerAPIOnly(s.myOpenAPIModels))
-	api.GET("/me/webhooks", s.developerAPIOnly(s.myWebhooks))
-	api.POST("/me/webhooks", s.developerAPIOnly(s.createMyWebhook))
-	api.PATCH("/me/webhooks/:id", s.developerAPIOnly(s.patchMyWebhook))
-	api.DELETE("/me/webhooks/:id", s.developerAPIOnly(s.deleteMyWebhook))
-	api.GET("/me/webhook-deliveries", s.developerAPIOnly(s.myWebhookDeliveries))
-	api.POST("/me/webhook-deliveries/:id/retry", s.developerAPIOnly(s.retryMyWebhookDelivery))
+	api.GET("/me/api-calls", s.developerAPIOnly(s.myDeveloperAPICalls))
 	api.POST("/me/assets", s.createUserAsset)
 	api.PATCH("/me/assets/:id", s.updateUserAsset)
 	api.DELETE("/me/assets/:id", s.deleteUserAsset)
@@ -453,22 +451,12 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/home-banners", s.homeBanners)
 	api.GET("/health", s.health)
 
-	open := r.Group("/api/open/v1")
-	open.GET("/models", s.openAPIOnly("models:read", s.openAPIModels))
-	open.GET("/usage", s.openAPIOnly("tasks:read", s.openAPIUsage))
-	open.POST("/tasks/quote", s.openAPIOnly("tasks:write", s.quoteTask))
-	open.POST("/uploads", s.openAPIOnly("files:write", s.upload))
-	open.GET("/files/*key", s.openAPIOnly("tasks:read", s.getFile))
-	open.POST("/tasks", s.openAPIOnly("tasks:write", s.createTask))
-	open.GET("/tasks/:id", s.openAPIOnly("tasks:read", s.getTask))
-
 	compat := r.Group("/v1")
-	compat.GET("/models", s.openAPIOnly("models:read", s.openAIModels))
-	compat.GET("/models/:model", s.openAPIOnly("models:read", s.openAIModel))
-	compat.POST("/responses", s.openAPIOnly("tasks:write", s.openAIResponses))
-	compat.GET("/responses", s.openAIResponsesWebSocket)
-	compat.POST("/images/generations", s.openAPIOnly("tasks:write", s.openAIGenerateImage))
-	compat.POST("/images/edits", s.openAPIOnly("tasks:write", s.openAIEditImage))
+	compat.GET("/models", s.openAPIOnly(s.openAIModels))
+	compat.GET("/models/:model", s.openAPIOnly(s.openAIModel))
+	compat.POST("/chat/completions", s.openAPIOnly(s.openAIChatCompletions))
+	compat.POST("/images/generations", s.openAPIOnly(s.openAIGenerateImage))
+	compat.POST("/images/edits", s.openAPIOnly(s.openAIEditImage))
 
 	// OAuth 2.0 + PKCE for local image skills that call the Images API.
 	r.GET("/.well-known/oauth-authorization-server", s.imageSkillOAuthAuthorizationServer)
@@ -492,6 +480,8 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/badge-counts", s.adminOnly(s.adminBadgeCounts))
 	admin.GET("/statistics", s.adminOnly(s.adminStats))
 	admin.GET("/profitability", s.adminOnly(s.adminProfitability))
+	admin.GET("/developer-api/calls", s.adminOnly(s.adminDeveloperAPICalls))
+	admin.GET("/developer-api/summary", s.adminOnly(s.adminDeveloperAPISummary))
 	admin.GET("/agent-quality", s.adminOnly(s.adminAgentQualityOverview))
 	admin.GET("/agent-quality/traces/:id", s.adminOnly(s.adminAgentTrace))
 	admin.PATCH("/agent-quality/eval-cases/:id", s.adminOnly(s.adminPatchAgentEvalCase))
@@ -669,8 +659,10 @@ func (s *Server) Router() *gin.Engine {
 }
 
 // originGuard 写请求校验 Origin 白名单；无 Origin 头的非浏览器请求放行。
+// 开发者 API（/v1）只凭 Bearer Key 鉴权、不读 Cookie，跳过校验，
+// 否则任何带 Origin 头的第三方调用方都会被误拦。
 func (s *Server) originGuard(c *gin.Context) {
-	if writeMethods[c.Request.Method] {
+	if writeMethods[c.Request.Method] && !isOpenAICompatPath(c.Request.URL.Path) {
 		origin := c.GetHeader("Origin")
 		if origin != "" {
 			trimmed := strings.TrimRight(origin, "/")

@@ -31,13 +31,13 @@ const upstream = createServer((request, response) => {
     return
   }
   if (request.url.endsWith('/upstream-timeout')) {
-    response.writeHead(504, { 'content-type': 'application/json', 'x-request-id': 'fixture-request', 'x-task-id': 'fixture-task' })
-    response.end(JSON.stringify({ error: { message: '任务仍在处理', type: 'server_error', param: null, code: 'image_generation_timeout' } }))
+    response.writeHead(504, { 'content-type': 'application/json', 'x-request-id': 'fixture-request' })
+    response.end(JSON.stringify({ error: { message: '等待上游超过 240 秒仍未返回，本次不扣费', type: 'server_error', param: null, code: 'request_timeout' } }))
     return
   }
   response.writeHead(200, { 'content-type': 'application/json', 'x-request-id': 'fixture-request' })
-  const payload = request.url === '/v1/responses'
-    ? { object: 'response', status: 'completed', output: [] }
+  const payload = request.url === '/v1/chat/completions'
+    ? { object: 'chat.completion', choices: [] }
     : request.url.startsWith('/v1/')
       ? { object: 'list', data: [{ id: 'fixture-image', object: 'model', owned_by: 'fixture', created: 0 }] }
       : { success: true, data: { fixture: true } }
@@ -81,6 +81,7 @@ try {
   const config = original
     .replace('set $server_upstream http://server:8000;', `set $server_upstream http://${hostIP}:${upstream.address().port};`)
     .replaceAll('proxy_read_timeout 300s;', 'proxy_read_timeout 1s;')
+    .replaceAll('proxy_read_timeout 320s;', 'proxy_read_timeout 1s;')
   const configPath = join(temporary, 'nginx.conf')
   await writeFile(configPath, config)
   docker('run', '-d', '--rm', '--pull', 'never', '--name', name,
@@ -104,25 +105,24 @@ try {
     assert.equal(response.headers.get('x-request-id'), 'fixture-request')
     assert.equal((await response.json()).object, 'list')
   })
-  await check('Responses requests reach the API', async () => {
-    const response = await fetchLocal('/v1/responses', {
+  await check('chat requests reach the API', async () => {
+    const response = await fetchLocal('/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'fixture-responses' },
-      body: JSON.stringify({ input: 'test', tools: [{ type: 'image_generation' }] }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'fixture-chat', messages: [{ role: 'user', content: 'test' }] }),
     })
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('x-request-id'), 'fixture-request')
-    assert.equal((await response.json()).object, 'response')
+    assert.equal((await response.json()).object, 'chat.completion')
   })
   await check('gateway timeout uses the compatibility error object', async () => {
     const body = await compatError(await fetchLocal('/v1/delayed'), 504, 'gateway_timeout')
-    assert(body.error.message.includes('Idempotency-Key'))
+    assert(body.error.message.includes('不扣费'))
   })
-  await check('upstream timeout keeps the task ID and original JSON error', async () => {
+  await check('an API timeout keeps its original JSON error', async () => {
     const response = await fetchLocal('/v1/upstream-timeout')
-    assert.equal(response.headers.get('x-task-id'), 'fixture-task')
     assert.equal(response.headers.get('x-request-id'), 'fixture-request')
-    await compatError(response, 504, 'image_generation_timeout', null)
+    await compatError(response, 504, 'request_timeout', null)
   })
   await check('a failed POST is not automatically replayed', async () => {
     const before = receivedPOSTs
@@ -132,7 +132,7 @@ try {
   await check('oversized requests get JSON before the body is uploaded', async () => {
     const response = await new Promise((done, reject) => {
       const request = httpRequest(base + '/v1/images/edits', {
-        method: 'POST', headers: { 'Content-Length': String((33 << 20) + 1), Expect: '100-continue' },
+        method: 'POST', headers: { 'Content-Length': String((512 * 1024 * 1024) + 1), Expect: '100-continue' },
       }, result => {
         const chunks = []
         result.on('data', chunk => chunks.push(chunk))

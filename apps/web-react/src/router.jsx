@@ -98,7 +98,7 @@ export const router = createBrowserRouter([
       { path: "/psd-decompose", lazy: lazyView(() => import("./views/PSDDecomposeView.jsx"), "PSDDecomposeView") },
       { path: "/skills", lazy: lazyView(() => import("./views/SkillsView.jsx"), "SkillsView") },
       { path: "/developer-api/docs", lazy: lazyView(() => import("./views/OpenAPIDocsView.jsx"), "OpenAPIDocsView") },
-      { path: "/developer-api/demo", lazy: lazyView(() => import("./views/DeveloperAPIView.jsx"), "DeveloperAPIDemoView") },
+      { path: "/developer-api/demo", loader: () => redirect("/developer-api") },
       {
         path: "/",
         lazy: lazyView(

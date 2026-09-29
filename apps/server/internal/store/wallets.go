@@ -230,6 +230,52 @@ func ListLedger(ctx context.Context, q Q, userID uuid.UUID, limit int, cursor *C
 	return ListLedgerFiltered(ctx, q, &userID, "", "", nil, limit, cursor)
 }
 
+// Wallet ledger sources written by developer /v1 requests. The developer
+// console lists these calls itself, so the user's wallet history leaves them
+// out; the balance and the admin ledgers still include them.
+const (
+	DeveloperAPIImageLedgerSource = "openai_image_request"
+	DeveloperAPIChatLedgerSource  = "open_api_chat"
+)
+
+var developerAPILedgerSources = []string{DeveloperAPIImageLedgerSource, DeveloperAPIChatLedgerSource, "open_api_responses_chat"}
+
+const userWalletLedgerWhere = ` FROM wallet_ledger WHERE user_id = $1 AND source_type <> ALL($2)`
+
+// ListUserWalletLedger is ListLedger without developer API entries.
+func ListUserWalletLedger(ctx context.Context, q Q, userID uuid.UUID, limit int, cursor *Cursor) ([]*LedgerEntry, error) {
+	sql, args := appendCursor(`SELECT `+ledgerCols+userWalletLedgerWhere, []any{userID, developerAPILedgerSources}, cursor, limit)
+	return queryLedger(ctx, q, sql, args...)
+}
+
+// ListUserWalletLedgerPage is ListLedgerPage without developer API entries.
+func ListUserWalletLedgerPage(ctx context.Context, q Q, userID uuid.UUID, limit, offset int) ([]*LedgerEntry, error) {
+	return queryLedger(ctx, q, `SELECT `+ledgerCols+userWalletLedgerWhere+`
+		ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4`, userID, developerAPILedgerSources, max(limit, 1), max(offset, 0))
+}
+
+// CountUserWalletLedgerCapped counts the rows ListUserWalletLedger pages over.
+func CountUserWalletLedgerCapped(ctx context.Context, q Q, userID uuid.UUID) (CappedCount, error) {
+	return countCapped(ctx, q, userWalletLedgerWhere, []any{userID, developerAPILedgerSources})
+}
+
+func queryLedger(ctx context.Context, q Q, sql string, args ...any) ([]*LedgerEntry, error) {
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*LedgerEntry
+	for rows.Next() {
+		e, err := scanLedger(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // ListLedgerFiltered 账本分页（limit+1 行），用户端与后台全站复用。
 // userID 精确定位单个用户；userIDs 为后台 user 关键字匹配出的候选集（nil = 不过滤）。
 func ListLedgerFiltered(ctx context.Context, q Q, userID *uuid.UUID, kind, sourceType string, userIDs []uuid.UUID, limit int, cursor *Cursor) ([]*LedgerEntry, error) {
@@ -488,7 +534,7 @@ func ledgerUserFilter(alias string, userID *uuid.UUID) (string, []any) {
 	return column + " = $1", []any{*userID}
 }
 
-// ListAllUserLedger 导出用：按时间倒序拉齐当前用户账本，最多 walletLedgerExportMax 条。
+// ListAllUserLedger 导出用：按时间倒序拉齐当前用户钱包账本（不含开发者 API），最多 walletLedgerExportMax 条。
 func ListAllUserLedger(ctx context.Context, q Q, userID uuid.UUID) ([]*LedgerEntry, error) {
 	out := make([]*LedgerEntry, 0, 64)
 	var cursor *Cursor
@@ -497,7 +543,7 @@ func ListAllUserLedger(ctx context.Context, q Q, userID uuid.UUID) ([]*LedgerEnt
 		if remain := walletLedgerExportMax - len(out); remain < limit {
 			limit = remain
 		}
-		batch, err := ListLedger(ctx, q, userID, limit, cursor)
+		batch, err := ListUserWalletLedger(ctx, q, userID, limit, cursor)
 		if err != nil {
 			return nil, err
 		}

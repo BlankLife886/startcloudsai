@@ -115,7 +115,6 @@ func AnonymizeUserAccount(ctx context.Context, q Q, id uuid.UUID, passwordHash s
 		`DELETE FROM sessions WHERE user_id = $1`,
 		`DELETE FROM user_identities WHERE user_id = $1`,
 		`DELETE FROM user_api_keys WHERE user_id = $1`,
-		`DELETE FROM api_webhook_endpoints WHERE user_id = $1`,
 		`DELETE FROM assistant_conversations WHERE user_id = $1`,
 		`DELETE FROM user_feedback WHERE user_id = $1`,
 		`UPDATE gallery_submissions SET status = 'removed', title = NULL,

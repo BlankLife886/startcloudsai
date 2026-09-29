@@ -1238,3 +1238,21 @@ func TestWithoutReasoningStripsEffortAndSummaryFromInternalCalls(t *testing.T) {
 		t.Fatalf("主路径的推理档位被误伤：%#v", body["reasoning_effort"])
 	}
 }
+
+func TestChatWithoutRetrySendsOneRequestOnTransientFailure(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	if _, err := client.CompleteChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil); err == nil || requests != chatStreamAttempts {
+		t.Fatalf("default client: err=%v requests=%d, want %d attempts", err, requests, chatStreamAttempts)
+	}
+	requests = 0
+	if _, err := client.WithoutRetry().CompleteChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil); err == nil || requests != 1 {
+		t.Fatalf("WithoutRetry: err=%v requests=%d, want exactly 1", err, requests)
+	}
+}

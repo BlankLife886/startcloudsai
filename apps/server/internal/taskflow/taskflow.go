@@ -1209,17 +1209,14 @@ func recordTaskProfit(ctx context.Context, q store.Q, task *store.Task, revenue 
 			apiKeyID = &parsed
 		}
 	}
-	if err := store.InsertUsageProfitEntry(ctx, q, store.UsageProfitEntry{
+	return store.InsertUsageProfitEntry(ctx, q, store.UsageProfitEntry{
 		SourceType: "task", SourceID: task.ID.String(), BillingGeneration: max(task.Attempt, 0),
 		UserID: task.UserID, APIKeyID: apiKeyID,
 		EventStatus: status, Workspace: stringParam(task.Params, "_pricingWorkspace"),
 		ProviderID: stringParam(task.Params, "_providerConfigId"), RouteID: stringParam(task.Params, "_providerRouteId"),
 		ModelID: stringParam(task.Params, "_modelConfigId"), Units: units,
 		RevenueCents: revenue, UpstreamCostCents: unitCost * int64(max(units, 0)), Metadata: metadata, CreatedAt: at,
-	}); err != nil {
-		return err
-	}
-	return store.EnqueueTaskWebhookDeliveries(ctx, q, task, status, at)
+	})
 }
 
 // TaskDisplayName 用户可读的任务名称，画布来源显示为无限画布而不是文生图。

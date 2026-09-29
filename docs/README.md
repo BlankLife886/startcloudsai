@@ -31,9 +31,9 @@
 | [API 契约](API_CONTRACT.md) | 站内、管理及开放接口；以实际路由为准 |
 | [完整 HTTP 路由清单](API_ROUTES.md) | 当前注册的方法、路径与 handler 包装器快照 |
 | [数据库](DATABASE.md) | 表职责、约束、事务和迁移演进 |
-| [开放 API](OPEN_API.md) | `/api/open/v1/tasks` 与 `/v1` Images/Responses 兼容子集 |
+| [开放 API](OPEN_API.md) | OpenAI 兼容 `/v1`：模型、生图、编辑、Chat Completions 对话 |
 | [开放 API 示例](../examples/open-api/README.md) | 示例脚本、SDK 参数、权限和幂等调用 |
-| [开发者控制台](DEVELOPER_CONSOLE.md) | 真实凭据、配置开关与演示页面的边界 |
+| [开发者控制台](DEVELOPER_CONSOLE.md) | Key、模型与快速接入；开发者 API 只保留 /v1 |
 | [订阅](SUBSCRIPTIONS.md) | 订阅批次、合同价格、升级和退款 |
 | [订单流程](ORDER_WORKFLOW.md) | 下单、支付证据、查单与状态恢复 |
 | [后台账务](ADMIN_BILLING.md) | 钱包、订单、订阅与人工核查 |

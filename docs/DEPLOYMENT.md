@@ -51,7 +51,7 @@ docker compose --env-file .env up -d --build
      -> /          用户端 web
      -> /admin/    管理端 admin
      -> /api/        Go server（站内与开放任务 API）
-     -> /v1          Go server（Images/Responses 兼容接口）
+     -> /v1          Go server（OpenAI 兼容：模型、图片、Chat Completions）
      -> /oauth/、/.well-known/oauth-*  Go server（图片技能授权）
                      -> PostgreSQL
                      -> Redis / Worker
@@ -399,7 +399,7 @@ map $http_upgrade $connection_upgrade {
 }
 ```
 
-已有同名 map 时复用，不在 `server {}` 内重复定义。WebSocket 头用于 `/v1/responses`；SSE 需要继续关闭缓冲。若启用 Cloudflare，应先配置可信边缘 IP，再用清洗后的 `$remote_addr` 覆盖转发头。
+已有同名 map 时复用，不在 `server {}` 内重复定义。`/v1` 已不提供 WebSocket，这组头可保留备用；`/v1/chat/completions` 等 SSE 需要继续关闭缓冲。若启用 Cloudflare，应先配置可信边缘 IP，再用清洗后的 `$remote_addr` 覆盖转发头。
 
 在站点 Nginx 配置的 `server {}` 内添加。画布模板 ZIP 最大为 128 MiB，
 这里需要覆盖 ZIP、模板元数据和 multipart 边界：
@@ -461,7 +461,7 @@ unset ADMIN_PASSWORD
 - 原图、缩略图和全屏预览可以通过站内文件接口加载。
 - 任务失败时积分可以正确释放。
 - 支付启用时，订单、通知/主动对账、订阅合同及钱包账本一致；未启用时准确提示不可购买。
-- 开发者 API 按环境开关开放或拒绝；开放时分别核对 `/api/open/v1/tasks` 与 `/v1` 直通行为、流式响应和 OAuth 授权。
+- 开发者 API 按环境开关开放或拒绝；开放时核对 `/v1` 直通行为、流式响应和 OAuth 授权。
 
 涉及真实模型、支付或公开内容的验收使用明确指定的测试账号和范围。上述为验收步骤，不是本次文档更新已执行的测试结果。
 

@@ -51,20 +51,13 @@ func (s *Server) urlsForKeys(c *gin.Context, keys []string) []string {
 	for _, key := range keys {
 		key = strings.TrimLeft(strings.TrimSpace(key), "/")
 		if key != "" {
-			urls = append(urls, storedFilePrefix(c)+key)
+			urls = append(urls, storedFilePrefix+key)
 		}
 	}
 	return urls
 }
 
-func storedFilePrefix(c *gin.Context) string {
-	if value, exists := c.Get(ctxOpenAPI); exists {
-		if open, _ := value.(bool); open {
-			return "/api/open/v1/files/"
-		}
-	}
-	return "/api/v1/files/"
-}
+const storedFilePrefix = "/api/v1/files/"
 
 func parseUUIDParam(c *gin.Context, name string) (uuid.UUID, error) {
 	id, err := uuid.Parse(c.Param(name))
@@ -309,15 +302,6 @@ func (s *Server) createTask(c *gin.Context) {
 	if body.Params["_source"] == "open_api" {
 		delete(body.Params, "_source")
 	}
-	if key := openAPIKeyFromContext(c); key != nil {
-		trustedParams["_apiKeyId"] = key.ID.String()
-		body.Params["_source"] = "open_api"
-		if body.IdempotencyKey == nil {
-			if value := strings.TrimSpace(c.GetHeader("Idempotency-Key")); value != "" {
-				body.IdempotencyKey = &value
-			}
-		}
-	}
 	if !store.Contains(store.TaskTypes, body.Type) {
 		fail(c, apperr.E("validation_error", "type: 无效的任务类型", 422))
 		return
@@ -462,10 +446,6 @@ func (s *Server) quoteTask(c *gin.Context) {
 	})
 	if err != nil {
 		fail(c, err)
-		return
-	}
-	if key := openAPIKeyFromContext(c); key != nil && len(key.AllowedModelIDs) > 0 && !store.Contains(key.AllowedModelIDs, quote.ModelID) {
-		fail(c, apperr.E("api_key_model_denied", "模型不在 API Key 白名单中", 403))
 		return
 	}
 	ok(c, gin.H{

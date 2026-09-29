@@ -1648,6 +1648,87 @@ func (c *Client) editImagesMultipartResponse(
 	if err := writer.Close(); err != nil {
 		return StandardImageResponse{}, err
 	}
+	return c.sendImageEdit(ctx, taskID, &body, writer.FormDataContentType(), body.Len())
+}
+
+// StreamImage is one reference image copied into the upstream request while it
+// is read, so the gateway never holds the whole file in memory.
+type StreamImage struct {
+	ContentType string
+	Open        func() (io.ReadCloser, error)
+}
+
+// EditImagesStandardStream sends a standard OpenAI /v1/images/edits request
+// whose reference images are streamed from their readers. The multipart body
+// is produced on the fly through a pipe, so its size is not known up front.
+func (c *Client) EditImagesStandardStream(ctx context.Context, prompt, model string, n int, images []StreamImage, size string, options ImageOptions) (response StandardImageResponse, err error) {
+	if c == nil || !c.standardImages {
+		return StandardImageResponse{}, errors.New("standard image client is not enabled")
+	}
+	defer func() {
+		if err != nil {
+			err = &SynchronousImageError{Err: err}
+		}
+	}()
+	if len(images) == 0 {
+		return StandardImageResponse{}, &UpstreamError{Message: "图像编辑至少需要一张参考图"}
+	}
+	reader, pipe := io.Pipe()
+	writer := multipart.NewWriter(pipe)
+	go func() {
+		pipe.CloseWithError(writeStreamedImageEdit(writer, prompt, model, n, images, size, options))
+	}()
+	defer reader.Close()
+	return c.sendImageEdit(ctx, "", reader, writer.FormDataContentType(), -1)
+}
+
+func writeStreamedImageEdit(writer *multipart.Writer, prompt, model string, n int, images []StreamImage, size string, options ImageOptions) error {
+	responseFormat := "b64_json"
+	if strings.EqualFold(strings.TrimSpace(options.ResponseFormat), "url") {
+		responseFormat = "url"
+	}
+	fields := [][2]string{{"model", model}, {"prompt", prompt}, {"n", fmt.Sprint(n)}, {"response_format", responseFormat}}
+	if strings.TrimSpace(size) != "" {
+		fields = append(fields, [2]string{"size", size})
+	}
+	for _, field := range fields {
+		if err := writer.WriteField(field[0], field[1]); err != nil {
+			return err
+		}
+	}
+	options.InputFidelity = ""
+	if err := writeMultipartImageOptions(writer, options); err != nil {
+		return err
+	}
+	imageField := "image"
+	if len(images) > 1 {
+		imageField = "image[]"
+	}
+	for index, image := range images {
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="reference-%d.%s"`,
+			imageField, index+1, imageContentExtension(image.ContentType)))
+		header.Set("Content-Type", image.ContentType)
+		part, err := writer.CreatePart(header)
+		if err != nil {
+			return err
+		}
+		source, err := image.Open()
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(part, source)
+		source.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return writer.Close()
+}
+
+// sendImageEdit posts a prepared multipart body to /v1/images/edits. bodyBytes
+// is only used for tracing; -1 means the body is streamed.
+func (c *Client) sendImageEdit(ctx context.Context, taskID string, body io.Reader, contentType string, bodyBytes int) (StandardImageResponse, error) {
 	endpoint, err := c.endpointURL("/v1/images/edits")
 	if err != nil {
 		return StandardImageResponse{}, err
@@ -1658,11 +1739,11 @@ func (c *Client) editImagesMultipartResponse(
 		requestCtx, cancel = context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
 	}
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, &body)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, body)
 	if err != nil {
 		return StandardImageResponse{}, err
 	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	if strings.TrimSpace(taskID) != "" {
 		req.Header.Set("Idempotency-Key", taskID)
@@ -1670,7 +1751,6 @@ func (c *Client) editImagesMultipartResponse(
 	if err := upstreamguard.Check(requestCtx); err != nil {
 		return StandardImageResponse{}, err
 	}
-	bodyBytes := body.Len()
 	traceCtx, trace := withSubmitTrace(req.Context())
 	req = req.WithContext(traceCtx)
 	resp, err := c.HTTPClient.Do(req)
@@ -1780,13 +1860,14 @@ func standardImageGenerationPayload(prompt, model string, n int, size string, op
 
 // GenerateImagesStandard calls only the provider's public OpenAI-compatible
 // image generation endpoint and preserves either b64_json or url responses.
-func (c *Client) GenerateImagesStandard(ctx context.Context, idempotencyKey, prompt, model string, n int, size string, options ImageOptions) (StandardImageResponse, error) {
+// GenerateImagesStandard sends one standard OpenAI /v1/images/generations
+// request. The gateway never retries it, so no idempotency key is sent.
+func (c *Client) GenerateImagesStandard(ctx context.Context, prompt, model string, n int, size string, options ImageOptions) (StandardImageResponse, error) {
 	if c == nil || !c.standardImages {
 		return StandardImageResponse{}, errors.New("standard image client is not enabled")
 	}
-	body, err := c.doRequestWithHeaders(ctx, http.MethodPost, "/v1/images/generations",
-		standardImageGenerationPayload(prompt, model, n, size, options), c.Timeout,
-		map[string]string{"Idempotency-Key": strings.TrimSpace(idempotencyKey)})
+	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/generations",
+		standardImageGenerationPayload(prompt, model, n, size, options), c.Timeout)
 	if err != nil {
 		return StandardImageResponse{}, err
 	}
@@ -1885,14 +1966,6 @@ func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, mode
 		body, err = c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
 	}
 	return synchronousImageResult(body, err)
-}
-
-// EditImagesStandard calls only the provider's public multipart edit endpoint.
-func (c *Client) EditImagesStandard(ctx context.Context, idempotencyKey, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) (StandardImageResponse, error) {
-	if c == nil || !c.standardImages {
-		return StandardImageResponse{}, errors.New("standard image client is not enabled")
-	}
-	return c.editImagesMultipartResponse(ctx, idempotencyKey, prompt, model, n, inputImagesB64, size, options)
 }
 
 func (c *Client) SubmitEditImages(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, error) {

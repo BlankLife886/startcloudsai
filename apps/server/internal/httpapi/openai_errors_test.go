@@ -52,7 +52,7 @@ func TestOpenAIErrorEnvelope(t *testing.T) {
 	}{
 		{"missing key", "api_key_required", "API Key required", "", "authentication_error", "invalid_api_key", 401, 401},
 		{"expired key", "api_key_invalid", "API Key expired", "", "authentication_error", "invalid_api_key", 401, 401},
-		{"scope", "api_key_scope_denied", "Missing tasks:write", "", "permission_error", "api_key_scope_denied", 403, 403},
+		{"ip denied", "api_key_ip_denied", "IP not allowed", "", "permission_error", "api_key_ip_denied", 403, 403},
 		{"model", "validation_error", "Unknown model", "model", "invalid_request_error", "validation_error", 422, 400},
 		{"quota", "insufficient_balance", "Insufficient balance", "", "invalid_request_error", "insufficient_balance", 400, 400},
 		{"rate limit", "rate_limited", "Rate limit reached", "", "rate_limit_error", "rate_limited", 429, 429},
@@ -127,16 +127,15 @@ func TestOpenAIErrorRedactsServerFailures(t *testing.T) {
 	response := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(response)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
-	c.Header("X-Task-ID", "existing-image-task")
-	failOpenAI(c, apperr.E("image_generation_timeout", "private upstream timeout detail", http.StatusGatewayTimeout), "")
+	failOpenAI(c, apperr.E("upstream_timeout", "private upstream timeout detail", http.StatusGatewayTimeout), "")
 	body := readOpenAIErrorForTest(t, response)
-	if response.Code != http.StatusGatewayTimeout || body["code"] != "image_generation_timeout" || !strings.Contains(body["message"].(string), "同一 Idempotency-Key") || response.Header().Get("X-Task-ID") != "existing-image-task" {
-		t.Fatalf("pending-task timeout must explain safe retries: %#v", body)
+	if response.Code != http.StatusGatewayTimeout || body["code"] != "upstream_timeout" || strings.Contains(body["message"].(string), "private") {
+		t.Fatalf("timeout must keep its code and hide details: %#v", body)
 	}
 	if strings.Contains(logs.String(), "secret-password") || strings.Contains(logs.String(), "private upstream") || strings.Contains(logs.String(), "provider.invalid") {
 		t.Fatal("server errors must not disclose their original details in logs")
 	}
-	if !strings.Contains(logs.String(), "request_id=") || !strings.Contains(logs.String(), "status=504 code=image_generation_timeout") {
+	if !strings.Contains(logs.String(), "request_id=") || !strings.Contains(logs.String(), "status=504 code=upstream_timeout") {
 		t.Fatal("safe request/status/code metadata must remain available for diagnostics")
 	}
 }
@@ -167,26 +166,23 @@ func TestOpenAIRequestIDReusesPlatformID(t *testing.T) {
 	}
 }
 
-func TestOpenAIImageRetryHintRequiresClientIdempotencyKey(t *testing.T) {
+func TestOpenAIPaidRequestsAreNeverRetriedBySDKs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, test := range []struct {
-		method, path, key, want string
+		method, path, want string
 	}{
-		{"POST", "/v1/images/generations", "", "false"},
-		{"POST", "/v1/images/edits", "   ", "false"},
-		{"POST", "/v1/images/generations", "client-attempt-123", ""},
-		{"POST", "/v1/images/edits", "client-attempt-123", ""},
-		{"GET", "/v1/models", "", ""},
-		{"POST", "/api/v1/tasks", "", ""},
+		{"POST", "/v1/images/generations", "false"},
+		{"POST", "/v1/images/edits", "false"},
+		{"POST", "/v1/chat/completions", "false"},
+		{"GET", "/v1/models", ""},
+		{"POST", "/api/v1/tasks", ""},
 	} {
-		t.Run(test.method+test.path+test.key, func(t *testing.T) {
+		t.Run(test.method+test.path, func(t *testing.T) {
 			engine := gin.New()
 			engine.Use(openAICompatRequestMiddleware)
 			engine.Handle(test.method, test.path, func(c *gin.Context) { c.Status(http.StatusServiceUnavailable) })
-			request := httptest.NewRequest(test.method, test.path, nil)
-			request.Header.Set("Idempotency-Key", test.key)
 			response := httptest.NewRecorder()
-			engine.ServeHTTP(response, request)
+			engine.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
 			if got := response.Header().Get("X-Should-Retry"); got != test.want {
 				t.Fatalf("retry hint = %q, want %q", got, test.want)
 			}
@@ -232,10 +228,10 @@ func TestOpenAIRouterFailuresAndBodyLimits(t *testing.T) {
 		{"retrieve model missing key", "GET", "/v1/models/demo-image", "", "", 0, 401, "invalid_api_key"},
 		{"invalid generation key", "POST", "/v1/images/generations", "Bearer demo_invalid", "", 0, 401, "invalid_api_key"},
 		{"invalid edit key", "POST", "/v1/images/edits", "Bearer demo_invalid", "", 0, 401, "invalid_api_key"},
-		{"origin guard", "POST", "/v1/images/generations", "", "http://denied.invalid", 0, 403, "origin_not_allowed"},
+		{"cross-origin reaches key check", "POST", "/v1/images/generations", "", "http://denied.invalid", 0, 401, "invalid_api_key"},
 		{"generation too large", "POST", "/v1/images/generations", "", "", (1 << 20) + 1, 413, "request_too_large"},
-		{"edit too large", "POST", "/v1/images/edits", "", "", (33 << 20) + 1, 413, "request_too_large"},
-		{"edit accepts upload-sized body", "POST", "/v1/images/edits", "", "", 2 << 20, 401, "invalid_api_key"},
+		{"edit too large", "POST", "/v1/images/edits", "", "", openAIImageEditMaxBodyBytes + 1, 413, "request_too_large"},
+		{"edit accepts large reference images", "POST", "/v1/images/edits", "", "", 100 << 20, 401, "invalid_api_key"},
 		{"panic", "GET", "/v1/panic-fixture", "", "", 0, 500, "internal_error"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

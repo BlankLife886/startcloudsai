@@ -378,7 +378,7 @@ func (s *Server) upload(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	respondCreated(c, item.response(storedFilePrefix(c)))
+	respondCreated(c, item.response(storedFilePrefix))
 }
 
 func (s *Server) getFile(c *gin.Context) {

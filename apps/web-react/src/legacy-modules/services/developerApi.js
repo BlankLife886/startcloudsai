@@ -38,40 +38,17 @@ export function rotateAPIKey(id) {
   });
 }
 
-export async function listWebhooks({ signal } = {}) {
-  const data = await apiGet("/me/webhooks", {
+export async function listAPICalls({ page = 1, key = "", signal } = {}) {
+  const params = new URLSearchParams({ page: String(page), limit: "20" });
+  if (key) params.set("key", key);
+  const data = await apiGet(`/me/api-calls?${params}`, {
     signal,
-    fallbackMessage: "Webhook 读取失败",
+    fallbackMessage: "调用记录读取失败",
   });
-  return Array.isArray(data?.items) ? data.items : [];
-}
-
-export function createWebhook(payload) {
-  return apiPost("/me/webhooks", payload, { fallbackMessage: "Webhook 创建失败" });
-}
-
-export function updateWebhook(id, payload) {
-  return apiPatch(`/me/webhooks/${encodeURIComponent(id)}`, payload, {
-    fallbackMessage: "Webhook 更新失败",
-  });
-}
-
-export function deleteWebhook(id) {
-  return apiDelete(`/me/webhooks/${encodeURIComponent(id)}`, {
-    fallbackMessage: "Webhook 删除失败",
-  });
-}
-
-export async function listWebhookDeliveries({ signal } = {}) {
-  const data = await apiGet("/me/webhook-deliveries", {
-    signal,
-    fallbackMessage: "投递记录读取失败",
-  });
-  return Array.isArray(data?.items) ? data.items : [];
-}
-
-export function retryWebhookDelivery(id) {
-  return apiPost(`/me/webhook-deliveries/${encodeURIComponent(id)}/retry`, null, {
-    fallbackMessage: "Webhook 重试失败",
-  });
+  return {
+    items: Array.isArray(data?.items) ? data.items : [],
+    total: Number(data?.total) || 0,
+    totalCapped: Boolean(data?.totalCapped),
+    pageSize: Number(data?.pageSize) || 20,
+  };
 }

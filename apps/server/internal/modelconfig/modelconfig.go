@@ -67,6 +67,8 @@ const (
 	DefaultMaxImages        = 4
 	MaxImagesLimit          = 100
 	MaxReferenceImagesLimit = 16
+	// MaxDeveloperAPIConcurrency bounds the per-model /v1 concurrency cap.
+	MaxDeveloperAPIConcurrency = 10000
 )
 
 type Provider struct {
@@ -143,48 +145,54 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 }
 
 type Model struct {
-	ID                           string               `json:"id"`
-	Name                         string               `json:"name"`
-	IconURL                      string               `json:"iconUrl,omitempty"`
-	Status                       string               `json:"status,omitempty"`
-	ProviderID                   string               `json:"providerId"`
-	UpstreamModel                string               `json:"upstreamModel"`
-	UpstreamInputFields          []string             `json:"upstreamInputFields,omitempty"`
-	UpstreamRequiredInputFields  []string             `json:"upstreamRequiredInputFields,omitempty"`
-	UpstreamInputSchema          map[string]any       `json:"upstreamInputSchema,omitempty"`
-	Modality                     string               `json:"modality,omitempty"`
-	Operations                   []string             `json:"operations,omitempty"`
-	Kind                         string               `json:"kind"`
-	Tool                         string               `json:"tool,omitempty"`
-	Description                  string               `json:"description,omitempty"`
-	PriceCents                   int64                `json:"priceCents"`
-	DiscountPriceCents           *int64               `json:"discountPriceCents"`
-	UpstreamCostCents            int64                `json:"upstreamCostCents"`
-	AllowZeroPrice               bool                 `json:"allowZeroPrice"`
-	AllowLossLeader              bool                 `json:"allowLossLeader"`
-	ImageUpscalePricing          *ImageUpscalePricing `json:"imageUpscalePricing,omitempty"`
-	FastMode                     bool                 `json:"fastMode"`
-	MinSeconds                   int                  `json:"minSeconds"`
-	MaxSeconds                   int                  `json:"maxSeconds"`
-	Resolutions                  []string             `json:"resolutions"`
-	AspectRatios                 []string             `json:"aspectRatios"`
-	AspectRatiosByResolution     map[string][]string  `json:"aspectRatiosByResolution"`
-	SupportsExactSize            bool                 `json:"supportsExactSize"`
-	ExactSizeLimits              *ExactSizeLimits     `json:"exactSizeLimits,omitempty"`
-	Qualities                    []string             `json:"qualities"`
-	TransparentBackground        bool                 `json:"transparentBackground"`
-	OutputFormats                []string             `json:"outputFormats"`
-	ModerationLevels             []string             `json:"moderationLevels"`
-	MaxReferenceImages           int                  `json:"maxReferenceImages"`
-	MaxImages                    int                  `json:"maxImages"`
-	ContextWindowTokens          int                  `json:"contextWindowTokens,omitempty"`
-	MaxOutputTokens              int                  `json:"maxOutputTokens,omitempty"`
-	SupportedReasoningEfforts    []string             `json:"supportedReasoningEfforts"`
-	ReasoningEnabled             *bool                `json:"reasoningEnabled,omitempty"`
-	ReasoningPricing             *ReasoningPricing    `json:"reasoningPricing,omitempty"`
-	Public                       bool                 `json:"public"`
-	Default                      bool                 `json:"default"`
-	Enabled                      bool                 `json:"enabled"`
+	ID                          string               `json:"id"`
+	Name                        string               `json:"name"`
+	IconURL                     string               `json:"iconUrl,omitempty"`
+	Status                      string               `json:"status,omitempty"`
+	ProviderID                  string               `json:"providerId"`
+	UpstreamModel               string               `json:"upstreamModel"`
+	UpstreamInputFields         []string             `json:"upstreamInputFields,omitempty"`
+	UpstreamRequiredInputFields []string             `json:"upstreamRequiredInputFields,omitempty"`
+	UpstreamInputSchema         map[string]any       `json:"upstreamInputSchema,omitempty"`
+	Modality                    string               `json:"modality,omitempty"`
+	Operations                  []string             `json:"operations,omitempty"`
+	Kind                        string               `json:"kind"`
+	Tool                        string               `json:"tool,omitempty"`
+	Description                 string               `json:"description,omitempty"`
+	PriceCents                  int64                `json:"priceCents"`
+	DiscountPriceCents          *int64               `json:"discountPriceCents"`
+	UpstreamCostCents           int64                `json:"upstreamCostCents"`
+	AllowZeroPrice              bool                 `json:"allowZeroPrice"`
+	AllowLossLeader             bool                 `json:"allowLossLeader"`
+	ImageUpscalePricing         *ImageUpscalePricing `json:"imageUpscalePricing,omitempty"`
+	FastMode                    bool                 `json:"fastMode"`
+	MinSeconds                  int                  `json:"minSeconds"`
+	MaxSeconds                  int                  `json:"maxSeconds"`
+	Resolutions                 []string             `json:"resolutions"`
+	AspectRatios                []string             `json:"aspectRatios"`
+	AspectRatiosByResolution    map[string][]string  `json:"aspectRatiosByResolution"`
+	SupportsExactSize           bool                 `json:"supportsExactSize"`
+	ExactSizeLimits             *ExactSizeLimits     `json:"exactSizeLimits,omitempty"`
+	Qualities                   []string             `json:"qualities"`
+	TransparentBackground       bool                 `json:"transparentBackground"`
+	OutputFormats               []string             `json:"outputFormats"`
+	ModerationLevels            []string             `json:"moderationLevels"`
+	MaxReferenceImages          int                  `json:"maxReferenceImages"`
+	MaxImages                   int                  `json:"maxImages"`
+	ContextWindowTokens         int                  `json:"contextWindowTokens,omitempty"`
+	MaxOutputTokens             int                  `json:"maxOutputTokens,omitempty"`
+	SupportedReasoningEfforts   []string             `json:"supportedReasoningEfforts"`
+	ReasoningEnabled            *bool                `json:"reasoningEnabled,omitempty"`
+	ReasoningPricing            *ReasoningPricing    `json:"reasoningPricing,omitempty"`
+	Public                      bool                 `json:"public"`
+	Default                     bool                 `json:"default"`
+	Enabled                     bool                 `json:"enabled"`
+	// DeveloperAPI offers the model on the developer /v1 API. Configs saved
+	// before this switch existed keep their models offered.
+	DeveloperAPI bool `json:"developerApi"`
+	// DeveloperAPIMaxConcurrency caps in-flight /v1 requests for the model
+	// across all Keys; 0 means unlimited.
+	DeveloperAPIMaxConcurrency   int `json:"developerApiMaxConcurrency"`
 	transparentBackgroundSet     bool
 	maxReferenceImagesSet        bool
 	maxImagesSet                 bool
@@ -207,6 +215,7 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		alias
 		Public                   *bool                      `json:"public"`
+		DeveloperAPI             *bool                      `json:"developerApi"`
 		TransparentBackground    *bool                      `json:"transparentBackground"`
 		MaxReferenceImages       *int                       `json:"maxReferenceImages"`
 		MaxImages                *int                       `json:"maxImages"`
@@ -255,6 +264,7 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 	} else {
 		m.Public = *raw.Public
 	}
+	m.DeveloperAPI = raw.DeveloperAPI == nil || *raw.DeveloperAPI
 	if raw.TransparentBackground == nil {
 		m.TransparentBackground = m.Kind == ModelKindImage
 	} else {
@@ -932,6 +942,9 @@ func Validate(cfg Config) error {
 			if model.MaxImages < 1 || model.MaxImages > MaxImagesLimit {
 				return fmt.Errorf("模型 %s 的单次生成张数须在 1-%d 之间", model.Name, MaxImagesLimit)
 			}
+		}
+		if model.DeveloperAPIMaxConcurrency < 0 || model.DeveloperAPIMaxConcurrency > MaxDeveloperAPIConcurrency {
+			return fmt.Errorf("模型 %s 的 API 并发上限须在 0-%d 之间（0 为不限制）", model.Name, MaxDeveloperAPIConcurrency)
 		}
 		models[model.ID] = model
 	}

@@ -64,7 +64,7 @@
 
 ### `wallet_ledger`
 
-图片任务使用 `source_type='task'`，AI 助手使用 `source_type='assistant_run'`，标准图片直通使用 `source_type='openai_image_request'`，Responses 对话使用 `open_api_responses_chat`。助手失败重试时 `source_id` 使用 `run_id/generation`，保证每代预留、释放和结算分别幂等。`balance_after_cents` 始终记录当时可用积分，冻结积分不重复计入；`settled_points` 用于实际结算统计，不能仅从 `delta_cents` 推算消费。
+图片任务使用 `source_type='task'`，AI 助手使用 `source_type='assistant_run'`，标准图片直通使用 `source_type='openai_image_request'`，开发者对话使用 `open_api_chat`（2026-09-29 之前的 Responses 对话记录为 `open_api_responses_chat`）。助手失败重试时 `source_id` 使用 `run_id/generation`，保证每代预留、释放和结算分别幂等。`balance_after_cents` 始终记录当时可用积分，冻结积分不重复计入；`settled_points` 用于实际结算统计，不能仅从 `delta_cents` 推算消费。
 
 | 列                         | 说明                                                            |
 | -------------------------- | --------------------------------------------------------------- |
@@ -316,11 +316,9 @@ platform_log_max_mb                       256
 
 Key 已有创建、更新、轮换和撤销接口；用量与任务路径的关系需要区分：站内任务创建记录任务额度，标准直通调用通过请求计数记录额度，无须创建 `tasks` 行。额度统计是提交预算，不等于扣除退款后的净消费。
 
-API Key 仅保存 SHA-256 哈希和可识别前缀，明文只在创建时返回。每个 Key 保存 scope、公开模型白名单、日/月任务上限、日/月积分额度、到期时间和限频更新的最近使用信息。`api_key_usage_events` 在创建任务的同一数据库事务内记录额度占用，`task_id` 唯一，幂等重试不会重复占用额度。
+API Key 仅保存 SHA-256 哈希和可识别前缀，明文只在创建时返回。每个 Key 保存可用模型白名单、日/月任务上限、日/月积分额度、到期时间和限频更新的最近使用信息。`api_key_usage_events` 在创建任务的同一数据库事务内记录额度占用，`task_id` 唯一，幂等重试不会重复占用额度。
 
-### `api_webhook_endpoints` / `api_webhook_deliveries`
-
-Webhook endpoint 保存用户、HTTPS URL、加密 Secret、订阅事件和启停状态，每个用户最多 10 个。终态任务在同一事务创建 delivery，`(endpoint_id,event_type,source_id)` 唯一。Worker 使用 `FOR UPDATE SKIP LOCKED` 租约并发领取，网络错误、限流和服务端错误指数退避；不可重试的 4xx 或达到 8 次后进入 `dead`。用户可把自己的 dead 记录重新置为 `pending`，不能操作其他用户记录。
+`user_api_keys.scopes` 列与 `api_webhook_endpoints`、`api_webhook_deliveries` 两张表已由迁移 `00167` 删除：开发者 API 只保留同步返回的 `/v1`，不再有按接口划分的 Key 权限和任务回调。
 
 ## 无限画布工作流运行诊断
 

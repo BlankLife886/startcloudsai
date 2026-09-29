@@ -1,6 +1,6 @@
 # MCP 接入方案：星空云绘
 
-状态：方案文档，未实现独立可用 MCP 服务。核对日期：2026-09-22；当前 Go 路由没有 `/mcp`，Compose 没有 `mcp` 服务。已经实现的 REST、OpenAI Images/Responses 兼容接口，以及图片技能 OAuth 授权均不是 MCP Server，使用说明见 [OPEN_API.md](OPEN_API.md)。本项目用于代码阅读的 CodeGraph MCP 是开发工具，也不属于对外产品接口。
+状态：方案文档，未实现独立可用 MCP 服务。**注意：下文基于的旧任务 API `/api/open/v1/*` 已于 2026-09-29 移除，若实施需改为调用 `/v1`（见 [OPEN_API.md](OPEN_API.md)）。**核对日期：2026-09-22；当前 Go 路由没有 `/mcp`，Compose 没有 `mcp` 服务。已经实现的 REST、OpenAI Images/Responses 兼容接口，以及图片技能 OAuth 授权均不是 MCP Server，使用说明见 [OPEN_API.md](OPEN_API.md)。本项目用于代码阅读的 CodeGraph MCP 是开发工具，也不属于对外产品接口。
 
 ## 1. 给非技术用户的解释
 

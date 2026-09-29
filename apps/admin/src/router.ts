@@ -55,8 +55,8 @@ const feedbackView = memoizeRouteLoader(
   () => import("@/views/FeedbackView.vue"),
 );
 const tasksView = memoizeRouteLoader(() => import("@/views/TasksView.vue"));
-const profitabilityView = memoizeRouteLoader(
-  () => import("@/views/ProfitabilityView.vue"),
+const developerAPIView = memoizeRouteLoader(
+  () => import("@/views/DeveloperAPIView.vue"),
 );
 const agentQualityView = memoizeRouteLoader(
   () => import("@/views/AgentQualityView.vue"),
@@ -109,7 +109,7 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/growth-groups", growthGroupsView],
   ["/feedback", feedbackView],
   ["/tasks", tasksView],
-  ["/profitability", profitabilityView],
+  ["/developer-api", developerAPIView],
   ["/agent-quality", agentQualityView],
   ["/model-config", modelConfigView],
   ["/canvas-templates", canvasTemplatesView],
@@ -218,9 +218,9 @@ const router = createRouter({
           meta: { title: "任务与调度" },
         },
         {
-          path: "profitability",
-          component: profitabilityView,
-          meta: { title: "成本利润" },
+          path: "developer-api",
+          component: developerAPIView,
+          meta: { title: "开发者 API" },
         },
         {
           path: "agent-quality",

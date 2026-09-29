@@ -27,6 +27,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/crun"
+	"github.com/BlankLife886/startcloudsai/server/internal/devapibilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
@@ -57,11 +58,11 @@ const (
 	typeEvaluateIncidents       = "cron:evaluate_operational_incidents"
 	typeDispatchAssistantOutbox = "cron:dispatch_assistant_run_outbox"
 	typeDispatchAssistantFiles  = "cron:dispatch_assistant_files"
-	typeDispatchAPIWebhooks     = "cron:dispatch_api_webhooks"
 	typeSettleReferralMonths    = "cron:settle_referral_months"
 	typeRefreshUserProfiles     = "cron:refresh_user_profiles"
 	typeRankUserProfiles        = "cron:rank_user_profiles"
 	typeEnqueueAllUserProfiles  = "cron:enqueue_all_user_profiles"
+	typeReclaimDeveloperAPI     = "cron:reclaim_developer_api_reservations"
 
 	taskCompletionLease         = 5 * time.Minute
 	taskLease                   = 2 * time.Minute
@@ -218,11 +219,11 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeEvaluateIncidents, w.handleEvaluateOperationalIncidents)
 	mux.HandleFunc(typeDispatchAssistantOutbox, w.handleDispatchAssistantOutbox)
 	mux.HandleFunc(typeDispatchAssistantFiles, w.handleDispatchAssistantFiles)
-	mux.HandleFunc(typeDispatchAPIWebhooks, w.handleDispatchAPIWebhooks)
 	mux.HandleFunc(typeSettleReferralMonths, w.handleSettleReferralMonths)
 	mux.HandleFunc(typeRefreshUserProfiles, w.handleRefreshUserProfiles)
 	mux.HandleFunc(typeRankUserProfiles, w.handleRankUserProfiles)
 	mux.HandleFunc(typeEnqueueAllUserProfiles, w.handleEnqueueAllUserProfiles)
+	mux.HandleFunc(typeReclaimDeveloperAPI, w.handleReclaimDeveloperAPI)
 
 	provider := &staticPeriodicConfigProvider{}
 	mgr, err := asynq.NewPeriodicTaskManager(asynq.PeriodicTaskManagerOpts{
@@ -313,11 +314,11 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		periodicConfig("@every 1m", typeEvaluateIncidents, 50*time.Second, 1),
 		periodicConfig("@every 15s", typeDispatchAssistantOutbox, 14*time.Second, 0),
 		periodicConfig("@every 15s", typeDispatchAssistantFiles, 14*time.Second, 0),
-		periodicConfig("@every 15s", typeDispatchAPIWebhooks, 14*time.Second, 0),
 		periodicConfig("@every 1m", typeSettleReferralMonths, 55*time.Second, 0),
 		periodicConfig("@every 1m", typeRefreshUserProfiles, 50*time.Second, 1),
 		periodicConfig("@every 1h", typeRankUserProfiles, 59*time.Minute, 1),
 		periodicConfig("@every 24h", typeEnqueueAllUserProfiles, 23*time.Hour+59*time.Minute, 1),
+		periodicConfig("@every 5m", typeReclaimDeveloperAPI, 4*time.Minute+50*time.Second, 0),
 	}, nil
 }
 
@@ -3747,6 +3748,16 @@ func (w *Worker) handleExpireTrialCampaigns(ctx context.Context, _ *asynq.Task) 
 		log.Printf("closed %d expired trial campaigns", expired)
 	}
 	return nil
+}
+
+// handleReclaimDeveloperAPI releases developer-API reservations that were
+// left open past their retry window (unknown upstream outcome, lost process).
+func (w *Worker) handleReclaimDeveloperAPI(ctx context.Context, _ *asynq.Task) error {
+	reclaimed, err := devapibilling.Reclaim(ctx, w.St, time.Now().UTC(), 200)
+	if reclaimed > 0 {
+		log.Printf("reclaimed %d expired developer API reservations", reclaimed)
+	}
+	return err
 }
 
 // handleSyncPromptSources cron：每 30 分钟扫描到期的提示词数据源并同步。

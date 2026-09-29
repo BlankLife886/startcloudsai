@@ -35,9 +35,9 @@ func TestDeveloperAPIGateDefaultsToDisabled(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/open/v1/models", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	called := false
-	srv.openAPIOnly("models:read", func(c *gin.Context) { called = true })(c)
+	srv.openAPIOnly(func(c *gin.Context) { called = true })(c)
 
 	if called {
 		t.Fatal("disabled Open API reached the protected handler")
@@ -59,12 +59,12 @@ func TestDeveloperAPIGateAllowsAuthenticationWhenEnabled(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/open/v1/models", nil)
-	srv.openAPIOnly("models:read", func(c *gin.Context) {
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	srv.openAPIOnly(func(c *gin.Context) {
 		t.Fatal("request without API key reached the protected handler")
 	})(c)
 
-	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), `"code":"api_key_required"`) {
+	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), `"code":"invalid_api_key"`) {
 		t.Fatalf("enabled response = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
@@ -82,17 +82,32 @@ func TestDeveloperAPIGateBlocksUserManagementEndpoints(t *testing.T) {
 	}
 }
 
+// developerCatalogFixture binds one image model to the text-to-image
+// workspace (so /v1 can run it) and leaves a second one unbound and a third private.
+func developerCatalogFixture() (modelconfig.Config, modelconfig.Model) {
+	provider := modelconfig.Provider{ID: "p", Name: "p", Adapter: modelconfig.AdapterOpenAI, BaseURL: "http://upstream.invalid", APIKey: "k", Enabled: true}
+	wire := modelconfig.Model{ID: "model-0000-internal", Name: "gpt-image-2", ProviderID: provider.ID, UpstreamModel: "u",
+		Kind: modelconfig.ModelKindImage, PriceCents: 20, Enabled: true, Public: true, Default: true, DeveloperAPI: true, MaxImages: 1,
+		Resolutions: []string{"1K"}, AspectRatios: []string{"1:1"}}
+	unbound := wire
+	unbound.ID, unbound.Name, unbound.Default = "model-1111-unbound", "unbound", false
+	private := wire
+	private.ID, private.Name, private.Default, private.Public = "model-2222-private", "private", false, false
+	return modelconfig.Config{Version: modelconfig.Version, Providers: []modelconfig.Provider{provider},
+		Models: []modelconfig.Model{wire, unbound, private},
+		Workspaces: map[string]modelconfig.WorkspaceBinding{modelconfig.WorkspaceT2I: {
+			ModelIDs: []string{wire.ID, private.ID}, DefaultModelIDs: map[string]string{modelconfig.ModelKindImage: wire.ID},
+		}},
+	}, wire
+}
+
 func TestNormalizeOpenAPIModelIDs(t *testing.T) {
-	cfg := modelconfig.Config{Models: []modelconfig.Model{
-		{ID: "image", Kind: modelconfig.ModelKindImage, Public: true, Enabled: true},
-		{ID: "chat", Kind: modelconfig.ModelKindChat, Public: true, Enabled: true},
-		{ID: "private", Kind: modelconfig.ModelKindImage, Public: false, Enabled: true},
-	}}
-	ids, err := normalizeOpenAPIModelIDs(cfg, []string{" image ", "image", "chat", ""})
-	if err != nil || len(ids) != 2 || ids[0] != "image" || ids[1] != "chat" {
+	cfg, wire := developerCatalogFixture()
+	ids, err := normalizeOpenAPIModelIDs(cfg, []string{" " + wire.ID + " ", wire.ID, ""})
+	if err != nil || len(ids) != 1 || ids[0] != wire.ID {
 		t.Fatalf("normalized ids = %#v err=%v", ids, err)
 	}
-	for _, denied := range []string{"private", "missing"} {
+	for _, denied := range []string{"model-1111-unbound", "model-2222-private", "missing"} {
 		if _, err := normalizeOpenAPIModelIDs(cfg, []string{denied}); err == nil {
 			t.Fatalf("model %q should be denied", denied)
 		}
@@ -114,12 +129,22 @@ func TestAPIKeyIPAllowlistSupportsAddressAndCIDR(t *testing.T) {
 	}
 }
 
-func TestNormalizeWebhookEvents(t *testing.T) {
-	events, err := normalizeWebhookEvents([]string{"task.failed", "task.failed", "task.succeeded"})
-	if err != nil || len(events) != 2 || events[0] != "task.failed" || events[1] != "task.succeeded" {
-		t.Fatalf("events = %#v err=%v", events, err)
+func TestAPIKeyDisplayPrefixShowsFourSecretCharacters(t *testing.T) {
+	for stored, want := range map[string]string{
+		"sk-sc-Ab3dEf9hIj2k": "sk-sc-Ab3d",
+		"sk-sc-Ab":           "sk-sc-Ab",
+		"":                   "",
+	} {
+		if got := apiKeyDisplayPrefix(stored); got != want {
+			t.Fatalf("apiKeyDisplayPrefix(%q) = %q, want %q", stored, got, want)
+		}
 	}
-	if _, err := normalizeWebhookEvents([]string{"task.running"}); err == nil {
-		t.Fatal("unsupported event should fail")
+}
+
+func TestDeveloperModelItemsListOnlyV1Models(t *testing.T) {
+	cfg, wire := developerCatalogFixture()
+	items := developerModelItems(cfg)
+	if len(items) != 1 || items[0]["id"] != wire.ID || items[0]["model"] != "gpt-image-2" {
+		t.Fatalf("developer catalog = %#v", items)
 	}
 }

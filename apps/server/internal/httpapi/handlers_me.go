@@ -610,7 +610,7 @@ func (s *Server) myLedger(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	total, err := store.CountUserLedgerCapped(ctx, s.St.Pool, user.ID)
+	total, err := store.CountUserWalletLedgerCapped(ctx, s.St.Pool, user.ID)
 	if err != nil {
 		fail(c, err)
 		return
@@ -618,9 +618,9 @@ func (s *Server) myLedger(c *gin.Context) {
 	var rows []*store.LedgerEntry
 	if page > 0 {
 		offset := (page - 1) * limit
-		rows, err = store.ListLedgerPage(ctx, s.St.Pool, user.ID, limit, offset)
+		rows, err = store.ListUserWalletLedgerPage(ctx, s.St.Pool, user.ID, limit, offset)
 	} else {
-		rows, err = store.ListLedger(ctx, s.St.Pool, user.ID, limit, cursor)
+		rows, err = store.ListUserWalletLedger(ctx, s.St.Pool, user.ID, limit, cursor)
 	}
 	if err != nil {
 		fail(c, err)

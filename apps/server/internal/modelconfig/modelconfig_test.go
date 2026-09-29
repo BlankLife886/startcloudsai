@@ -767,3 +767,16 @@ func TestWorkspaceModelLimitsValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestDeveloperAPISwitchKeepsOlderConfigsOffered(t *testing.T) {
+	var older, off Model
+	if err := json.Unmarshal([]byte(`{"id":"a","kind":"image"}`), &older); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{"id":"b","kind":"image","developerApi":false,"developerApiMaxConcurrency":3}`), &off); err != nil {
+		t.Fatal(err)
+	}
+	if !older.DeveloperAPI || off.DeveloperAPI || off.DeveloperAPIMaxConcurrency != 3 {
+		t.Fatalf("older=%v off=%v/%d", older.DeveloperAPI, off.DeveloperAPI, off.DeveloperAPIMaxConcurrency)
+	}
+}

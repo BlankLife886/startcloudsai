@@ -119,7 +119,7 @@ const UTILITY_TOOLS = [
   tool("prompts", "提示词库", "搜索和复用管理员分配的提示词。", { to: "/prompts", surface: "资产" }),
   tool("history", "生成历史", "查看图片、文本、失败原因和生成耗时。", { to: "/history", surface: "记录" }),
   tool("share", "作品社区", "提交作品、审核并公开展示。", { to: "/share", surface: "作品" }),
-  tool("developer-api", "开放 API", "创建 API Key、调用生图和工作流接口并接收 Webhook。", { to: "/developer-api", surface: "开放能力", status: "controlled" }),
+  tool("developer-api", "开放 API", "创建 API Key，用 OpenAI SDK 调用生图与对话模型。", { to: "/developer-api", surface: "开放能力", status: "controlled" }),
   tool("wallet", "钱包与账单", "查看积分余额、变动明细和订单。", { to: "/wallet", surface: "账户" }),
 ];
 

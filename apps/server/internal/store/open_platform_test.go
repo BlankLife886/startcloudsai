@@ -97,7 +97,7 @@ func TestAPIKeyTaskAndSpendLimits(t *testing.T) {
 	user := openPlatformUser(t, st)
 	key, err := store.InsertUserAPIKey(ctx, st.Pool, &store.UserAPIKey{
 		UserID: user.ID, KeyPrefix: "sk-sc-test", KeyHash: "hash-" + uuid.NewString(), Label: "test",
-		Scopes: []string{"tasks:write"}, AllowedModelIDs: []string{"allowed"}, DailyTaskLimit: 1,
+		AllowedModelIDs: []string{"allowed"}, DailyTaskLimit: 1,
 		MonthlyTaskLimit: 2, DailySpendLimitCents: 20, MonthlySpendLimitCents: 40,
 	})
 	if err != nil {
@@ -128,45 +128,5 @@ func TestAPIKeyTaskAndSpendLimits(t *testing.T) {
 	denied := newTask("denied")
 	if err := store.RecordAPIKeyTaskCreation(ctx, st.Pool, key.ID, user.ID, denied.ID, "denied", 1, now); !errors.Is(err, store.ErrAPIKeyModelDenied) {
 		t.Fatalf("expected model denial, got %v", err)
-	}
-}
-
-func TestWebhookDeadDeliveryCanBeRetriedByOwner(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	user := openPlatformUser(t, st)
-	endpoint, err := store.InsertAPIWebhookEndpoint(ctx, st.Pool, &store.APIWebhookEndpoint{
-		UserID: user.ID, Label: "callback", URL: "https://example.com/hook", SecretEncrypted: "encrypted",
-		Events: []string{"task.failed"}, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	apiKeyID := uuid.NewString()
-	errorCode, errorMessage := "upstream_failed", "provider rejected request"
-	task := &store.Task{ID: uuid.New(), UserID: user.ID, Type: "t2i", Count: 1,
-		Params: map[string]any{"_apiKeyId": apiKeyID}, ErrorCode: &errorCode, ErrorMessage: &errorMessage}
-	now := time.Now().UTC()
-	if err := store.EnqueueTaskWebhookDeliveries(ctx, st.Pool, task, "failed", now); err != nil {
-		t.Fatal(err)
-	}
-	claimed, err := store.ClaimAPIWebhookDeliveries(ctx, st.Pool, "worker", time.Now().UTC().Add(time.Second), time.Minute, 10)
-	if err != nil || len(claimed) != 1 || claimed[0].EndpointID != endpoint.ID {
-		t.Fatalf("claimed = %#v err=%v", claimed, err)
-	}
-	if err := store.FailAPIWebhookDelivery(ctx, st.Pool, claimed[0].ID, "worker", "HTTP 400", 400, now, now, 1); err != nil {
-		t.Fatal(err)
-	}
-	items, err := store.ListAPIWebhookDeliveries(ctx, st.Pool, user.ID, 10)
-	if err != nil || len(items) != 1 || items[0].Status != "dead" {
-		t.Fatalf("deliveries = %#v err=%v", items, err)
-	}
-	changed, err := store.RetryAPIWebhookDelivery(ctx, st.Pool, user.ID, items[0].ID, now.Add(time.Second))
-	if err != nil || !changed {
-		t.Fatalf("retry changed=%v err=%v", changed, err)
-	}
-	other := openPlatformUser(t, st)
-	if changed, err := store.RetryAPIWebhookDelivery(ctx, st.Pool, other.ID, items[0].ID, now); err != nil || changed {
-		t.Fatalf("other user retry changed=%v err=%v", changed, err)
 	}
 }

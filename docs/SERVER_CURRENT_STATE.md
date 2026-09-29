@@ -6,11 +6,11 @@
 
 | 入口 | 执行和持久化 | 账务与恢复 |
 | --- | --- | --- |
-| `/api/v1/tasks`、`/api/open/v1/tasks` | PostgreSQL `tasks`、Asynq、Worker、私有对象存储 | 提交预留，按实际交付结算；任务 ID 查询、租约/上游尝试恢复。Open API 任务可投递 Webhook。 |
+| `/api/v1/tasks` | PostgreSQL `tasks`、Asynq、Worker、私有对象存储 | 提交预留，按实际交付结算；任务 ID 查询、租约/上游尝试恢复。 |
 | `/api/v1/assistant/runs` | `assistant_runs`、对话/图片执行池、持久消息、SSE | `assistantbilling` 把状态变化与钱包操作放在同一事务；重试按 billing generation 区分。 |
-| `/v1/images/generations`、`/v1/images/edits` | HTTP 直接调用 OpenAI 协议上游；不建站内任务、不存输入输出图片 | 按 Key 和幂等键关联 `openai_image_request` 账务；没有站内任务查询、后台回收或任务 Webhook。 |
+| `/v1/images/generations`、`/v1/images/edits` | HTTP 直接调用 OpenAI 协议上游；不建站内任务、不存输入输出图片 | 按 Key 和幂等键关联 `openai_image_request` 账务；没有站内任务查询。 |
 
-`/v1/responses` 另提供对话、SSE、WebSocket 及图片工具的兼容子集。公开模型名、权限和受支持字段见 [开放 API](OPEN_API.md)。不能把 `/v1` 图片请求的超时解释成“稍后到站内历史取图”：上游结果重放依赖上游幂等能力。网络超时、断开和其他不确定失败会保留预留；确定失败可以释放。客户端须保存原幂等键和请求参数，避免以新键盲目重发。
+`/v1/chat/completions` 把对话原样转发给上游（只替换模型名）。`/v1` 没有站内任务可查：请求要么成功结算，要么失败（含超时、断开）立即释放预留，网关不重试、不支持幂等键；进程中途退出留下的预留由回收任务在 1 小时后释放。公开模型名和受支持字段见 [开放 API](OPEN_API.md)。
 
 ## 支付与计费
 

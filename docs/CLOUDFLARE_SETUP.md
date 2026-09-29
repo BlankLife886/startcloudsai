@@ -66,7 +66,7 @@ sh deploy/cloudflare/update-realip-ranges.sh
 
 只有 `nginx -t` 成功后才能 reload。
 
-现有 snippet 只包含普通 HTTP/SSE 代理基础配置。若使用 `/v1/responses` WebSocket，还需按 [部署手册](DEPLOYMENT.md) 补外层 Upgrade/Connection 转发；图片/模板上传大小限制也由外层与容器网关共同决定。
+现有 snippet 只包含普通 HTTP/SSE 代理基础配置，`/v1` 已不提供 WebSocket；图片/模板上传大小限制由外层与容器网关共同决定（`/v1/images/edits` 请求体上限 512 MiB）。
 
 ## 4. Docker Gateway
 
@@ -128,7 +128,7 @@ starts_with(http.request.uri.path, "/.well-known/oauth-")
 
 操作：**Bypass cache**。
 
-用户登录、钱包、任务、SSE、后台、`/api/v1/files/...`、开放 Images/Responses 和图片技能授权都包含在这条规则中。表达式使用 `starts_with(field, prefix)` 函数，见 [规则表达式语法](https://developers.cloudflare.com/ruleset-engine/rules-language/operators/)。
+用户登录、钱包、任务、SSE、后台、`/api/v1/files/...`、开放 `/v1` 接口和图片技能授权都包含在这条规则中。表达式使用 `starts_with(field, prefix)` 函数，见 [规则表达式语法](https://developers.cloudflare.com/ruleset-engine/rules-language/operators/)。
 
 ### 7.2 静态文件缓存
 

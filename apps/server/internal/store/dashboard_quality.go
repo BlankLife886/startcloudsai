@@ -26,8 +26,6 @@ type DashboardOpenAPIQuality struct {
 	Enabled         bool  `json:"enabled"`
 	ActiveKeys      int64 `json:"activeKeys"`
 	Requests24Hours int64 `json:"requests24Hours"`
-	PendingWebhooks int64 `json:"pendingWebhooks"`
-	DeadWebhooks    int64 `json:"deadWebhooks"`
 }
 
 type DashboardObjectCleanupQuality struct {
@@ -78,9 +76,7 @@ func GetDashboardQualitySummary(ctx context.Context, q Q, agentSince, billingSin
 		SELECT
 			(SELECT count(*) FROM user_api_keys
 				WHERE status = 'active' AND (expires_at IS NULL OR expires_at > now())) AS active_keys,
-			(SELECT count(*) FROM api_key_usage_events WHERE created_at >= $3) AS requests_24h,
-			(SELECT count(*) FROM api_webhook_deliveries WHERE status = 'pending') AS pending_webhooks,
-			(SELECT count(*) FROM api_webhook_deliveries WHERE status = 'dead') AS dead_webhooks
+			(SELECT count(*) FROM api_key_usage_events WHERE created_at >= $3) AS requests_24h
 	),
 	cleanup AS (
 		SELECT count(*) AS pending,
@@ -91,7 +87,7 @@ func GetDashboardQualitySummary(ctx context.Context, q Q, agentSince, billingSin
 	SELECT agent_traces.total, agent_traces.succeeded, agent_traces.failed, agent_traces.average_score,
 		agent_steps.failed, agent_steps.unfinished,
 		billing.anomalous, billing.zero_revenue, billing.below_cost, billing.zero_cost, billing.missing_route,
-		open_api.active_keys, open_api.requests_24h, open_api.pending_webhooks, open_api.dead_webhooks,
+		open_api.active_keys, open_api.requests_24h,
 		cleanup.pending, cleanup.failed, cleanup.oldest_created_at
 	FROM agent_traces CROSS JOIN agent_steps CROSS JOIN billing CROSS JOIN open_api CROSS JOIN cleanup`,
 		agentSince, billingSince, apiSince).Scan(
@@ -99,7 +95,7 @@ func GetDashboardQualitySummary(ctx context.Context, q Q, agentSince, billingSin
 		&out.Agent.FailedSteps, &out.Agent.UnfinishedSteps,
 		&out.Billing.AnomalousEntries, &out.Billing.ZeroRevenueEntries, &out.Billing.BelowCostEntries,
 		&out.Billing.ZeroCostEntries, &out.Billing.MissingRouteEntries,
-		&out.OpenAPI.ActiveKeys, &out.OpenAPI.Requests24Hours, &out.OpenAPI.PendingWebhooks, &out.OpenAPI.DeadWebhooks,
+		&out.OpenAPI.ActiveKeys, &out.OpenAPI.Requests24Hours,
 		&out.ObjectCleanup.Pending, &out.ObjectCleanup.Failed, &out.ObjectCleanup.OldestCreatedAt,
 	)
 	return &out, err

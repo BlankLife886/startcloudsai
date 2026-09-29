@@ -142,8 +142,8 @@ func TestPersistUserUploadPreservesOriginalAndResponse(t *testing.T) {
 	if !reflect.DeepEqual(registered, item.Objects) {
 		t.Fatal("result includes an object that was not quota-registered")
 	}
-	response := item.response("/api/open/v1/files/")
-	if len(response) != 8 || response["url"] != "/api/open/v1/files/"+item.Key || response["thumbnailKey"] != item.ThumbnailKey || response["displayKey"] != item.DisplayKey {
+	response := item.response(storedFilePrefix)
+	if len(response) != 8 || response["url"] != storedFilePrefix+item.Key || response["thumbnailKey"] != item.ThumbnailKey || response["displayKey"] != item.DisplayKey {
 		t.Fatalf("legacy upload response changed: %#v", response)
 	}
 	if _, exposed := response["SHA256"]; exposed {
