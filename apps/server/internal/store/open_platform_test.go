@@ -97,7 +97,7 @@ func TestAPIKeyTaskAndSpendLimits(t *testing.T) {
 	user := openPlatformUser(t, st)
 	key, err := store.InsertUserAPIKey(ctx, st.Pool, &store.UserAPIKey{
 		UserID: user.ID, KeyPrefix: "sk-sc-test", KeyHash: "hash-" + uuid.NewString(), Label: "test",
-		AllowedModelIDs: []string{"allowed"}, AllowedAPIModelIDs: []string{"allowed"}, DailyTaskLimit: 1,
+		AllowedAPIModelIDs: []string{"allowed"}, DailyTaskLimit: 1,
 		MonthlyTaskLimit: 2, DailySpendLimitCents: 20, MonthlySpendLimitCents: 40,
 	})
 	if err != nil {

@@ -24,12 +24,60 @@ const ContractLockSettingKey = "developer_api_contract_lock_until"
 // ContractLockNotice is how long locks keep applying after the migration.
 const ContractLockNotice = 7 * 24 * time.Hour
 
-// MigrationKey is one API Key as the migration sees it.
+// MigrationKey is one API Key as the migration sees it: its former
+// site-model allowlist (the dropped user_api_keys.allowed_model_ids column).
 type MigrationKey struct {
 	ID              string
 	Label           string
 	Owner           string
 	AllowedModelIDs []string
+}
+
+// LegacyModel is what a site model said about /v1 before the catalog: the
+// "developerApi" switch (absent meant on) and "developerApiMaxConcurrency"
+// in the stored model configuration JSON. The fields are no longer part of
+// modelconfig.Model; only the one-time migration reads them.
+type LegacyModel struct {
+	Offered        bool
+	MaxConcurrency int
+}
+
+// Legacy maps site model ids to their former /v1 settings.
+type Legacy map[string]LegacyModel
+
+// Of returns a model's former settings; a model without them was offered.
+func (l Legacy) Of(id string) LegacyModel {
+	if model, ok := l[id]; ok {
+		return model
+	}
+	return LegacyModel{Offered: true}
+}
+
+// ParseLegacy reads the former /v1 settings from stored model config JSON.
+func ParseLegacy(raw []byte) Legacy {
+	var stored struct {
+		Models []struct {
+			ID             string `json:"id"`
+			Offered        *bool  `json:"developerApi"`
+			MaxConcurrency int    `json:"developerApiMaxConcurrency"`
+		} `json:"models"`
+	}
+	legacy := Legacy{}
+	if json.Unmarshal(raw, &stored) != nil {
+		return legacy
+	}
+	for _, model := range stored.Models {
+		legacy[model.ID] = LegacyModel{Offered: model.Offered == nil || *model.Offered, MaxConcurrency: model.MaxConcurrency}
+	}
+	return legacy
+}
+
+// MigrationInput is everything BuildPlan reads.
+type MigrationInput struct {
+	Config   modelconfig.Config
+	Legacy   Legacy
+	Keys     []MigrationKey
+	Policies []MigrationPolicy
 }
 
 // MigrationPolicy is one stored copy of a subscription policy.
@@ -79,19 +127,20 @@ func modelByID(cfg modelconfig.Config) map[string]modelconfig.Model {
 //     (an older copy of the same model), dropped if it is disabled on the
 //     site, and otherwise kept as a draft for an admin to review;
 //   - Keys and subscription policies are rewritten to catalog ids.
-func BuildPlan(cfg modelconfig.Config, keys []MigrationKey, policies []MigrationPolicy, now time.Time) Plan {
+func BuildPlan(in MigrationInput, now time.Time) Plan {
+	cfg, legacy, keys, policies := in.Config, in.Legacy, in.Keys, in.Policies
 	plan := Plan{}
 	byID := modelByID(cfg)
 	byTarget := map[string]*store.DeveloperAPIModel{}
 	taken := map[string]bool{}
 	published := now.UTC()
 
-	for _, selected := range LegacyOffered(cfg) {
+	for _, selected := range LegacyOffered(cfg, legacy) {
 		kind, _ := KindOf(selected.Model)
 		entry := &store.DeveloperAPIModel{
 			ID: NewID(), APIName: strings.TrimSpace(selected.Model.Name), Aliases: []string{}, Kind: kind,
 			TargetModelID: selected.Model.ID, Status: store.DeveloperAPIModelLive, PriceMode: store.DeveloperAPIPriceFollow,
-			MaxConcurrency: selected.Model.DeveloperAPIMaxConcurrency, Description: selected.Model.Description, PublishedAt: &published,
+			MaxConcurrency: legacy.Of(selected.Model.ID).MaxConcurrency, Description: selected.Model.Description, PublishedAt: &published,
 		}
 		plan.Entries = append(plan.Entries, entry)
 		byTarget[entry.TargetModelID] = entry
@@ -134,11 +183,11 @@ func BuildPlan(cfg modelconfig.Config, keys []MigrationKey, policies []Migration
 		entry = &store.DeveloperAPIModel{
 			ID: NewID(), APIName: candidate, Aliases: []string{}, Kind: kind, TargetModelID: model.ID,
 			Status: store.DeveloperAPIModelDraft, PriceMode: store.DeveloperAPIPriceFollow,
-			MaxConcurrency: model.DeveloperAPIMaxConcurrency, Description: model.Description,
+			MaxConcurrency: legacy.Of(model.ID).MaxConcurrency, Description: model.Description,
 		}
 		plan.Entries = append(plan.Entries, entry)
 		byTarget[model.ID] = entry
-		reason := draftReason(cfg, model)
+		reason := draftReason(cfg, legacy, model)
 		plan.Notes = append(plan.Notes, fmt.Sprintf("草稿「%s」→ 站内模型「%s」（%s）", candidate, name, reason))
 		return entry, false, true
 	}
@@ -206,9 +255,9 @@ func BuildPlan(cfg modelconfig.Config, keys []MigrationKey, policies []Migration
 	return plan
 }
 
-func draftReason(cfg modelconfig.Config, model modelconfig.Model) string {
+func draftReason(cfg modelconfig.Config, legacy Legacy, model modelconfig.Model) string {
 	reasons := []string{}
-	if !model.DeveloperAPI {
+	if !legacy.Of(model.ID).Offered {
 		reasons = append(reasons, "未开启开发者 API")
 	}
 	if !model.Enabled {
@@ -341,30 +390,45 @@ func kindLabel(kind string) string {
 	return "图片"
 }
 
-// LoadMigrationInput reads what BuildPlan needs.
-func LoadMigrationInput(ctx context.Context, q store.Q) (modelconfig.Config, []MigrationKey, []MigrationPolicy, error) {
+// LoadMigrationInput reads what BuildPlan needs. The legacy Key allowlist
+// column is gone once migration 00174 has run; the catalog is built before
+// that (see BackfillSchemaVersion), and afterwards no Key has one.
+func LoadMigrationInput(ctx context.Context, q store.Q) (MigrationInput, error) {
+	in := MigrationInput{Legacy: Legacy{}, Keys: []MigrationKey{}}
 	cfg, err := modelconfig.Load(ctx, q)
 	if err != nil {
-		return cfg, nil, nil, err
+		return in, err
 	}
-	rows, err := q.Query(ctx, `SELECT k.id::text,k.label,COALESCE(u.email,''),k.allowed_model_ids
-		FROM user_api_keys k LEFT JOIN users u ON u.id=k.user_id
-		WHERE k.status<>'revoked' ORDER BY k.created_at`)
+	in.Config = cfg
+	raw, err := store.GetAppSetting(ctx, q, modelconfig.SettingKey)
 	if err != nil {
-		return cfg, nil, nil, err
+		return in, err
 	}
-	keys := []MigrationKey{}
-	for rows.Next() {
-		var key MigrationKey
-		if err := rows.Scan(&key.ID, &key.Label, &key.Owner, &key.AllowedModelIDs); err != nil {
-			rows.Close()
-			return cfg, nil, nil, err
+	in.Legacy = ParseLegacy(raw)
+	var hasColumn bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		WHERE table_schema=current_schema() AND table_name='user_api_keys' AND column_name='allowed_model_ids')`).Scan(&hasColumn); err != nil {
+		return in, err
+	}
+	if hasColumn {
+		rows, err := q.Query(ctx, `SELECT k.id::text,k.label,COALESCE(u.email,''),k.allowed_model_ids
+			FROM user_api_keys k LEFT JOIN users u ON u.id=k.user_id
+			WHERE k.status<>'revoked' ORDER BY k.created_at`)
+		if err != nil {
+			return in, err
 		}
-		keys = append(keys, key)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return cfg, nil, nil, err
+		for rows.Next() {
+			var key MigrationKey
+			if err := rows.Scan(&key.ID, &key.Label, &key.Owner, &key.AllowedModelIDs); err != nil {
+				rows.Close()
+				return in, err
+			}
+			in.Keys = append(in.Keys, key)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return in, err
+		}
 	}
 	policies := []MigrationPolicy{}
 	for _, source := range []struct{ table, query string }{
@@ -374,14 +438,14 @@ func LoadMigrationInput(ctx context.Context, q store.Q) (modelconfig.Config, []M
 	} {
 		rows, err := q.Query(ctx, source.query)
 		if err != nil {
-			return cfg, nil, nil, err
+			return in, err
 		}
 		for rows.Next() {
 			var id string
 			var raw []byte
 			if err := rows.Scan(&id, &raw); err != nil {
 				rows.Close()
-				return cfg, nil, nil, err
+				return in, err
 			}
 			var policy store.SubscriptionPolicy
 			if len(raw) == 0 || json.Unmarshal(raw, &policy) != nil {
@@ -391,10 +455,11 @@ func LoadMigrationInput(ctx context.Context, q store.Q) (modelconfig.Config, []M
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return cfg, nil, nil, err
+			return in, err
 		}
 	}
-	return cfg, keys, policies, nil
+	in.Policies = policies
+	return in, nil
 }
 
 // Apply writes the plan in one transaction. It refuses to run twice.

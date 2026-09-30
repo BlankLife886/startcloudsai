@@ -213,6 +213,12 @@ func ContractLockActive(ctx context.Context, q store.Q, now time.Time) (bool, er
 	return now.Before(until), nil
 }
 
+// BackfillSchemaVersion is the last migration before the legacy Key
+// allowlist column is dropped (00174). Callers migrate up to it, run
+// EnsureInitialized, then migrate the rest, so the backfill can still read
+// the legacy column on a database that has never had a catalog.
+const BackfillSchemaVersion int64 = 173
+
 // EnsureInitialized builds the catalog on the first start after the schema
 // migration, so /v1 never runs with an empty catalog. It is a no-op once the
 // catalog has entries. The report goes to the log for review.
@@ -234,12 +240,13 @@ func EnsureInitialized(ctx context.Context, pool *pgxpool.Pool) error {
 	if count, err := store.CountDeveloperAPIModels(ctx, tx); err != nil || count > 0 {
 		return err
 	}
-	cfg, keys, policies, err := LoadMigrationInput(ctx, tx)
+	in, err := LoadMigrationInput(ctx, tx)
 	if err != nil {
 		return err
 	}
 	now := time.Now()
-	plan := BuildPlan(cfg, keys, policies, now)
+	cfg := in.Config
+	plan := BuildPlan(in, now)
 	if len(plan.Entries) == 0 {
 		return nil
 	}

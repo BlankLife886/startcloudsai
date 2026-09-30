@@ -67,14 +67,14 @@ Key 指定模型  -------------------->  API 模型 ID
 | `pending_price` | 计划中的调价：`{price_cents, effective_at}`，到点自动生效 |
 | `sunset_at` | 弃用后计划下线的时间 |
 | `replacement_id` | 推荐替代的 API 模型，用于弃用提示和 410 响应 |
-| `max_concurrency` | 该 API 模型同时进行的 `/v1` 请求上限，**默认 0 = 不限制**，后台可调。从站内模型的 `developerApiMaxConcurrency` 迁过来 |
+| `max_concurrency` | 该 API 模型同时进行的 `/v1` 请求上限，**默认 0 = 不限制**，后台可调。迁移时取自站内模型原来的 `developerApiMaxConcurrency`（该字段已移除） |
 | `description` | 控制台模型页显示的说明 |
 
 ### 3.2 与站内模型的关系
 
 - 一个站内模型可以被多个 API 模型指向（例如同一上游、不同定价档）；一个 API 模型只指向一个站内模型。
 - API 模型的可用性 = 自身状态为 `live` 或 `deprecated`，且目标站内模型存在、启用、非维护，线路为 OpenAI 协议。**不再检查工作台绑定**。
-- 站内模型上的 `developerApi` 开关废弃，由“是否有 API 模型指向它”取代。
+- 站内模型上的 `developerApi` 开关已移除，由“是否有 API 模型指向它”取代。
 
 ## 4. 存储
 
@@ -250,12 +250,10 @@ API 调用的 `source_type`：`openai_image_request`（生图、编辑）、`ope
    - 若一把 Key 回填后没有任何 `live` 模型，保持“指定模型”语义（不能变成“全部模型”），控制台标红提示。
 4. **回填账单快照**：`developer_api_billing_requests` 的历史行按 `usage_profit_ledger.model_id` 与当前配置补 `api_model_name`，补不上的留空。
 5. **迁移报告**：输出到后台“API 模型”页顶部，列出所有 `draft` 条目和受影响 Key，运营逐项确认。
-6. **兼容期**：
-   - 一个版本内同时写 `allowed_model_ids` 与 `allowed_api_model_ids`，读取以新列为准，便于回滚；
-   - 站内模型的 `developerApi` 开关在后台置灰，改由目录管理；
-   - 下个版本删除旧列和旧开关。
+6. **不设兼容期**（2026-09-30 决定，尚未上线，无需保留回滚通道）：迁移 `00174` 删除 `user_api_keys.allowed_model_ids`；站内模型的 `developerApi`、`developerApiMaxConcurrency` 字段从 `modelconfig.Model` 移除，后台模型编辑页不再有这两项。旧值只由一次性迁移读取：Key 旧列在删列前读取；站内模型的旧开关与并发上限直接从模型配置 JSON 读取（`apicatalog.ParseLegacy`，缺省视为开启），模型配置下一次保存时这些旧字段自然消失。
+7. **执行顺序**：`serve` 启动时先迁移到 `00173`（`apicatalog.BackfillSchemaVersion`），执行目录初始化，再迁移到最新；`server api-models-migrate --apply` 同样只迁移到 `00173`。`00174` 自带检查：目录为空且仍有 Key 指定了模型时拒绝删列并报错，防止其他入口（如 `seed`）先删列造成丢失。已升级的库重复执行整个流程不会有任何变化。
 
-**回滚**：新代码回退到旧版本时，旧版本读 `allowed_model_ids`（兼容期内仍在写），`/v1` 恢复旧逻辑；新表保留不删。
+**回滚**：`00174` 的 Down 会恢复旧列，并按 `allowed_api_model_ids` 指向的站内模型回填；旧版本的站内模型旧开关缺省视为开启。
 
 ## 10. 分期
 
@@ -286,7 +284,7 @@ API 调用的 `source_type`：`openai_image_request`（生图、编辑）、`ope
 | 通知渠道 | 只发站内消息 |
 | 同一站内模型挂多个 API 模型 | 允许（用于不同定价档、专属客户价） |
 | 已下线条目隐藏 | 下线 90 天后从控制台列表隐藏 |
-| 并发上限 | API 默认不限并发；每个 API 模型可在后台单独设上限（0 = 不限）。站内模型上的 `developerApiMaxConcurrency` 只作用于 `/v1`，迁移到 API 模型后删除 |
+| 并发上限 | API 默认不限并发；每个 API 模型可在后台单独设上限（0 = 不限）。站内模型上原来的 `developerApiMaxConcurrency` 已迁移到 API 模型并删除 |
 | 充值与订阅 | 见第 8.2 节 A–E：体验积分不可用于 API；API 不享受订阅锁价；订阅 API 范围按 API 模型判断；钱包/订阅页显示 API 消耗汇总；后台拆分站内/API 消耗 |
 
 ### 12.1 与站内用户的隔离
@@ -313,4 +311,4 @@ API 调用的 `source_type`：`openai_image_request`（生图、编辑）、`ope
 
 **站内模型配置的保护。** `PUT /api/v1/admin/model-config` 比较保存前后，凡是上线或弃用中的 API 模型会因此从可执行变为不可执行（站内模型被删除、停用、设为维护，或服务商线路改为非 OpenAI 协议），先返回 `409 api_model_impact`；管理员确认后带 `confirmApiImpact=1` 保存。后台模型卡片显示“API N”，编辑页列出引用它的 API 模型名。
 
-**未做的事。** 兼容期收尾（删除 `user_api_keys.allowed_model_ids` 旧列与站内模型的 `developerApi` / `developerApiMaxConcurrency` 字段）留到下一个版本；真实上游的端到端验证需要在确认后单独进行。
+**兼容期收尾已完成**（2026-09-30）：见第 9 节第 6、7 条。**未做的事**：真实上游的端到端验证需要在确认后单独进行。

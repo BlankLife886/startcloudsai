@@ -120,9 +120,6 @@ interface ModelItem {
   public: boolean;
   default: boolean;
   enabled: boolean;
-  // Offered on the developer /v1 API; 0 concurrency means unlimited.
-  developerApi: boolean;
-  developerApiMaxConcurrency: number;
 }
 
 interface ModelConfig {
@@ -689,9 +686,6 @@ function hydrate(value: ModelConfig) {
         : null,
     public: model.public !== false,
     default: model.default === true,
-    // Configs saved before the switch existed keep their models on the API.
-    developerApi: model.developerApi !== false,
-    developerApiMaxConcurrency: Math.max(0, Math.round(Number(model.developerApiMaxConcurrency) || 0)),
   }));
   const incoming = value.workspaces || ({} as ModelConfig["workspaces"]);
   config.workspaces = Object.fromEntries(
@@ -1666,7 +1660,6 @@ async function importDiscoveredMediaTools() {
         outputFormats: [], moderationLevels: [], maxReferenceImages: 0, maxImages: 0,
         contextWindowTokens: 0, maxOutputTokens: 0, supportedReasoningEfforts: [],
         reasoningPricing: null, public: false, default: false, enabled: false,
-        developerApi: false, developerApiMaxConcurrency: 0,
       });
       created += 1;
     }
@@ -1966,8 +1959,6 @@ const modelDraft = reactive<ModelDraft>({
   reasoningEnabled: false,
   default: false,
   enabled: true,
-  developerApi: false,
-  developerApiMaxConcurrency: 0,
 });
 
 function openModel(index = -1) {
@@ -2038,8 +2029,6 @@ function openModel(index = -1) {
           reasoningEnabled: source.reasoningEnabled ?? Boolean(source.supportedReasoningEfforts?.length),
           default: source.default,
           enabled: source.enabled,
-          developerApi: source.developerApi,
-          developerApiMaxConcurrency: source.developerApiMaxConcurrency,
           pricePoints: normalizePoints(source.priceCents),
           discountEnabled: source.discountPriceCents !== null,
           discountPoints: normalizePoints(source.discountPriceCents),
@@ -2110,8 +2099,6 @@ function openModel(index = -1) {
           public: true,
           default: false,
           enabled: true,
-          developerApi: false,
-          developerApiMaxConcurrency: 0,
         },
   );
   modelEditIndex.value = index;
@@ -2835,8 +2822,6 @@ async function saveModelDraft() {
     public: modelDraft.public,
     default: modelDraft.default,
     enabled: modelDraft.enabled,
-    developerApi: modelDraft.kind !== "image_tool" && modelDraft.developerApi,
-    developerApiMaxConcurrency: Math.min(10000, Math.max(0, Math.round(Number(modelDraft.developerApiMaxConcurrency) || 0))),
   };
   if (modelDraft.kind === "chat") {
     const pricing = normalizeReasoningPricing(

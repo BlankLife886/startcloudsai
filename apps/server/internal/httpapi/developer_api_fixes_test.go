@@ -226,7 +226,7 @@ func (env *openAIImagesIntegrationEnv) withChatModel(t *testing.T, priceCents in
 	}
 	cfg.Providers = append(cfg.Providers, modelconfig.Provider{ID: "chat-provider", Name: "Local chat provider", Adapter: modelconfig.AdapterOpenAI,
 		BaseURL: server.URL, APIKey: "test-chat-key", Enabled: true, TimeoutSecs: 10})
-	cfg.Models = append(cfg.Models, modelconfig.Model{DeveloperAPI: true,
+	cfg.Models = append(cfg.Models, modelconfig.Model{
 		ID: "compat-chat", Name: "compat-chat", ProviderID: "chat-provider",
 		UpstreamModel: "upstream-chat", Kind: modelconfig.ModelKindChat, PriceCents: priceCents,
 		Enabled: true, Public: true, Default: true,
@@ -238,11 +238,7 @@ func (env *openAIImagesIntegrationEnv) withChatModel(t *testing.T, priceCents in
 	if err := modelconfig.Save(ctx, env.st.Pool, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.st.Pool.Exec(ctx, `UPDATE user_api_keys SET allowed_model_ids=$2 WHERE id=$1`,
-		env.key.ID, []string{openAIIntegrationModel, "compat-chat"}); err != nil {
-		t.Fatal(err)
-	}
-	env.rebuildCatalog(t)
+	env.rebuildCatalog(t, openAIIntegrationModel, "compat-chat")
 	return upstream
 }
 

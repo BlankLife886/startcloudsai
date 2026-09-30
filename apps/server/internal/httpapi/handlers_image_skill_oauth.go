@@ -361,8 +361,7 @@ func (s *Server) exchangeImageSkillOAuthToken(c *gin.Context) {
 	expiresAt := time.Now().UTC().Add(imageSkillOAuthTokenTTL)
 	_, err = store.InsertUserAPIKey(c.Request.Context(), s.St.Pool, &store.UserAPIKey{
 		UserID: user.ID, KeyPrefix: secret[:min(18, len(secret))], KeyHash: hashAPISecret(secret), Label: imageSkillOAuthKeyLabel,
-		AllowedModelIDs: []string{},
-		DailyTaskLimit:  100, MonthlyTaskLimit: 2000, DailySpendLimitCents: 10000, MonthlySpendLimitCents: 200000,
+		DailyTaskLimit: 100, MonthlyTaskLimit: 2000, DailySpendLimitCents: 10000, MonthlySpendLimitCents: 200000,
 		RateLimitPerMinute: 120, DailyByteLimit: 2 << 30, ExpiresAt: &expiresAt,
 	})
 	if err != nil {

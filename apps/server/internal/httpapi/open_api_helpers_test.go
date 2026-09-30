@@ -88,7 +88,7 @@ func TestDeveloperAPIGateBlocksUserManagementEndpoints(t *testing.T) {
 func developerCatalogFixture() (modelconfig.Config, modelconfig.Model) {
 	provider := modelconfig.Provider{ID: "p", Name: "p", Adapter: modelconfig.AdapterOpenAI, BaseURL: "http://upstream.invalid", APIKey: "k", Enabled: true}
 	wire := modelconfig.Model{ID: "model-0000-internal", Name: "gpt-image-2", ProviderID: provider.ID, UpstreamModel: "u",
-		Kind: modelconfig.ModelKindImage, PriceCents: 20, Enabled: true, Public: true, Default: true, DeveloperAPI: true, MaxImages: 1,
+		Kind: modelconfig.ModelKindImage, PriceCents: 20, Enabled: true, Public: true, Default: true, MaxImages: 1,
 		Resolutions: []string{"1K"}, AspectRatios: []string{"1:1"}}
 	unbound := wire
 	unbound.ID, unbound.Name, unbound.Default = "model-1111-unbound", "unbound", false
@@ -102,20 +102,19 @@ func developerCatalogFixture() (modelconfig.Config, modelconfig.Model) {
 	}, wire
 }
 
-// A Key allowlist accepts callable catalog entries only, and records the
-// site models behind them for the legacy column.
+// A Key allowlist accepts catalog entries in service only, deduplicated.
 func TestNormalizeAPIModelIDs(t *testing.T) {
 	entries := []*store.DeveloperAPIModel{
 		{ID: "apim_live", TargetModelID: "model-0000-internal", Status: store.DeveloperAPIModelLive},
 		{ID: "apim_vip", TargetModelID: "model-0000-internal", Status: store.DeveloperAPIModelLive},
 		{ID: "apim_draft", TargetModelID: "model-1111-unbound", Status: store.DeveloperAPIModelDraft},
 	}
-	ids, targets, err := normalizeAPIModelIDs(entries, []string{" apim_live ", "apim_live", "", "apim_vip"})
-	if err != nil || len(ids) != 2 || ids[0] != "apim_live" || len(targets) != 1 || targets[0] != "model-0000-internal" {
-		t.Fatalf("normalized = %#v %#v err=%v", ids, targets, err)
+	ids, err := normalizeAPIModelIDs(entries, []string{" apim_live ", "apim_live", "", "apim_vip"})
+	if err != nil || len(ids) != 2 || ids[0] != "apim_live" || ids[1] != "apim_vip" {
+		t.Fatalf("normalized = %#v err=%v", ids, err)
 	}
 	for _, denied := range []string{"apim_draft", "model-0000-internal", "missing"} {
-		if _, _, err := normalizeAPIModelIDs(entries, []string{denied}); err == nil {
+		if _, err := normalizeAPIModelIDs(entries, []string{denied}); err == nil {
 			t.Fatalf("%q should be denied", denied)
 		}
 	}

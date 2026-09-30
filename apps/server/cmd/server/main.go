@@ -108,7 +108,9 @@ func runAPIModelsMigrate(cfg *config.Config, args []string) error {
 		return err
 	}
 	if *apply {
-		if err := store.Migrate(cfg.DatabaseURL); err != nil {
+		// Stop before the legacy Key allowlist column is dropped; the next
+		// serve start migrates the rest.
+		if err := store.MigrateTo(cfg.DatabaseURL, apicatalog.BackfillSchemaVersion); err != nil {
 			return fmt.Errorf("run migrations: %w", err)
 		}
 	}
@@ -123,12 +125,13 @@ func runAPIModelsMigrate(cfg *config.Config, args []string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	modelCfg, keys, policies, err := apicatalog.LoadMigrationInput(ctx, tx)
+	in, err := apicatalog.LoadMigrationInput(ctx, tx)
 	if err != nil {
 		return err
 	}
+	modelCfg := in.Config
 	now := time.Now()
-	plan := apicatalog.BuildPlan(modelCfg, keys, policies, now)
+	plan := apicatalog.BuildPlan(in, now)
 	fmt.Print(plan.Report(modelCfg))
 	if !*apply {
 		fmt.Println("\n（演练模式，未写入任何数据；确认后加 --apply 执行）")
@@ -148,7 +151,11 @@ func runServe(cfg *config.Config) error {
 	if err := storage.ValidateConfig(cfg); err != nil {
 		return err
 	}
-	if err := store.Migrate(cfg.DatabaseURL); err != nil {
+	// /v1 resolves models through the catalog; build it on the first start
+	// after the catalog migration so the API never runs with it empty. It
+	// reads the legacy Key allowlist, which a later migration drops, so the
+	// schema is brought up in two steps around it.
+	if err := store.MigrateTo(cfg.DatabaseURL, apicatalog.BackfillSchemaVersion); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	ctx := context.Background()
@@ -157,16 +164,17 @@ func runServe(cfg *config.Config) error {
 		return err
 	}
 	defer st.Close()
+	if err := apicatalog.EnsureInitialized(ctx, st.Pool); err != nil {
+		return fmt.Errorf("initialize developer API model catalog: %w", err)
+	}
+	if err := store.Migrate(cfg.DatabaseURL); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
 	if err := seedBuiltinContent(ctx, st); err != nil {
 		return err
 	}
 	if err := settings.EncryptStoredSecrets(ctx, st.Pool, cfg.AppSecret); err != nil {
 		return fmt.Errorf("encrypt stored settings: %w", err)
-	}
-	// /v1 resolves models through the catalog; build it on the first start
-	// after the catalog migration so the API never runs with it empty.
-	if err := apicatalog.EnsureInitialized(ctx, st.Pool); err != nil {
-		return fmt.Errorf("initialize developer API model catalog: %w", err)
 	}
 
 	stg, err := storage.New(cfg)

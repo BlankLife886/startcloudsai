@@ -134,12 +134,22 @@ func (s *Server) adminDeveloperAPISummary(c *gin.Context, _ *store.User) {
 			"grossProfitCents": item.RevenueCents - item.UpstreamCostCents,
 		})
 	}
-	// Every configured model that /v1 has ever been offered, for the filter.
+	// Site models that API models point at, for the filter (calls are
+	// recorded against the site model that ran them).
+	entries, err := s.developerCatalog(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	options := make([]gin.H, 0)
-	for _, model := range cfg.Models {
-		if model.DeveloperAPI {
-			options = append(options, gin.H{"id": model.ID, "name": openAIPublicModelID(model), "kind": model.Kind})
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		model, found := siteModelByID(cfg, entry.TargetModelID)
+		if !found || seen[model.ID] || entry.Status == store.DeveloperAPIModelDraft {
+			continue
 		}
+		seen[model.ID] = true
+		options = append(options, gin.H{"id": model.ID, "name": openAIPublicModelID(model), "kind": model.Kind})
 	}
 	ok(c, gin.H{
 		"calls": summary.Calls, "charged": summary.Charged, "refunded": summary.Refunded, "pending": summary.Pending,

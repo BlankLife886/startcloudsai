@@ -15,7 +15,7 @@ func TestOpenAPIFrozenKeyCannotRotate(t *testing.T) {
 	ctx := context.Background()
 	user, _ := makeOrder(t, st)
 	secret, _ := newAPISecret()
-	key, err := store.InsertUserAPIKey(ctx, st.Pool, &store.UserAPIKey{UserID: user.ID, KeyPrefix: secret[:18], KeyHash: hashAPISecret(secret), Label: "frozen", AllowedModelIDs: []string{}, DailyTaskLimit: 100, MonthlyTaskLimit: 1000, DailySpendLimitCents: 10000, MonthlySpendLimitCents: 100000})
+	key, err := store.InsertUserAPIKey(ctx, st.Pool, &store.UserAPIKey{UserID: user.ID, KeyPrefix: secret[:18], KeyHash: hashAPISecret(secret), Label: "frozen", DailyTaskLimit: 100, MonthlyTaskLimit: 1000, DailySpendLimitCents: 10000, MonthlySpendLimitCents: 100000})
 	if err != nil {
 		t.Fatal(err)
 	}

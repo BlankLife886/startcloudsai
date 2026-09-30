@@ -14,18 +14,22 @@ import (
 // enabled chat model not bound to the assistant, and a background-removal tool.
 func catalogFixture() modelconfig.Config {
 	provider := modelconfig.Provider{ID: "p", Name: "p", Adapter: modelconfig.AdapterOpenAI, BaseURL: "http://upstream.invalid", APIKey: "k", Enabled: true}
-	image := modelconfig.Model{ID: "img", Name: "gpt-image-2", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindImage, PriceCents: 12, Public: true, Enabled: true, DeveloperAPI: true, DeveloperAPIMaxConcurrency: 4}
-	chat := modelconfig.Model{ID: "chat-new", Name: "gpt-5.6-luna", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindChat, PriceCents: 10, Public: true, Enabled: true, DeveloperAPI: true}
-	oldChat := modelconfig.Model{ID: "chat-old", Name: "gpt-5.6-luna", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindChat, PriceCents: 10, Enabled: false, DeveloperAPI: true}
-	retired := modelconfig.Model{ID: "chat-retired", Name: "gpt-5-5", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindChat, PriceCents: 10, Enabled: false, DeveloperAPI: true}
-	unbound := modelconfig.Model{ID: "chat-unbound", Name: "gpt-5.6-sol", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindChat, PriceCents: 10, Public: true, Enabled: true, DeveloperAPI: true}
-	tool := modelconfig.Model{ID: "tool", Name: "背景移除", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindImageTool, PriceCents: 5, Public: true, Enabled: true, DeveloperAPI: true}
+	image := modelconfig.Model{ID: "img", Name: "gpt-image-2", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindImage, PriceCents: 12, Public: true, Enabled: true}
+	chat := modelconfig.Model{ID: "chat-new", Name: "gpt-5.6-luna", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindChat, PriceCents: 10, Public: true, Enabled: true}
+	oldChat := modelconfig.Model{ID: "chat-old", Name: "gpt-5.6-luna", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindChat, PriceCents: 10, Enabled: false}
+	retired := modelconfig.Model{ID: "chat-retired", Name: "gpt-5-5", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindChat, PriceCents: 10, Enabled: false}
+	unbound := modelconfig.Model{ID: "chat-unbound", Name: "gpt-5.6-sol", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindChat, PriceCents: 10, Public: true, Enabled: true}
+	tool := modelconfig.Model{ID: "tool", Name: "背景移除", ProviderID: "p", UpstreamModel: "u", Kind: modelconfig.ModelKindImageTool, PriceCents: 5, Public: true, Enabled: true}
 	return modelconfig.Config{Providers: []modelconfig.Provider{provider}, Models: []modelconfig.Model{image, chat, oldChat, retired, unbound, tool},
 		Workspaces: map[string]modelconfig.WorkspaceBinding{
 			modelconfig.WorkspaceT2I:       {ModelIDs: []string{"img"}},
 			modelconfig.WorkspaceAssistant: {ModelIDs: []string{"chat-new"}},
 		}}
 }
+
+// fixtureLegacy: the image model had a /v1 concurrency cap; every model had
+// the former developer API switch on (absent means on).
+var fixtureLegacy = Legacy{"img": {Offered: true, MaxConcurrency: 4}}
 
 func entryFor(plan Plan, target string) *store.DeveloperAPIModel {
 	for _, entry := range plan.Entries {
@@ -43,7 +47,7 @@ func TestBuildPlanKeepsTodaysNamesAndDraftsTheRest(t *testing.T) {
 		{ID: "k-mixed", Label: "mixed", AllowedModelIDs: []string{"img", "chat-old", "chat-retired", "tool", "gone"}},
 		{ID: "k-draft", Label: "draft-only", AllowedModelIDs: []string{"chat-unbound"}},
 	}
-	plan := BuildPlan(cfg, keys, nil, time.Now())
+	plan := BuildPlan(MigrationInput{Config: cfg, Legacy: fixtureLegacy, Keys: keys}, time.Now())
 
 	image, chat, draft := entryFor(plan, "img"), entryFor(plan, "chat-new"), entryFor(plan, "chat-unbound")
 	if image == nil || image.APIName != "gpt-image-2" || image.Status != store.DeveloperAPIModelLive || image.MaxConcurrency != 4 || image.PublishedAt == nil {
@@ -90,7 +94,7 @@ func TestBuildPlanMapsSubscriptionScopes(t *testing.T) {
 		{Table: "subscription_credit_lots", ID: "tool-only", Policy: store.SubscriptionPolicy{Channels: []string{"web", "api"}, ModelIDs: []string{"tool"}}},
 		{Table: "plans", ID: "web-only", Policy: store.SubscriptionPolicy{Channels: []string{"web"}, ModelIDs: []string{"img"}}},
 	}
-	plan := BuildPlan(cfg, nil, policies, time.Now())
+	plan := BuildPlan(MigrationInput{Config: cfg, Legacy: fixtureLegacy, Policies: policies}, time.Now())
 	byID := map[string]PolicyChange{}
 	for _, change := range plan.Policies {
 		byID[change.Source.ID] = change
@@ -120,5 +124,22 @@ func TestNormalizeNameMatchesWireComparison(t *testing.T) {
 	}
 	if id := NewID(); !strings.HasPrefix(id, "apim_") || len(id) != 17 {
 		t.Fatalf("NewID() = %q", id)
+	}
+}
+
+// The former switch and cap are read from the stored JSON: an absent switch
+// meant on, and a model switched off was not offered and becomes a draft
+// only if a Key or plan referenced it.
+func TestLegacySettingsComeFromStoredJSON(t *testing.T) {
+	legacy := ParseLegacy([]byte(`{"models":[{"id":"img","developerApiMaxConcurrency":4},{"id":"chat-new","developerApi":false}]}`))
+	if got := legacy.Of("img"); !got.Offered || got.MaxConcurrency != 4 {
+		t.Fatalf("img = %+v", got)
+	}
+	if legacy.Of("chat-new").Offered || !legacy.Of("unknown").Offered {
+		t.Fatalf("legacy = %+v", legacy)
+	}
+	plan := BuildPlan(MigrationInput{Config: catalogFixture(), Legacy: legacy}, time.Now())
+	if entryFor(plan, "chat-new") != nil || entryFor(plan, "img") == nil || entryFor(plan, "img").MaxConcurrency != 4 {
+		t.Fatalf("entries = %+v", plan.Entries)
 	}
 }

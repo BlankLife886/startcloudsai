@@ -289,7 +289,7 @@ func (s *Server) createMyAPIKey(c *gin.Context) {
 	}
 	key, err := store.InsertUserAPIKey(c.Request.Context(), s.St.Pool, &store.UserAPIKey{
 		UserID: user.ID, KeyPrefix: secret[:min(18, len(secret))], KeyHash: hashAPISecret(secret), Label: settings.Label,
-		AllowedModelIDs: settings.AllowedModelIDs, AllowedAPIModelIDs: settings.AllowedAPIModelIDs, DailyTaskLimit: settings.DailyTaskLimit,
+		AllowedAPIModelIDs: settings.AllowedAPIModelIDs, DailyTaskLimit: settings.DailyTaskLimit,
 		MonthlyTaskLimit: settings.MonthlyTaskLimit, DailySpendLimitCents: settings.DailySpendLimitCents,
 		MonthlySpendLimitCents: settings.MonthlySpendLimitCents, IPAllowlist: settings.IPAllowlist,
 		RateLimitPerMinute: settings.RateLimitPerMinute, DailyByteLimit: settings.DailyByteLimit, ExpiresAt: settings.ExpiresAt,
@@ -327,7 +327,7 @@ func (s *Server) patchMyAPIKey(c *gin.Context) {
 		return
 	}
 	key, err := store.UpdateUserAPIKey(c.Request.Context(), s.St.Pool, user.ID, id, &store.UserAPIKey{
-		Label: settings.Label, AllowedModelIDs: settings.AllowedModelIDs, AllowedAPIModelIDs: settings.AllowedAPIModelIDs,
+		Label: settings.Label, AllowedAPIModelIDs: settings.AllowedAPIModelIDs,
 		DailyTaskLimit: settings.DailyTaskLimit, MonthlyTaskLimit: settings.MonthlyTaskLimit,
 		DailySpendLimitCents: settings.DailySpendLimitCents, MonthlySpendLimitCents: settings.MonthlySpendLimitCents,
 		IPAllowlist: settings.IPAllowlist, RateLimitPerMinute: settings.RateLimitPerMinute,
@@ -351,7 +351,6 @@ func (s *Server) patchMyAPIKey(c *gin.Context) {
 
 type apiKeySettings struct {
 	Label                  string
-	AllowedModelIDs        []string // site models behind AllowedAPIModelIDs (legacy column)
 	AllowedAPIModelIDs     []string
 	DailyTaskLimit         int
 	MonthlyTaskLimit       int
@@ -429,12 +428,12 @@ func (s *Server) parseAPIKeySettings(c *gin.Context, body *createAPIKeyInput) (*
 	if err != nil {
 		return nil, err
 	}
-	apiModelIDs, siteModelIDs, err := normalizeAPIModelIDs(entries, body.AllowedModelIDs)
+	apiModelIDs, err := normalizeAPIModelIDs(entries, body.AllowedModelIDs)
 	if err != nil {
 		return nil, err
 	}
 	return &apiKeySettings{
-		Label: body.Label, AllowedModelIDs: siteModelIDs, AllowedAPIModelIDs: apiModelIDs,
+		Label: body.Label, AllowedAPIModelIDs: apiModelIDs,
 		DailyTaskLimit: body.DailyTaskLimit, MonthlyTaskLimit: body.MonthlyTaskLimit,
 		DailySpendLimitCents: body.DailySpendLimitCents, MonthlySpendLimitCents: body.MonthlySpendLimitCents,
 		IPAllowlist: allowlist, RateLimitPerMinute: body.RateLimitPerMinute,
@@ -539,7 +538,7 @@ func (s *Server) rotateMyAPIKey(c *gin.Context) {
 		var insertErr error
 		replacement, insertErr = store.InsertUserAPIKey(c.Request.Context(), tx, &store.UserAPIKey{
 			UserID: existing.UserID, KeyPrefix: secret[:min(18, len(secret))], KeyHash: hashAPISecret(secret),
-			Label: existing.Label, AllowedModelIDs: existing.AllowedModelIDs, AllowedAPIModelIDs: existing.AllowedAPIModelIDs,
+			Label: existing.Label, AllowedAPIModelIDs: existing.AllowedAPIModelIDs,
 			DailyTaskLimit: existing.DailyTaskLimit, MonthlyTaskLimit: existing.MonthlyTaskLimit,
 			DailySpendLimitCents: existing.DailySpendLimitCents, MonthlySpendLimitCents: existing.MonthlySpendLimitCents,
 			IPAllowlist: existing.IPAllowlist, RateLimitPerMinute: existing.RateLimitPerMinute,

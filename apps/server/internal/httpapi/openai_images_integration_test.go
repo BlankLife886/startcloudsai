@@ -185,7 +185,7 @@ func newOpenAIImagesIntegrationEnv(t *testing.T) *openAIImagesIntegrationEnv {
 	}
 	provider := modelconfig.Provider{ID: "compat-provider", Name: "Local test provider", Adapter: modelconfig.AdapterOpenAI,
 		BaseURL: env.upstream.URL, APIKey: "test-upstream-key", Enabled: true, TimeoutSecs: 10}
-	imageModel := modelconfig.Model{ID: openAIIntegrationModel, Name: openAIIntegrationModel, ProviderID: provider.ID, DeveloperAPI: true,
+	imageModel := modelconfig.Model{ID: openAIIntegrationModel, Name: openAIIntegrationModel, ProviderID: provider.ID,
 		UpstreamModel: "test-upstream-image", Kind: modelconfig.ModelKindImage, PriceCents: 20,
 		Enabled: true, Public: true, Default: true, MaxImages: 4, MaxReferenceImages: 6,
 		Resolutions: []string{"1K"}, AspectRatios: []string{"1:1"}, Qualities: []string{"low", "medium", "high"},
@@ -226,20 +226,21 @@ func newOpenAIImagesIntegrationEnv(t *testing.T) *openAIImagesIntegrationEnv {
 	}
 	env.key, err = store.InsertUserAPIKey(ctx, st.Pool, &store.UserAPIKey{
 		UserID: env.user.ID, KeyPrefix: env.secret[:12], KeyHash: hashAPISecret(env.secret), Label: "Integration test only",
-		AllowedModelIDs: []string{openAIIntegrationModel}, DailyTaskLimit: 20, MonthlyTaskLimit: 100, DailySpendLimitCents: 10000, MonthlySpendLimitCents: 10000,
+		DailyTaskLimit: 20, MonthlyTaskLimit: 100, DailySpendLimitCents: 10000, MonthlySpendLimitCents: 10000,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	env.router = env.srv.Router()
-	env.rebuildCatalog(t)
+	env.rebuildCatalog(t, openAIIntegrationModel)
 	return env
 }
 
 // rebuildCatalog recreates the developer API catalog from the current model
-// config and legacy Key allowlists with the production migration, as the
-// first start after the catalog migration does.
-func (env *openAIImagesIntegrationEnv) rebuildCatalog(t *testing.T) {
+// config with the production initialization, as the first start after the
+// catalog migration does, and limits the integration Key to the API models
+// pointing at the given site models.
+func (env *openAIImagesIntegrationEnv) rebuildCatalog(t *testing.T, siteModelIDs ...string) {
 	t.Helper()
 	ctx := context.Background()
 	for _, statement := range []string{`DELETE FROM developer_api_model_events`, `DELETE FROM developer_api_models`, `UPDATE user_api_keys SET allowed_api_model_ids='{}'`} {
@@ -248,6 +249,11 @@ func (env *openAIImagesIntegrationEnv) rebuildCatalog(t *testing.T) {
 		}
 	}
 	if err := apicatalog.EnsureInitialized(ctx, env.st.Pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE user_api_keys SET allowed_api_model_ids=COALESCE(
+		(SELECT array_agg(id ORDER BY api_name) FROM developer_api_models WHERE target_model_id = ANY($2)), '{}') WHERE id=$1`,
+		env.key.ID, siteModelIDs); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -568,10 +574,9 @@ func (env *openAIImagesIntegrationEnv) apiModel(t *testing.T, name string) *stor
 	return nil
 }
 
-// The catalog, not the site model switches, decides what /v1 offers: the
-// concurrency limit lives on the API model, turning the site model's API
-// switch off no longer hides it, a site model in maintenance answers 503
-// without charging, and a draft entry is neither callable nor listed.
+// The catalog decides what /v1 offers: the concurrency limit lives on the
+// API model, a site model in maintenance answers 503 without charging, and a
+// draft entry is neither callable nor listed.
 func TestOpenAIImagesIntegrationHonorsModelAPISwitches(t *testing.T) {
 	env := newOpenAIImagesIntegrationEnv(t)
 	ctx := context.Background()
@@ -604,13 +609,10 @@ func TestOpenAIImagesIntegrationHonorsModelAPISwitches(t *testing.T) {
 		t.Fatal("an unknown model name reached the upstream")
 	}
 
-	env.updateModel(t, func(model *modelconfig.Model) { model.DeveloperAPI = false })
-	requireOpenAIIntegrationStatus(t, env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "", strings.NewReader(body))), http.StatusOK, "")
-
 	env.updateModel(t, func(model *modelconfig.Model) { model.Status = modelconfig.ModelStatusMaintenance })
 	down := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "", strings.NewReader(body)))
 	requireOpenAIIntegrationStatus(t, down, http.StatusServiceUnavailable, "model_unavailable")
-	env.assertDirectBilling(t, 2, 40)
+	env.assertDirectBilling(t, 1, 20)
 	env.updateModel(t, func(model *modelconfig.Model) { model.Status = modelconfig.ModelStatusAvailable })
 
 	if _, err := env.st.Pool.Exec(ctx, `UPDATE developer_api_models SET status='draft' WHERE id=$1`, entry.ID); err != nil {

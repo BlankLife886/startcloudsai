@@ -318,7 +318,7 @@ Key 已有创建、更新、轮换和撤销接口；用量与任务路径的关�
 
 API Key 仅保存 SHA-256 哈希和可识别前缀，明文只在创建时返回。每个 Key 保存可用模型白名单、日/月任务上限、日/月积分额度、到期时间和限频更新的最近使用信息。`api_key_usage_events` 在创建任务的同一数据库事务内记录额度占用，`task_id` 唯一，幂等重试不会重复占用额度。
 
-`user_api_keys.allowed_api_model_ids`（迁移 `00172`）存 Key 可调用的 API 模型目录 ID，为空表示不限；兼容期内旧列 `allowed_model_ids` 继续同步写入对应的站内模型 ID，便于回滚。
+`user_api_keys.allowed_api_model_ids`（迁移 `00172`）存 Key 可调用的 API 模型目录 ID，为空表示不限。旧列 `allowed_model_ids`（站内模型 ID）由迁移 `00174` 删除；`serve` 启动时先迁移到 `00173`、用旧列初始化 API 模型目录，再执行 `00174`，目录为空而仍有 Key 指定了模型时 `00174` 拒绝执行。
 
 ### `developer_api_models` / `developer_api_model_events`
 

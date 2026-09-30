@@ -23,9 +23,6 @@ type UserAPIKey struct {
 	KeyHash   string
 	Label     string
 	Status    string
-	// AllowedModelIDs is the legacy site-model allowlist, still written during
-	// the catalog compatibility window so an older build can roll back.
-	AllowedModelIDs []string
 	// AllowedAPIModelIDs lists developer API catalog entries; empty = all.
 	AllowedAPIModelIDs     []string
 	DailyTaskLimit         int
@@ -46,7 +43,7 @@ type UserAPIKey struct {
 }
 
 // #nosec G101 -- this is a list of SQL column names, not credential values.
-const userAPIKeyCols = `id,user_id,key_prefix,key_hash,label,status,allowed_model_ids,
+const userAPIKeyCols = `id,user_id,key_prefix,key_hash,label,status,
 	daily_task_limit,monthly_task_limit,daily_spend_limit_cents,monthly_spend_limit_cents,
 	ip_allowlist,rate_limit_per_minute,daily_byte_limit,auto_frozen_at,freeze_reason,
 	expires_at,last_used_at,last_used_ip,last_error,created_at,updated_at,allowed_api_model_ids`
@@ -54,7 +51,7 @@ const userAPIKeyCols = `id,user_id,key_prefix,key_hash,label,status,allowed_mode
 func scanUserAPIKey(row pgx.Row) (*UserAPIKey, error) {
 	var key UserAPIKey
 	err := row.Scan(&key.ID, &key.UserID, &key.KeyPrefix, &key.KeyHash, &key.Label, &key.Status,
-		&key.AllowedModelIDs, &key.DailyTaskLimit, &key.MonthlyTaskLimit,
+		&key.DailyTaskLimit, &key.MonthlyTaskLimit,
 		&key.DailySpendLimitCents, &key.MonthlySpendLimitCents, &key.IPAllowlist,
 		&key.RateLimitPerMinute, &key.DailyByteLimit, &key.AutoFrozenAt, &key.FreezeReason, &key.ExpiresAt,
 		&key.LastUsedAt, &key.LastUsedIP, &key.LastError, &key.CreatedAt, &key.UpdatedAt, &key.AllowedAPIModelIDs)
@@ -80,18 +77,15 @@ func InsertUserAPIKey(ctx context.Context, q Q, key *UserAPIKey) (*UserAPIKey, e
 	if key.IPAllowlist == nil {
 		key.IPAllowlist = []string{}
 	}
-	if key.AllowedModelIDs == nil {
-		key.AllowedModelIDs = []string{}
-	}
 	if key.AllowedAPIModelIDs == nil {
 		key.AllowedAPIModelIDs = []string{}
 	}
 	return scanUserAPIKey(q.QueryRow(ctx, `INSERT INTO user_api_keys (
-		id,user_id,key_prefix,key_hash,label,allowed_model_ids,daily_task_limit,monthly_task_limit,
+		id,user_id,key_prefix,key_hash,label,daily_task_limit,monthly_task_limit,
 		daily_spend_limit_cents,monthly_spend_limit_cents,ip_allowlist,rate_limit_per_minute,daily_byte_limit,expires_at,
 		allowed_api_model_ids)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING `+userAPIKeyCols,
-		key.ID, key.UserID, key.KeyPrefix, key.KeyHash, key.Label, key.AllowedModelIDs,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING `+userAPIKeyCols,
+		key.ID, key.UserID, key.KeyPrefix, key.KeyHash, key.Label,
 		key.DailyTaskLimit, key.MonthlyTaskLimit, key.DailySpendLimitCents, key.MonthlySpendLimitCents,
 		key.IPAllowlist, key.RateLimitPerMinute, key.DailyByteLimit, key.ExpiresAt, key.AllowedAPIModelIDs))
 }
@@ -146,19 +140,16 @@ func UpdateUserAPIKey(ctx context.Context, q Q, userID, id uuid.UUID, key *UserA
 	if key.IPAllowlist == nil {
 		key.IPAllowlist = []string{}
 	}
-	if key.AllowedModelIDs == nil {
-		key.AllowedModelIDs = []string{}
-	}
 	if key.AllowedAPIModelIDs == nil {
 		key.AllowedAPIModelIDs = []string{}
 	}
 	item, err := scanUserAPIKey(q.QueryRow(ctx, `UPDATE user_api_keys SET
-		label=$3,allowed_model_ids=$4,daily_task_limit=$5,monthly_task_limit=$6,
-		daily_spend_limit_cents=$7,monthly_spend_limit_cents=$8,ip_allowlist=$9,
-		rate_limit_per_minute=$10,daily_byte_limit=$11,expires_at=$12,allowed_api_model_ids=$13,updated_at=now()
+		label=$3,daily_task_limit=$4,monthly_task_limit=$5,
+		daily_spend_limit_cents=$6,monthly_spend_limit_cents=$7,ip_allowlist=$8,
+		rate_limit_per_minute=$9,daily_byte_limit=$10,expires_at=$11,allowed_api_model_ids=$12,updated_at=now()
 		WHERE id=$1 AND user_id=$2 AND status IN ('active','paused','frozen')
 		RETURNING `+userAPIKeyCols,
-		id, userID, key.Label, key.AllowedModelIDs, key.DailyTaskLimit, key.MonthlyTaskLimit,
+		id, userID, key.Label, key.DailyTaskLimit, key.MonthlyTaskLimit,
 		key.DailySpendLimitCents, key.MonthlySpendLimitCents, key.IPAllowlist,
 		key.RateLimitPerMinute, key.DailyByteLimit, key.ExpiresAt, key.AllowedAPIModelIDs))
 	return nilOnNoRows(item, err)

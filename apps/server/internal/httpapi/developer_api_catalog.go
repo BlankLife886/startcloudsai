@@ -128,35 +128,29 @@ func developerModelItems(entries []*store.DeveloperAPIModel, cfg modelconfig.Con
 }
 
 // normalizeAPIModelIDs validates a Key allowlist against catalog entries in
-// service (live, deprecated or under maintenance) and returns it with the
-// matching site model ids, which are still written to the legacy column
-// during the compatibility window.
-func normalizeAPIModelIDs(entries []*store.DeveloperAPIModel, values []string) ([]string, []string, error) {
-	byID := map[string]*store.DeveloperAPIModel{}
+// service (live, deprecated or under maintenance).
+func normalizeAPIModelIDs(entries []*store.DeveloperAPIModel, values []string) ([]string, error) {
+	inService := map[string]bool{}
 	now := time.Now()
 	for _, entry := range entries {
 		if entry.InServiceAt(now) {
-			byID[entry.ID] = entry
+			inService[entry.ID] = true
 		}
 	}
 	seen := map[string]bool{}
-	apiIDs, targets := make([]string, 0, len(values)), make([]string, 0, len(values))
+	apiIDs := make([]string, 0, len(values))
 	for _, raw := range values {
 		id := strings.TrimSpace(raw)
 		if id == "" || seen[id] {
 			continue
 		}
-		entry := byID[id]
-		if entry == nil {
-			return nil, nil, apperr.E("validation_error", "allowedModelIds: 包含未开放或不存在的模型", 422)
+		if !inService[id] {
+			return nil, apperr.E("validation_error", "allowedModelIds: 包含未开放或不存在的模型", 422)
 		}
 		seen[id] = true
 		apiIDs = append(apiIDs, id)
-		if !store.Contains(targets, entry.TargetModelID) {
-			targets = append(targets, entry.TargetModelID)
-		}
 	}
-	return apiIDs, targets, nil
+	return apiIDs, nil
 }
 
 // asCatalogModel is a /v1/models entry. status, sunset_at and replacement

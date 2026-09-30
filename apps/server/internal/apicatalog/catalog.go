@@ -76,9 +76,9 @@ func Runnable(cfg modelconfig.Config, modelID string) (modelconfig.Selection, bo
 
 // LegacyOffered lists what /v1 offered before the catalog existed, in the
 // order /v1/models showed it: text-to-image image models, then AI assistant
-// chat models, each gated by the model's developer API switch and an
+// chat models, each gated by the model's former developer API switch and an
 // OpenAI-wire route, deduplicated by name with the first one winning.
-func LegacyOffered(cfg modelconfig.Config) []modelconfig.Selection {
+func LegacyOffered(cfg modelconfig.Config, legacy Legacy) []modelconfig.Selection {
 	seen := map[string]struct{}{}
 	result := []modelconfig.Selection{}
 	for _, group := range []struct{ workspace, kind string }{
@@ -87,7 +87,7 @@ func LegacyOffered(cfg modelconfig.Config) []modelconfig.Selection {
 	} {
 		for _, selected := range modelconfig.PublicModelsForWorkspace(cfg, group.workspace, group.kind) {
 			model := selected.Model
-			if !model.DeveloperAPI || !model.Available() || selected.Provider.Adapter != modelconfig.AdapterOpenAI {
+			if !legacy.Of(model.ID).Offered || !model.Available() || selected.Provider.Adapter != modelconfig.AdapterOpenAI {
 				continue
 			}
 			name := NormalizeName(model.Name)
