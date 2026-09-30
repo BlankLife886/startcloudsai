@@ -5,6 +5,7 @@ export interface AdminBadgeCounts {
   runningTasks: number;
   pendingTrialApplications: number;
   pendingFeedback: number;
+  pendingRefunds: number;
 }
 
 const CACHE_MS = 30_000;
@@ -22,6 +23,7 @@ function normalizeBadgeCounts(data: Partial<AdminBadgeCounts>): AdminBadgeCounts
     runningTasks: Number(data.runningTasks || 0),
     pendingTrialApplications: Number(data.pendingTrialApplications || 0),
     pendingFeedback: Number(data.pendingFeedback || 0),
+    pendingRefunds: Number(data.pendingRefunds || 0),
   };
 }
 

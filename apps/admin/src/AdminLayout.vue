@@ -34,6 +34,8 @@ import {
   Sunny,
   SwitchButton,
   Ticket,
+  Tickets,
+  RefreshLeft,
   Connection,
   Star,
   User,
@@ -126,6 +128,8 @@ const NAV_GROUPS = [
     title: "交易与审计",
     items: [
       { path: "/finance-center", label: "财务中心", icon: Wallet },
+      { path: "/orders", label: "订单管理", icon: Tickets },
+      { path: "/subscription-changes", label: "订阅变更", icon: RefreshLeft },
       { path: "/plans", label: "套餐管理", icon: Box },
       { path: "/codes", label: "兑换码", icon: Ticket },
       { path: "/audit", label: "审计日志", icon: List },
@@ -149,6 +153,7 @@ const pendingSubmissions = ref(0);
 const runningTasks = ref(0);
 const pendingTrialApplications = ref(0);
 const pendingFeedback = ref(0);
+const pendingRefunds = ref(0);
 
 /** 聚合端点一次返回全部徽标计数，替代原先的多次独立请求。 */
 async function loadTodoCounts() {
@@ -162,6 +167,8 @@ async function loadTodoCounts() {
       pendingTrialApplications.value = data.pendingTrialApplications;
     if (typeof data.pendingFeedback === "number")
       pendingFeedback.value = data.pendingFeedback;
+    if (typeof data.pendingRefunds === "number")
+      pendingRefunds.value = data.pendingRefunds;
   } catch {
     // 静默：读取失败保持旧值，徽标缺失不影响使用
   }
@@ -202,6 +209,15 @@ const notifyItems = computed(() =>
       tone: "warning",
       icon: ChatDotRound,
       to: "/feedback",
+    },
+    {
+      key: "refund",
+      label: "退款待审核",
+      count: pendingRefunds.value,
+      countText: String(pendingRefunds.value),
+      tone: "warning",
+      icon: RefreshLeft,
+      to: "/subscription-changes?status=reviewing",
     },
     {
       key: "running",

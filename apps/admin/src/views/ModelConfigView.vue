@@ -13,7 +13,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { Check, Close, Connection, Cpu, Delete, EditPen, Loading, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
 import PageCard from "@/components/PageCard.vue";
-import { request } from "@/request";
+import { ApiError, request } from "@/request";
 import { useClientPagination } from "@/useClientPagination";
 import { formatPoints, IMAGE_SERVICE_ROUTES, normalizePoints } from "@/utils";
 import { exactSizeLimits, schemaSupportsExactSize, validateExactSizeLimits, type ExactSizeLimits } from "@/exactImageSize";
@@ -764,6 +764,24 @@ async function load() {
   }
 }
 
+// Site models that API models point at, so the editor can say what an
+// edit reaches on /v1 (docs/DEVELOPER_API_MODEL_CATALOG.md section 6.1).
+type APIReference = { apiName: string; status: string };
+const apiReferences = ref<Record<string, APIReference[]>>({});
+async function loadAPIReferences() {
+  try {
+    const data = await request<{ items: { apiName: string; status: string; target: { id: string } }[] }>("/api/v1/admin/developer-api/models", { silent: true, scope: "persistent" });
+    const byTarget: Record<string, APIReference[]> = {};
+    for (const item of data.items) {
+      if (item.status === "draft" || item.status === "retired") continue;
+      (byTarget[item.target.id] ||= []).push({ apiName: item.apiName, status: item.status });
+    }
+    apiReferences.value = byTarget;
+  } catch {
+    apiReferences.value = {};
+  }
+}
+
 async function save() {
   if (!configLoaded.value || loading.value || saving.value) return;
   sanitizeWorkspaceBindings();
@@ -772,20 +790,44 @@ async function save() {
   const payload = JSON.parse(JSON.stringify(config)) as ModelConfig;
   const submittedSignature = JSON.stringify(payload);
   saving.value = true;
+  // A save that would stop callable developer API models is refused once
+  // (409 api_model_impact); the admin confirms and the same payload is sent
+  // again with confirmApiImpact.
+  let confirmApiImpact = false;
   try {
-    const saved = await request<ModelConfig>("/api/v1/admin/model-config", {
-      method: "PUT",
-      body: payload,
-      scope: "persistent",
-    });
-    if (signature() === submittedSignature) {
-      hydrate(retainSubmittedReasoning(saved, payload));
-    } else {
-      savedSignature.value = submittedSignature;
+    for (;;) {
+      try {
+        const saved = await request<ModelConfig>("/api/v1/admin/model-config", {
+          method: "PUT",
+          body: payload,
+          scope: "persistent",
+          query: confirmApiImpact ? { confirmApiImpact: 1 } : undefined,
+          silent: true,
+        });
+        if (signature() === submittedSignature) {
+          hydrate(retainSubmittedReasoning(saved, payload));
+        } else {
+          savedSignature.value = submittedSignature;
+        }
+        ElMessage.success(signature() === savedSignature.value ? "模型配置已保存" : "已保存提交的配置，后续修改请再次点击保存");
+        void loadAPIReferences();
+        return;
+      } catch (error) {
+        if (error instanceof ApiError && error.code === "api_model_impact" && !confirmApiImpact) {
+          try {
+            await ElMessageBox.confirm(`${error.message}。\n\n这些 API 模型的调用方会收到 503（可重试、不扣费），直到站内模型恢复或在「开发者 API → API 模型」里更换指向。仍要保存吗？`, "会影响开发者 API", { confirmButtonText: "仍然保存", cancelButtonText: "返回修改", type: "warning" });
+          } catch {
+            return;
+          }
+          confirmApiImpact = true;
+          continue;
+        }
+        // Keep the draft dirty after failure. Retry only on an explicit Save click.
+        const message = error instanceof Error ? error.message : "";
+        if (!(error instanceof ApiError && error.code === "request_aborted")) ElMessage.error(message || "保存失败");
+        return;
+      }
     }
-    ElMessage.success(signature() === savedSignature.value ? "模型配置已保存" : "已保存提交的配置，后续修改请再次点击保存");
-  } catch {
-    // Keep the draft dirty after failure. Retry only on an explicit Save click.
   } finally {
     saving.value = false;
   }
@@ -2892,6 +2934,7 @@ onBeforeRouteLeave(async () => {
   } catch { return false; }
 });
 onMounted(() => {
+  void loadAPIReferences();
   window.addEventListener("beforeunload", warnBeforeUnload);
   window.addEventListener("keydown", handleToolbarShortcut);
   void load();
@@ -3039,12 +3082,8 @@ onBeforeUnmount(() => {
                         kindName(row.kind)
                       }}</span>
                       <span v-if="row.default" class="default-badge">默认</span>
-                      <span
-                        v-if="row.developerApi && row.kind !== 'image_tool'"
-                        class="default-badge"
-                        :title="row.developerApiMaxConcurrency ? `开放 API 调用，最多同时 ${row.developerApiMaxConcurrency} 个请求` : '开放 API 调用，不限并发'"
-                      >API{{ row.developerApiMaxConcurrency ? ` · ${row.developerApiMaxConcurrency}` : "" }}</span>
                       <span v-if="row.status === 'maintenance'" class="maintenance-badge">维护中</span>
+                      <span v-if="apiReferences[row.id]?.length" class="api-ref-badge" :title="`开发者 API 模型：${apiReferences[row.id].map(item => item.apiName).join('、')}`">API {{ apiReferences[row.id].length }}</span>
                     </div>
                     <div
                       class="model-card__line"
@@ -4543,29 +4582,14 @@ onBeforeUnmount(() => {
               <el-switch v-model="modelDraft.enabled" />
             </label>
           </div>
-          <div v-if="modelDraft.kind !== 'image_tool'" class="model-status-grid">
-            <label>
-              <span>
-                <strong>开放 API 调用</strong>
-                <small>开发者可在 /v1 按模型名调用</small>
-              </span>
-              <el-switch v-model="modelDraft.developerApi" />
-            </label>
-            <label v-if="modelDraft.developerApi">
-              <span>
-                <strong>API 并发上限</strong>
-                <small>同时进行的 API 请求数，0 为不限制</small>
-              </span>
-              <el-input-number
-                v-model="modelDraft.developerApiMaxConcurrency"
-                :min="0"
-                :max="10000"
-                :step="1"
-                controls-position="right"
-                size="small"
-              />
-            </label>
-          </div>
+          <p v-if="modelDraft.kind !== 'image_tool'" class="model-api-note">
+            开发者 API（/v1）开放哪些模型、对外名称、价格和并发上限，由
+            <router-link to="/developer-api">开发者 API → API 模型</router-link>
+            管理。这里的站内设置变化（改名、解绑页面、换线路）不会改变 API 调用方使用的模型名；停用或维护会让指向它的 API 模型暂时返回 503。
+            <template v-if="apiReferences[modelDraft.id]?.length">
+              <br /><strong class="model-api-refs">被 {{ apiReferences[modelDraft.id].length }} 个 API 模型引用：{{ apiReferences[modelDraft.id].map(item => item.apiName).join("、") }}</strong>，保存会让它们不可用时会先提示确认。
+            </template>
+          </p>
         </section>
 
         <section
@@ -8495,4 +8519,8 @@ html.dark .assign-card.is-ghost:hover {
   .model-editor-nav strong { font-size: 12px; }
   .model-editor .model-section { padding: 14px; }
   .model-editor .model-status-grid { grid-template-columns: minmax(0, 1fr); }
-}</style>
+}.model-api-note { margin: 12px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface-2); color: var(--ink-3); font-size: 12px; line-height: 1.7; }
+.model-api-note a { color: var(--brand, #5b4dff); font-weight: 600; }
+.model-api-refs { color: var(--ink-1, inherit); }
+.api-ref-badge { flex: none; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--brand, #5b4dff) 30%, transparent); border-radius: 999px; color: var(--brand, #5b4dff); font-size: 11px; line-height: 18px; }
+</style>

@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import AdminDateRange from '@/components/AdminDateRange.vue'
+import DeveloperAPIModelsPanel from '@/components/DeveloperAPIModelsPanel.vue'
 import { formatTime } from '@/utils'
 
 interface CallUser { id: string; email?: string; username?: string }
@@ -47,7 +48,7 @@ function beijingDay(offsetDays = 0) {
 const defaults = () => ({ createdFrom: beijingDay(-6), createdTo: beijingDay(), kind: '', status: '', model: '', user: '', key: '' })
 const filters = reactive(defaults())
 const pageSize = ref(20)
-const tab = ref<'calls' | 'models'>('calls')
+const tab = ref<'calls' | 'models' | 'catalog'>('calls')
 
 const { items, loading, error, total, totalCapped, page, hasPrev, hasNext, reset, goToPage, retry } =
   usePagedList<Call>(
@@ -128,7 +129,7 @@ async function copyText(value: string, label: string) {
 <template>
   <div class="page devapi-page">
     <PageCard>
-      <template #header>
+      <template v-if="tab !== 'catalog'" #header>
         <div class="devapi-filters">
           <AdminDateRange v-model:from="filters.createdFrom" v-model:to="filters.createdTo" label="调用时间" @change="search" />
           <el-select v-model="filters.kind" clearable placeholder="全部接口" class="devapi-select" @change="search">
@@ -144,14 +145,14 @@ async function copyText(value: string, label: string) {
           <el-input v-model="filters.key" class="devapi-search" placeholder="Key 名称或前缀" clearable :prefix-icon="Search" @keyup.enter="search" @clear="search" />
         </div>
       </template>
-      <template #actions>
+      <template v-if="tab !== 'catalog'" #actions>
         <el-button type="primary" :icon="Refresh" :loading="loading || summaryLoading" @click="search">查询</el-button>
         <el-button text @click="clearFilters">重置</el-button>
       </template>
 
       <el-alert v-if="summaryError" :title="`汇总读取失败：${summaryError}`" type="error" :closable="false" />
 
-      <section class="devapi-kpis" aria-label="开发者 API 汇总">
+      <section v-if="tab !== 'catalog'" class="devapi-kpis" aria-label="开发者 API 汇总">
         <article><small>调用</small><strong class="tnum">{{ points(summary?.calls) }}</strong><span>{{ points(summary?.users) }} 个用户 · {{ points(summary?.keys) }} 把 Key</span></article>
         <article><small>已扣费</small><strong class="tnum">{{ points(summary?.charged) }}</strong><span>退回 {{ points(summary?.refunded) }}<template v-if="summary?.pending"> · 进行中 {{ points(summary.pending) }}</template></span></article>
         <article><small>实收积分</small><strong class="tnum">{{ points(summary?.revenueCents) }}</strong><span>只计已扣费的请求</span></article>
@@ -164,6 +165,7 @@ async function copyText(value: string, label: string) {
       <nav class="devapi-tabs" role="tablist" aria-label="视图">
         <button type="button" role="tab" :aria-selected="tab === 'calls'" :class="{ active: tab === 'calls' }" @click="tab = 'calls'">调用记录<em class="tnum">{{ total ?? items.length }}{{ totalCapped ? '+' : '' }}</em></button>
         <button type="button" role="tab" :aria-selected="tab === 'models'" :class="{ active: tab === 'models' }" @click="tab = 'models'">按模型<em class="tnum">{{ summary?.models.length || 0 }}</em></button>
+        <button type="button" role="tab" :aria-selected="tab === 'catalog'" :class="{ active: tab === 'catalog' }" @click="tab = 'catalog'">API 模型</button>
       </nav>
 
       <template v-if="tab === 'calls'">
@@ -221,6 +223,8 @@ async function copyText(value: string, label: string) {
           </el-table>
         </AdminListShell>
       </template>
+
+      <DeveloperAPIModelsPanel v-else-if="tab === 'catalog'" />
 
       <div v-else v-loading="summaryLoading" class="devapi-models">
         <el-table :data="summary?.models || []" height="100%" empty-text="这个范围内没有 /v1 调用">

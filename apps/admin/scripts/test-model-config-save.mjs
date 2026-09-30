@@ -12,7 +12,7 @@ const names=new Set(['load','save','signature','warnBeforeUnload']);
 const selected=ast.statements.filter(s=>ts.isFunctionDeclaration(s)&&names.has(s.name?.text)||ts.isExpressionStatement(s)&&ts.isCallExpression(s.expression)&&['onBeforeRouteLeave','onBeforeUnmount'].includes(s.expression.expression.getText(ast)));
 const executable=ts.transpileModule(selected.map(s=>s.getText(ast)).join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 function fixture(){
- const writes=[],hooks={};const c={configLoaded:{value:false},loadFailed:{value:false},loading:{value:false},saving:{value:false},savedSignature:{value:''},config:{models:[],providers:[]},ElMessage:{success(){},warning(){},error(){}},ElMessageBox:{async confirm(){}},window:{removeEventListener(){}},sanitizeWorkspaceBindings(){},sanitizeEditableFileConfig(){},retainSubmittedReasoning:v=>v,onBeforeRouteLeave:fn=>hooks.leave=fn,onBeforeUnmount:fn=>hooks.unmount=fn};
+ const writes=[],hooks={};const c={configLoaded:{value:false},loadFailed:{value:false},loading:{value:false},saving:{value:false},savedSignature:{value:''},config:{models:[],providers:[]},ElMessage:{success(){},warning(){},error(){}},ElMessageBox:{async confirm(){}},window:{removeEventListener(){}},sanitizeWorkspaceBindings(){},sanitizeEditableFileConfig(){},retainSubmittedReasoning:v=>v,handleToolbarShortcut(){},loadAPIReferences(){},ApiError:class ApiError extends Error{constructor(code,message,status){super(message);this.code=code;this.status=status}},onBeforeRouteLeave:fn=>hooks.leave=fn,onBeforeUnmount:fn=>hooks.unmount=fn};
  c.isDirty={get value(){return c.configLoaded.value&&JSON.stringify(c.config)!==c.savedSignature.value}};
  c.hydrate=v=>{c.config=JSON.parse(JSON.stringify(v));c.savedSignature.value=JSON.stringify(c.config)};
  c.request=async(path,options)=>{if(!options)return {models:[{id:'m'}],providers:[{id:'p'}]};writes.push(options);return options.body};
@@ -37,5 +37,14 @@ test('dirty navigation can be canceled and tab closure only warns',async()=>{
  const {c,writes,hooks}=fixture();await c.load();c.config.models[0].name='draft';c.ElMessageBox.confirm=async()=>{throw Error('cancel')};assert.equal(await hooks.leave(),false);let warned=false;c.warnBeforeUnload({preventDefault(){warned=true}});assert.equal(warned,true);assert.equal(writes.length,0);
 });
 test('no hidden save calls or autosave timers remain in the production script',()=>{
- const calls=[];function visit(n){if(ts.isCallExpression(n)&&n.expression.getText(ast)==='save')calls.push(n);ts.forEachChild(n,visit)}visit(ast);assert.equal(calls.length,0);assert.doesNotMatch(script,/autoSave|scheduleSave|saveQueued/);assert.match(vue,/@click="save"/);
+ // The only programmatic call is the explicit Cmd/Ctrl+S shortcut.
+ const calls=[];function visit(n,owner){if(ts.isFunctionDeclaration(n))owner=n.name?.text;if(ts.isCallExpression(n)&&n.expression.getText(ast)==='save')calls.push(owner);ts.forEachChild(n,child=>visit(child,owner))}visit(ast);assert.deepEqual(calls,['handleToolbarShortcut']);assert.doesNotMatch(script,/autoSave|scheduleSave|saveQueued/);assert.match(vue,/@click="save"/);
+});
+test('a save that would stop API models asks once, then resends with confirmation',async()=>{
+ const {c,writes}=fixture();await c.load();c.config.models[0].name='disable';
+ let calls=0;c.request=async(path,options)=>{writes.push(options);if(calls++===0)throw new c.ApiError('api_model_impact','会让 API 模型不可用',409);return options.body};
+ let asked=0;c.ElMessageBox.confirm=async()=>{asked++};
+ await c.save();assert.equal(asked,1);assert.equal(writes.length,2);assert.equal(writes[0].query,undefined);assert.equal(JSON.stringify(writes[1].query),'{"confirmApiImpact":1}');assert.equal(c.isDirty.value,false);
+ c.config.models[0].name='again';calls=0;c.ElMessageBox.confirm=async()=>{throw Error('cancel')};
+ await c.save();assert.equal(writes.length,3);assert.equal(c.isDirty.value,true);assert.equal(c.saving.value,false);
 });

@@ -90,7 +90,7 @@ type Detail = {
 };
 const route=useRoute();
 const query = ref(String(route.query.search || "")),
-  statusFilter = ref(""),
+  statusFilter = ref(String(route.query.status || "")),
   kindFilter = ref(""),
   page = ref(1),
   total = ref(0);
@@ -323,6 +323,7 @@ const actionLabel = (action: string) =>
   })[action] || action;
 onMounted(load);
 watch(()=>route.query.search,value=>{query.value=String(value||'');page.value=1;load()});
+watch(()=>route.query.status,value=>{statusFilter.value=String(value||'');page.value=1;load()});
 </script>
 
 <template>

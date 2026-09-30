@@ -8,6 +8,12 @@ import { useFinanceWorkspace } from '@/useFinanceWorkspace'
 const financeTime = (value?: string) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'
 const orderTagType = (status?: string) => status === 'completed' ? 'success' : status === 'uncertain' || status === 'paid' ? 'warning' : status === 'failed' ? 'danger' : 'info'
 const { orderActions, activeTab, days, query, orderStatus, range, cashSummary, orders, reconciliations, changes, summary, selectedOrderId, detailVisible, runningRecon, recoverySupported, outcomeLabels, receivedCents, filteredOrders, tabs, money, points, statusLabel, changeLabel, outcomeType, openOrder, load, runReconciliation, confirmNotCreated, loading, loadError, reconciliationReport, orderList, reconTotal, reconIssueTotal, reconPage, changeTotal, changePage, changeRecordPage, profitPager } = useFinanceWorkspace()
+// The overview tabs show recent rows; filters, detail actions and refund
+// review live on the full pages.
+const fullPage: Record<string, { to: string; label: string }> = {
+  orders: { to: '/orders', label: '打开订单管理' },
+  subscriptions: { to: '/subscription-changes', label: '打开订阅变更（含退款审核）' },
+}
 const openOrderRow = (row: { id: string }) => openOrder(row.id)
 </script>
 
@@ -50,6 +56,7 @@ const openOrderRow = (row: { id: string }) => openOrder(row.id)
           </el-select>
           <el-button v-else-if="activeTab === 'reconcile'" type="primary" :icon="Search" :loading="runningRecon" @click="runReconciliation">立即核对</el-button>
           <span v-else-if="activeTab === 'costs'" class="finance-note">积分口径 · 近 {{ days }} 日 · 最多 50 个模型</span>
+          <router-link v-if="fullPage[activeTab]" class="finance-full-link" :to="fullPage[activeTab].to">{{ fullPage[activeTab].label }} →</router-link>
         </div>
       </div>
 
@@ -173,4 +180,6 @@ const openOrderRow = (row: { id: string }) => openOrder(row.id)
   .finance-kpis article:nth-child(3) { border-right: 0; }
   .finance-kpis article:nth-child(-n + 3) { border-bottom: 1px solid var(--border); }
 }
+.finance-full-link { color: var(--brand, #5b4dff); font-size: 12.5px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.finance-full-link:hover { text-decoration: underline; }
 </style>
