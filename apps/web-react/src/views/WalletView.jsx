@@ -722,7 +722,7 @@ export function WalletView() {
                 <small><Link to="/subscriptions">查看发放与适用范围</Link></small>
               </article> : null}
             </div>
-            <ApiUsageSummary />
+            <ApiUsageSummary className="api-usage-summary--wallet" />
             {showTrial ? (
               <aside
                 className={`wallet-trial${trial.rewardStatus === "redeemed" ? " is-used" : ""}`}

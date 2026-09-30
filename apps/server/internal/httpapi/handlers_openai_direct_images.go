@@ -471,7 +471,7 @@ func (s *Server) inspectOpenAIReferenceImage(c *gin.Context, user *store.User, h
 		key := openAPIKeyFromContext(c)
 		s.recordRisk(c.Request.Context(), store.NewSecurityRiskEvent{UserID: &user.ID, APIKeyID: &key.ID,
 			ClientIP: c.ClientIP(), Category: "blocked_upload", Severity: "high", Score: 80, Action: "blocked",
-			Reason: "开发者 API 输入图片命中安全黑名单", Metadata: map[string]any{"sha256": hashText, "rule": reason}})
+			Reason: "API 调用输入图片命中安全黑名单", Metadata: map[string]any{"sha256": hashText, "rule": reason}})
 		return c2a.StreamImage{}, apperr.E("upload_blocked", "参考图命中平台安全黑名单，已拒绝", http.StatusUnprocessableEntity)
 	}
 	return c2a.StreamImage{

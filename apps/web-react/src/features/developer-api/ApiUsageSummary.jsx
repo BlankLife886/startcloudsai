@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 import {Link} from 'react-router';
-import {SquareTerminal} from 'lucide-react';
+import {ChevronRight,SquareTerminal} from 'lucide-react';
 import {apiGet} from '../../legacy-modules/services/apiClient.js';
 import './ApiUsageSummary.css';
 
@@ -15,9 +15,12 @@ export function ApiUsageSummary({className=''}){
   return()=>controller.abort();
  },[]);
  if(!summary||!Number(summary.monthCalls))return null;
- return <p className={`api-usage-summary ${className}`}>
-  <SquareTerminal size={15} aria-hidden="true"/>
-  <span>开发者 API 本月消耗 <b>{Number(summary.monthPoints).toLocaleString('zh-CN')}</b> 积分（{Number(summary.monthCalls).toLocaleString('zh-CN')} 次调用），不计入积分明细</span>
-  <Link to="/developer-api?tab=calls">查看调用记录</Link>
- </p>;
+ return <div className={`api-usage-summary ${className}`}>
+  <span className="api-usage-summary__icon"><SquareTerminal size={16} aria-hidden="true"/></span>
+  <div className="api-usage-summary__body">
+   <strong>API 调用本月消耗 <b>{Number(summary.monthPoints).toLocaleString('zh-CN')}</b> 积分</strong>
+   <small>{Number(summary.monthCalls).toLocaleString('zh-CN')} 次调用 · 不计入积分明细</small>
+  </div>
+  <Link to="/developer-api?tab=calls">调用记录<ChevronRight size={14} aria-hidden="true"/></Link>
+ </div>;
 }

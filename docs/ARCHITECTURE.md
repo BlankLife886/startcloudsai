@@ -6,8 +6,8 @@
 
 | 组件 | 技术 | 职责 |
 | --- | --- | --- |
-| `apps/web-react` | React 19、Vite、Zustand、React Router | 桌面 Web 创作、社区、技能、素材、账户和开发者控制台；`src/canvas` 内置无限画布 |
-| `apps/admin` | Vue 3、TypeScript、Pinia、Element Plus | 任务、用户、内容、模型、账务（财务中心含创作成本）、开发者 API、Agent 质量、日志和安全运营 |
+| `apps/web-react` | React 19、Vite、Zustand、React Router | 桌面 Web 创作、社区、技能、素材、账户和API 调用控制台；`src/canvas` 内置无限画布 |
+| `apps/admin` | Vue 3、TypeScript、Pinia、Element Plus | 任务、用户、内容、模型、账务（财务中心含创作成本）、API 调用、Agent 质量、日志和安全运营 |
 | `apps/mobile` | Flutter、Riverpod、Dio、GoRouter | 独立移动客户端；复用站内 API，独立构建和商店发布 |
 | Go API | Gin、pgx | 鉴权、业务事务、模型路由、文件交付、实时事件和队列投递 |
 | Go Worker | Asynq | 图片、聊天/Agent、附件、异步轮询与后台维护 |
@@ -34,7 +34,7 @@ API 与 Worker 使用同一份 Go 源码，可分别构建镜像。`cmd/server/m
 - 普通用户使用 Gmail、Googlemail、QQ 邮箱验证码；邮箱规范化、验证码消费、首次建号、钱包与 session 创建在服务端完成。用户 Cookie 为 `sc_session`，不提供用户密码登录。
 - 管理员通过独立 `admin_accounts`、`admin_sessions` 和 `sc_admin_session` 登录。管理员文件使用 `/api/v1/admin/files/*`，不复用用户 Cookie。
 - App 将现有 `sc_session` 保存于系统安全存储，通过统一网络层访问 REST、私有图片和事件流；网站桌面视口策略不限制独立 App。
-- 开发者 API 使用限定 scope、模型、额度等权限的 API Key。图片技能 OAuth 2.0 + PKCE 是外部工具授权，不是第三方账号登录，也不代表已经实现 MCP Server。
+- API 调用使用限定 scope、模型、额度等权限的 API Key。图片技能 OAuth 2.0 + PKCE 是外部工具授权，不是第三方账号登录，也不代表已经实现 MCP Server。
 - 携带 Origin 的浏览器写请求校验允许来源；代理地址仅信任配置的入口，生产使用 Redis 共享限流。`DEV_LOGIN_CODE_ECHO` 只允许开发环境显式启用，生产禁止验证码回显。
 - 普通图片任务优先使用账户级 SSE，批量轮询兜底；助手 run 使用自己的事件流与状态恢复接口。公告使用独立共享快照和 Redis 通知，见 [公告推送](ANNOUNCEMENT_PUSH.md)。
 
@@ -66,7 +66,7 @@ API 与 Worker 使用同一份 Go 源码，可分别构建镜像。`cmd/server/m
 
 套餐、订单创建/查询/关闭、蓝鲸支付通知及订阅查询/升级/退款路由已注册。实际购买要求后台启用支付并配齐渠道、凭据和可售套餐。订单保存购买与支付快照，回调和主动对账必须验证支付证据。充值退款与订阅退款、邀请返利冲正不是同一流程。
 
-邀请功能默认关闭、月结暂停，历史记录保留；前端还有独立构建开关，见 [邀请返利](REFERRALS.md)。开发者 API 默认开放状态及发布脚本强制关闭行为见 [维护发布](MAINTENANCE_RELEASE.md)，不能由接口存在推断线上可调用。
+邀请功能默认关闭、月结暂停，历史记录保留；前端还有独立构建开关，见 [邀请返利](REFERRALS.md)。API 调用默认开放状态及发布脚本强制关闭行为见 [维护发布](MAINTENANCE_RELEASE.md)，不能由接口存在推断线上可调用。
 
 ## 文件与社区数据
 

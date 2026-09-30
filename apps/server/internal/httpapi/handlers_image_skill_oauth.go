@@ -49,7 +49,7 @@ type imageSkillOAuthApproval struct {
 
 var imageSkillOAuthConsentPage = template.Must(template.New("image-skill-oauth-consent").Parse(`<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>授权星空云绘图片工具</title></head>
-<body><main><h1>授权 StarClouds Image Skill</h1><p>应用：{{.ClientName}}</p><p>登录账号：{{.UserEmail}}</p><p>授权后，本地图片技能可以读取图片模型并通过开发者 API 创建和编辑图片。应用无法读取你的密码。</p>
+<body><main><h1>授权 StarClouds Image Skill</h1><p>应用：{{.ClientName}}</p><p>登录账号：{{.UserEmail}}</p><p>授权后，本地图片技能可以读取图片模型并通过API 调用创建和编辑图片。应用无法读取你的密码。</p>
 <form method="post" action="/oauth/authorize"><input type="hidden" name="approval_token" value="{{.ApprovalToken}}"><button type="submit" name="decision" value="approve">允许并返回应用</button><button type="submit" name="decision" value="deny">取消</button></form></main></body></html>`))
 
 func imageSkillOAuthRandomToken() (string, error) {

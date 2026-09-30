@@ -33,8 +33,8 @@
 | [数据库](DATABASE.md) | 表职责、约束、事务和迁移演进 |
 | [开放 API](OPEN_API.md) | OpenAI 兼容 `/v1`：模型、生图、编辑、Chat Completions 对话 |
 | [开放 API 示例](../examples/open-api/README.md) | 示例脚本、SDK 参数、权限和幂等调用 |
-| [开发者控制台](DEVELOPER_CONSOLE.md) | Key、模型与快速接入；开发者 API 只保留 /v1 |
-| [开发者 API 模型目录（已确认，待实现）](DEVELOPER_API_MODEL_CATALOG.md) | 稳定 API 模型名、生命周期、独立定价、充值与订阅规则、迁移方案 |
+| [API 调用控制台](DEVELOPER_CONSOLE.md) | Key、模型与快速接入；API 调用只保留 /v1 |
+| [API 调用模型目录（已确认，待实现）](DEVELOPER_API_MODEL_CATALOG.md) | 稳定 API 模型名、生命周期、独立定价、充值与订阅规则、迁移方案 |
 | [订阅](SUBSCRIPTIONS.md) | 订阅批次、合同价格、升级和退款 |
 | [订单流程](ORDER_WORKFLOW.md) | 下单、支付证据、查单与状态恢复 |
 | [后台账务](ADMIN_BILLING.md) | 钱包、订单、订阅与人工核查 |

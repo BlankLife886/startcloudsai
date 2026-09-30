@@ -506,14 +506,14 @@ func (s *Server) developerAPIModelAction(c *gin.Context, admin *store.User, acti
 			}
 			next.Status, next.SunsetAt, next.DeprecatedAt = store.DeveloperAPIModelLive, nil, nil
 			notice = func() error {
-				body := fmt.Sprintf("开发者 API 模型「%s」的下线计划已取消，可以继续正常调用。", next.APIName)
+				body := fmt.Sprintf("API 调用模型「%s」的下线计划已取消，可以继续正常调用。", next.APIName)
 				users, err := store.DeveloperAPIModelAudience(ctx, tx, next.ID, now)
 				if err != nil {
 					return err
 				}
 				for _, id := range users {
 					userID := id
-					if err := store.InsertNotification(ctx, tx, &userID, "system", "开发者 API 模型下线计划已取消", &body); err != nil {
+					if err := store.InsertNotification(ctx, tx, &userID, "system", "API 调用模型下线计划已取消", &body); err != nil {
 						return err
 					}
 				}

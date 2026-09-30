@@ -290,33 +290,30 @@ onMounted(reset);
           <template #empty>
             <el-empty description="暂无订单" :image-size="64" />
           </template>
-          <el-table-column label="套餐" min-width="180">
+          <el-table-column label="套餐" min-width="170" show-overflow-tooltip>
+            <template #default="{ row }"><strong class="order-cell-strong">{{ row.planName || "历史套餐" }}</strong></template>
+          </el-table-column>
+          <el-table-column label="类型" width="96">
+            <template #default="{ row }"><span class="order-cell-muted">{{ orderKindLabels[row.finance?.kind] || '历史记录' }}</span></template>
+          </el-table-column>
+          <el-table-column label="用户" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">
-              <div class="order-main">
-                <strong>{{ row.planName || "历史套餐" }}</strong>
-                <small>{{ orderKindLabels[row.finance?.kind] || '历史记录' }}</small>
-              </div>
+              <el-button class="order-user-link" link type="primary" :title="row.userEmail || undefined" @click="router.push({path:'/users',query:{userId:row.userId,search:row.userEmail || row.userId}})">{{ row.userEmail || "未知用户" }}</el-button>
             </template>
           </el-table-column>
-          <el-table-column label="用户" min-width="210">
-            <template #default="{ row }">
-              <div class="order-user">
-                <el-button link type="primary" :title="row.userEmail || undefined" @click="router.push({path:'/users',query:{userId:row.userId,search:row.userEmail || row.userId}})">{{ row.userEmail || "未知用户" }}</el-button>
-              </div>
-            </template>
+          <el-table-column label="订单金额" width="110" align="right" header-align="right">
+            <template #default="{ row }"><span class="tnum">{{ formatMoney(row.amountCents) }}</span></template>
           </el-table-column>
-          <el-table-column label="确认实收 / 订单金额" width="160">
-            <template #default="{ row }">
-              <div class="order-money">
-                <strong>{{ formatMoney(paidAmount(row as AdminOrder)) }}</strong>
-                <small v-if="Number(paidAmount(row as AdminOrder)) !== Number(row.amountCents)">
-                  订单金额 {{ formatMoney(row.amountCents) }}
-                </small>
-              </div>
-            </template>
+          <el-table-column label="确认实收" width="110" align="right" header-align="right">
+            <template #default="{ row }"><span class="tnum order-money-paid">{{ formatMoney(paidAmount(row as AdminOrder)) }}</span></template>
           </el-table-column>
-          <el-table-column label="净收款 / 已退" width="150"><template #default="{ row }"><div class="order-money"><strong>{{ billingMoney(row.finance?.netCents) }}</strong><small>已退 {{ billingMoney(row.finance?.refundedCents) }}</small></div></template></el-table-column>
-          <el-table-column label="到账" width="130"><template #default="{ row }"><span>{{ deliveryLabels[row.finance?.delivery] || '-' }}</span></template></el-table-column>
+          <el-table-column label="净收款" width="110" align="right" header-align="right">
+            <template #default="{ row }"><span class="tnum">{{ billingMoney(row.finance?.netCents) }}</span></template>
+          </el-table-column>
+          <el-table-column label="已退" width="100" align="right" header-align="right">
+            <template #default="{ row }"><span class="tnum order-money-refund">{{ billingMoney(row.finance?.refundedCents) }}</span></template>
+          </el-table-column>
+          <el-table-column label="到账" width="100"><template #default="{ row }"><span>{{ deliveryLabels[row.finance?.delivery] || '-' }}</span></template></el-table-column>
           <el-table-column label="发放权益" width="180">
             <template #default="{ row }">
               <span class="tnum">{{ orderBenefit(row as AdminOrder) }}</span>
@@ -351,7 +348,7 @@ onMounted(reset);
               <span class="tnum order-time">{{ formatTime(row.completedAt) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="150" fixed="right">
+          <el-table-column label="操作" width="150" fixed="right" class-name="order-actions-cell">
             <template #default="{ row }">
               <el-button text size="small" :icon="View" title="查看订单" @click="openDetail(row as AdminOrder)">详情</el-button>
               <el-button v-if="row.status==='expired' && !row.paidAt && !row.completedAt" text type="danger" size="small" :icon="Delete" :loading="deletingOrder===row.id" :disabled="!!deletingOrder && deletingOrder!==row.id" @click="deleteExpiredOrder(row as AdminOrder)">删除</el-button>
@@ -581,6 +578,15 @@ onMounted(reset);
 .order-money small {
   color: var(--warning);
 }
+.order-cell-strong { color: var(--ink); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.order-cell-muted { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+.order-user-link { max-width: 100%; padding: 0; }
+.order-user-link :deep(span) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-money-paid { color: var(--success); font-weight: 600; }
+.order-money-refund { color: var(--ink-3); }
+.orders-table :deep(.order-actions-cell .cell) { display: flex; align-items: center; flex-wrap: nowrap; white-space: nowrap; }
+.orders-table :deep(.order-actions-cell .el-button + .el-button) { margin-left: 4px; }
+.orders-table :deep(.cell) { white-space: nowrap; }
 .order-time {
   color: var(--ink-2);
   font-size: 12px;

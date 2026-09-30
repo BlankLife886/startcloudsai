@@ -258,7 +258,7 @@ func BuildPlan(in MigrationInput, now time.Time) Plan {
 func draftReason(cfg modelconfig.Config, legacy Legacy, model modelconfig.Model) string {
 	reasons := []string{}
 	if !legacy.Of(model.ID).Offered {
-		reasons = append(reasons, "未开启开发者 API")
+		reasons = append(reasons, "未开启API 调用")
 	}
 	if !model.Enabled {
 		reasons = append(reasons, "站内已停用")
@@ -318,7 +318,7 @@ func (p Plan) Report(cfg modelconfig.Config) string {
 		}
 		return id
 	}
-	fmt.Fprintf(&b, "开发者 API 模型目录迁移报告\n\n")
+	fmt.Fprintf(&b, "API 调用模型目录迁移报告\n\n")
 	fmt.Fprintf(&b, "一、上线（%d 个）：名称与现在 /v1 完全一致，调用方无需改动\n", len(live))
 	for _, entry := range live {
 		fmt.Fprintf(&b, "  - [%s] %s\n", kindLabel(entry.Kind), entry.APIName)
@@ -541,10 +541,10 @@ func notifyContractLockEnd(ctx context.Context, tx pgx.Tx, now, until time.Time)
 		return err
 	}
 	date := until.In(time.FixedZone("CST", 8*3600)).Format("2006年1月2日 15:04")
-	body := "开发者 API 生图目前按订阅锁定的价格扣费。自 " + date + "（北京时间）起，API 调用将统一按开发者控制台「模型」页显示的价格扣费，不再享受订阅锁价；站内创作的锁价不受影响。"
+	body := "API 调用生图目前按订阅锁定的价格扣费。自 " + date + "（北京时间）起，API 调用将统一按API 调用控制台「模型」页显示的价格扣费，不再享受订阅锁价；站内创作的锁价不受影响。"
 	for _, id := range users {
 		userID := id
-		if err := store.InsertNotification(ctx, tx, &userID, "system", "开发者 API 价格调整通知", &body); err != nil {
+		if err := store.InsertNotification(ctx, tx, &userID, "system", "API 调用价格调整通知", &body); err != nil {
 			return err
 		}
 	}

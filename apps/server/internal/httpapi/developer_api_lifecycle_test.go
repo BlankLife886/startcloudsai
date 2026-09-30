@@ -100,7 +100,7 @@ func TestDeveloperAPIModelLifecycle(t *testing.T) {
 	expectResponse(t, env.adminRequest(t, token, "POST", models+"/"+current.ID+"/deprecate", deprecate), http.StatusUnprocessableEntity, "至少要在 7 天之后")
 	expectResponse(t, env.adminRequest(t, token, "PUT", "/api/v1/admin/developer-api/model-settings", `{"deprecationNoticeDays":1}`), http.StatusOK, `"deprecationNoticeDays":1`)
 	expectResponse(t, env.adminRequest(t, token, "POST", models+"/"+current.ID+"/deprecate", deprecate), http.StatusOK, `"status":"deprecated"`)
-	if env.notificationCount(t, "开发者 API 模型下线预告") != 1 {
+	if env.notificationCount(t, "API 调用模型下线预告") != 1 {
 		t.Fatal("users of a deprecated model are notified")
 	}
 	deprecated := generate(openAIIntegrationModel)
@@ -136,7 +136,7 @@ func TestDeveloperAPIModelLifecycle(t *testing.T) {
 	if entry := env.apiModel(t, "compat-next"); entry.Status != store.DeveloperAPIModelRetired || entry.RetiredAt == nil {
 		t.Fatalf("sweep records the retirement: %+v", entry)
 	}
-	if env.notificationCount(t, "开发者 API 模型已下线") != 1 {
+	if env.notificationCount(t, "API 调用模型已下线") != 1 {
 		t.Fatal("users of the retired model are notified once")
 	}
 	env.requireWallet(t, 960, 0)
@@ -167,7 +167,7 @@ func TestDeveloperAPIFollowPriceIncreaseIsAnnounced(t *testing.T) {
 	if result := reconcile(); result.Announced != 1 {
 		t.Fatalf("site increase announced: %+v", result)
 	}
-	if env.notificationCount(t, "开发者 API 价格调整预告") != 1 {
+	if env.notificationCount(t, "API 调用价格调整预告") != 1 {
 		t.Fatal("recent callers hear about the increase")
 	}
 	generate()

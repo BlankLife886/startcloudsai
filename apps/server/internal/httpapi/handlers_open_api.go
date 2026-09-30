@@ -134,13 +134,13 @@ func apiKeyUsableError(key *store.UserAPIKey, now time.Time) error {
 	case key == nil || key.Status == "revoked":
 		return apperr.E("api_key_invalid", "API Key 不存在或已被撤销，请在控制台确认这把 Key 是否仍可用", 401)
 	case key.Status == "frozen":
-		message := "API Key 已被风控冻结，请在开发者控制台查看原因并申请解冻"
+		message := "API Key 已被风控冻结，请在API 调用控制台查看原因并申请解冻"
 		if key.FreezeReason != nil && strings.TrimSpace(*key.FreezeReason) != "" {
 			message += "（原因：" + strings.TrimSpace(*key.FreezeReason) + "）"
 		}
 		return apperr.E("api_key_frozen", message, 403)
 	case key.Status == "paused":
-		return apperr.E("api_key_paused", "API Key 已被停用，请在开发者控制台重新启用", 403)
+		return apperr.E("api_key_paused", "API Key 已被停用，请在API 调用控制台重新启用", 403)
 	case key.Status != "active":
 		return apperr.E("api_key_invalid", "API Key 已失效", 401)
 	case key.ExpiresAt != nil && !key.ExpiresAt.After(now):

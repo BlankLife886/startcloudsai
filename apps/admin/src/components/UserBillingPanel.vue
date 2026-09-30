@@ -117,7 +117,7 @@ async function exportLots(){
      <el-table :data="lots" size="small" max-height="390">
       <el-table-column type="expand"><template #default="{row}"><dl class="user-billing__facts is-expanded">
        <dt>批次编号</dt><dd>{{ row.id }}</dd><dt>来源订单</dt><dd><el-button link type="primary" @click="order(row.orderId)">{{ row.orderId || '未记录' }}</el-button></dd>
-       <dt>发放总额</dt><dd>{{ row.grantedPoints }} 积分</dd><dt>已消费（站内 / API）</dt><dd>{{ row.spentPoints - (row.apiSpentPoints || 0) }} / {{ row.apiSpentPoints || 0 }} 积分<small class="user-billing__sub">API 消费不出现在用户钱包明细，可在开发者 API 调用记录中查看</small></dd><dt>购买时比例</dt><dd>{{ row.rechargePolicy ? `每元 ${row.rechargePolicy.pointsPerYuan} 积分` : '固定包或周期发放' }}</dd>
+       <dt>发放总额</dt><dd>{{ row.grantedPoints }} 积分</dd><dt>已消费（站内 / API）</dt><dd>{{ row.spentPoints - (row.apiSpentPoints || 0) }} / {{ row.apiSpentPoints || 0 }} 积分<small class="user-billing__sub">API 消费不出现在用户钱包明细，可在API 调用记录中查看</small></dd><dt>购买时比例</dt><dd>{{ row.rechargePolicy ? `每元 ${row.rechargePolicy.pointsPerYuan} 积分` : '固定包或周期发放' }}</dd>
        <dt>购买时锁价门槛</dt><dd>{{ row.rechargePolicy ? `${row.rechargePolicy.priceLockMinYuan} 元` : '按原套餐资格' }}</dd>
        <dt>变更冻结原因</dt><dd>{{ row.holdReason==='refund'?'退订审核':row.holdReason==='upgrade'?'升级待支付':'无' }}</dd>
        <dt>到期时间</dt><dd>{{ row.expiresAt?formatTime(row.expiresAt):'不随订阅周期到期' }}</dd>

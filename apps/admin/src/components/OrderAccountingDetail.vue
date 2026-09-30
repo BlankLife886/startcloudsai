@@ -55,7 +55,7 @@ async function copy(value:string){try{await navigator.clipboard.writeText(value)
         <div><small>本单净收款</small><strong>{{ billingMoney(data.finance.netCents) }}</strong></div>
       </div>
       <el-alert v-if="data.finance.refundNeedsAllocation" type="warning" :closable="false" :title="`关联订阅已确认退款 ${billingMoney(data.finance.relatedRefundCents)}，但未记录逐单归属；此金额不能重复计入每笔付款。`" />
-      <el-alert v-if="data.apiSpentPoints" type="info" :closable="false" :title="`本单积分中已有 ${formatPoints(data.apiSpentPoints)} 用于开发者 API 调用。API 消费不显示在用户钱包明细里，只在开发者控制台的调用记录中；退款核算时按已使用计入。`" />
+      <el-alert v-if="data.apiSpentPoints" type="info" :closable="false" :title="`本单积分中已有 ${formatPoints(data.apiSpentPoints)} 用于API 调用。API 消费不显示在用户钱包明细里，只在API 调用控制台的调用记录中；退款核算时按已使用计入。`" />
       <el-alert v-if="data.finance.delivery === 'missing'" type="error" :closable="false" title="订单已完成，但未找到对应的权益发放记录，请核查积分流水或订阅记录。" />
       <el-descriptions :column="2" border size="small">
         <el-descriptions-item label="用户"><el-button link type="primary" @click="router.push({path:'/users',query:{userId:data.userId,search:data.userEmail || data.userId}})">{{ data.username || data.userEmail }}</el-button></el-descriptions-item>

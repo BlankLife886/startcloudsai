@@ -25,7 +25,7 @@ test('real resource failures stay explicit and models are listed by their /v1 na
  await page.route('**/api/v1/me/api-models',route=>fulfillJson(route,{items:[{id:'model-7f3a-internal',model:'real-image',name:'真实模型目录',kind:'image',priceCents:12}]}));
  await page.goto('/developer-api');
  await expect(page.getByRole('alert')).toContainText('读取服务暂时不可用');
- await expect(page.getByRole('navigation',{name:'开发者导航'}).getByRole('button')).toHaveText(['开始使用','API Keys','调用记录','模型']);
+ await expect(page.getByRole('navigation',{name:'API 调用导航'}).getByRole('button')).toHaveText(['开始使用','API Keys','调用记录','模型']);
  await page.getByRole('button',{name:'模型',exact:true}).click();
  await expect(page).toHaveURL(/tab=models/);
  const table=page.getByRole('table');

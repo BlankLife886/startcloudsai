@@ -46,7 +46,7 @@ function DeveloperConsole({auth}){
  const signedIn=Boolean(auth?.isAuthenticated);
  const consoleRef=useRef(null);
  useConsoleMotion(consoleRef,tab,Object.values(ready).some(Boolean),signedIn);
- useEffect(()=>{const previous=document.title;document.title='开发者 API · 星空云绘';return()=>{document.title=previous}},[]);
+ useEffect(()=>{const previous=document.title;document.title='API 调用 · 星空云绘';return()=>{document.title=previous}},[]);
  useEffect(()=>{alive.current=true;return()=>{alive.current=false;generation.current++;pendingRead.current?.abort()}},[]);
  useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(''),3200);return()=>clearTimeout(timer)},[notice]);
 
@@ -107,12 +107,12 @@ function DeveloperConsole({auth}){
  const apiBase=`${window.location.origin}/v1`;
  const createButton=<button className="dap-button primary" onClick={openCreate} disabled={createDisabled} title={createTitle}><Plus size={16}/>创建 Key</button>;
 
- if(!auth?.loading&&!signedIn)return <main className={`dap${isDark?' is-dark':''}`}><div className="dap-inner"><Empty icon={ShieldCheck} title="开发者 API" description="登录后创建 API Key，用 OpenAI SDK 调用图片与对话模型。" action={<div className="dap-action-row"><Link className="dap-button primary" to="/auth?redirect=%2Fdeveloper-api">登录控制台</Link></div>}/></div></main>;
+ if(!auth?.loading&&!signedIn)return <main className={`dap${isDark?' is-dark':''}`}><div className="dap-inner"><Empty icon={ShieldCheck} title="API 调用" description="登录后创建 API Key，用 OpenAI SDK 调用图片与对话模型。" action={<div className="dap-action-row"><Link className="dap-button primary" to="/auth?redirect=%2Fdeveloper-api">登录控制台</Link></div>}/></div></main>;
 
  return <main ref={consoleRef} className={`dap${isDark?' is-dark':''}`} data-testid="developer-console" data-tab={tab}><div className="dap-shell">
   <aside className="dap-side">
-   <div className="dap-brand"><span className="dap-brand-mark" aria-hidden="true"><SquareTerminal size={18}/></span><div><h1>开发者 API</h1><small>OpenAI 兼容 · /v1</small></div></div>
-   <p className="dap-side-label">控制台</p><nav className="dap-tabs" aria-label="开发者导航">{NAV.map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} aria-current={tab===id?'page':undefined} onClick={()=>navigateTab(id)}><Icon size={17} aria-hidden="true"/><span>{label}</span>{id==='keys'&&ready.keys&&<b>{usable.length}</b>}</button>)}</nav>
+   <div className="dap-brand"><span className="dap-brand-mark" aria-hidden="true"><SquareTerminal size={18}/></span><div><h1>API 调用</h1><small>OpenAI 兼容 · /v1</small></div></div>
+   <p className="dap-side-label">控制台</p><nav className="dap-tabs" aria-label="API 调用导航">{NAV.map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} aria-current={tab===id?'page':undefined} onClick={()=>navigateTab(id)}><Icon size={17} aria-hidden="true"/><span>{label}</span>{id==='keys'&&ready.keys&&<b>{usable.length}</b>}</button>)}</nav>
    <div className="dap-side-foot">
     {tab!=='start'&&<div className="dap-side-endpoint"><span>Base URL</span><CopyValue value={apiBase} label="Base URL" onCopy={copy}/></div>}
     <Link to="/developer-api/docs" className="dap-side-link"><BookOpen size={16}/>API 文档<ExternalLink size={13}/></Link>

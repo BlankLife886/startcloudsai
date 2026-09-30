@@ -102,7 +102,7 @@ const CREATION_ITEMS = [
 
 const FOOTER_GROUPS = [
   { title: "开始创作", links: [["创作台", "/studio"], ["AI 助手", "/assistant"], ["无限画布", "/canvas"], ["AI 电商", "/ecommerce-design"]] },
-  { title: "工具资源", links: [["全部工具", "/ai-tools"], ["技能库", "/skills"], ["提示词", "/prompts"], ["开发者 API", "/developer-api"]] },
+  { title: "工具资源", links: [["全部工具", "/ai-tools"], ["技能库", "/skills"], ["提示词", "/prompts"], ["API 调用", "/developer-api"]] },
   { title: "社区活动", links: [["社区", "/share"], ["创作激励", "/incentive-plans"], ["创作价格", "/pricing"], ["更新说明", "/updates"]] },
   { title: "我的空间", links: [["创作历史", "/history"], ["我的订单", "/orders"], ["我的钱包", "/wallet"], ["账户设置", "/account"]] },
 ];

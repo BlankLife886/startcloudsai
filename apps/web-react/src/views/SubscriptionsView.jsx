@@ -33,6 +33,22 @@ const statusNames = {
   rejected: "申请未通过",
   pending: "待支付",
   quoted: "待确认",
+  none: "未订阅",
+};
+// Stand-in so the page keeps its full layout (balances, benefits, records)
+// with zeros before the first subscription.
+const EMPTY_SUBSCRIPTION = {
+  id: "",
+  status: "none",
+  billingVersion: 2,
+  planName: "暂未订阅",
+  availablePoints: 0,
+  dailyPoints: 0,
+  issuedPoints: 0,
+  frozenPoints: 0,
+  spentPoints: 0,
+  grantedCycles: 0,
+  canChange: false,
 };
 const scenes = {
   text_to_image: "文生图",
@@ -199,7 +215,9 @@ export function SubscriptionsView() {
       document.removeEventListener("visibilitychange", refresh);
     };
   }, []);
-  const current = data.items.find((item) => item.id === selected);
+  const current = data.items.find((item) => item.id === selected)
+    || (!data.items.length ? EMPTY_SUBSCRIPTION : undefined);
+  const unsubscribed = current?.status === "none";
   const requestedSubscription = searchParams.get("subscription");
   const appliedLinkRef = useRef("");
   useEffect(() => {
@@ -332,13 +350,6 @@ export function SubscriptionsView() {
           <p className="subscription-error" role="alert">{error}</p>
           <button type="button" className="subscription-btn" onClick={() => setVersion(v => v + 1)}>重新读取</button>
         </section>
-      ) : !data.items.length ? (
-        <section className="subscription-empty">
-          <Coins size={36} aria-hidden="true" />
-          <h1>我的订阅</h1>
-          <h2>暂无订阅</h2>
-          <Link className="subscription-btn is-primary" to="/pricing?plan=subscription">选择订阅方案</Link>
-        </section>
       ) : current ? (
         <div className="subscription-layout">
           <aside className="subscription-aside" aria-label="订阅概览">
@@ -359,11 +370,11 @@ export function SubscriptionsView() {
                     </span>
                     <em>{current.planName}</em>
                   </p>
-                  <small>
+                  {unsubscribed ? <small>订阅后每月自动发放积分，并可享受模型锁价</small> : <small>
                     {current.status === "cancelled" ? "原有效期：" : ""}
                     {shortDate(current.startsAt)} 至 {shortDate(current.endsAt)}
                     {current.status === "active" && current.endsAt ? ` · ${remainLabel(current.endsAt, clock)}` : ""}
-                  </small>
+                  </small>}
                 </div>
               </header>
 
@@ -373,9 +384,9 @@ export function SubscriptionsView() {
               </div>}
 
               <div className="subscription-spotlight">
-                <span>{stopped || current.status === "refunding" || current.upgrading ? "订阅状态" : !nextGrantAt && cycleDeadline ? "本期到期" : "下一次重置"}</span>
-                <p className={`subscription-countdown${stopped || current.status === "refunding" || current.upgrading ? " is-status" : ""}`}>
-                  {current.upgrading ? "升级待支付" : stopped || current.status === "refunding" ? statusNames[current.status] : cycleDeadline ? (
+                <span>{unsubscribed || stopped || current.status === "refunding" || current.upgrading ? "订阅状态" : !nextGrantAt && cycleDeadline ? "本期到期" : "下一次重置"}</span>
+                <p className={`subscription-countdown${unsubscribed || stopped || current.status === "refunding" || current.upgrading ? " is-status" : ""}`}>
+                  {current.upgrading ? "升级待支付" : unsubscribed || stopped || current.status === "refunding" ? statusNames[current.status] : cycleDeadline ? (
                     <>
                       <Clock3 size={22} aria-hidden="true" />
                       {remaining(cycleDeadline, clock)}
@@ -387,6 +398,7 @@ export function SubscriptionsView() {
                 <small>
                   {cycleDeadline
                     ? `${shortDate(cycleDeadline)} · 未用额度到期失效`
+                    : unsubscribed ? "订阅后在这里查看下一次额度重置时间"
                     : current.upgrading ? "旧积分已锁定，暂停发放；取消升级订单后恢复"
                     : current.status === "refunding"
                       ? "退订处理中，暂停发放"
@@ -428,19 +440,19 @@ export function SubscriptionsView() {
                   <small className="subscription-usage-context">{current.billingVersion === 2 ? <>
                     {usageSplitKnown && current.hasPriorTerm && <span>升级前使用 {formatPoints(current.priorTermSpentPoints)}</span>}
                     <span>历史累计 {formatPoints(current.spentPoints)}</span>
-                    {!usageSplitKnown && <span>周期用量未独立记录</span>}
+                    {!usageSplitKnown && !unsubscribed && <span>周期用量未独立记录</span>}
                   </> : "历史消耗未独立记录"}</small>
                 </div>
               </dl>
-              <ApiUsageSummary />
+              <ApiUsageSummary className="api-usage-summary--subscription" />
               {current.expiredPoints > 0 ? <p className="subscription-legacy">历史周期已失效 {formatPoints(current.expiredPoints)}，不计为创作消费。</p> : null}
               {current.skippedCycles > 0 ? <p className="subscription-legacy">已跳过 {current.skippedCycles} 个过期周期，不累积补发额度。</p> : null}
               {current.upgradeReclaimedPoints > 0 ? <p className="subscription-legacy">历史升级已置换回收 {formatPoints(current.upgradeReclaimedPoints)}，不计为创作消费。</p> : null}
 
-              <section className="subscription-scope" aria-label="订阅权益">
+              {!unsubscribed ? <section className="subscription-scope" aria-label="订阅权益">
                 <header><h2>{stopped ? '原订阅权益' : '订阅权益'}</h2>{current.contract && <span>权益版本 v{current.contract.planRevision}</span>}</header>
                 <dl>
-                  <div><dt>价格保护</dt><dd>{current.contract ? current.contract.lockModelPrices ? current.contract.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分' : '按实时价格计费' : '历史订阅按实时价格计费'}{current.contract?.lockModelPrices && <small>站内创作适用；开发者 API 按控制台「模型」页的价格计费</small>}</dd></div>
+                  <div><dt>价格保护</dt><dd>{current.contract ? current.contract.lockModelPrices ? current.contract.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分' : '按实时价格计费' : '历史订阅按实时价格计费'}{current.contract?.lockModelPrices && <small>站内创作适用；API 调用按控制台「模型」页的价格计费</small>}</dd></div>
                   {current.contract && <div><dt>额外并发</dt><dd>+{current.contract.concurrencyBonus ?? 0} 张</dd></div>}
                   {!stopped && data.concurrency && <div><dt>并发上限</dt><dd>{data.concurrency.imageLimit ?? data.concurrency.limit} 张<small>基础 {data.concurrency.base} + 订阅 {data.concurrency.planBonus ?? data.concurrency.bonus}{data.concurrency.manualBonus > 0 ? ` + 专属追加 ${data.concurrency.manualBonus}` : ''}，所有生图场景共用</small></dd></div>}
                   {!stopped && data.concurrency?.chatLimit != null && <div><dt>对话并发上限</dt><dd>{data.concurrency.chatLimit} 次<small>与图片额度独立</small></dd></div>}
@@ -449,7 +461,7 @@ export function SubscriptionsView() {
                   {current.policy?.modelIds?.length > 0 && <div><dt>适用模型</dt><dd>{current.policy.modelIds.join('、')}</dd></div>}
                 </dl>
                 {current.contract && (current.status !== 'active' || current.upgrading) && <p className="subscription-scope__status">当前订阅权益已暂停或结束</p>}
-              </section>
+              </section> : null}
 
               {current.billingVersion !== 2 ? (
                 <p className="subscription-legacy">
@@ -482,9 +494,10 @@ export function SubscriptionsView() {
               ) : null}
 
               <div className="subscription-cta">
+                {unsubscribed ? <Link className="is-primary" to="/pricing?plan=subscription">选择订阅方案</Link> : null}
                 <Link to="/wallet">钱包</Link>
                 <Link to="/orders">订单</Link>
-                <Link className="is-primary" to="/pricing?plan=topup">购买额度包</Link>
+                <Link className={unsubscribed ? "" : "is-primary"} to="/pricing?plan=topup">购买额度包</Link>
               </div>
               </footer>
             </div>
@@ -496,7 +509,7 @@ export function SubscriptionsView() {
                 <h2>{tab === "grants" ? "发放记录" : "升级与退订"}</h2>
                 <p>{tab === "grants" ? "每笔订阅积分到账都会记在这里" : "升级补差价与退订审核进度"}</p>
               </div>
-              <button
+              {data.items.length ? <button
                 type="button"
                 ref={pickerRef}
                 className="subscription-history-btn"
@@ -506,7 +519,7 @@ export function SubscriptionsView() {
               >
                 历史订阅
                 <ChevronDown size={14} aria-hidden="true" />
-              </button>
+              </button> : null}
             </header>
             {pickerMounted && pickerBox
               ? createPortal(

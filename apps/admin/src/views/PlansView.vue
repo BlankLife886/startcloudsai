@@ -759,14 +759,14 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
             <el-form-item label="未使用全退窗口（小时）"><el-input-number v-model="form.refundWindowHours" :min="0" :max="720" :precision="0" /></el-form-item>
           </div>
           <el-form-item label="使用渠道"><el-checkbox-group v-model="form.channels"><el-checkbox value="web">网站</el-checkbox><el-checkbox value="api">API</el-checkbox></el-checkbox-group></el-form-item>
-          <el-form-item label="适用场景"><el-select v-model="form.featureKeys" multiple clearable placeholder="全部场景" style="width:100%"><el-option v-for="option in [{value:'text_to_image',label:'文生图'},{value:'ai_assistant',label:'AI助手'},{value:'ui_design',label:'UI设计'},{value:'ecommerce_design',label:'电商创作'},{value:'illustration_coloring',label:'插画上色'},{value:'model_sheet',label:'角色设定'},{value:'game_art',label:'游戏美术'},{value:'background_remove',label:'背景移除'},{value:'infinite_canvas',label:'无限画布'},{value:'developer_api_image',label:'开发者 API 生图'},{value:'developer_api_chat',label:'开发者 API 对话'}]" :key="option.value" :value="option.value" :label="option.label" /></el-select></el-form-item>
+          <el-form-item label="适用场景"><el-select v-model="form.featureKeys" multiple clearable placeholder="全部场景" style="width:100%"><el-option v-for="option in [{value:'text_to_image',label:'文生图'},{value:'ai_assistant',label:'AI助手'},{value:'ui_design',label:'UI设计'},{value:'ecommerce_design',label:'电商创作'},{value:'illustration_coloring',label:'插画上色'},{value:'model_sheet',label:'角色设定'},{value:'game_art',label:'游戏美术'},{value:'background_remove',label:'背景移除'},{value:'infinite_canvas',label:'无限画布'},{value:'developer_api_image',label:'API 调用生图'},{value:'developer_api_chat',label:'API 调用对话'}]" :key="option.value" :value="option.value" :label="option.label" /></el-select></el-form-item>
           <el-form-item label="模型ID范围"><el-input v-model="form.modelIdsText" type="textarea" :rows="3" placeholder="留空允许全部模型，每行一个模型配置ID" /></el-form-item>
           <el-form-item v-if="form.channels.includes('api')" label="API 模型">
             <div class="plan-api-models">
-              <el-select v-if="limitsModels" v-model="form.apiModelIds" multiple clearable filterable placeholder="不选则订阅积分不能用于开发者 API" style="width:100%">
+              <el-select v-if="limitsModels" v-model="form.apiModelIds" multiple clearable filterable placeholder="不选则订阅积分不能用于API 调用" style="width:100%">
                 <el-option v-for="item in apiModels" :key="item.id" :value="item.id" :label="`${item.apiName}（${item.kind === 'chat' ? '对话' : '图片'}）`" />
               </el-select>
-              <p>{{ limitsModels ? '已限定模型ID范围：开发者 API 只能用这里选中的 API 模型。' : '模型ID范围留空：订阅积分可用于全部开发者 API 模型。' }}适用场景若有限定，还需勾选「开发者 API 生图 / 对话」。</p>
+              <p>{{ limitsModels ? '已限定模型ID范围：API 调用只能用这里选中的 API 模型。' : '模型ID范围留空：订阅积分可用于全部API 调用模型。' }}适用场景若有限定，还需勾选「API 调用生图 / 对话」。</p>
             </div>
           </el-form-item>
         </template>

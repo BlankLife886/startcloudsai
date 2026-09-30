@@ -322,9 +322,9 @@ API Key 仅保存 SHA-256 哈希和可识别前缀，明文只在创建时返回
 
 ### `developer_api_models` / `developer_api_model_events`
 
-开发者 API 模型目录（迁移 `00172`，设计见 [开发者 API 模型目录](DEVELOPER_API_MODEL_CATALOG.md)）：对外稳定的 `api_name`（发布后锁定，`lower(api_name)` 唯一）、`aliases`、`kind`（image/chat）、`target_model_id`（指向模型配置 JSON 中的站内模型）、`status`（draft/live/maintenance/deprecated/retired）、`price_mode`（follow/fixed）与 `price_cents`、`max_concurrency`（0 不限）。首次启动时由 `apicatalog.EnsureInitialized` 按原 /v1 行为回填；`server api-models-migrate` 可先演练输出报告。`developer_api_model_events` 记录每次创建、编辑、发布、撤回、维护、弃用、下线以及定时任务的自动下线与调价的前后快照与原因（定时任务写入的 `admin_id` 为空）。迁移 `00173` 增加生命周期与定时调价字段：`sunset_at`（弃用后的下线时间，`deprecated` 必填）、`deprecated_at`、`retired_at`、`replacement_id`（替代模型，引用本表）、`committed_price_cents`（跟随站内价时当前生效的 API 价，站内涨价在预告期内不写入）、`pending_price_cents` 与 `pending_price_at`（已预告的调价，两者同时为空或同时有值）。请求路径按这些字段即时计算状态与价格，Worker 每分钟的 `cron:reconcile_developer_api_models` 负责落库、发站内消息。`developer_api_billing_requests` 新增 `api_model_id`、`api_model_name`，调用记录显示请求当时的模型名。
+API 调用模型目录（迁移 `00172`，设计见 [API 调用模型目录](DEVELOPER_API_MODEL_CATALOG.md)）：对外稳定的 `api_name`（发布后锁定，`lower(api_name)` 唯一）、`aliases`、`kind`（image/chat）、`target_model_id`（指向模型配置 JSON 中的站内模型）、`status`（draft/live/maintenance/deprecated/retired）、`price_mode`（follow/fixed）与 `price_cents`、`max_concurrency`（0 不限）。首次启动时由 `apicatalog.EnsureInitialized` 按原 /v1 行为回填；`server api-models-migrate` 可先演练输出报告。`developer_api_model_events` 记录每次创建、编辑、发布、撤回、维护、弃用、下线以及定时任务的自动下线与调价的前后快照与原因（定时任务写入的 `admin_id` 为空）。迁移 `00173` 增加生命周期与定时调价字段：`sunset_at`（弃用后的下线时间，`deprecated` 必填）、`deprecated_at`、`retired_at`、`replacement_id`（替代模型，引用本表）、`committed_price_cents`（跟随站内价时当前生效的 API 价，站内涨价在预告期内不写入）、`pending_price_cents` 与 `pending_price_at`（已预告的调价，两者同时为空或同时有值）。请求路径按这些字段即时计算状态与价格，Worker 每分钟的 `cron:reconcile_developer_api_models` 负责落库、发站内消息。`developer_api_billing_requests` 新增 `api_model_id`、`api_model_name`，调用记录显示请求当时的模型名。
 
-`user_api_keys.scopes` 列与 `api_webhook_endpoints`、`api_webhook_deliveries` 两张表已由迁移 `00167` 删除：开发者 API 只保留同步返回的 `/v1`，不再有按接口划分的 Key 权限和任务回调。
+`user_api_keys.scopes` 列与 `api_webhook_endpoints`、`api_webhook_deliveries` 两张表已由迁移 `00167` 删除：API 调用只保留同步返回的 `/v1`，不再有按接口划分的 Key 权限和任务回调。
 
 ## 无限画布工作流运行诊断
 

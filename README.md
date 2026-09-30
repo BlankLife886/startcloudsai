@@ -2,7 +2,7 @@
 
 星空云绘是一个 AI 图像创作与作品社区平台，提供文生图、插画染色、设计工作台、模型设定图、游戏美术、AI 电商、拼图、AI 助手和无限画布，并包含技能库、个人素材库、共享画廊、提示词库、钱包、充值与订阅，以及独立运营后台。
 
-项目由 React 主站（内置无限画布模块）、Vue 管理端、Go API/Worker 和独立 Flutter App 组成。网站服务通过 Docker Compose 部署，移动端独立构建和发布。支付、模型调用、开发者 API 等能力受后台配置和凭据控制；源码有入口不代表某个环境已开放。
+项目由 React 主站（内置无限画布模块）、Vue 管理端、Go API/Worker 和独立 Flutter App 组成。网站服务通过 Docker Compose 部署，移动端独立构建和发布。支付、模型调用、API 调用等能力受后台配置和凭据控制；源码有入口不代表某个环境已开放。
 
 > 文档基准：2026-09-22 当前工作区，包含尚未提交的改动，不代表生产部署状态。完整文档与历史记录见 [文档索引](docs/README.md)。Web 主站和管理端面向桌面浏览器，最低支持视口为 `1280x720`；独立 Flutter App 不受此 Web 适配限制，见 [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)。
 
@@ -35,7 +35,7 @@
 
 外部依赖包括 `chatgpt2api`/OpenAI 兼容模型服务、Sub2API 对话服务、CRUN 图片工具、S3 兼容对象存储（部署示例使用阿里云香港 OSS）、SMTP 邮件和可选蓝鲸支付。站内创作由 Worker 异步执行，私有图片通过站内鉴权文件接口交付。一体化 Compose 额外部署 ChatGPT2API，并使用 PostgreSQL 18；根 Compose 使用 PostgreSQL 17。
 
-开发者 API 只有 OpenAI 兼容的 `/v1`（模型、生图、编辑、Chat Completions 对话）：鉴权计费后直接请求配置的 OpenAI 兼容上游，同步返回结果，不创建站内任务，也不保存输入、输出图片。详见 [开放 API 文档](docs/OPEN_API.md)。
+API 调用只有 OpenAI 兼容的 `/v1`（模型、生图、编辑、Chat Completions 对话）：鉴权计费后直接请求配置的 OpenAI 兼容上游，同步返回结果，不创建站内任务，也不保存输入、输出图片。详见 [开放 API 文档](docs/OPEN_API.md)。
 
 ## Docker 本地启动
 

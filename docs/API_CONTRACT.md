@@ -89,7 +89,7 @@
 | PATCH  | `/api/v1/me/profile`                  | 更新 `{username?,avatarUrl?,studioFigureUrl?,bio?,location?,websiteUrl?,requireCostConfirm?,assistantAutoApprove?,assistantAutoApproveBudgetCents?}`；简介上限 280 字、所在地 80 字、网站仅允许完整 http/https 地址，头像与形象图只能引用本人站内上传；用户端不支持密码 |
 | GET    | `/api/v1/me/overview`                 | 钱包、任务汇总/分类型统计、未读数和最近任务                                                                                                                                                                      |
 | GET    | `/api/v1/me/wallet`                   | `{availableCents,balanceCents,frozenCents,totalCents,...}`；`balanceCents` 是 `availableCents` 的兼容别名，禁止再次减去冻结额                                                                                   |
-| GET    | `/api/v1/me/wallet/entries`            | 当前用户账本 cursor 分页（不含开发者 API 调用，见 `/me/api-calls`）                                                                                                                                                                                         |
+| GET    | `/api/v1/me/wallet/entries`            | 当前用户账本 cursor 分页（不含API 调用，见 `/me/api-calls`）                                                                                                                                                                                         |
 | POST   | `/api/v1/me/wallet/redemptions`            | `{code}`，兑换成功返回 `{grantCents,balanceCents}`                                                                                                                                                               |
 | GET    | `/api/v1/trial-access-campaign`             | 当前唯一且未过期的体验活动，包含 `expiresAt` 与 `remainingSeconds`；无可用活动时 `campaign:null`                                                                                                                   |
 | GET    | `/api/v1/me/trial-access-application`       | 当前用户在当前启用活动中的申请；无启用活动或未申请时 `application:null`                                                                                                                                           |
@@ -130,7 +130,7 @@
 | PATCH  | `/api/v1/me/asset-groups/{id}`        | 更新 `{name?,sort?}`                                                                                                                                                                                             |
 | DELETE | `/api/v1/me/asset-groups/{id}`        | 删除分组；组内素材 `group_id` 置空                                                                                                                                                                               |
 | GET    | `/api/v1/me/api-models`               | API 模型目录中当前可调用的模型：`id` 为目录 ID（Key 的 `allowedModelIds` 存它），`model` 为 /v1 使用的模型名，`priceCents` 为 API 单价 |
-| GET    | `/api/v1/me/api-usage-summary`        | 本月（UTC）开发者 API 已扣费的积分与调用次数；钱包页、订阅页用它显示 API 消耗汇总（API 扣费不进钱包明细） |
+| GET    | `/api/v1/me/api-usage-summary`        | 本月（UTC）API 调用已扣费的积分与调用次数；钱包页、订阅页用它显示 API 消耗汇总（API 扣费不进钱包明细） |
 | GET    | `/api/v1/me/api-calls`                | 本人 `/v1` 调用记录：`?page=&limit=&key=`，返回 `{items,page,pageSize,total,totalCapped}`；每项含时间、接口、模型名、Key 名称与短前缀、用量、扣费积分、状态与原因，不含内部 id |
 | GET/POST | `/api/v1/me/api-keys`               | 查询或创建 API Key；明文仅在创建响应返回一次                                                                                                                                                                      |
 | PATCH | `/api/v1/me/api-keys/{id}`             | 更新本人 Key 的可编辑配置；仍受权限、模型白名单及额度范围校验 |

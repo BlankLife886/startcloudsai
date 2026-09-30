@@ -75,7 +75,7 @@ const PAGE_LABELS = Object.freeze({
   "ecommerce.outpaint": "智能扩图",
   "ecommerce.enhance": "清晰增强",
   assistant: "AI 助手",
-  developer_api: "开发者 API",
+  developer_api: "API 调用",
   text_to_image: "文生图",
   model_sheet: "模型设计",
   illustration_coloring: "插画染色",

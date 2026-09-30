@@ -62,7 +62,7 @@ func (c *Client) WithoutReasoning() *Client {
 }
 
 // WithoutRetry 让对话请求失败就直接返回，不再对“还没收到任何输出”的瞬时错误重发一次。
-// 开发者 API 按“失败就是失败”计费：失败不扣费，由调用方自己决定要不要发新请求。
+// API 调用按“失败就是失败”计费：失败不扣费，由调用方自己决定要不要发新请求。
 func (c *Client) WithoutRetry() *Client {
 	if c == nil {
 		return nil

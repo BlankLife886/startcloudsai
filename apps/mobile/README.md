@@ -91,7 +91,7 @@ lib/
 └── features/  # auth、discover、create、tasks、profile
 ```
 
-当前移动端用户登录使用 HttpOnly Cookie 会话。App 将 `sc_session` 保存到 Keychain/Keystore，并让 REST 与私有媒体共用该凭据；开发者 API Key 的 Bearer 鉴权是独立入口，不等于移动端已经采用 Bearer 用户会话。若后续引入移动 Bearer 会话，应同步调整 `SessionStore` 与 `ApiClient` 的凭据注入逻辑。
+当前移动端用户登录使用 HttpOnly Cookie 会话。App 将 `sc_session` 保存到 Keychain/Keystore，并让 REST 与私有媒体共用该凭据；API 调用 Key 的 Bearer 鉴权是独立入口，不等于移动端已经采用 Bearer 用户会话。若后续引入移动 Bearer 会话，应同步调整 `SessionStore` 与 `ApiClient` 的凭据注入逻辑。
 
 ## 设备配置
 

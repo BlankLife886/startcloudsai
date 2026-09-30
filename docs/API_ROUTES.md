@@ -375,7 +375,7 @@
 | PUT | `/api/v1/admin/ecommerce/tryon-catalog/:id/image` | `s.adminOnly(s.adminUploadTryonCatalogImage)` |
 | DELETE | `/api/v1/admin/ecommerce/tryon-catalog/:id` | `s.adminOnly(s.adminDeleteTryonCatalog)` |
 
-## 开发者 API（OpenAI 兼容 /v1）
+## API 调用（OpenAI 兼容 /v1）
 
 | 方法 | 路径 | 注册表达式 |
 | --- | --- | --- |

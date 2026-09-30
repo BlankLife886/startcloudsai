@@ -71,7 +71,7 @@ func (s *Server) adminPutModelConfig(c *gin.Context, _ *store.User) {
 				names = append(names, fmt.Sprintf("「%s」（%s）", item["apiName"], item["reason"]))
 			}
 			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"success": false, "code": "api_model_impact",
-				"error": "这次保存会让以下开发者 API 模型无法调用（返回 503）：" + strings.Join(names, "、"),
+				"error": "这次保存会让以下API 调用模型无法调用（返回 503）：" + strings.Join(names, "、"),
 				"data":  gin.H{"models": impacted}})
 			return
 		}

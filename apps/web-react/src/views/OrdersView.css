@@ -1176,3 +1176,138 @@
     animation: none;
   }
 }
+
+/* Payment dialog: QR + amount layout, default fade/scale open and close */
+.order-dialog { animation: order-dialog-fade 0.18s ease-out; }
+.order-dialog > section { animation: order-dialog-pop 0.18s ease-out; }
+.order-dialog.is-leaving { animation: order-dialog-fade-out 0.16s ease-in forwards; pointer-events: none; }
+.order-dialog.is-leaving > section { animation: order-dialog-pop-out 0.16s ease-in forwards; }
+
+@keyframes order-dialog-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes order-dialog-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes order-dialog-pop { from { opacity: 0; transform: translateY(8px) scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes order-dialog-pop-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(8px) scale(0.97); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .order-dialog, .order-dialog > section, .order-dialog.is-leaving, .order-dialog.is-leaving > section { animation: none; }
+}
+
+.order-dialog__payment {
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 28px;
+  padding: 24px;
+}
+
+.order-dialog__qr {
+  align-content: center;
+  gap: 12px;
+  padding: 16px 16px 14px;
+  border-radius: 16px;
+  box-shadow: 0 0 0 1px var(--line), 0 8px 24px rgb(0 0 0 / 8%);
+}
+
+.order-dialog__qr span { color: #6b6e7a; font-size: 0.75rem; }
+
+.order-dialog__paycopy {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.order-pay__amount { display: grid; gap: 4px; }
+.order-pay__amount span { color: var(--muted); font-size: 0.75rem; }
+.order-pay__amount strong {
+  margin: 0;
+  font-size: 2.4rem;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+}
+
+.order-pay__facts {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 4px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+.order-pay__facts > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 0;
+  font-size: 0.78rem;
+}
+.order-pay__facts > div + div { border-top: 1px solid var(--line); }
+.order-pay__facts dt { margin: 0; color: var(--muted); }
+.order-pay__facts dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+.order-pay__timer { display: grid; gap: 6px; }
+.order-pay__timer .orders-remain { font-size: 0.8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.order-pay__timer .order-meter { max-width: none; height: 4px; margin-top: 0; }
+
+.order-pay__warn {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--pending);
+  background: var(--pending-soft);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.order-dialog__paycopy .order-dialog__actions { margin-top: auto; }
+.order-dialog__paycopy .order-dialog__actions > * { min-height: 44px; font-size: 0.82rem; }
+.order-dialog__paycopy .order-dialog__actions > a { flex: 1.4; gap: 6px; }
+
+@media (max-width: 640px) {
+  .order-dialog__payment { grid-template-columns: 1fr; gap: 20px; padding: 18px 16px 20px; }
+  .order-dialog__qr { justify-self: center; width: min(240px, 100%); }
+}
+
+/* Polish: calmer open animation, tighter QR card */
+.order-dialog { animation: order-dialog-dim 0.2s ease-out; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.order-dialog > section { animation: order-dialog-pop 0.2s cubic-bezier(0.2, 0.8, 0.2, 1); }
+@keyframes order-dialog-dim { from { background-color: transparent; } }
+@keyframes order-dialog-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes order-dialog-pop { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes order-dialog-pop-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: scale(0.98); } }
+
+.order-dialog__payment { grid-template-columns: 236px minmax(0, 1fr); align-items: center; gap: 32px; padding: 28px; }
+
+.order-dialog__qr {
+  align-self: center;
+  gap: 14px;
+  padding: 18px 18px 16px;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--line), 0 14px 32px rgb(0 0 0 / 14%);
+}
+.order-dialog__qr-method {
+  padding: 3px 12px;
+  border-radius: 999px;
+  color: #4a3fd6 !important;
+  background: rgb(109 92 255 / 10%);
+  font-size: 0.72rem !important;
+  font-weight: 700;
+}
+.order-dialog__qr-code {
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  border: 1px solid rgb(21 22 31 / 8%);
+  border-radius: 14px;
+  background: #fff;
+}
+.order-dialog__qr-code > * { display: block; padding: 0 !important; }
+.order-dialog__qr-tip { color: #6b6e7a !important; font-size: 0.75rem !important; }
+
+.order-dialog__paycopy { gap: 14px; align-self: stretch; }
+
+@media (max-width: 640px) {
+  .order-dialog__payment { grid-template-columns: 1fr; gap: 20px; padding: 18px 16px 20px; }
+}

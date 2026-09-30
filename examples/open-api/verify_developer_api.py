@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""对真实部署的开发者 API 做一轮修复验收。
+"""对真实部署的API 调用做一轮修复验收。
 
 只用 Python 标准库，不需要安装依赖。分两级执行：
 
@@ -254,7 +254,7 @@ def read_wallet(args: argparse.Namespace) -> tuple[int, int] | None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="开发者 API 修复验收（真实环境）")
+    parser = argparse.ArgumentParser(description="API 调用修复验收（真实环境）")
     parser.add_argument("--paid", action="store_true", help="执行会扣积分的检查")
     parser.add_argument("--image-model", help="GET /v1/models 返回的图片模型 ID")
     parser.add_argument("--chat-model", help="GET /v1/models 返回的对话模型 ID")

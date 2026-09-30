@@ -1648,7 +1648,7 @@ export function NavBar() {
                               ["/subscriptions", "bi-calendar-check", "我的订阅"],
                               ["/orders", "bi-receipt", "我的订单"],
                               ["/account", "bi-person-gear", "账号设置"],
-                              ["/developer-api", "bi-code-square", "开发者 API"],
+                              ["/developer-api", "bi-code-square", "API 调用"],
                               ...(REFERRALS_ENABLED ? [["/invite", "bi-person-plus", "邀请好友"]] : []),
                             ]
                               .filter(([to]) => isEntryVisible(to))

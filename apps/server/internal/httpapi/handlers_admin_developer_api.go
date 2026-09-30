@@ -14,7 +14,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
-// adminDeveloperAPIFilter reads the shared filters of the admin 开发者 API page.
+// adminDeveloperAPIFilter reads the shared filters of the admin API 调用 page.
 func adminDeveloperAPIFilter(c *gin.Context) (store.AdminDeveloperAPICallFilter, error) {
 	base, err := adminListFilter(c)
 	if err != nil {

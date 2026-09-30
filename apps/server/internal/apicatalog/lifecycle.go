@@ -268,20 +268,20 @@ func replacementNote(entry *store.DeveloperAPIModel, names map[string]string) st
 
 // NotifyPriceIncrease tells users of an entry about an announced increase.
 func NotifyPriceIncrease(ctx context.Context, q store.Q, entry *store.DeveloperAPIModel, current int64, now time.Time) error {
-	body := fmt.Sprintf("开发者 API 模型「%s」将于 %s（北京时间）起由 %d 积分/次调整为 %d 积分/次，此前的调用仍按原价计费。详情见开发者控制台「模型」页。",
+	body := fmt.Sprintf("API 调用模型「%s」将于 %s（北京时间）起由 %d 积分/次调整为 %d 积分/次，此前的调用仍按原价计费。详情见API 调用控制台「模型」页。",
 		entry.APIName, FormatBeijing(*entry.PendingPriceAt), current, *entry.PendingPriceCents)
-	return notify(ctx, q, entry, now, "开发者 API 价格调整预告", body)
+	return notify(ctx, q, entry, now, "API 调用价格调整预告", body)
 }
 
 // NotifyDeprecated tells users of an entry about its planned retirement.
 func NotifyDeprecated(ctx context.Context, q store.Q, entry *store.DeveloperAPIModel, names map[string]string, now time.Time) error {
-	body := fmt.Sprintf("开发者 API 模型「%s」将于 %s（北京时间）下线%s。下线后调用会返回 410 错误，请在此之前更新代码中的 model 参数和 Key 的指定模型。",
+	body := fmt.Sprintf("API 调用模型「%s」将于 %s（北京时间）下线%s。下线后调用会返回 410 错误，请在此之前更新代码中的 model 参数和 Key 的指定模型。",
 		entry.APIName, FormatBeijing(*entry.SunsetAt), replacementNote(entry, names))
-	return notify(ctx, q, entry, now, "开发者 API 模型下线预告", body)
+	return notify(ctx, q, entry, now, "API 调用模型下线预告", body)
 }
 
 // NotifyRetired tells users of an entry that it has stopped.
 func NotifyRetired(ctx context.Context, q store.Q, entry *store.DeveloperAPIModel, names map[string]string, now time.Time) error {
-	body := fmt.Sprintf("开发者 API 模型「%s」已下线，调用会返回 410 错误%s。", entry.APIName, replacementNote(entry, names))
-	return notify(ctx, q, entry, now, "开发者 API 模型已下线", body)
+	body := fmt.Sprintf("API 调用模型「%s」已下线，调用会返回 410 错误%s。", entry.APIName, replacementNote(entry, names))
+	return notify(ctx, q, entry, now, "API 调用模型已下线", body)
 }

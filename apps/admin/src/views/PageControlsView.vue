@@ -71,7 +71,7 @@ const PAGE_GROUPS: PageGroup[] = [
     title: "开放能力",
     description: "控制台与接入文档可分别管理。",
     pages: [
-      { key: "developer_api", label: "开发者 API", path: "/developer-api" },
+      { key: "developer_api", label: "API 调用", path: "/developer-api" },
       { key: "developer_api_docs", label: "API 文档", path: "/developer-api/docs" },
     ],
   },

@@ -4,13 +4,12 @@ import { useRoute } from 'vue-router';
 import { ElMessage } from "element-plus";
 import {
   Refresh,
-  Check,
-  Close,
   CreditCard,
   Search,
   Download,
 } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
+import PageCard from "@/components/PageCard.vue";
 import SubscriptionAuditTrail from '@/components/SubscriptionAuditTrail.vue';
 import { request } from "@/request";
 import { formatTime } from "@/utils";
@@ -189,6 +188,9 @@ const names: Record<string, string> = {
   cancelled: "已取消",
   pending: "待支付",
 };
+type TagType = "success" | "danger" | "info" | "warning";
+const statusTag = (status: string): TagType =>
+  ({ completed: "success", rejected: "danger", cancelled: "info" } as Record<string, TagType>)[status] || "warning";
 const money = (value: number) => `¥${(value / 100).toFixed(2)}`;
 const displayedPage = ref(1);
 let listGeneration = 0;
@@ -327,127 +329,101 @@ watch(()=>route.query.status,value=>{statusFilter.value=String(value||'');page.v
 </script>
 
 <template>
-  <div class="subscription-admin">
-    <header>
-      <h2>订阅变更</h2>
-      <div>
-      <el-button :icon="CreditCard" type="warning" plain @click="openManual">人工例外退款</el-button>
-      <el-button :icon="Refresh" :loading="loading" @click="load"
-        >刷新</el-button
-      >
+  <div class="page subscription-admin">
+    <PageCard>
+      <div class="subscription-admin-toolbar">
+        <form class="subscription-admin-filters" @submit.prevent="search">
+          <el-input
+            v-model="query"
+            clearable
+            :prefix-icon="Search"
+            placeholder="搜索用户、申请号、订单号或渠道流水"
+            aria-label="搜索订阅账务"
+          />
+          <el-select
+            v-model="statusFilter"
+            clearable
+            placeholder="全部状态"
+            aria-label="变更状态"
+            @change="search"
+          ><el-option v-for="(label, value) in names" :key="value" :value="value" :label="label" /></el-select>
+          <el-select
+            v-model="kindFilter"
+            clearable
+            placeholder="全部类型"
+            aria-label="变更类型"
+            @change="search"
+          ><el-option value="refund" label="退订退款" /><el-option value="upgrade" label="订阅升级" /></el-select>
+          <el-button native-type="submit">查询</el-button>
+        </form>
+        <div class="subscription-admin-actions">
+          <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+          <el-button :icon="CreditCard" type="warning" plain @click="openManual">人工例外退款</el-button>
+        </div>
       </div>
-    </header>
-    <form class="subscription-admin-filters" @submit.prevent="search">
-      <el-input
-        v-model="query"
-        clearable
-        placeholder="搜索用户、申请号、订单号或渠道流水"
-        aria-label="搜索订阅账务"
+      <el-alert v-if="error" :title="error" type="error" :closable="false" />
+      <div class="subscription-admin-board">
+        <el-table class="subscription-admin-table" :data="items" v-loading="loading" height="100%" table-layout="fixed">
+          <template #empty>
+            <el-empty :image-size="72">
+              <template #description>
+                <p class="subscription-empty__title">{{ query || statusFilter || kindFilter ? "没有符合条件的申请" : "暂无订阅变更申请" }}</p>
+                <p class="subscription-empty__hint">{{ query || statusFilter || kindFilter ? "调整搜索词或筛选条件后重试" : "用户提交退订或升级申请后会显示在这里" }}</p>
+              </template>
+            </el-empty>
+          </template>
+          <el-table-column label="套餐" min-width="240" show-overflow-tooltip>
+            <template #default="{ row }">
+              <strong class="cell-strong">{{ row.snapshot.planName }}</strong>
+              <span v-if="row.kind === 'upgrade'" class="cell-muted"> ← {{ row.snapshot.sourcePlan?.planName || '原套餐未记录' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="用户" min-width="260" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.username || "未命名用户" }} · {{ row.userEmail || row.userId }}</template>
+          </el-table-column>
+          <el-table-column label="类型" width="130">
+            <template #default="{ row }">{{
+              row.snapshot.manualRefund ? "人工例外退款" : row.kind === "refund" ? "退订退款" : row.snapshot.upgradeMode === "restart" ? "整期置换升级" : "升级补差价"
+            }}</template>
+          </el-table-column>
+          <el-table-column label="申请 / 核定金额" width="150" align="right" header-align="right">
+            <template #default="{ row }"><span class="tnum">{{ money(row.amountCents) }}</span></template>
+          </el-table-column>
+          <el-table-column label="状态" width="170" align="center">
+            <template #default="{ row }">
+              <el-tag :type="statusTag(row.status)" effect="light" size="small" :title="[row.publicMessage, row.providerReference ? `渠道流水：${row.providerReference}` : ''].filter(Boolean).join('\n') || undefined">{{
+                row.kind === "refund" && row.status === "completed" ? "已人工确认退款" : names[row.status] || row.status
+              }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="原因" min-width="170" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.reason || "—" }}</template>
+          </el-table-column>
+          <el-table-column label="申请时间" width="180">
+            <template #default="{ row }"><span class="tnum">{{ formatTime(row.createdAt) }}</span></template>
+          </el-table-column>
+          <el-table-column label="处理" width="300" fixed="right" class-name="subscription-actions-cell">
+            <template #default="{ row }">
+              <el-button size="small" @click="inspect(row)">查账</el-button>
+              <template v-if="row.kind === 'refund'">
+                <el-button v-if="row.status === 'reviewing'" size="small" @click="open(row, 'approve')">通过审核</el-button>
+                <el-button v-if="row.status === 'processing'" size="small" @click="open(row, 'confirm_external_refund')">确认渠道退款</el-button>
+                <el-button v-if="['reviewing', 'processing'].includes(row.status)" size="small" @click="open(row, 'reject')">驳回 / 恢复</el-button>
+              </template>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <el-pagination
+        class="subscription-admin-pagination"
+        :current-page="displayedPage"
+        :disabled="loading"
+        :page-size="25"
+        :total="total"
+        layout="total, prev, pager, next"
+        @update:current-page="value => { page = value; load() }"
       />
-      <el-select
-        v-model="statusFilter"
-        clearable
-        placeholder="全部状态"
-        aria-label="变更状态"
-        @change="search"
-        ><el-option
-          v-for="(label, value) in names"
-          :key="value"
-          :value="value"
-          :label="label"
-      /></el-select>
-      <el-select
-        v-model="kindFilter"
-        clearable
-        placeholder="全部类型"
-        aria-label="变更类型"
-        @change="search"
-        ><el-option value="refund" label="退订退款" /><el-option
-          value="upgrade"
-          label="订阅升级"
-      /></el-select>
-      <el-button native-type="submit" :icon="Search">查询</el-button>
-    </form>
-    <el-alert v-if="error" :title="error" type="error" :closable="false" />
-    <el-table :data="items" v-loading="loading" empty-text="暂无订阅变更申请">
-      <el-table-column label="套餐 / 用户" min-width="220"
-        ><template #default="{ row }"
-          ><strong>{{ row.snapshot.planName }}</strong
-          ><small v-if="row.kind === 'upgrade'">来源：{{ row.snapshot.sourcePlan?.planName || '原套餐信息未记录' }}</small
-          ><small
-            >{{ row.username || "未命名用户" }} ·
-            {{ row.userEmail || row.userId }}</small
-          ></template
-        ></el-table-column
-      >
-      <el-table-column label="类型" width="110"
-        ><template #default="{ row }">{{
-          row.snapshot.manualRefund ? "人工例外退款" : row.kind === "refund" ? "退订退款" : row.snapshot.upgradeMode === "restart" ? "整期置换升级" : "升级补差价"
-        }}</template></el-table-column
-      >
-      <el-table-column label="申请 / 核定金额" width="145"
-        ><template #default="{ row }">{{
-          money(row.amountCents)
-        }}</template></el-table-column
-      >
-      <el-table-column label="状态" width="170"
-        ><template #default="{ row }">{{
-          row.kind === "refund" && row.status === "completed"
-            ? "已人工确认退款"
-            : names[row.status] || row.status
-        }}</template></el-table-column
-      >
-      <el-table-column label="原因 / 处理记录" min-width="240"
-        ><template #default="{ row }"
-          ><span>{{ row.reason || "—" }}</span
-          ><small>{{ row.publicMessage || "" }}</small
-          ><small v-if="row.providerReference"
-            >渠道流水：{{ row.providerReference }}</small
-          ></template
-        ></el-table-column
-      >
-      <el-table-column label="申请时间" width="165"
-        ><template #default="{ row }">{{
-          formatTime(row.createdAt)
-        }}</template></el-table-column
-      >
-      <el-table-column label="处理" width="355" fixed="right"
-        ><template #default="{ row }"
-          ><el-button size="small" :icon="Search" @click="inspect(row)"
-            >查账</el-button
-          ><template v-if="row.kind === 'refund'"
-            ><el-button
-              v-if="row.status === 'reviewing'"
-              size="small"
-              :icon="Check"
-              @click="open(row, 'approve')"
-              >通过审核</el-button
-            ><el-button
-              v-if="row.status === 'processing'"
-              size="small"
-              :icon="CreditCard"
-              @click="open(row, 'confirm_external_refund')"
-              >确认渠道退款</el-button
-            ><el-button
-              v-if="['reviewing', 'processing'].includes(row.status)"
-              size="small"
-              :icon="Close"
-              @click="open(row, 'reject')"
-              >驳回 / 恢复</el-button
-            ></template
-          ></template
-        ></el-table-column
-      >
-    </el-table>
-    <el-pagination
-      class="subscription-admin-pagination"
-      :current-page="displayedPage"
-      :disabled="loading"
-      :page-size="25"
-      :total="total"
-      layout="total, prev, pager, next"
-      @update:current-page="value => { page = value; load() }"
-    />
+    </PageCard>
     <el-drawer
       v-model="detailOpen"
       title="订阅账务详情"
@@ -678,7 +654,8 @@ watch(()=>route.query.status,value=>{statusFilter.value=String(value||'');page.v
             : '确认渠道退款结果'
       "
       :icon="CreditCard"
-      width="520px"
+      :subtitle="selected ? `${selected.username || '未命名用户'} · ${selected.userEmail || selected.userId}` : undefined"
+      width="760px"
       confirm-text="记录处理结果"
       :confirm-disabled="
         saving ||
@@ -688,10 +665,11 @@ watch(()=>route.query.status,value=>{statusFilter.value=String(value||'');page.v
       "
       @confirm="submit"
     >
-      <p v-if="selected">
-        {{ selected.snapshot.planName }} · 申请金额上限
-        {{ money(selected.amountCents) }}
-      </p>
+      <dl v-if="selected" class="review-summary">
+        <div><dt>订阅套餐</dt><dd>{{ selected.snapshot.planName }}</dd></div>
+        <div><dt>申请金额上限</dt><dd class="review-summary__amount tnum">{{ money(selected.amountCents) }}</dd></div>
+        <div><dt>申请时间</dt><dd class="tnum">{{ formatTime(selected.createdAt) }}</dd></div>
+      </dl>
       <el-alert
         v-if="action === 'approve'"
         type="warning"
@@ -704,11 +682,13 @@ watch(()=>route.query.status,value=>{statusFilter.value=String(value||'');page.v
         :closable="false"
         title="渠道未退款时才能驳回；已冻结的订阅权益将恢复。"
       />
-      <el-form label-position="top">
+      <el-form label-position="top" class="review-form">
         <el-form-item
           v-if="action === 'approve'"
           label="核定退款金额（元，留空按当前上限）"
           ><el-input-number
+            class="review-amount"
+            controls-position="right"
             v-model="approvedYuan"
             :min="0"
             :max="(selected?.amountCents || 0) / 100"
@@ -729,6 +709,7 @@ watch(()=>route.query.status,value=>{statusFilter.value=String(value||'');page.v
             :rows="4"
             maxlength="500"
             show-word-limit
+            placeholder="记录审核依据，仅内部可见（至少 6 个字）"
         /></el-form-item>
         <el-form-item label="用户可见说明（可选）"
           ><el-input
@@ -753,27 +734,53 @@ watch(()=>route.query.status,value=>{statusFilter.value=String(value||'');page.v
 <style scoped>
 .manual-refund-form { margin-top: 18px; }
 .manual-refund-form :deep(.el-descriptions) { margin-bottom: 18px; overflow-wrap: anywhere; }
-.subscription-admin header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
+.subscription-admin { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; padding: 0; }
+.subscription-admin :deep(.page-card) { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
+.subscription-admin :deep(.page-card__body) { display: flex; flex: 1; flex-direction: column; min-height: 0; gap: 14px; overflow: hidden; }
+.subscription-admin-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.subscription-admin-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.subscription-admin-filters > .el-input { width: 320px; }
+.subscription-admin-filters > .el-select { width: 150px; }
+.subscription-admin-actions { display: flex; gap: 8px; }
+.subscription-admin-board {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
 }
-.subscription-admin-filters {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 18px;
+.subscription-admin-table { font-size: 13px; }
+.subscription-admin-table :deep(th.el-table__cell) { padding: 12px 0; }
+.subscription-admin-table :deep(td.el-table__cell) { padding: 14px 0; }
+.subscription-admin-table :deep(.cell) { padding: 0 16px; white-space: nowrap; }
+.subscription-admin-table :deep(.el-tag) { padding: 0 10px; }
+.subscription-admin-table :deep(.subscription-actions-cell .cell) { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
+.subscription-admin-table :deep(.subscription-actions-cell .el-button + .el-button) { margin-left: 0; }
+.cell-strong { color: var(--ink); font-weight: 600; }
+.cell-muted { color: var(--ink-3); }
+.subscription-admin-pagination { flex: none; justify-content: flex-end; }
+.subscription-empty__title { margin: 0; color: var(--ink-2); font-size: 14px; font-weight: 600; }
+.subscription-empty__hint { margin: 4px 0 0; color: var(--ink-3); font-size: 12px; }
+.subscription-admin-table :deep(.el-table__empty-block) { min-height: 100%; }
+.review-summary {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1.2fr;
+  gap: 1px;
+  margin: 0 0 16px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--border);
 }
-.subscription-admin-filters > .el-input {
-  max-width: 380px;
-}
-.subscription-admin-filters > .el-select {
-  width: 160px;
-}
-.subscription-admin-pagination {
-  margin-top: 18px;
-  justify-content: flex-end;
-}
+.review-summary > div { display: grid; gap: 4px; padding: 12px 16px; background: var(--surface); }
+.review-summary dt { margin: 0; color: var(--ink-3); font-size: 12px; }
+.review-summary dd { margin: 0; color: var(--ink); font-size: 14px; font-weight: 600; }
+.review-summary__amount { color: var(--success); font-size: 18px !important; }
+.el-alert { margin-bottom: 16px; }
+.review-form :deep(.el-form-item) { margin-bottom: 18px; }
+.review-form :deep(.el-form-item__label) { font-weight: 600; }
+.review-amount { width: 240px; }
 .subscription-audit-head {
   display: flex;
   justify-content: space-between;

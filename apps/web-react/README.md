@@ -17,7 +17,7 @@ npm run dev
 - `/canvas` 是画布入口，`/canvas/:id` 和 `/canvas/config` 为原生项目与配置路由；不再使用独立 iframe 服务。
 - `/skills` 是真实技能库，支持本地、账号云端和官方技能，通过文生图、电商、助手及画布输入中的 `@` 提及使用，详见 [技能库](../../docs/SKILL_PAGE_PLAN.md)。
 - 电商页面由 `EcommerceDesignView.jsx`、`EcommerceBusinessSession.jsx`、`features/ecommerce/workbench/` 与 `DetailStudio.jsx` 等组成；以当前工作台实现为准，迁移期组件和旧视觉描述不再是现状。
-- `/assets` 为素材入口，`/materials` 保留重定向；另有 PSD 分解、闪光卡、工具目录、开发者 API 文档与控制台、订单与订阅页面。页面可见性仍受运行时页面控制影响。
+- `/assets` 为素材入口，`/materials` 保留重定向；另有 PSD 分解、闪光卡、工具目录、API 调用文档与控制台、订单与订阅页面。页面可见性仍受运行时页面控制影响。
 
 `REACT_MIGRATION.md`、`DESIGN.md` 和 `CANVAS_CHANGELOG.md` 分别保留迁移记录、历史首页基线与上游版本历史，不作为当前完整功能清单。
 

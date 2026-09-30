@@ -392,15 +392,28 @@ export function OrdersView() {
   selectedRef.current = selected;
   cancelConfirmRef.current = cancelConfirm;
 
+  const leaveTimerRef = useRef(0);
+  const [leaving, setLeaving] = useState(false);
   const dismissOrder = useCallback(() => {
     if (closingRef.current) return;
     selectedIDRef.current = "";
     detailVersionRef.current += 1;
     detailControllerRef.current?.abort();
-    setSelected(null);
     setDetailLoading(false);
     setDetailRefreshing(false);
+    window.clearTimeout(leaveTimerRef.current);
+    if (!selectedRef.current || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setSelected(null);
+      setLeaving(false);
+      return;
+    }
+    setLeaving(true);
+    leaveTimerRef.current = window.setTimeout(() => {
+      setLeaving(false);
+      if (!selectedIDRef.current) setSelected(null);
+    }, 160);
   }, []);
+  useEffect(() => () => window.clearTimeout(leaveTimerRef.current), []);
 
   const load = useCallback(
     async (targetCursor = "", { quiet = false } = {}) => {
@@ -586,7 +599,9 @@ export function OrdersView() {
     selectedIDRef.current = order.id;
     setSelected(order);
     setDetailError("");
-    void refreshDetails(order.id, { initial: true });
+    // A pending order that already carries its pay link opens straight into
+    // the QR view and refreshes in the background, avoiding a loader flash.
+    void refreshDetails(order.id, { initial: !(order.status === "pending" && order.payUrl) });
   }
 
   async function cancelSelected() {
@@ -722,7 +737,7 @@ export function OrdersView() {
 
             <div className="orders-stage__cta">
               <Link to="/wallet">钱包</Link>
-              <Link className="is-primary" to="/pricing">查看套餐</Link>
+              <Link className="is-primary" to="/pricing?plan=topup">去充值</Link>
             </div>
           </div>
         </aside>
@@ -884,7 +899,7 @@ export function OrdersView() {
       </div>
 
       {selected && createPortal(
-        <div className={`order-dialog${isDark ? " is-dark" : ""}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && dismissOrder()}>
+        <div className={`order-dialog${isDark ? " is-dark" : ""}${leaving ? " is-leaving" : ""}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && dismissOrder()}>
           <section ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="order-dialog-title">
             <header>
               <div className="order-dialog__lead">
@@ -912,24 +927,31 @@ export function OrdersView() {
             ) : selected.status === "pending" && selected.payUrl && !isPaymentExpired(selected, now) && !detailError && !selected.syncError ? (
               <div className="order-dialog__payment">
                 <div className="order-dialog__qr">
-                  <QRCode value={String(selected.payUrl)} size={180} bordered={false} />
-                  <span>打开{paymentMethodMeta(selected.paymentMethod).label}扫一扫</span>
+                  <span className="order-dialog__qr-method">{paymentMethodMeta(selected.paymentMethod).label}</span>
+                  <div className="order-dialog__qr-code">
+                    <QRCode value={String(selected.payUrl)} size={188} bordered={false} errorLevel="M" />
+                  </div>
+                  <span className="order-dialog__qr-tip">打开{paymentMethodMeta(selected.paymentMethod).label}扫一扫</span>
                 </div>
                 <div className="order-dialog__paycopy">
-                  <span>应付金额</span>
-                  <strong>{formatYuan(selected.payAmountCents ?? selected.amountCents)}</strong>
-                  <p>{planKindLabel(selected.planKind)} · {orderBenefit(selected)}</p>
-                  <p>创建 {formatDate(selected.createdAt)}</p>
+                  <div className="order-pay__amount">
+                    <span>应付金额</span>
+                    <strong>{formatYuan(selected.payAmountCents ?? selected.amountCents)}</strong>
+                  </div>
+                  <dl className="order-pay__facts">
+                    <div><dt>订单内容</dt><dd>{planKindLabel(selected.planKind)} · {orderBenefit(selected)}</dd></div>
+                    <div><dt>创建时间</dt><dd>{formatDate(selected.createdAt)}</dd></div>
+                    {selected.expiresAt ? <div><dt>支付截止</dt><dd>{formatDate(selected.expiresAt)}</dd></div> : null}
+                  </dl>
                   {selected.expiresAt ? (
-                    <>
+                    <div className="order-pay__timer">
                       <small className={`orders-remain ${remainTone(remainingMs(selected.expiresAt, now))}`}>
                         {formatRemaining(remainingMs(selected.expiresAt, now))}
-                        {` · ${formatDate(selected.expiresAt)} 截止`}
                       </small>
                       <TicketMeter order={selected} now={now} />
-                    </>
+                    </div>
                   ) : null}
-                  {selected.requiresManualAmount ? <p className="is-warn">扫码后请手动输入页面显示的应付金额，金额必须完全一致。</p> : null}
+                  {selected.requiresManualAmount ? <p className="order-pay__warn">扫码后请手动输入页面显示的应付金额，金额必须完全一致。</p> : null}
                   <div className="order-dialog__actions">
                     <a href={selected.payUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开支付</a>
                     {!cancelConfirm && <button type="button" onClick={() => setCancelConfirm(true)}>取消订单</button>}

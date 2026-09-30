@@ -534,7 +534,7 @@ func ledgerUserFilter(alias string, userID *uuid.UUID) (string, []any) {
 	return column + " = $1", []any{*userID}
 }
 
-// ListAllUserLedger 导出用：按时间倒序拉齐当前用户钱包账本（不含开发者 API），最多 walletLedgerExportMax 条。
+// ListAllUserLedger 导出用：按时间倒序拉齐当前用户钱包账本（不含API 调用），最多 walletLedgerExportMax 条。
 func ListAllUserLedger(ctx context.Context, q Q, userID uuid.UUID) ([]*LedgerEntry, error) {
 	out := make([]*LedgerEntry, 0, 64)
 	var cursor *Cursor

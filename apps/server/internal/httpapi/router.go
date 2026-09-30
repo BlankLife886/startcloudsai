@@ -674,7 +674,7 @@ func (s *Server) Router() *gin.Engine {
 }
 
 // originGuard 写请求校验 Origin 白名单；无 Origin 头的非浏览器请求放行。
-// 开发者 API（/v1）只凭 Bearer Key 鉴权、不读 Cookie，跳过校验，
+// API 调用（/v1）只凭 Bearer Key 鉴权、不读 Cookie，跳过校验，
 // 否则任何带 Origin 头的第三方调用方都会被误拦。
 func (s *Server) originGuard(c *gin.Context) {
 	if writeMethods[c.Request.Method] && !isOpenAICompatPath(c.Request.URL.Path) {

@@ -809,7 +809,7 @@ async function save() {
       } catch (error) {
         if (error instanceof ApiError && error.code === "api_model_impact" && !confirmApiImpact) {
           try {
-            await ElMessageBox.confirm(`${error.message}。\n\n这些 API 模型的调用方会收到 503（可重试、不扣费），直到站内模型恢复或在「开发者 API → API 模型」里更换指向。仍要保存吗？`, "会影响开发者 API", { confirmButtonText: "仍然保存", cancelButtonText: "返回修改", type: "warning" });
+            await ElMessageBox.confirm(`${error.message}。\n\n这些 API 模型的调用方会收到 503（可重试、不扣费），直到站内模型恢复或在「API 调用 → API 模型」里更换指向。仍要保存吗？`, "会影响API 调用", { confirmButtonText: "仍然保存", cancelButtonText: "返回修改", type: "warning" });
           } catch {
             return;
           }
@@ -3068,7 +3068,7 @@ onBeforeUnmount(() => {
                       }}</span>
                       <span v-if="row.default" class="default-badge">默认</span>
                       <span v-if="row.status === 'maintenance'" class="maintenance-badge">维护中</span>
-                      <span v-if="apiReferences[row.id]?.length" class="api-ref-badge" :title="`开发者 API 模型：${apiReferences[row.id].map(item => item.apiName).join('、')}`">API {{ apiReferences[row.id].length }}</span>
+                      <span v-if="apiReferences[row.id]?.length" class="api-ref-badge" :title="`API 调用模型：${apiReferences[row.id].map(item => item.apiName).join('、')}`">API {{ apiReferences[row.id].length }}</span>
                     </div>
                     <div
                       class="model-card__line"
@@ -4568,8 +4568,8 @@ onBeforeUnmount(() => {
             </label>
           </div>
           <p v-if="modelDraft.kind !== 'image_tool'" class="model-api-note">
-            开发者 API（/v1）开放哪些模型、对外名称、价格和并发上限，由
-            <router-link to="/developer-api">开发者 API → API 模型</router-link>
+            API 调用（/v1）开放哪些模型、对外名称、价格和并发上限，由
+            <router-link to="/developer-api">API 调用 → API 模型</router-link>
             管理。这里的站内设置变化（改名、解绑页面、换线路）不会改变 API 调用方使用的模型名；停用或维护会让指向它的 API 模型暂时返回 503。
             <template v-if="apiReferences[modelDraft.id]?.length">
               <br /><strong class="model-api-refs">被 {{ apiReferences[modelDraft.id].length }} 个 API 模型引用：{{ apiReferences[modelDraft.id].map(item => item.apiName).join("、") }}</strong>，保存会让它们不可用时会先提示确认。

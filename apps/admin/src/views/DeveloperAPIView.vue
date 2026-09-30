@@ -152,7 +152,7 @@ async function copyText(value: string, label: string) {
 
       <el-alert v-if="summaryError" :title="`汇总读取失败：${summaryError}`" type="error" :closable="false" />
 
-      <section v-if="tab !== 'catalog'" class="devapi-kpis" aria-label="开发者 API 汇总">
+      <section v-if="tab !== 'catalog'" class="devapi-kpis" aria-label="API 调用汇总">
         <article><small>调用</small><strong class="tnum">{{ points(summary?.calls) }}</strong><span>{{ points(summary?.users) }} 个用户 · {{ points(summary?.keys) }} 把 Key</span></article>
         <article><small>已扣费</small><strong class="tnum">{{ points(summary?.charged) }}</strong><span>退回 {{ points(summary?.refunded) }}<template v-if="summary?.pending"> · 进行中 {{ points(summary.pending) }}</template></span></article>
         <article><small>实收积分</small><strong class="tnum">{{ points(summary?.revenueCents) }}</strong><span>只计已扣费的请求</span></article>

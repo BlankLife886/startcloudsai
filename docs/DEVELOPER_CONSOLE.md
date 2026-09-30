@@ -1,10 +1,10 @@
-# 开发者控制台
+# API 调用控制台
 
 核对日期：2026-09-29。面向开发者的接口说明见 [OPEN_API.md](OPEN_API.md)（同时渲染在 `/developer-api/docs`）。
 
 ## 设计原则
 
-开发者 API 只有一套：OpenAI 兼容的 `/v1`（模型、生图、编辑、Chat Completions 对话），全部是直通、同步返回结果。开发者只需要知道 Base URL、Key 和模型名三样东西。
+API 调用只有一套：OpenAI 兼容的 `/v1`（模型、生图、编辑、Chat Completions 对话），全部是直通、同步返回结果。开发者只需要知道 Base URL、Key 和模型名三样东西。
 
 2026-09-29 起移除了以下旧设计，不再对外提供：
 
@@ -27,7 +27,7 @@
 
 调用记录读取 `GET /api/v1/me/api-calls?page=&limit=&key=`（`key` 为 Key 的 id，可选），数据来自 `developer_api_billing_requests` 关联 Key 与 `developer_api` 利润流水：时间、接口、模型名、Key 名称与短前缀、图片张数或 token 用量、扣费积分、状态（已扣费/已退回/进行中）与原因。不返回 billing id、内部模型 UUID 或上游成本。API 调用的钱包流水（来源 `openai_image_request`、`open_api_chat`、历史 `open_api_responses_chat`）不出现在用户钱包明细与导出中，只在这里展示；余额、后台账本和利润统计仍包含它们。
 
-钱包页与订阅页在本月有 API 调用时显示一行汇总：「开发者 API 本月消耗 N 积分（M 次调用），不计入积分明细 · 查看调用记录」，数据来自 `GET /api/v1/me/api-usage-summary`；订阅页的价格保护说明注明开发者 API 按控制台价格计费。模型列表与 Key 的可用模型来自 API 模型目录（见 [开发者 API 模型目录](DEVELOPER_API_MODEL_CATALOG.md)）。
+钱包页与订阅页在本月有 API 调用时显示一行汇总：「API 调用本月消耗 N 积分（M 次调用），不计入积分明细 · 查看调用记录」，数据来自 `GET /api/v1/me/api-usage-summary`；订阅页的价格保护说明注明API 调用按控制台价格计费。模型列表与 Key 的可用模型来自 API 模型目录（见 [API 调用模型目录](DEVELOPER_API_MODEL_CATALOG.md)）。
 
 开始使用顶部是今日/本月用量卡片；下方左侧是请求配置：选接口（文生图 `/images/generations`、图片编辑 `/images/edits`、对话 `/chat/completions`，选中后下方显示完整路径；图片编辑只列出参考图上限大于 0 的图片模型，示例用 multipart 上传当前目录的 reference.png）、选模型（显示起始价格）、Key 状态与新建入口、固定的 Base URL；右侧是 Python、Node.js、cURL 三种示例代码，只复制、不发送请求（SDK 示例关闭自动重试，超时与 OPEN_API.md 一致）。左侧每项带一个彩色标签（接口、模型、API Key、Base URL），代码里受它影响的行用同色标出，行尾挂同名标签；代码底部说明运行后会得到什么。Key 一项只放按钮：已有 Key 时是「新建 Key / 管理 Key」，新建后显示已填入的掩码密钥与复制按钮。本次访问中创建或轮换得到的密钥只保存在页面内存里，自动填进示例代码，刷新或离开后不再显示；撤销这把 Key 会同时清掉。计费规则与错误码不在控制台展示，见 `/developer-api/docs`。
 
@@ -40,8 +40,8 @@ Key 可随时「停用」：列表行尾与详情里都有停用/启用按钮，
 ## 运维配置
 
 - 管理后台“服务商”的 Base URL 填真实上游地址（例如 `https://上游域名/v1`），协议选 **OpenAI 兼容**，模型的 `UpstreamModel` 填上游真实模型名。不要填 StarClouds 自己的 `/v1`，否则会回环调用。
-- `/v1` 开放哪些模型、对外名称、价格、并发上限与上下线，都在后台“开发者 API → API 模型”管理（见 [开发者 API 模型目录](DEVELOPER_API_MODEL_CATALOG.md)）。站内模型编辑页只显示“被 N 个 API 模型引用”；保存会让上线中的 API 模型不可调用时（删除、停用、维护、线路改为非 OpenAI 协议）先弹窗确认。API 模型的并发上限对所有 Key 合计（跨实例用 Redis 计数），0 为不限制，超出时立即返回 `429 model_concurrency_limited`；服务商的“最大并发”只作用于站内任务。
-- `/v1` 请求不创建站内任务、不进入站内队列、不保存输入输出图片。每次调用记入 `developer_api` 利润流水。后台“业务 → 开发者 API”页（`/developer-api`）按时间、接口、结果、模型、用户、Key 筛选全站 `/v1` 调用：汇总调用数、扣费/退回数、实收、上游成本与毛利，列出每次调用的用户、Key、模型、服务商与线路、用量、实收、成本、结果原因，详情抽屉含计费单号、错误码、备注与上游 usage；“按模型”视图列出调用最多的 20 个模型。接口：`GET /api/v1/admin/developer-api/calls`、`GET /api/v1/admin/developer-api/summary`。
+- `/v1` 开放哪些模型、对外名称、价格、并发上限与上下线，都在后台“API 调用 → API 模型”管理（见 [API 调用模型目录](DEVELOPER_API_MODEL_CATALOG.md)）。站内模型编辑页只显示“被 N 个 API 模型引用”；保存会让上线中的 API 模型不可调用时（删除、停用、维护、线路改为非 OpenAI 协议）先弹窗确认。API 模型的并发上限对所有 Key 合计（跨实例用 Redis 计数），0 为不限制，超出时立即返回 `429 model_concurrency_limited`；服务商的“最大并发”只作用于站内任务。
+- `/v1` 请求不创建站内任务、不进入站内队列、不保存输入输出图片。每次调用记入 `developer_api` 利润流水。后台“业务 → API 调用”页（`/developer-api`）按时间、接口、结果、模型、用户、Key 筛选全站 `/v1` 调用：汇总调用数、扣费/退回数、实收、上游成本与毛利，列出每次调用的用户、Key、模型、服务商与线路、用量、实收、成本、结果原因，详情抽屉含计费单号、错误码、备注与上游 usage；“按模型”视图列出调用最多的 20 个模型。接口：`GET /api/v1/admin/developer-api/calls`、`GET /api/v1/admin/developer-api/summary`。
 - 计费只有两种结局：拿到上游结果就结算，否则（上游/平台失败、风控拒绝、超时）立即释放预留并删除 Key 额度记录。生图与非流式对话的上游调用不随调用方断开而取消，上游成功照常结算；流式对话已送出内容后调用方断开按成功结算，未送出内容则释放；调用方断开后结算的请求在利润 metadata 记 note=client_disconnected（生图同样），调用记录显示“调用方中途断开，照常扣费”。网关不重试、不支持幂等键。进程中途退出留下的 pending 预留在 1 小时后由后台回收任务（每 5 分钟）释放。
 - 编辑请求的参考图由 multipart 解析落到临时文件（内存只留 1 MiB），读一遍算黑名单哈希、识别格式，再边读边写进发往上游的请求体，整张图不进内存。张数以模型的参考图上限为准，请求体上限 512 MiB 只用于保护磁盘。`/v1` 不做 ClamAV 与内容审核，由上游负责。
 

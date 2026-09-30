@@ -28,7 +28,7 @@ Vite 的 `base` 固定为 `/admin/`。直接打开开发地址时应保留尾部
 | `/users` | 用户搜索、封禁、角色、钱包调整、详情与账本 |
 | `/tasks` | 全站任务筛选、详情、取消、强制失败和失败任务重入队 |
 | `/model-config` | 模型、能力、上游路由与图片尺寸配置 |
-| `/profitability` | 创作任务、助手与开发者 API 的成本、收入和利润统计 |
+| `/profitability` | 创作任务、助手与API 调用的成本、收入和利润统计 |
 | `/agent-quality` | Agent 运行质量与问题诊断 |
 | `/canvas-templates` | 上传、编辑、排序、发布和下架无限画布 v3 模板 |
 | `/prompt-library` | 提示词条 CRUD、封面上传、外部数据源和手动同步 |
