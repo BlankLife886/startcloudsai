@@ -119,15 +119,17 @@ for (const [theme, width] of [['light', 1280], ['dark', 390]]) {
     const group = dialog.getByRole('radiogroup', { name: '支付方式' })
     await expect(group).toBeVisible()
     await expect(dialog.locator('.pp-checkout__art')).toHaveAttribute('src', '/pricing/subscription-upgrade.webp')
-    await expect(dialog.locator('.pp-checkout__art')).toHaveCSS('width', width > 520 ? '72px' : '64px')
+    // The upgrade quote keeps a compact 64px illustration at every width.
+    await expect(dialog.locator('.pp-checkout__art')).toHaveCSS('width', '64px')
     await expect.poll(() => dialog.locator('.pp-checkout__art').evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true)
     const notice = await dialog.locator('.pp-upgrade-consent').boundingBox()
     const box = await group.boundingBox()
     expect(notice.y - box.y - box.height).toBeCloseTo(8, 0)
-    const explanation=await group.evaluate(el=>{const rect=el.previousElementSibling.getBoundingClientRect();return {y:rect.y,height:rect.height}})
-    expect(box.y - explanation.y - explanation.height).toBeCloseTo(8, 0)
+    // Payment sits in the pinned footer, below the scrolling quote details.
+    await expect(dialog.locator('.pp-upgrade-payment').getByRole('radiogroup', { name: '支付方式' })).toBeVisible()
     const payBox = await dialog.getByRole('button', { name:'使用支付宝支付', exact:true }).boundingBox()
-    expect(payBox.y - notice.y - notice.height).toBeCloseTo(8, 0)
+    // The footer gives the consent line 10px above the pay button.
+    expect(payBox.y - notice.y - notice.height).toBeCloseTo(10, 0)
     await expect(group).toHaveCSS('border-radius', '999px')
     await expect(dialog.locator('.pp-checkout__notice')).toHaveCSS('border-radius', '0px')
     await expect(group.getByRole('radio').first()).toHaveCSS('border-width', '0px')

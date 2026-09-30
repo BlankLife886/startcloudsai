@@ -84,7 +84,8 @@ test('canvas text retry keeps its conversation and idempotency key after a lost 
   let conversations = 0;
   const context = {
     exports: {}, crypto, localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) },
-    flattenMessages: () => 'prompt', collectMessageReferenceImages: () => [], modelOptionName: (model) => model,
+    flattenMessages: () => 'prompt', fitAssistantPrompt: () => 'prompt', canvasAssistantPromptLimit: async () => 100000,
+    collectMessageReferenceImages: () => [], modelOptionName: (model) => model,
     scheduleWalletRefresh() {}, waitForCanvasAssistantRun: async () => 'answer',
     starcloudsJson: async (path, _method, body) => {
       if (path === '/assistant/conversations') return { id: `conversation-${++conversations}` };

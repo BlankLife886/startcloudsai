@@ -26,7 +26,8 @@ for(const [theme,width] of [['light',1280],['dark',390]]) {
   test(`subscription purchase discloses rights and requires explicit consent at ${width}`,async({page},info)=>{
     const state=await setup(page,theme)
     await page.setViewportSize({width,height:844})
-    await page.goto('/pricing')
+    // Pricing opens on top-up packs; subscriptions are one tab away.
+    await page.goto('/pricing?plan=subscription')
     await expect(page.getByRole('button',{name:'订阅',exact:true})).toHaveAttribute('aria-pressed','true')
     await page.getByRole('button',{name:'选择此方案',exact:true}).click()
     const dialog=page.getByRole('dialog')
