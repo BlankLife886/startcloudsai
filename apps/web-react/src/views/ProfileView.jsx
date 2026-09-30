@@ -1004,7 +1004,7 @@ export function ProfileView() {
           const targets = [
             ".pp-soft-hero",
             ".pp-bento-hero-figure",
-            ".pp-soft-hero-link",
+            ".pp-hero-stat",
             ".pp-soft-event",
             ".pp-soft-performance",
             ".pp-soft-stat",
@@ -1022,7 +1022,7 @@ export function ProfileView() {
               0.12,
             )
             .from(
-              ".pp-soft-hero-link",
+              ".pp-hero-stat",
               {
                 autoAlpha: 0,
                 duration: 0.4,
@@ -1706,30 +1706,15 @@ export function ProfileView() {
                   <div className="pp-soft-hero__rim" />
                 </div>
               </div>
-              <nav className="pp-soft-hero-links" aria-label="创作数据">
-                {usageHeroLinks(usage, pointsDisplay).map((item, index) => (
-                  <Link
-                    key={item.to}
-                    to={item.to}
-                    className={`pp-soft-hero-link is-${item.tone}${item.value ? "" : " is-bare"}`}
-                  >
-                    <span className="pp-soft-hero-link__glow" aria-hidden="true" />
-                    <span className="pp-soft-hero-link__mark" aria-hidden="true">
-                      <i className={`bi ${item.icon}`} />
+              <nav className="pp-soft-hero-links pp-hero-stats" aria-label="创作数据">
+                {usageHeroLinks(usage, pointsDisplay).map((item) => (
+                  <Link key={item.id} to={item.to} className="pp-hero-stat">
+                    <span className="pp-hero-stat__label">
+                      {item.title}
+                      <ArrowUpRight className="pp-hero-stat__go" size={14} strokeWidth={2.2} aria-hidden="true" />
                     </span>
-                    <span className="pp-soft-hero-link__head">
-                      <span className="pp-soft-hero-link__index">
-                        {String(index + 1).padStart(2, "0")}
-                      </span>
-                      <span className="pp-soft-hero-link__go" aria-hidden="true">
-                        <ArrowUpRight size={28} strokeWidth={2.1} />
-                      </span>
-                    </span>
-                    <span className="pp-soft-hero-link__copy">
-                      <strong>{item.title}</strong>
-                      {item.value ? <b>{item.value}</b> : null}
-                      <small>{item.hint}</small>
-                    </span>
+                    <b className="pp-hero-stat__value">{item.value}</b>
+                    <small className="pp-hero-stat__hint">{item.hint}</small>
                   </Link>
                 ))}
               </nav>

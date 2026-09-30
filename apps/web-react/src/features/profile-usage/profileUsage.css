@@ -5,6 +5,7 @@
  */
 .pp-page {
   --pp-usage-mark: #5b65e6;
+  --pp-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .pp-page.is-dark {
@@ -32,6 +33,11 @@
   font-size: 12px;
   font-weight: 650;
   cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease, box-shadow 0.25s var(--pp-ease);
+}
+
+.pp-usage-seg button:active {
+  transform: scale(0.96);
 }
 
 .pp-usage-seg button.is-on {
@@ -181,6 +187,14 @@
   overflow: visible;
 }
 
+.pp-usage-chart__grid {
+  transition: opacity 0.25s ease;
+}
+
+.pp-usage-chart__grid.is-out {
+  opacity: 0;
+}
+
 .pp-usage-chart__grid line {
   stroke: var(--pc-line);
   stroke-width: 1;
@@ -196,11 +210,36 @@
 
 .pp-usage-chart__bar {
   fill: var(--pp-usage-mark);
-  transition: opacity 0.12s ease;
+  transition: opacity 0.22s ease, filter 0.22s ease;
 }
 
 .pp-usage-chart__bar.is-dim {
   opacity: 0.42;
+}
+
+.pp-usage-chart__bar.is-active {
+  filter: brightness(1.08) drop-shadow(0 4px 8px color-mix(in srgb, var(--pp-usage-mark) 35%, transparent));
+}
+
+.pp-usage-chart__x {
+  transition: fill 0.2s ease;
+}
+
+.pp-usage-chart__x.is-active {
+  fill: var(--pc-text);
+  font-weight: 700;
+}
+
+/* 悬停高亮带：跟随鼠标在柱子之间滑动 */
+.pp-usage-chart__band {
+  fill: color-mix(in srgb, var(--pp-usage-mark) 9%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.24s var(--pp-ease), opacity 0.2s ease;
+}
+
+.pp-usage-chart.is-hovering .pp-usage-chart__band {
+  opacity: 1;
 }
 
 .pp-usage-chart__hit {
@@ -221,8 +260,16 @@
   line-height: 1.35;
   white-space: nowrap;
   pointer-events: none;
-  transform: translate(-50%, -100%);
+  opacity: 0;
+  transform: translate(-50%, calc(-100% + 6px)) scale(0.96);
+  transform-origin: 50% 100%;
   box-shadow: 0 8px 20px rgba(21, 26, 45, 0.18);
+  transition: left 0.24s var(--pp-ease), top 0.24s var(--pp-ease), opacity 0.18s ease, transform 0.22s var(--pp-ease);
+}
+
+.pp-usage-tooltip.is-visible {
+  opacity: 1;
+  transform: translate(-50%, -100%) scale(1);
 }
 
 .pp-usage-tooltip span {
@@ -306,6 +353,19 @@
   border-radius: 3px 3px 0 0;
   background: var(--pp-usage-mark);
   opacity: 0.55;
+  transform-origin: 50% 100%;
+  transition: height 0.45s var(--pp-ease), opacity 0.2s ease, filter 0.2s ease, transform 0.2s var(--pp-ease);
+  animation: pp-grow-y 0.55s var(--pp-ease) calc(var(--i, 0) * 14ms) both;
+}
+
+.pp-mini-bars i:hover {
+  transform: scaleY(1.06);
+}
+
+@keyframes pp-grow-y {
+  from {
+    transform: scaleY(0);
+  }
 }
 
 .pp-mini-bars i.is-current,
@@ -341,6 +401,22 @@
   height: clamp(6px, 1.05vh, 10px);
   border-radius: 2px;
   background: color-mix(in srgb, var(--pp-usage-mark) calc(var(--level, 0) * 100%), var(--pc-surface));
+  transition: transform 0.18s var(--pp-ease), box-shadow 0.18s ease;
+  animation: pp-heat-in 0.4s ease calc(var(--col, 0) * 18ms) both;
+}
+
+.pp-mini-heat__row i:hover {
+  position: relative;
+  z-index: 1;
+  transform: scale(1.4);
+  box-shadow: 0 0 0 1px var(--pc-surface), 0 2px 6px rgba(21, 26, 45, 0.2);
+}
+
+@keyframes pp-heat-in {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
 }
 
 .pp-mini-heat__row i.is-empty {
@@ -470,7 +546,6 @@
 
 .pp-page.pp-page .pp-usage-panel {
   padding: 18px 4px 12px 26px;
-  box-shadow: inset 1px 0 0 var(--gl-line) !important;
 }
 
 .pp-page.pp-page .pp-usage-panel::before,
@@ -574,6 +649,15 @@
 .pp-page.pp-page .pp-soft-types b i {
   background: var(--pp-usage-mark);
   box-shadow: none;
+  transform-origin: 0 50%;
+  transition: width 0.45s var(--pp-ease);
+  animation: pp-grow-x 0.6s var(--pp-ease) 0.1s both;
+}
+
+@keyframes pp-grow-x {
+  from {
+    transform: scaleX(0);
+  }
 }
 
 /* 切换：文字 + 下划线 */
@@ -603,6 +687,18 @@
 .pp-page.pp-page .pp-usage-chart__bar {
   fill: var(--pp-usage-mark);
   opacity: 0.92;
+}
+
+.pp-page.pp-page .pp-usage-chart__bar.is-dim {
+  opacity: 0.38;
+}
+
+.pp-page.pp-page .pp-usage-chart__bar.is-active {
+  opacity: 1;
+}
+
+.pp-page.pp-page .pp-usage-chart__x.is-active {
+  fill: var(--gl-ink);
 }
 
 .pp-page.pp-page .pp-usage-chart__grid line {
@@ -636,40 +732,123 @@
   color: var(--gl-ink-3);
 }
 
-/* 左侧四张卡：轻玻璃 + 粗体数字 */
-.pp-page.pp-page .pp-soft-hero-link {
-  background: linear-gradient(160deg, var(--gl-card-a), var(--gl-card-b)) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 0 0 1px var(--gl-card-edge) !important;
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
+/* 左侧创作数据：无卡片，文字直接落在画面上，细线分隔，数字为主角 */
+.pp-page.pp-page .pp-hero-stats {
+  justify-content: center;
+  gap: 0;
 }
 
-.pp-page.pp-page .pp-soft-hero-link__glow {
+.pp-hero-stat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: clamp(12px, 2.4vh, 22px) 0 clamp(12px, 2.4vh, 22px) 14px;
+  border-top: 1px solid var(--gl-line);
+  color: inherit;
+  text-decoration: none;
+}
+
+/* 进场由 GSAP 控制整项透明度，悬停淡出放在子元素上，避免两者抢同一个属性 */
+.pp-hero-stat > * {
+  transition: opacity 0.25s ease;
+}
+
+.pp-hero-stat:first-child {
+  border-top: 0;
+}
+
+/* 悬停时左侧长出一道主色短线，其余几项淡出 */
+.pp-hero-stat::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 2px;
+  height: 0;
+  border-radius: 2px;
+  background: var(--pp-usage-mark);
+  transform: translateY(-50%);
+  transition: height 0.3s var(--pp-ease);
+}
+
+.pp-hero-stat:hover::before,
+.pp-hero-stat:focus-visible::before {
+  height: 46%;
+}
+
+.pp-hero-stats:hover .pp-hero-stat:not(:hover) > * {
   opacity: 0.45;
 }
 
-.pp-page.pp-page .pp-soft-hero-link__mark {
-  display: none;
+.pp-hero-stat:focus-visible {
+  outline: 2px solid var(--pp-usage-mark);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
-.pp-page.pp-page .pp-soft-hero-link__copy strong {
+.pp-hero-stat__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--gl-ink-2);
   font-size: 12px;
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
-.pp-page.pp-page .pp-soft-hero-link__copy b {
+.pp-hero-stat__go {
+  color: var(--pp-usage-mark);
+  opacity: 0;
+  transform: translate(-4px, 4px);
+  transition: opacity 0.2s ease, transform 0.3s var(--pp-ease);
+}
+
+.pp-hero-stat:hover .pp-hero-stat__go,
+.pp-hero-stat:focus-visible .pp-hero-stat__go {
+  opacity: 1;
+  transform: none;
+}
+
+.pp-hero-stat__value {
   color: var(--gl-ink);
   font-family: var(--gl-num);
+  font-size: clamp(26px, 3.6vh, 38px);
   font-weight: 750;
   letter-spacing: -0.03em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
-.pp-page.pp-page .pp-soft-hero-link__copy small {
+.pp-page.is-dark .pp-hero-stat__value {
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+}
+
+.pp-hero-stat__hint {
   color: var(--gl-ink-3);
+  font-size: 11px;
   font-weight: 550;
+  line-height: 1.3;
+}
+
+/* 窄屏时四项排成两列压在画面顶部 */
+@media (max-width: 560px) {
+  .pp-page.pp-page .pp-hero-stats {
+    gap: 0 16px;
+  }
+
+  .pp-hero-stat {
+    padding: 10px 0 10px 12px;
+  }
+
+  .pp-hero-stat:nth-child(-n + 2) {
+    border-top: 0;
+  }
+
+  .pp-hero-stat__value {
+    font-size: 24px;
+  }
 }
 
 /* 最近作品：画廊带 */
@@ -869,7 +1048,22 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pp-usage-panel__state.is-loading {
+  .pp-usage-panel__state.is-loading,
+  .pp-mini-bars i,
+  .pp-mini-heat__row i,
+  .pp-page.pp-page .pp-soft-types b i {
     animation: none;
+  }
+
+  .pp-usage-seg button,
+  .pp-hero-stat > *,
+  .pp-hero-stat::before,
+  .pp-hero-stat__go,
+  .pp-usage-chart__band,
+  .pp-usage-tooltip,
+  .pp-mini-bars i,
+  .pp-mini-heat__row i,
+  .pp-page.pp-page .pp-soft-types b i {
+    transition: none;
   }
 }

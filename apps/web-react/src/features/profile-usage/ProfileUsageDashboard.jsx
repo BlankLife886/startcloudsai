@@ -19,39 +19,35 @@ function recentTotal(model, key) {
   return model.daily.reduce((sum, day) => sum + (Number(day[key]) || 0), 0);
 }
 
-/** 仪表盘左侧四张入口卡的数据：累计创作数据，第三张附带钱包余额。 */
+/** 仪表盘左侧四项创作数据（可点击跳转），第三项附带钱包余额。id 唯一，用作列表 key。 */
 export function usageHeroLinks(usage, pointsDisplay) {
   const { model, ready } = usage;
   const value = (text) => (ready ? text : "—");
   return [
     {
+      id: "images",
       to: "/history",
-      icon: "bi-images",
-      tone: "assets",
       title: "累计生成",
       value: value(formatCompact(model.totals.images)),
       hint: ready ? `张 · 近 30 天 ${formatCompact(recentTotal(model, "images"))}` : "张",
     },
     {
+      id: "creations",
       to: "/history",
-      icon: "bi-lightning-charge",
-      tone: "submissions",
       title: "累计创作",
       value: value(formatCompact(model.totals.creations)),
       hint: ready ? `次 · 近 30 天 ${formatCompact(recentTotal(model, "creations"))}` : "次",
     },
     {
+      id: "points",
       to: "/wallet",
-      icon: "bi-coin",
-      tone: "wallet",
       title: "累计消耗",
       value: value(formatCompact(model.totals.points)),
       hint: `积分 · 可用 ${pointsDisplay}`,
     },
     {
+      id: "duration",
       to: "/history",
-      icon: "bi-clock-history",
-      tone: "orders",
       title: "创作时长",
       value: value(hours(model.totals.durationSeconds)),
       hint: ready ? `小时 · 近 30 天 ${hours(recentTotal(model, "durationSeconds"))}` : "小时",

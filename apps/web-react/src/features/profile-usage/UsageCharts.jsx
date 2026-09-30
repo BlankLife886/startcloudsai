@@ -28,6 +28,61 @@ function useElementSize() {
   return [ref, size];
 }
 
+const TWEEN_MS = 520;
+const STAGGER_MS = 200;
+const easeOutCubic = (t) => 1 - (1 - t) ** 3;
+
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+}
+
+/**
+ * 柱高与纵轴上限的补间：新出现的柱子从基线依次长出，已有的柱子从当前高度过渡到新值。
+ * 动画中途数据再变时从当前帧接着过渡，不会跳回。
+ */
+function useTweenedBars(items, top, enabled) {
+  const [frame, setFrame] = useState({ values: {}, top });
+  const frameRef = useRef(frame);
+  const signature = `${top}|${items.map((item) => `${item.key}:${item.value}`).join(",")}`;
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const commit = (next) => {
+      frameRef.current = next;
+      setFrame(next);
+    };
+    const target = { values: Object.fromEntries(items.map((item) => [item.key, item.value])), top };
+    if (prefersReducedMotion()) {
+      commit(target);
+      return undefined;
+    }
+    const from = frameRef.current;
+    const fromTop = Object.keys(from.values).length ? from.top : top;
+    const last = Math.max(1, items.length - 1);
+    const plan = items.map((item, index) => {
+      const start = from.values[item.key];
+      const entering = start === undefined;
+      return { key: item.key, start: entering ? 0 : start, end: item.value, delay: entering ? (index / last) * STAGGER_MS : 0 };
+    });
+    const startedAt = performance.now();
+    let raf = 0;
+    const step = (now) => {
+      const elapsed = now - startedAt;
+      const values = {};
+      plan.forEach((bar) => {
+        const progress = easeOutCubic(Math.min(1, Math.max(0, (elapsed - bar.delay) / TWEEN_MS)));
+        values[bar.key] = bar.start + (bar.end - bar.start) * progress;
+      });
+      commit({ values, top: fromTop + (top - fromTop) * easeOutCubic(Math.min(1, elapsed / TWEEN_MS)) });
+      if (elapsed < TWEEN_MS + STAGGER_MS) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [signature, enabled]);
+
+  return frame;
+}
+
 // 顶部 4px 圆角、底部贴基线的柱子。
 function barPath(x, y, width, height) {
   if (height <= 0) return "";
@@ -45,42 +100,65 @@ export function UsageBarChart({ items, height = 200, formatValue = String, capti
   const fill = height === "fill";
   height = fill ? Math.max(96, size.height) : height;
   const [hover, setHover] = useState(-1);
+  // 移出后保留最后一次悬停的柱子，让提示和高亮带淡出而不是瞬间消失。
+  const [lastHover, setLastHover] = useState(-1);
   const maxValue = Math.max(0, ...items.map((item) => item.value));
   const ticks = niceTicks(maxValue);
   const top = ticks[ticks.length - 1] || 1;
+  const frame = useTweenedBars(items, top, width > 0);
+  const shownTop = frame.top || 1;
   const plotWidth = Math.max(0, width - AXIS_WIDTH);
   const plotHeight = height - AXIS_HEIGHT - TOP_PAD;
   const band = items.length ? plotWidth / items.length : 0;
   const barWidth = Math.max(2, Math.min(MAX_BAR, band - 2, band * 0.62));
   const labelEvery = Math.max(1, Math.ceil(46 / Math.max(band, 1)));
-  const y = (value) => TOP_PAD + plotHeight - (value / top) * plotHeight;
-  const hovered = hover >= 0 ? items[hover] : null;
+  const y = (value) => TOP_PAD + plotHeight - (Math.min(value, shownTop) / shownTop) * plotHeight;
+  const shownValue = (item) => frame.values[item.key] ?? 0;
+  // 提示框始终挂载（未悬停时透明），首次悬停也能淡入。
+  const focus = Math.min(Math.max(hover >= 0 ? hover : lastHover, 0), items.length - 1);
+  const focused = items[focus];
+  const enter = (index) => {
+    setHover(index);
+    setLastHover(index);
+  };
 
   return (
-    <figure className={`pp-usage-chart${fill ? " is-fill" : ""}`} ref={ref} onMouseLeave={() => setHover(-1)}>
+    <figure className={`pp-usage-chart${fill ? " is-fill" : ""}${hover >= 0 ? " is-hovering" : ""}`} ref={ref} onMouseLeave={() => setHover(-1)}>
       {width > 0 && (
         <svg width={width} height={height} role="img" aria-label={caption}>
           {ticks.map((tick) => (
-            <g key={tick} className="pp-usage-chart__grid">
+            <g key={tick} className={`pp-usage-chart__grid${tick > shownTop * 1.001 ? " is-out" : ""}`}>
               <line x1={AXIS_WIDTH} x2={width} y1={y(tick)} y2={y(tick)} />
               <text x={AXIS_WIDTH - 8} y={y(tick)} dy="0.32em" textAnchor="end">
                 {formatValue(tick, true)}
               </text>
             </g>
           ))}
+          {band > 0 && (
+            <rect
+              className="pp-usage-chart__band"
+              x={AXIS_WIDTH}
+              y={TOP_PAD}
+              width={band}
+              height={plotHeight}
+              rx={Math.min(6, band / 4)}
+              style={{ transform: `translateX(${focus * band}px)` }}
+            />
+          )}
           {items.map((item, index) => {
             const x = AXIS_WIDTH + index * band + (band - barWidth) / 2;
-            const barHeight = Math.max(0, TOP_PAD + plotHeight - y(item.value));
+            const value = shownValue(item);
+            const barHeight = Math.max(0, TOP_PAD + plotHeight - y(value));
             // 默认保证最后一根（通常是今天）有标签；时段图从 0 点开始对齐。
             const showLabel = index % labelEvery === (labelAnchor === "start" ? 0 : (items.length - 1) % labelEvery);
             return (
               <g key={item.key}>
                 <path
-                  className={`pp-usage-chart__bar${hover >= 0 && hover !== index ? " is-dim" : ""}${item.key === highlightKey ? " is-current" : ""}`}
-                  d={barPath(x, y(item.value), barWidth, barHeight)}
+                  className={`pp-usage-chart__bar${hover >= 0 && hover !== index ? " is-dim" : ""}${hover === index ? " is-active" : ""}${item.key === highlightKey ? " is-current" : ""}`}
+                  d={barPath(x, y(value), barWidth, barHeight)}
                 />
                 {showLabel && (
-                  <text className="pp-usage-chart__x" x={AXIS_WIDTH + index * band + band / 2} y={height - 6} textAnchor="middle">
+                  <text className={`pp-usage-chart__x${hover === index ? " is-active" : ""}`} x={AXIS_WIDTH + index * band + band / 2} y={height - 6} textAnchor="middle">
                     {item.label}
                   </text>
                 )}
@@ -90,23 +168,24 @@ export function UsageBarChart({ items, height = 200, formatValue = String, capti
                   y={TOP_PAD}
                   width={band}
                   height={plotHeight}
-                  onMouseEnter={() => setHover(index)}
+                  onMouseEnter={() => enter(index)}
                 />
               </g>
             );
           })}
         </svg>
       )}
-      {hovered && (
+      {focused && (
         <div
-          className="pp-usage-tooltip"
+          className={`pp-usage-tooltip${hover >= 0 ? " is-visible" : ""}`}
+          aria-hidden={hover < 0}
           style={{
-            left: `${Math.min(Math.max(AXIS_WIDTH + hover * band + band / 2, 70), Math.max(70, width - 70))}px`,
-            top: `${Math.max(0, y(hovered.value) - 10)}px`,
+            left: `${Math.min(Math.max(AXIS_WIDTH + focus * band + band / 2, 70), Math.max(70, width - 70))}px`,
+            top: `${Math.max(0, y(shownValue(focused)) - 10)}px`,
           }}
         >
-          <span>{hovered.title}</span>
-          <strong>{formatValue(hovered.value)}</strong>
+          <span>{focused.title}</span>
+          <strong>{formatValue(focused.value)}</strong>
         </div>
       )}
       <table className="pp-usage-sr">
@@ -136,7 +215,7 @@ export function UsageMiniHeatmap({ rows, max }) {
             <i
               key={hour}
               className={count ? undefined : "is-empty"}
-              style={count ? { "--level": level(count) } : undefined}
+              style={count ? { "--level": level(count), "--col": hour } : { "--col": hour }}
               title={`${row.label} ${hourRangeLabel(hour)} · ${count} 次`}
             />
           ))}
@@ -163,7 +242,7 @@ export function UsageMiniBars({ items, formatValue = String }) {
         <i
           key={item.key}
           className={index === items.length - 1 ? "is-current" : undefined}
-          style={{ "--h": item.value / max }}
+          style={{ "--h": item.value / max, "--i": index }}
           title={`${item.title} · ${formatValue(item.value)}`}
         />
       ))}
