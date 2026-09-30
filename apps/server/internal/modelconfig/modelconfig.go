@@ -465,11 +465,7 @@ func normalize(cfg *Config) {
 				route.MaxConcurrency = 100
 			}
 		}
-		if len(provider.Routes) > 0 {
-			primary := provider.Routes[0]
-			provider.BaseURL, provider.APIKey = primary.BaseURL, primary.APIKey
-			provider.TimeoutSecs, provider.MaxConcurrency = primary.TimeoutSecs, primary.MaxConcurrency
-		}
+		syncProviderPrimary(provider)
 	}
 	defaultKinds := map[string]bool{}
 	for index := range cfg.Models {
@@ -1089,13 +1085,26 @@ func maskSecret(secret string) string {
 	return "****" + string(runes[len(runes)-4:])
 }
 
+// syncProviderPrimary 把服务商级别的地址/密钥同步为「第一条启用的线路」。
+// SelectPublic、PublicModels、不带线路的 FindExecution 返回的正是服务商级别配置，
+// 开发者 API 直连生图等路径会直接用它发请求，所以绝不能指向已关闭的线路。
+// 所有线路都关闭时只保留第一条的地址作展示，密钥清空，使其无法被执行。
 func syncProviderPrimary(provider *Provider) {
 	if provider == nil || len(provider.Routes) == 0 {
 		return
 	}
-	primary := provider.Routes[0]
+	primary, enabled := provider.Routes[0], false
+	for _, route := range provider.Routes {
+		if route.Enabled {
+			primary, enabled = route, true
+			break
+		}
+	}
 	provider.BaseURL, provider.APIKey = primary.BaseURL, primary.APIKey
 	provider.TimeoutSecs, provider.MaxConcurrency = primary.TimeoutSecs, primary.MaxConcurrency
+	if !enabled {
+		provider.APIKey = ""
+	}
 }
 
 func AdminView(ctx context.Context, q store.Q, masterKey string) (Config, error) {

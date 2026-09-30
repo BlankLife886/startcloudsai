@@ -827,3 +827,32 @@ func TestValidateProfileOutfitPrompt(t *testing.T) {
 		t.Fatal("default outfit template must contain the items placeholder")
 	}
 }
+
+func TestProviderPrimarySkipsDisabledRoutes(t *testing.T) {
+	cfg := testConfig()
+	cfg.Providers[0].Routes = []ProviderRoute{
+		{ID: "route-off", Name: "关闭", BaseURL: "http://177.3.34.248:3030", APIKey: "off-key", Enabled: false},
+		{ID: "route-on", Name: "启用", BaseURL: "https://upstream.example.com", APIKey: "on-key", Enabled: true},
+	}
+	selected, ok := SelectPublic(cfg, ModelKindImage, "image-fast")
+	if !ok || selected.Provider.BaseURL != "https://upstream.example.com" || selected.Provider.APIKey != "on-key" {
+		t.Fatalf("public selection must use the first enabled route, got %#v", selected)
+	}
+	for _, item := range PublicModels(cfg, ModelKindImage) {
+		if item.Provider.BaseURL != "https://upstream.example.com" {
+			t.Fatalf("public model uses disabled route: %#v", item.Provider)
+		}
+	}
+	execution, ok := FindExecution(cfg, "provider", "image-fast")
+	if !ok || execution.Provider.BaseURL != "https://upstream.example.com" {
+		t.Fatalf("execution must use the first enabled route, got %#v", execution)
+	}
+
+	cfg.Providers[0].Routes[1].Enabled = false
+	if _, ok := FindExecution(cfg, "provider", "image-fast"); ok {
+		t.Fatal("provider with every route disabled must not be executable")
+	}
+	if selected, ok := SelectPublic(cfg, ModelKindImage, "image-fast"); ok && selected.Provider.APIKey != "" {
+		t.Fatalf("all-disabled provider must not expose a usable key, got %#v", selected.Provider)
+	}
+}
