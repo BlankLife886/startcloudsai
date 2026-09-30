@@ -301,6 +301,9 @@ type Config struct {
 	Models        []Model                     `json:"models"`
 	Workspaces    map[string]WorkspaceBinding `json:"workspaces"`
 	EditableFiles EditableFileConfig          `json:"editableFiles"`
+	// DefaultProfileFigurePrompt 只在后台读取时回填，供编辑框展示内置提示词；保存时忽略。
+	DefaultProfileFigurePrompt string `json:"defaultProfileFigurePrompt,omitempty"`
+	DefaultProfileOutfitPrompt string `json:"defaultProfileOutfitPrompt,omitempty"`
 }
 
 type EditableFileConfig struct {
@@ -314,10 +317,45 @@ type WorkspaceBinding struct {
 	DefaultModelIDs map[string]string                `json:"defaultModelIds"`
 	ModelPricing    map[string]WorkspaceModelPricing `json:"modelPricing,omitempty"`
 	ModelLimits     map[string]WorkspaceModelLimits  `json:"modelLimits,omitempty"`
+	// ProfileFigureModelID 仅对文生图页面生效：个人中心「参考生成 / 装扮」固定使用的模型，
+	// 为空时由用户端按能力自动挑选。
+	ProfileFigureModelID string `json:"profileFigureModelId,omitempty"`
+	// ProfileFigurePrompt 同样仅对文生图页面生效：个人中心「参考生成」的提示词，为空用内置默认。
+	ProfileFigurePrompt string `json:"profileFigurePrompt,omitempty"`
+	// ProfileOutfitPrompt 是个人中心「装扮」的提示词模板，{{items}} 处插入各部位要求。
+	ProfileOutfitPrompt string `json:"profileOutfitPrompt,omitempty"`
 }
 
 // WorkspaceModelLimits 是页面在模型自身配置之上追加的额度，只允许追加（>= 0）。
 // 最终值 = 模型配置 + 追加值，并受服务端硬上限约束。
+// MaxProfileFigurePromptRunes 限制后台可配置的个人中心参考生成提示词长度。
+const MaxProfileFigurePromptRunes = 4000
+
+// DefaultProfileFigurePrompt 是后台未配置时个人中心「参考生成」使用的提示词。
+const DefaultProfileFigurePrompt = "Create one new full-body standing character illustration of the person in the reference image, in a polished high-detail anime style. Use the reference only for identity: keep their face, hairstyle, outfit, color palette and overall vibe faithful to it, but do not copy its background, lighting setup or framing. Vertical 2:3 composition, the whole figure visible from head to toe, centered with a small margin on every side. Output the isolated character on a genuinely fully transparent alpha background; everything outside the character's silhouette stays transparent. No backdrop, floor, platform, cast shadow, glow, frame, border or text. Crisp, clean edges on hair, clothing and accessories."
+
+// ProfileOutfitItemsPlaceholder 标记装扮模板中插入部位清单的位置。
+const ProfileOutfitItemsPlaceholder = "{{items}}"
+
+// DefaultProfileOutfitPrompt 是后台未配置时个人中心「装扮」使用的提示词模板。
+const DefaultProfileOutfitPrompt = "Image 1 is the current character. Edit only the items listed below and keep everything else identical to image 1: the same person, face, body proportions, hair color, pose, art style and line quality.\nAny later reference images show items only: copy their design, color, material and structure onto the character, fitted to the character's body and perspective. Never copy the person, pose or background from them.\nChanges:\n{{items}}\nKeep the whole figure visible from head to toe in the same vertical 2:3 framing. Output the character on a genuinely fully transparent alpha background; everything outside the character's silhouette stays transparent. No backdrop, floor, platform, cast shadow, frame or text."
+
+// ProfileOutfitPrompt 返回个人中心「装扮」实际使用的提示词模板。
+func ProfileOutfitPrompt(cfg Config) string {
+	if prompt := strings.TrimSpace(cfg.Workspaces[WorkspaceT2I].ProfileOutfitPrompt); prompt != "" {
+		return prompt
+	}
+	return DefaultProfileOutfitPrompt
+}
+
+// ProfileFigurePrompt 返回个人中心「参考生成」实际使用的提示词。
+func ProfileFigurePrompt(cfg Config) string {
+	if prompt := strings.TrimSpace(cfg.Workspaces[WorkspaceT2I].ProfileFigurePrompt); prompt != "" {
+		return prompt
+	}
+	return DefaultProfileFigurePrompt
+}
+
 type WorkspaceModelLimits struct {
 	ExtraReferenceImages int `json:"extraReferenceImages"`
 	ExtraImages          int `json:"extraImages"`
@@ -563,6 +601,9 @@ func normalize(cfg *Config) {
 			}
 		}
 		binding.ModelLimits = modelLimits
+		binding.ProfileFigureModelID = strings.TrimSpace(binding.ProfileFigureModelID)
+		binding.ProfileFigurePrompt = strings.TrimSpace(binding.ProfileFigurePrompt)
+		binding.ProfileOutfitPrompt = strings.TrimSpace(binding.ProfileOutfitPrompt)
 		normalizedWorkspaces[strings.TrimSpace(key)] = binding
 	}
 	cfg.Workspaces = normalizedWorkspaces
@@ -964,6 +1005,35 @@ func Validate(cfg Config) error {
 				return fmt.Errorf("页面 %s 的默认模型必须包含在该页面的可选模型中", workspace)
 			}
 		}
+		if binding.ProfileFigurePrompt != "" && workspace != WorkspaceT2I {
+			return fmt.Errorf("页面 %s 不支持设置个人中心参考生成提示词", workspace)
+		}
+		if len([]rune(binding.ProfileFigurePrompt)) > MaxProfileFigurePromptRunes {
+			return fmt.Errorf("个人中心参考生成提示词不能超过 %d 字", MaxProfileFigurePromptRunes)
+		}
+		if outfit := binding.ProfileOutfitPrompt; outfit != "" {
+			if workspace != WorkspaceT2I {
+				return fmt.Errorf("页面 %s 不支持设置个人中心装扮提示词", workspace)
+			}
+			if len([]rune(outfit)) > MaxProfileFigurePromptRunes {
+				return fmt.Errorf("个人中心装扮提示词不能超过 %d 字", MaxProfileFigurePromptRunes)
+			}
+			if strings.Count(outfit, ProfileOutfitItemsPlaceholder) != 1 {
+				return fmt.Errorf("个人中心装扮提示词必须包含且只包含一个 %s", ProfileOutfitItemsPlaceholder)
+			}
+		}
+		if modelID := binding.ProfileFigureModelID; modelID != "" {
+			model, exists := models[modelID]
+			if workspace != WorkspaceT2I {
+				return fmt.Errorf("页面 %s 不支持设置个人中心参考生成模型", workspace)
+			}
+			if !exists || !assigned[modelID] || model.Kind != ModelKindImage {
+				return fmt.Errorf("个人中心参考生成模型必须是文生图页面的可选图像模型")
+			}
+			if model.MaxReferenceImages < 1 {
+				return fmt.Errorf("个人中心参考生成模型 %s 必须支持参考图", model.Name)
+			}
+		}
 		for modelID, pricing := range binding.ModelPricing {
 			model, exists := models[modelID]
 			if !exists || !assigned[modelID] {
@@ -1048,6 +1118,8 @@ func AdminView(ctx context.Context, q store.Q, masterKey string) (Config, error)
 		}
 		syncProviderPrimary(provider)
 	}
+	cfg.DefaultProfileFigurePrompt = DefaultProfileFigurePrompt
+	cfg.DefaultProfileOutfitPrompt = DefaultProfileOutfitPrompt
 	return cfg, nil
 }
 
@@ -1057,6 +1129,8 @@ func PrepareAdminSave(ctx context.Context, q store.Q, input Config, masterKey st
 		return Config{}, err
 	}
 	normalize(&input)
+	input.DefaultProfileFigurePrompt = ""
+	input.DefaultProfileOutfitPrompt = ""
 	existingKeys := map[string]string{}
 	for _, provider := range existing.Providers {
 		for _, route := range provider.Routes {

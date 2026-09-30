@@ -6,7 +6,7 @@ import { ArrowUpRight } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import { PageEntryLink as Link } from "../page-control/PageEntryLink.jsx";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
-import { getOverview, getWallet, listUserAssets, updateProfile } from "@react/legacy-modules/services/meApi.js";
+import { getOverview, getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
 import { logoutAccount } from "@react/legacy-modules/services/auth.js";
 import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
 import { TASK_TYPE_LABELS, TASK_UPDATE_EVENT, uploadFile } from "@react/legacy-modules/services/tasksApi.js";
@@ -32,7 +32,6 @@ import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.cs
 import "@react/legacy-static/views/ProfileView.modern.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
-import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { LogoutDialog } from "../components/LogoutDialog.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import {
@@ -44,16 +43,24 @@ import {
 import { useProfileUsage } from "../features/profile-usage/useProfileUsage.js";
 import {
   DRESSUP_CATEGORIES,
+  DRESSUP_DEFAULT_MAX_REFERENCES,
+  addWardrobeEntry,
   buildDressupSourcePlan,
-  dressupSlotSummary,
+  figureSourceFor,
+  isTaskOriginalUrl,
+  rememberFigureSource,
+  updateWardrobeEntry,
+  dressupSelectionFromPreset,
   emptyDressupSelection,
   emptyDressupSlot,
-  isDressupSlotFilled,
+  readWardrobe,
+  removeWardrobeEntry,
   revokeDressupPreview,
   revokeDressupSelection,
   selectedDressupSlots,
   serializeDressupSelection,
 } from "./profileStudioDressup.js";
+import { ProfileDressupStudio } from "./ProfileDressupStudio.jsx";
 
 gsap.registerPlugin(useGSAP);
 
@@ -62,7 +69,7 @@ const STUDIO_FIGURE_RATIO = 1360 / 2048;
 const STUDIO_FIGURE_MAX_HEIGHT = 2048;
 const STUDIO_FIGURE_MAX_BYTES = 10 * 1024 * 1024;
 const STUDIO_FIGURE_PROMPT =
-  "根据用户上传的参考图生成一张全身站立角色立绘，严格保留参考人物的外貌、发型、服装、配色与气质。固定 2:3 竖构图，全身入镜，高像素高清二次元插画。透明背景，移除背景。不要任何场景、地面、圆形或椭圆平台、展示台、光圈、光效背景、阴影底板、角色周围的圆形或椭圆边框、立绘外框、轮廓线或文字。no oval frame, no circular border, no standing platform, no vignette. 人物边缘干净，适合直接作为个人工作室形象。";
+  "Create one new full-body standing character illustration of the person in the reference image, in a polished high-detail anime style. Use the reference only for identity: keep their face, hairstyle, outfit, color palette and overall vibe faithful to it, but do not copy its background, lighting setup or framing. Vertical 2:3 composition, the whole figure visible from head to toe, centered with a small margin on every side. Output the isolated character on a genuinely fully transparent alpha background; everything outside the character's silhouette stays transparent. No backdrop, floor, platform, cast shadow, glow, frame, border or text. Crisp, clean edges on hair, clothing and accessories.";
 const FIGURE_JOB_STORAGE_PREFIX = "starclouds.profile-studio-figure:";
 const applyingFigureJobs = new Map();
 
@@ -336,7 +343,9 @@ async function resolveStudioFigurePlan() {
       return { item, id, capabilities, resolutionScale };
     })
     .filter(Boolean);
+  const pinnedId = String(merged.profileFigureModelId || "").trim();
   const model =
+    (pinnedId && usable.find((entry) => entry.id === pinnedId)) ||
     usable.find((entry) => isGptImage2Model(entry.item) && entry.resolutionScale === "2K") ||
     usable.find((entry) => isGptImage2Model(entry.item)) ||
     usable.find((entry) => entry.resolutionScale === "2K") ||
@@ -353,6 +362,9 @@ async function resolveStudioFigurePlan() {
   const creditCost = Math.max(0, Number(pointPricing.effective ?? merged.creditCost ?? 0));
   return {
     id: model.id,
+    prompt: String(merged.profileFigurePrompt || "").trim(),
+    outfitPromptTemplate: String(merged.profileOutfitPrompt || "").trim(),
+    maxReferenceImages: model.capabilities.maxReferenceImages,
     creditCost,
     pointPricing,
     resolutionScale: model.resolutionScale,
@@ -447,364 +459,6 @@ function FigureCostDialog({ cost, isDark, onCancel, onConfirm }) {
       </section>
     </div>,
     document.body,
-  );
-}
-
-function DressupMedia({ src, alt = "", fallbackSrc = "" }) {
-  if (!src) return null;
-  if (isAuthenticatedAiMediaUrl(src) || isAuthenticatedAiMediaUrl(fallbackSrc)) {
-    return <AuthenticatedImage src={src} fallbackSrc={fallbackSrc} alt={alt} />;
-  }
-  return <img src={src} alt={alt} />;
-}
-
-const DRESSUP_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-
-function StudioDressupDialog({
-  open,
-  busy,
-  isDark,
-  figureSrc,
-  figureFallbackSrc,
-  previewSrc,
-  note,
-  selection,
-  categoryId,
-  onCategory,
-  onSlotChange,
-  onClearSlot,
-  onReset,
-  onClose,
-  onConfirm,
-  onUsePreview,
-  onDiscardPreview,
-  onRetry,
-  closeLocked,
-}) {
-  const fileInputRef = useRef(null);
-  const [assetOpen, setAssetOpen] = useState(false);
-  const [assets, setAssets] = useState({ loading: false, items: [], nextCursor: "", error: "" });
-  const active = DRESSUP_CATEGORIES.find((item) => item.id === categoryId) || DRESSUP_CATEGORIES[0];
-  const slot = selection[active.id] || emptyDressupSlot();
-  const picked = selectedDressupSlots(selection);
-  const filled = isDressupSlotFilled(slot);
-
-  useEffect(() => {
-    if (!open) setAssetOpen(false);
-  }, [open]);
-
-  useEffect(() => {
-    if (!assetOpen) return undefined;
-    let cancelled = false;
-    setAssets((current) => ({ ...current, loading: true, error: "" }));
-    listUserAssets({ limit: 48, groupId: "all" })
-      .then((result) => {
-        if (cancelled) return;
-        setAssets({
-          loading: false,
-          items: result.items || [],
-          nextCursor: result.nextCursor || "",
-          error: "",
-        });
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setAssets({ loading: false, items: [], nextCursor: "", error: error?.message || "素材库读取失败" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [assetOpen]);
-
-  const pickFile = (file) => {
-    if (busy || !file) return;
-    if (!file.type?.startsWith("image/")) return;
-    if (file.size > DRESSUP_IMAGE_MAX_BYTES) return;
-    onSlotChange(active.id, {
-      file,
-      previewUrl: URL.createObjectURL(file),
-      sourceUrl: "",
-    });
-  };
-
-  const pickAsset = (asset) => {
-    const url = originalFileUrlFromAny(asset.url) || siteFileUrl(asset.url) || String(asset.url || "").trim();
-    if (!url) return;
-    onSlotChange(active.id, {
-      file: null,
-      previewUrl: String(asset.thumbnailUrl || asset.url || url).trim(),
-      sourceUrl: url,
-    });
-    setAssetOpen(false);
-  };
-
-  const loadMoreAssets = async () => {
-    if (!assets.nextCursor || assets.loading) return;
-    setAssets((current) => ({ ...current, loading: true }));
-    try {
-      const result = await listUserAssets({ limit: 48, groupId: "all", cursor: assets.nextCursor });
-      setAssets((current) => ({
-        loading: false,
-        items: [...current.items, ...(result.items || [])],
-        nextCursor: result.nextCursor || "",
-        error: "",
-      }));
-    } catch (error) {
-      setAssets((current) => ({ ...current, loading: false, error: error?.message || "素材库读取失败" }));
-    }
-  };
-
-  return (
-    <DialogMotion
-      open={open}
-      layerClassName={`pp-dressup-layer${isDark ? " is-dark" : ""}`}
-      panelClassName="pp-dressup"
-      variant="detail"
-      ariaLabelledby="pp-dressup-title"
-      closeDisabled={busy || closeLocked}
-      onClose={onClose}
-    >
-      <header className="pp-dressup__head" data-dialog-motion-item>
-        <div>
-          <p>形象装扮</p>
-          <h2 id="pp-dressup-title">给当前立绘换衣服和配件</h2>
-        </div>
-        <button type="button" aria-label="关闭装扮" disabled={busy || closeLocked} onClick={onClose}>
-          <i className="bi bi-x-lg" />
-        </button>
-      </header>
-      <div className="pp-dressup__body" data-dialog-motion-item>
-        <aside className="pp-dressup__stage">
-          <div className={`pp-dressup__figure${busy ? " is-busy" : ""}${previewSrc ? " is-preview" : ""}`}>
-            {isAuthenticatedAiMediaUrl(previewSrc || figureSrc) ? (
-              <AuthenticatedImage
-                src={previewSrc || figureSrc}
-                fallbackSrc={previewSrc ? "" : figureFallbackSrc}
-                alt={previewSrc ? "装扮预览" : "当前立绘参考图"}
-                loading="eager"
-                keepLoaded
-              />
-            ) : (
-              <img src={previewSrc || figureSrc} alt={previewSrc ? "装扮预览" : "当前立绘参考图"} />
-            )}
-            {busy ? <em>正在生成装扮…</em> : null}
-            {previewSrc && !busy ? <span>待确认</span> : null}
-          </div>
-          {note && (busy || previewSrc) ? <p className="pp-dressup__status">{note}</p> : null}
-          <div className="pp-dressup__equipped">
-            <p>{picked.length ? `已装配 ${picked.length} 个部位` : "还没有装配"}</p>
-            {picked.length ? (
-              <ul>
-                {picked.map(({ category, slot: item }) => (
-                  <li key={category.id}>
-                    {item.previewUrl ? (
-                      <DressupMedia src={item.previewUrl} fallbackSrc={item.sourceUrl} alt="" />
-                    ) : (
-                      <i className={`bi ${category.icon}`} />
-                    )}
-                    <span>
-                      <b>{category.label}</b>
-                      <small>{dressupSlotSummary(item)}</small>
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`移除${category.label}`}
-                      disabled={busy}
-                      onClick={() => onClearSlot(category.id)}
-                    >
-                      <i className="bi bi-x" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <small>选右侧部位，上传参考图或填写描述</small>
-            )}
-          </div>
-        </aside>
-        <section className="pp-dressup__editor">
-          <nav className="pp-dressup__cats" aria-label="装扮部位">
-            {DRESSUP_CATEGORIES.map((category) => {
-              const current = selection[category.id] || emptyDressupSlot();
-              const on = isDressupSlotFilled(current);
-              return (
-                <button
-                  key={category.id}
-                  type="button"
-                  className={`${category.id === active.id ? "is-on" : ""}${on ? " is-filled" : ""}`}
-                  onClick={() => onCategory(category.id)}
-                >
-                  {category.label}
-                </button>
-              );
-            })}
-          </nav>
-          <div className="pp-dressup__panel">
-            <header>
-              <strong>{active.label}</strong>
-              <span>{active.hint}</span>
-            </header>
-            <div className="pp-dressup__pair">
-              <div
-                className={`pp-dressup__upload${slot.previewUrl ? " has-image" : ""}`}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  pickFile(event.dataTransfer.files?.[0]);
-                }}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  hidden
-                  disabled={busy}
-                  onChange={(event) => {
-                    pickFile(event.target.files?.[0]);
-                    event.target.value = "";
-                  }}
-                />
-                {slot.previewUrl ? (
-                  <>
-                    <DressupMedia src={slot.previewUrl} fallbackSrc={slot.sourceUrl} alt={`${active.label}参考图`} />
-                    <span className="pp-dressup__upload-actions">
-                      <button type="button" disabled={busy} onClick={() => fileInputRef.current?.click()}>
-                        上传
-                      </button>
-                      <button type="button" disabled={busy} onClick={() => setAssetOpen(true)}>
-                        资产
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => onSlotChange(active.id, { file: null, previewUrl: "", sourceUrl: "" })}
-                      >
-                        移除
-                      </button>
-                    </span>
-                  </>
-                ) : (
-                  <div className="pp-dressup__upload-empty">
-                    <i className="bi bi-image" />
-                    <b>添加{active.label}参考图</b>
-                    <small>上传本地图片，或从我的资产里选一张</small>
-                    <span className="pp-dressup__upload-actions is-empty">
-                      <button type="button" disabled={busy} aria-label="上传参考图" onClick={() => fileInputRef.current?.click()}>
-                        上传
-                      </button>
-                      <button type="button" disabled={busy} onClick={() => setAssetOpen(true)}>
-                        我的资产
-                      </button>
-                    </span>
-                  </div>
-                )}
-              </div>
-              <label className="pp-dressup__desc">
-                <span>描述想换的{active.label}</span>
-                <textarea
-                  value={slot.text}
-                  disabled={busy}
-                  placeholder={active.placeholder}
-                  aria-label={`描述想换的${active.label}`}
-                  rows={6}
-                  onChange={(event) => onSlotChange(active.id, { text: event.target.value })}
-                />
-              </label>
-            </div>
-            <p className="pp-dressup__tip">
-              {filled
-                ? "这个部位会按参考图和描述一起改；也可以只选图或只写文字。"
-                : "这个部位现在保持原样。参考图可上传或从我的资产选择，也可以只写描述。"}
-            </p>
-          </div>
-        </section>
-      </div>
-      <footer className="pp-dressup__foot" data-dialog-motion-item>
-        <p>
-          {previewSrc
-            ? "看一下对不对。对了再换上当前立绘，不对可以移除或重新生成。"
-            : "第一张参考图是当前立绘。未装配的部位保持原样。"}
-        </p>
-        <div>
-          {previewSrc ? (
-            <>
-              <button type="button" disabled={busy} onClick={onDiscardPreview}>
-                移除
-              </button>
-              <button type="button" disabled={busy} onClick={onRetry}>
-                重新生成
-              </button>
-              <button type="button" className="is-primary" disabled={busy} onClick={onUsePreview}>
-                使用这张
-              </button>
-            </>
-          ) : (
-            <>
-              <button type="button" disabled={busy || !picked.length} onClick={onReset}>
-                清空
-              </button>
-              <button type="button" disabled={busy} onClick={onClose}>
-                取消
-              </button>
-              <button
-                type="button"
-                className="is-primary"
-                disabled={busy || !picked.length}
-                onClick={onConfirm}
-              >
-                {busy ? "生成中…" : "生成装扮"}
-              </button>
-            </>
-          )}
-        </div>
-      </footer>
-      {assetOpen ? (
-        <div className="pp-dressup__assets" role="dialog" aria-label="从我的资产选择">
-          <header>
-            <div>
-              <p>我的资产</p>
-              <strong>选择一张作为{active.label}参考图</strong>
-            </div>
-            <button type="button" aria-label="关闭资产选择" onClick={() => setAssetOpen(false)}>
-              <i className="bi bi-x-lg" />
-            </button>
-          </header>
-          <div className="pp-dressup__assets-body">
-            {assets.loading && !assets.items.length ? (
-              <p>正在读取资产…</p>
-            ) : assets.error && !assets.items.length ? (
-              <p>{assets.error}</p>
-            ) : assets.items.length ? (
-              <div className="pp-dressup__assets-grid">
-                {assets.items.map((asset) => (
-                  <button
-                    key={asset.id}
-                    type="button"
-                    disabled={busy}
-                    onClick={() => pickAsset(asset)}
-                  >
-                    <DressupMedia src={asset.thumbnailUrl || asset.url} fallbackSrc={asset.url} alt={asset.title || "个人素材"} />
-                    <span>{asset.title || "未命名素材"}</span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="pp-dressup__assets-empty">
-                <p>还没有资产</p>
-                <Link to="/assets">去素材库上传</Link>
-              </div>
-            )}
-          </div>
-          {assets.nextCursor ? (
-            <footer>
-              <button type="button" disabled={assets.loading} onClick={() => void loadMoreAssets()}>
-                {assets.loading ? "加载中…" : "加载更多"}
-              </button>
-            </footer>
-          ) : null}
-        </div>
-      ) : null}
-    </DialogMotion>
   );
 }
 
@@ -906,8 +560,29 @@ export function ProfileView() {
   const [dressupCategory, setDressupCategory] = useState(DRESSUP_CATEGORIES[0].id);
   const [dressupSelection, setDressupSelection] = useState(emptyDressupSelection);
   const [dressupDraft, setDressupDraft] = useState(null);
+  // 「在此基础上继续」后，下一轮以这张未确认的结果为底图。
+  const [dressupBase, setDressupBase] = useState(null);
+  const [dressupMaxRefs, setDressupMaxRefs] = useState(DRESSUP_DEFAULT_MAX_REFERENCES);
+  const [wardrobe, setWardrobe] = useState([]);
   const dressupSelectionRef = useRef(dressupSelection);
   dressupSelectionRef.current = dressupSelection;
+
+  useEffect(() => {
+    setWardrobe(readWardrobe(auth.user?.id));
+  }, [auth.user?.id]);
+
+  useEffect(() => {
+    if (!dressupOpen) return undefined;
+    let cancelled = false;
+    resolveStudioFigurePlan()
+      .then((plan) => {
+        if (!cancelled && plan.maxReferenceImages > 0) setDressupMaxRefs(plan.maxReferenceImages);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [dressupOpen]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1157,6 +832,7 @@ export function ProfileView() {
         throw new Error("形象未保存到账号，请重试");
       }
       commitStudioFigure(saved);
+      return saved;
     } catch (error) {
       if (mountedRef.current) {
         markFigureBusy("");
@@ -1240,17 +916,19 @@ export function ProfileView() {
         savedUrl = String(result?.user?.studioFigureUrl || "").trim();
       }
       if (savedUrl) {
+        rememberFigureSource(auth.user?.id, savedUrl, persistUrl);
         commitStudioFigure(savedUrl);
-        return;
+        return savedUrl;
       }
       if (mountedRef.current) {
         markFigureBusy("");
         setFigureNote("形象已套用，保存到账号失败，请再试一次");
       }
+      return "";
     })();
     if (applyKey) applyingFigureJobs.set(applyKey, run);
     try {
-      await run;
+      return await run;
     } finally {
       if (applyKey) applyingFigureJobs.delete(applyKey);
     }
@@ -1313,7 +991,6 @@ export function ProfileView() {
     const mode = options.mode === "outfit" ? "outfit" : "reference";
     const kind = mode === "outfit" ? "profile-studio-outfit" : "profile-studio-figure";
     const plan = mode === "outfit" ? buildDressupSourcePlan(options.dressup || dressupSelection) : null;
-    const prompt = mode === "outfit" ? plan.prompt : STUDIO_FIGURE_PROMPT;
     if (mode === "outfit") {
       if (!plan.picked.length) {
         setFigureNote("请先选择装扮");
@@ -1333,6 +1010,11 @@ export function ProfileView() {
     let jobId = "";
     try {
       const model = await resolveStudioFigurePlan();
+      const sourcePlan =
+        mode === "outfit"
+          ? buildDressupSourcePlan(options.dressup || dressupSelection, { template: model.outfitPromptTemplate })
+          : null;
+      const prompt = mode === "outfit" ? sourcePlan.prompt : model.prompt || STUDIO_FIGURE_PROMPT;
       const sourceUrls = [];
       if (mode === "outfit") {
         const characterSrc = String(options.characterSrc || figureSrc || DEFAULT_STUDIO_FIGURE).trim();
@@ -1341,7 +1023,7 @@ export function ProfileView() {
           : await uploadAiInputFile(asImageFile(await readGeneratedFigureBlob([characterSrc])));
         if (!characterUrl) throw new Error("当前立绘读取失败");
         sourceUrls.push(characterUrl);
-        for (const extra of plan.extras || []) {
+        for (const extra of sourcePlan.extras || []) {
           if (extra.file) sourceUrls.push(await uploadAiInputFile(extra.file));
           else if (extra.url) sourceUrls.push(siteFileUrl(extra.url) || extra.url);
         }
@@ -1601,7 +1283,7 @@ export function ProfileView() {
     }
     await requestStudioFigureGenerate(null, {
       mode: "outfit",
-      characterSrc: figureSrc,
+      characterSrc: dressupBase?.previewUrl || figureSrc,
       prompt: plan.prompt,
       dressup: dressupSelection,
     });
@@ -1614,20 +1296,98 @@ export function ProfileView() {
     setFigureNote("");
   };
 
-  const useDressupDraft = async () => {
-    if (!dressupDraft?.outputUrls?.length) return;
+  const resetDressupSelection = (next = emptyDressupSelection()) => {
+    setDressupSelection((current) => {
+      revokeDressupSelection(current);
+      return next;
+    });
+  };
+
+  // 换上一张装扮结果：先把当前形象收进衣橱作为「换装前」，保存成功后再收进结果。
+  const applyDressupResult = async (draft, labels) => {
+    if (!draft?.outputUrls?.length) return;
+    const userId = auth.user?.id;
+    const previousUrl = String(auth.user?.studioFigureUrl || "").trim();
     skipProfilePreviewRef.current = false;
-    markFigureBusy("outfit");
+    // 这里只是保存已生成的结果，用 upload 状态，工作台不会显示生成中的扫描光带
+    markFigureBusy("upload");
     setFigureNote("正在保存形象…");
     try {
-      await applyGeneratedOutputs(dressupDraft.completed || { job: { id: dressupDraft.jobId } }, dressupDraft.outputUrls);
+      const previousSource = figureSourceFor(userId, previousUrl);
+      const job = draft.completed?.job && typeof draft.completed.job === "object" ? draft.completed.job : {};
+      const sourceUrl = studioFigurePersistUrl(draft.outputUrls, job);
+      const savedUrl = await applyGeneratedOutputs(draft.completed || { job: { id: draft.jobId } }, draft.outputUrls);
+      if (userId && savedUrl) {
+        // 换装前的形象只有找得到任务原图才能收进衣橱；手动上传的形象被替换后文件会被清理，无法穿回
+        if (previousSource && previousUrl !== savedUrl) {
+          addWardrobeEntry(userId, { url: previousSource, savedUrl: previousUrl, kind: "before" });
+        }
+        const lookUrl = isTaskOriginalUrl(sourceUrl) ? sourceUrl : figureSourceFor(userId, savedUrl);
+        if (lookUrl) setWardrobe(addWardrobeEntry(userId, { url: lookUrl, savedUrl, kind: "look", labels }));
+        else setWardrobe(readWardrobe(userId));
+      }
       setDressupDraft(null);
+      setDressupBase(null);
+      resetDressupSelection();
       setDressupOpen(false);
     } catch (error) {
       if (!mountedRef.current) return;
       markFigureBusy("");
       setFigureNote(error?.message || "形象保存失败");
     }
+  };
+
+  const selectedLabels = () => selectedDressupSlots(dressupSelection).map(({ category }) => category.label);
+
+  const useDressupDraft = () =>
+    applyDressupResult(dressupDraft, [...(dressupBase?.labels || []), ...selectedLabels()]);
+
+  const useDressupBase = () => applyDressupResult(dressupBase, dressupBase?.labels || []);
+
+  const continueFromDressupDraft = () => {
+    if (!dressupDraft?.previewUrl) return;
+    setDressupBase({ ...dressupDraft, labels: [...(dressupBase?.labels || []), ...selectedLabels()] });
+    setDressupDraft(null);
+    resetDressupSelection();
+    if (auth.user?.id) clearFigureJob(auth.user.id);
+    setFigureNote("");
+  };
+
+  const applyDressupPreset = (preset) => {
+    resetDressupSelection(dressupSelectionFromPreset(preset));
+    const first = Object.keys(preset?.slots || {})[0];
+    if (first) setDressupCategory(first);
+  };
+
+  const wearWardrobeLook = async (item) => {
+    if (!item?.url || figureBusyRef.current) return;
+    const userId = auth.user?.id;
+    const previousUrl = String(auth.user?.studioFigureUrl || "").trim();
+    const previousSource = figureSourceFor(userId, previousUrl);
+    // 换衣橱只是保存形象，不生成；先清掉上一次生成失败留下的记录和提示，避免在换装时误显示「生成超时」
+    if (userId) clearFigureJob(userId);
+    setFigureNote("正在换上这套…");
+    try {
+      const saved = await saveStudioFigure(item.url);
+      if (userId) {
+        rememberFigureSource(userId, saved, item.url);
+        updateWardrobeEntry(userId, item.id, { savedUrl: saved });
+        if (previousSource && previousUrl !== saved && !readWardrobe(userId).some((look) => look.url === previousSource)) {
+          addWardrobeEntry(userId, { url: previousSource, savedUrl: previousUrl, kind: "before" });
+        }
+        setWardrobe(readWardrobe(userId));
+      }
+    } catch (error) {
+      // 原图已不存在（生成记录被删、或是旧版本衣橱存的会被清理的形象文件）：直接移出衣橱并说明
+      if (userId && /不存在|有效图片|仅允许/.test(String(error?.message || ""))) {
+        setWardrobe(removeWardrobeEntry(userId, item.id));
+        if (mountedRef.current) setFigureNote("这套造型的原图已不存在，已从衣橱移除");
+      }
+    }
+  };
+
+  const removeWardrobeLook = (item) => {
+    if (auth.user?.id) setWardrobe(removeWardrobeEntry(auth.user.id, item.id));
   };
 
   const onStudioFigureSelected = async (event) => {
@@ -1940,16 +1700,25 @@ export function ProfileView() {
           }
         }}
       />
-      <StudioDressupDialog
+      <ProfileDressupStudio
         open={dressupOpen}
         busy={figureSaving}
+        busyKind={figureBusy}
+        onDismissNote={() => setFigureNote("")}
         isDark={isDark}
-        figureSrc={figureSrc}
-        figureFallbackSrc={figureFallbackSrc}
+        baseSrc={dressupBase?.previewUrl || figureSrc}
+        baseFallbackSrc={dressupBase ? "" : figureFallbackSrc}
+        baseIsDraft={Boolean(dressupBase)}
         previewSrc={dressupDraft?.previewUrl || ""}
         note={figureNote}
         selection={dressupSelection}
         categoryId={dressupCategory}
+        maxReferenceImages={dressupMaxRefs}
+        wardrobe={wardrobe}
+        currentFigureUrl={String(auth.user?.studioFigureUrl || "").trim()}
+        toAssetSourceUrl={(value) =>
+          originalFileUrlFromAny(value) || siteFileUrl(value) || String(value || "").trim()
+        }
         onCategory={setDressupCategory}
         onSlotChange={(categoryId, patch) => {
           setDressupSelection((current) => {
@@ -1966,21 +1735,22 @@ export function ProfileView() {
             return { ...current, [categoryId]: emptyDressupSlot() };
           });
         }}
-        onReset={() => {
-          setDressupSelection((current) => {
-            revokeDressupSelection(current);
-            return emptyDressupSelection();
-          });
-        }}
+        onReset={() => resetDressupSelection()}
+        onApplyPreset={applyDressupPreset}
         onClose={() => {
           if (figureSaving) return;
           discardDressupDraft();
+          setDressupBase(null);
           setDressupOpen(false);
         }}
         onConfirm={() => void requestStudioDressup()}
         onUsePreview={() => void useDressupDraft()}
+        onUseBase={() => void useDressupBase()}
         onDiscardPreview={discardDressupDraft}
         onRetry={() => void requestStudioDressup()}
+        onContinue={continueFromDressupDraft}
+        onWear={(item) => void wearWardrobeLook(item)}
+        onRemoveLook={removeWardrobeLook}
         closeLocked={Boolean(figureCost)}
       />
       <LogoutDialog

@@ -128,6 +128,9 @@ interface ModelConfig {
   models: ModelItem[];
   workspaces: Record<WorkspaceKey, WorkspaceBinding>;
   editableFiles: EditableFileConfig;
+  /** 后台读取时服务端回填的内置提示词，仅用于展示。 */
+  defaultProfileFigurePrompt?: string;
+  defaultProfileOutfitPrompt?: string;
 }
 
 interface EditableFileConfig {
@@ -141,6 +144,12 @@ interface WorkspaceBinding {
   defaultModelIds: Partial<Record<ModelKind, string>>;
   modelPricing: Record<string, WorkspaceModelPricing>;
   modelLimits: Record<string, WorkspaceModelLimits>;
+  /** 仅文生图页面：个人中心「参考生成 / 装扮」固定使用的模型，空为自动挑选。 */
+  profileFigureModelId?: string;
+  /** 仅文生图页面：个人中心「参考生成」提示词，空为用户端内置默认。 */
+  profileFigurePrompt?: string;
+  /** 仅文生图页面：个人中心「装扮」提示词模板，{{items}} 处插入部位清单。 */
+  profileOutfitPrompt?: string;
 }
 
 /** 页面在模型自身配置之上追加的参考图 / 生成张数，只允许 >= 0。 */
@@ -727,7 +736,17 @@ function hydrate(value: ModelConfig) {
             extraImages: Math.max(0, Math.round(Number(limits?.extraImages) || 0)),
           }]),
       );
-      return [workspace.key, { modelIds, defaultModelIds, modelPricing, modelLimits }];
+      const profileFigureModelId =
+        workspace.key === "t2i" ? String(saved?.profileFigureModelId || "") : "";
+      const profileFigurePrompt =
+        workspace.key === "t2i"
+          ? String(saved?.profileFigurePrompt || value.defaultProfileFigurePrompt || "")
+          : "";
+      const profileOutfitPrompt =
+        workspace.key === "t2i"
+          ? String(saved?.profileOutfitPrompt || value.defaultProfileOutfitPrompt || "")
+          : "";
+      return [workspace.key, { modelIds, defaultModelIds, modelPricing, modelLimits, profileFigureModelId, profileFigurePrompt, profileOutfitPrompt }];
     }),
   ) as Record<WorkspaceKey, WorkspaceBinding>;
   sanitizeWorkspaceBindings();
@@ -1089,9 +1108,28 @@ function workspaceDefaultOptions(
   );
 }
 
+function profileFigureOptions() {
+  const binding = config.workspaces.t2i;
+  if (!binding) return [];
+  return workspaceAvailableModels(
+    workspaceMeta.find((workspace) => workspace.key === "t2i")!,
+  ).filter(
+    (model) =>
+      model.kind === "image" &&
+      model.maxReferenceImages > 0 &&
+      binding.modelIds.includes(model.id),
+  );
+}
+
 function ensureWorkspaceDefaults(workspace: (typeof workspaceMeta)[number]) {
   const binding = config.workspaces[workspace.key];
   if (!binding) return;
+  if (
+    binding.profileFigureModelId &&
+    !profileFigureOptions().some((model) => model.id === binding.profileFigureModelId)
+  ) {
+    binding.profileFigureModelId = "";
+  }
   for (const kind of workspace.kinds) {
     const options = workspaceDefaultOptions(workspace, kind);
     if (!options.some((model) => model.id === binding.defaultModelIds[kind])) {
@@ -3389,8 +3427,53 @@ onBeforeUnmount(() => {
                     />
                   </el-select>
                 </label>
+                <label
+                  v-if="activeWorkspace.key === 't2i'"
+                  class="assignment-default"
+                  title="个人中心「参考生成 / 装扮」使用的模型；不选则自动优先 gpt-image-2"
+                >
+                  <span>个人中心参考生成</span>
+                  <el-select
+                    v-model="config.workspaces.t2i.profileFigureModelId"
+                    clearable
+                    filterable
+                    placeholder="自动选择"
+                  >
+                    <el-option
+                      v-for="model in profileFigureOptions()"
+                      :key="model.id"
+                      :label="model.name"
+                      :value="model.id"
+                    />
+                  </el-select>
+                </label>
               </div>
             </header>
+
+            <section
+              v-if="activeWorkspace.key === 't2i'"
+              class="profile-figure-prompt"
+              aria-label="个人中心参考生成提示词"
+            >
+              <span>个人中心参考生成提示词</span>
+              <el-input
+                v-model="config.workspaces.t2i.profileFigurePrompt"
+                type="textarea"
+                :autosize="{ minRows: 3, maxRows: 10 }"
+                maxlength="4000"
+                show-word-limit
+                placeholder="清空则恢复内置默认提示词。不要描述场景或背景，否则会覆盖透明背景效果。"
+              />
+              <span>个人中心装扮提示词模板</span>
+              <el-input
+                v-model="config.workspaces.t2i.profileOutfitPrompt"
+                type="textarea"
+                :autosize="{ minRows: 3, maxRows: 10 }"
+                maxlength="4000"
+                show-word-limit
+                placeholder="清空则恢复内置默认模板。必须保留一个 {{items}}，用户选的部位会插到这里。"
+              />
+            </section>
 
             <section
               v-if="activeWorkspace.key === 'ui_design'"
@@ -8508,4 +8591,15 @@ html.dark .assign-card.is-ghost:hover {
 .model-api-note a { color: var(--brand, #5b4dff); font-weight: 600; }
 .model-api-refs { color: var(--ink-1, inherit); }
 .api-ref-badge { flex: none; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--brand, #5b4dff) 30%, transparent); border-radius: 999px; color: var(--brand, #5b4dff); font-size: 11px; line-height: 18px; }
+
+.profile-figure-prompt {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.profile-figure-prompt > span {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
 </style>

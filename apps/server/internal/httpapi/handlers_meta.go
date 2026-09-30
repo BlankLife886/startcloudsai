@@ -198,9 +198,14 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"imageModels": assistantImageModels,
 			"textModels":  assistantTextModels,
 		}},
-		"ai.imageTools":           gin.H{"enabled": len(backgroundRemovalModels) > 0, "config": gin.H{"backgroundRemovalModels": backgroundRemovalModels}},
-		"ai.mediaTools":           gin.H{"enabled": len(mediaTools) > 0, "config": gin.H{"tools": mediaTools}},
-		"ai.wallpaperGeneration":  gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
+		"ai.imageTools": gin.H{"enabled": len(backgroundRemovalModels) > 0, "config": gin.H{"backgroundRemovalModels": backgroundRemovalModels}},
+		"ai.mediaTools": gin.H{"enabled": len(mediaTools) > 0, "config": gin.H{"tools": mediaTools}},
+		"ai.wallpaperGeneration": gin.H{"enabled": true, "config": gin.H{
+			"publicModels":         workspaceImageModels(modelconfig.WorkspaceT2I),
+			"profileFigureModelId": cfg.Workspaces[modelconfig.WorkspaceT2I].ProfileFigureModelID,
+			"profileFigurePrompt":  modelconfig.ProfileFigurePrompt(cfg),
+			"profileOutfitPrompt":  modelconfig.ProfileOutfitPrompt(cfg),
+		}},
 		"wallpaper":               gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
 		"ai.illustrationColoring": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceColoring)}},
 		"ai.uiDesign": gin.H{"enabled": true, "config": gin.H{

@@ -767,3 +767,63 @@ func TestWorkspaceModelLimitsValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateProfileFigureModel(t *testing.T) {
+	cfg := testConfig()
+	cfg.Models[1].MaxReferenceImages = 4
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceT2I: {ModelIDs: []string{"image-fast"}, ProfileFigureModelID: "image-fast"},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("assigned reference-capable model should be valid: %v", err)
+	}
+	cfg.Workspaces[WorkspaceT2I] = WorkspaceBinding{ModelIDs: []string{"image-fast"}, ProfileFigureModelID: "image-quality"}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "个人中心参考生成模型") {
+		t.Fatalf("unassigned profile figure model must be rejected, got %v", err)
+	}
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceColoring: {ModelIDs: []string{"image-fast"}, ProfileFigureModelID: "image-fast"},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "不支持设置") {
+		t.Fatalf("profile figure model outside t2i must be rejected, got %v", err)
+	}
+}
+
+func TestValidateProfileFigurePrompt(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceT2I: {ModelIDs: []string{"image-fast"}, ProfileFigurePrompt: "  生成全身立绘  "},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("t2i profile figure prompt should be valid: %v", err)
+	}
+	cfg.Workspaces[WorkspaceT2I] = WorkspaceBinding{ModelIDs: []string{"image-fast"}, ProfileFigurePrompt: strings.Repeat("字", MaxProfileFigurePromptRunes+1)}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "不能超过") {
+		t.Fatalf("overlong prompt must be rejected, got %v", err)
+	}
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceColoring: {ModelIDs: []string{"image-fast"}, ProfileFigurePrompt: "x"},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "不支持设置") {
+		t.Fatalf("prompt outside t2i must be rejected, got %v", err)
+	}
+}
+
+func TestValidateProfileOutfitPrompt(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceT2I: {ModelIDs: []string{"image-fast"}, ProfileOutfitPrompt: "Edit only:\n{{items}}"},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("outfit template with one placeholder should be valid: %v", err)
+	}
+	for _, prompt := range []string{"no placeholder", "{{items}} and {{items}}"} {
+		cfg.Workspaces[WorkspaceT2I] = WorkspaceBinding{ModelIDs: []string{"image-fast"}, ProfileOutfitPrompt: prompt}
+		if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "{{items}}") {
+			t.Fatalf("template %q must be rejected, got %v", prompt, err)
+		}
+	}
+	if !strings.Contains(DefaultProfileOutfitPrompt, ProfileOutfitItemsPlaceholder) {
+		t.Fatal("default outfit template must contain the items placeholder")
+	}
+}
