@@ -5,8 +5,8 @@
       "name": "web-dev",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
-      "cwd": "apps/web",
-      "port": 3102
+      "cwd": "apps/web-react",
+      "port": 3105
     },
     {
       "name": "admin-dev",

@@ -129,11 +129,14 @@
 | POST   | `/api/v1/me/asset-groups`             | 创建 `{name,sort?}`；名称 1-64 字、同用户唯一，最多 50 组                                                                                                                                                         |
 | PATCH  | `/api/v1/me/asset-groups/{id}`        | 更新 `{name?,sort?}`                                                                                                                                                                                             |
 | DELETE | `/api/v1/me/asset-groups/{id}`        | 删除分组；组内素材 `group_id` 置空                                                                                                                                                                               |
-| GET    | `/api/v1/me/api-models`               | 当前可授权给 API Key 的开放模型                                                                                                                                                                                   |
+| GET    | `/api/v1/me/api-models`               | API 模型目录中当前可调用的模型：`id` 为目录 ID（Key 的 `allowedModelIds` 存它），`model` 为 /v1 使用的模型名，`priceCents` 为 API 单价 |
+| GET    | `/api/v1/me/api-usage-summary`        | 本月（UTC）开发者 API 已扣费的积分与调用次数；钱包页、订阅页用它显示 API 消耗汇总（API 扣费不进钱包明细） |
 | GET    | `/api/v1/me/api-calls`                | 本人 `/v1` 调用记录：`?page=&limit=&key=`，返回 `{items,page,pageSize,total,totalCapped}`；每项含时间、接口、模型名、Key 名称与短前缀、用量、扣费积分、状态与原因，不含内部 id |
 | GET/POST | `/api/v1/me/api-keys`               | 查询或创建 API Key；明文仅在创建响应返回一次                                                                                                                                                                      |
 | PATCH | `/api/v1/me/api-keys/{id}`             | 更新本人 Key 的可编辑配置；仍受权限、模型白名单及额度范围校验 |
 | POST | `/api/v1/me/api-keys/{id}/rotate`       | 轮换本人 Key；新明文只返回一次，旧 Key 不再可用 |
+| POST | `/api/v1/me/api-keys/{id}/pause`        | 停用本人 Key（仅 active → paused），密钥不变 |
+| POST | `/api/v1/me/api-keys/{id}/resume`       | 重新启用本人 Key（仅 paused → active） |
 | DELETE | `/api/v1/me/api-keys/{id}`             | 撤销当前用户的 API Key                                                                                                                                                                                            |
 
 账本条目包含 `{id,kind,deltaCents,balanceAfterCents,sourceType,sourceId,reason,createdAt}`。
@@ -461,7 +464,7 @@ JSON 导出格式为 `{schemaVersion,exportedAt,items}`；CSV 使用 UTF-8 BOM�
 | PATCH        | `/api/v1/admin/plans/{id}`         | 编辑价格、积分、权益、推荐位、排序和上下架状态     |
 | DELETE       | `/api/v1/admin/plans/{id}`         | 删除未使用套餐；有历史记录时返回 `plan_in_use`     |
 | POST         | `/api/v1/admin/providers/{provider}/tests` | provider 为 `c2a`、`sub2api`、`crun` 或 `lanjing-pay`，执行连接测试；蓝鲸支付仅调用 `/getState`，不创建订单 |
-| GET/PUT      | `/api/v1/admin/model-config`              | 获取或保存模型路由配置                                 |
+| GET/PUT      | `/api/v1/admin/model-config`              | 获取或保存模型路由配置；保存会让已上线/弃用中的 API 模型无法调用（删除、停用、维护站内模型或线路改为非 OpenAI 协议）时返回 `409 api_model_impact`（`data.models` 列出受影响的 API 模型与原因），带 `?confirmApiImpact=1` 重新提交即保存。保存后立即按新站内价同步跟随价的 API 模型（涨价转为预告） |
 | POST         | `/api/v1/admin/model-config/discoveries`  | 创建一次上游模型发现请求                               |
 
 settings 请求/响应：
@@ -626,6 +629,8 @@ settings 请求/响应：
 | PUT | `/api/v1/assistant/messages/:id/feedback` | 为当前用户会话中的助手回复设置 `positive` / `negative` 反馈；空字符串取消反馈，返回更新后的消息。 |
 | POST | `/api/v1/me/behavior-events` | `{events:[...]}`，每批 `1-50` 条脱敏行为事件；返回 `{accepted}`。 |
 | POST | `/api/v1/me/api-keys/{id}/rotate` | 轮换本人 API Key；旧 Key 立即失效，新明文 Secret 仅在本次响应显示。受 `developer_api` 页面开关保护。 |
+| POST | `/api/v1/me/api-keys/{id}/pause` | 停用本人 API Key：只把 `active` 改为 `paused`，密钥与设置不变，调用返回 `403 api_key_paused`；其他状态返回 `409 api_key_state_conflict`。风控冻结的 Key 不能自行停用或启用。 |
+| POST | `/api/v1/me/api-keys/{id}/resume` | 重新启用本人 API Key：只把 `paused` 改回 `active`，立即恢复可用；其他状态返回 `409 api_key_state_conflict`。 |
 
 行为事件元素：
 
@@ -717,12 +722,23 @@ SSE 使用 `text/event-stream`。客户端收到终态后应停止重连；断�
 | 方法 | 路径 | 请求/响应说明 |
 | --- | --- | --- |
 | GET | `/api/v1/admin/files/*key` | 管理员查看受控站内文件；仅用于后台预览，跳过用户 Cookie 但仍要求管理员会话。 |
-| GET | `/api/v1/admin/badge-counts` | 返回待审核、待处理等导航角标数量。 |
+| GET | `/api/v1/admin/badge-counts` | 返回待审核、待处理等导航角标数量；`pendingRefunds` 为订阅退款待审核数（`subscription_changes` 中 `kind=refund`、`status=reviewing`），右上角待办链接到 `/subscription-changes?status=reviewing`。 |
 | GET | `/api/v1/admin/statistics` | 后台首页统计：任务、系统、文本/图片用量、利润、Agent/Open API/OSS 质量摘要。 |
 | GET | `/api/v1/admin/system/metrics` | 当前 CPU、内存、Go、数据库、Redis、队列和 Worker 运行指标。 |
 | GET | `/api/v1/admin/profitability` | `dimension=model\|provider\|route\|workspace\|user&days=7\|30`；返回周期汇总和最多 50 个维度项。 |
 | GET | `/api/v1/admin/developer-api/calls` | 全站 `/v1` 调用记录；筛选 `createdFrom`、`createdTo`（北京时间日期）、`kind=image\|chat`、`status=charged\|refunded\|pending`、`model`（模型 ID）、`user`（邮箱/用户名/ID）、`key`（Key 名称或前缀），`page`/`limit` 分页，`nextCursor` 为下一页页码。每项含计费单号、用户、Key、模型、服务商与线路、用量、实收、上游成本、错误码与原因。 |
 | GET | `/api/v1/admin/developer-api/summary` | 与调用记录同筛选的汇总：调用、扣费、退回、进行中、实收、上游成本、毛利、用户数、Key 数、调用最多的 20 个模型，以及可筛选的模型列表。 |
+| GET | `/api/v1/admin/developer-api/models` | API 模型目录：名称、别名、状态（按当前时间计算，过了下线时间的弃用模型即为 `retired`）、下线时间、替代模型、指向的站内模型（是否可执行）、当前 API 单价与 `pendingPrice`（已预告的调价 `{priceCents, effectiveAt}`）、并发上限，以及引用 Key 数、近 7/30 天调用、30 天用户数与实收、指向的站内模型近 1 小时站内/API 调用数；另返回可指向的站内模型列表和 `settings`（`deprecationNoticeDays`、`priceIncreaseNoticeDays`）。 |
+| POST | `/api/v1/admin/developer-api/models` | 新建 API 模型（草稿）：`apiName`、`aliases`、`targetModelId`、`priceMode`（`follow`/`fixed`）、`priceCents`、`maxConcurrency`、`description`。名称与别名按 /v1 比较规则（忽略大小写，`.` 与 `-` 视为相同）全局唯一。 |
+| PATCH | `/api/v1/admin/developer-api/models/{id}` | 编辑。已发布的名称不可改；已下线的不可改；更换指向须同类型，能力减少时必须填 `reason`（否则 `422 capability_narrowed`）。上线/维护/弃用中的模型涨价（含改指向、改价格方式导致的涨价）不会立即生效：保存后写入 `pendingPrice`，7 天后生效并给相关用户发站内消息；降价立即生效并取消未生效的涨价。每次变更写入 `developer_api_model_events`。 |
+| POST | `/api/v1/admin/developer-api/models/{id}/publish` | 草稿发布为上线；指向的站内模型必须可执行，发布后名称锁定。 |
+| POST | `/api/v1/admin/developer-api/models/{id}/withdraw` | 紧急撤回为草稿（调用立即 404），必须填 `reason`。 |
+| POST | `/api/v1/admin/developer-api/models/{id}/maintenance` | 上线或弃用中的模型设为维护：调用返回 `503 model_unavailable`（不扣费、可重试）。`reason` 可选。 |
+| POST | `/api/v1/admin/developer-api/models/{id}/resume` | 结束维护，回到上线（有下线时间的回到弃用中）；指向的站内模型必须可执行。 |
+| POST | `/api/v1/admin/developer-api/models/{id}/deprecate` | 弃用：`sunsetAt`（RFC 3339，至少在弃用预告期之后）、可选 `replacementId`（另一个已上线的同类型 API 模型）、`reason`。给近 30 天调用过或 Key 指定了它的用户发站内消息。到期后自动下线。 |
+| POST | `/api/v1/admin/developer-api/models/{id}/undeprecate` | 取消弃用，回到上线，并通知相关用户。 |
+| POST | `/api/v1/admin/developer-api/models/{id}/retire` | 立即下线（调用返回 `410 model_retired`），必须填 `reason`，可改 `replacementId`；通知相关用户。不能撤销。 |
+| GET/PUT | `/api/v1/admin/developer-api/model-settings` | 读取或设置弃用预告期 `deprecationNoticeDays`（1–365，默认 7，存于 app setting `developer_api_deprecation_notice_days`）；返回值还含固定的涨价预告期 `priceIncreaseNoticeDays`（7）。 |
 | GET | `/api/v1/admin/user-analytics` | 返回全站用户生命周期、风险、价值、活跃、留存和业务使用聚合。 |
 | POST | `/api/v1/admin/users/{id}/profile/refresh` | 立即重新计算单个用户画像并返回新结果。 |
 | GET | `/api/v1/admin/tasks/{id}/timeline` | 返回任务阶段事件、创建/开始/结束时间，用于拆分排队、上游、拉取和保存耗时。 |

@@ -60,12 +60,26 @@ with open("cat.png", "xb") as file:
 
 ## 模型
 
+模型名（`model`）由平台的 API 模型目录维护，发布后保持不变：平台调整站内模型名称、服务商或线路，都不会改变你代码里使用的模型名。
+
+模型的状态变化都会提前或当场告诉你：
+
+| 状态 | 调用结果 | 你需要做什么 |
+| --- | --- | --- |
+| 维护中 | `503 model_unavailable`，带 `Retry-After: 60`、`X-Should-Retry: true`；在预扣积分前拒绝，不扣费 | 稍后重试 |
+| 即将下线 | 照常调用，响应额外带 `Deprecation`（弃用时间，`@Unix 秒`）、`Sunset`（下线时间，HTTP 日期）、`Link: </v1/models/替代模型>; rel="successor-version"` 头 | 在下线前把 `model` 换成替代模型，并更新 Key 的指定模型 |
+| 已下线 | `410 model_retired`，消息里给出替代模型 | 改用替代模型 |
+
+弃用至少提前 7 天（平台可调长）通过站内消息通知近 30 天调用过该模型、或 Key 指定了它的用户；紧急下线（上游停服等）会立即生效并同样发站内消息。
+
+价格：每次请求在开始时按当时的价格计费，之后调价不影响已发出的请求。涨价至少提前 7 天在控制台“模型”页显示“X 月 X 日起调整为 N 积分/次”并发站内消息，到期后生效；降价立即生效。开发者 API 价格不享受订阅锁价。
+
 ```bash
 curl -sS "$STAR_CLOUD_BASE_URL/models" \
   -H "Authorization: Bearer $STAR_CLOUD_API_KEY"
 ```
 
-返回 `{"object":"list","data":[{"id":"gpt-image-2","object":"model","created":0,"owned_by":"starcloudsai"}, ...]}`。列表只包含当前 Key 可调用的模型；Key 限定了可用模型时只返回那几个。不同模型支持的尺寸、质量和参考图数量不同，可在控制台“模型”页查看。
+返回 `{"object":"list","data":[{"id":"gpt-image-2","object":"model","created":0,"owned_by":"starcloudsai","status":"live"}, ...]}`。列表包含当前 Key 可用的模型（Key 限定了可用模型时只返回那几个），含维护中和即将下线的，不含已下线的。`status` 为 `live`、`maintenance` 或 `deprecated`；即将下线的模型另有 `sunset_at`（RFC 3339）和 `replacement`（替代模型名，可能为空）。这些是扩展字段，OpenAI SDK 会忽略。`GET /v1/models/{model}` 返回同样的对象，已下线的模型返回 `410 model_retired`。不同模型支持的尺寸、质量和参考图数量不同，可在控制台“模型”页查看。
 
 ## 生成图片
 
@@ -156,8 +170,11 @@ for chunk in client.chat.completions.create(model="gpt-5.6-luna", messages=[{"ro
 | 401 | `invalid_api_key` | Key 缺失、格式不对或已撤销 |
 | 401 | `api_key_expired` | Key 已过期，请创建或轮换 |
 | 403 | `api_key_frozen` | Key 被风控冻结，消息中含原因 |
+| 403 | `api_key_paused` | Key 已被你在控制台停用，重新启用后立即恢复，密钥不变 |
 | 403 | `api_key_ip_denied` | 来源 IP 不在 Key 的白名单中 |
 | 404 | `model_not_found` | 模型名不存在，或未开放给这把 Key；消息里带上你填的名字 |
+| 410 | `model_retired` | 模型已下线，消息里给出替代模型 |
+| 503 | `model_unavailable` | 模型暂时不可用（维护或上游线路停用），不扣费；带 `Retry-After` 与 `X-Should-Retry: true`，可稍后重试 |
 | 413 | `request_too_large` | 请求体超过 512 MiB |
 | 429 | `model_concurrency_limited` | 该模型同时进行的请求已达上限，稍后再发 |
 | 429 | `upstream_rate_limited` | 上游当前限流，稍后再发 |
