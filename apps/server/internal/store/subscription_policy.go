@@ -20,6 +20,11 @@ type SubscriptionPolicy struct {
 	Channels             []string `json:"channels"`
 	FeatureKeys          []string `json:"featureKeys"`
 	ModelIDs             []string `json:"modelIds"`
+	// APIModelIDs scopes the api channel to developer API catalog entries. It
+	// only applies when ModelIDs restricts the plan; an unrestricted plan
+	// covers every API model. It is derived from ModelIDs when the catalog is
+	// introduced, so changing an API model's target keeps the entitlement.
+	APIModelIDs []string `json:"apiModelIds,omitempty"`
 }
 
 func (p SubscriptionPolicy) ModelPricesLocked() bool {
@@ -53,8 +58,20 @@ func DefaultSubscriptionPolicy() SubscriptionPolicy {
 	return SubscriptionPolicy{Version: 2, Series: "general", Tier: 1, Channels: []string{"web", "api"}, FeatureKeys: []string{}, ModelIDs: []string{}, RefundWindowHours: &hours}
 }
 
+// Allows reports whether credits under this policy may pay for the use. On
+// the api channel model is a developer API model id and is checked against
+// APIModelIDs; elsewhere it is a site model id checked against ModelIDs.
 func (p SubscriptionPolicy) Allows(feature, channel, model string) bool {
-	return Contains(p.Channels, channel) && (len(p.FeatureKeys) == 0 || Contains(p.FeatureKeys, feature)) && (len(p.ModelIDs) == 0 || Contains(p.ModelIDs, model))
+	if !Contains(p.Channels, channel) || (len(p.FeatureKeys) > 0 && !Contains(p.FeatureKeys, feature)) {
+		return false
+	}
+	if len(p.ModelIDs) == 0 {
+		return true
+	}
+	if channel == "api" {
+		return Contains(p.APIModelIDs, model)
+	}
+	return Contains(p.ModelIDs, model)
 }
 
 func (p SubscriptionPolicy) Covers(old SubscriptionPolicy) bool {
@@ -72,7 +89,8 @@ func (p SubscriptionPolicy) Covers(old SubscriptionPolicy) bool {
 		}
 		return true
 	}
-	return p.Series != "" && p.Series == old.Series && p.Tier > old.Tier && covers(p.Channels, old.Channels, false) && covers(p.FeatureKeys, old.FeatureKeys, true) && covers(p.ModelIDs, old.ModelIDs, true)
+	apiCovered := len(p.ModelIDs) == 0 || (len(old.ModelIDs) > 0 && covers(p.APIModelIDs, old.APIModelIDs, false))
+	return p.Series != "" && p.Series == old.Series && p.Tier > old.Tier && covers(p.Channels, old.Channels, false) && covers(p.FeatureKeys, old.FeatureKeys, true) && covers(p.ModelIDs, old.ModelIDs, true) && apiCovered
 }
 
 func (p *SubscriptionPolicy) Normalize() error {
@@ -124,7 +142,7 @@ func (p *SubscriptionPolicy) Normalize() error {
 			return fmt.Errorf("无效的订阅使用渠道")
 		}
 	}
-	for _, list := range [][]string{p.FeatureKeys, p.ModelIDs} {
+	for _, list := range [][]string{p.FeatureKeys, p.ModelIDs, p.APIModelIDs} {
 		if len(list) > 100 {
 			return fmt.Errorf("订阅范围最多100项")
 		}

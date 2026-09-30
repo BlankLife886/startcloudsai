@@ -13,18 +13,20 @@ type CreditLotFilter struct {
 	Bucket, State string
 }
 type UserCreditLot struct {
-	ID                uuid.UUID       `json:"id"`
-	Bucket            string          `json:"bucket"`
-	Name              string          `json:"name"`
-	OrderID           *uuid.UUID      `json:"orderId"`
-	SubscriptionID    *uuid.UUID      `json:"subscriptionId"`
-	GrantedPoints     int64           `json:"grantedPoints"`
-	AvailablePoints   int64           `json:"availablePoints"`
-	FrozenPoints      int64           `json:"frozenPoints"`
-	HeldPoints        int64           `json:"heldPoints"`
-	SpentPoints       int64           `json:"spentPoints"`
-	ExpiredPoints     int64           `json:"expiredPoints"`
-	RevokedPoints     int64           `json:"revokedPoints"`
+	ID              uuid.UUID  `json:"id"`
+	Bucket          string     `json:"bucket"`
+	Name            string     `json:"name"`
+	OrderID         *uuid.UUID `json:"orderId"`
+	SubscriptionID  *uuid.UUID `json:"subscriptionId"`
+	GrantedPoints   int64      `json:"grantedPoints"`
+	AvailablePoints int64      `json:"availablePoints"`
+	FrozenPoints    int64      `json:"frozenPoints"`
+	HeldPoints      int64      `json:"heldPoints"`
+	SpentPoints     int64      `json:"spentPoints"`
+	ExpiredPoints   int64      `json:"expiredPoints"`
+	RevokedPoints   int64      `json:"revokedPoints"`
+	// APISpentPoints is the part of SpentPoints paid for developer API calls.
+	APISpentPoints    int64           `json:"apiSpentPoints"`
 	HoldReason        string          `json:"holdReason"`
 	PriceLockEligible bool            `json:"priceLockEligible"`
 	Policy            json.RawMessage `json:"policy"`
@@ -40,6 +42,7 @@ type CreditLotSummary struct {
 	Spent     int64 `json:"spentPoints"`
 	Expired   int64 `json:"expiredPoints"`
 	Revoked   int64 `json:"revokedPoints"`
+	APISpent  int64 `json:"apiSpent"` // settled points paid for developer API calls
 }
 
 const userCreditLotsCTE = `WITH lots AS(
@@ -75,7 +78,25 @@ func ListUserCreditLots(ctx context.Context, q Q, f CreditLotFilter, page, size 
 		}
 		items = append(items, l)
 	}
-	return items, s, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, s, err
+	}
+	rows.Close()
+	if err := q.QueryRow(ctx, userCreditLotsCTE+`SELECT COALESCE(sum(a.settled_points),0) FROM selected JOIN (`+creditAllocationsUnion+`) a ON a.lot_id=selected.id WHERE a.source_type = ANY($4)`, append(args, developerAPILedgerSources)...).Scan(&s.APISpent); err != nil {
+		return nil, s, err
+	}
+	ids := make([]uuid.UUID, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	spent, err := APISpentByLot(ctx, q, ids)
+	if err != nil {
+		return nil, s, err
+	}
+	for index := range items {
+		items[index].APISpentPoints = spent[items[index].ID]
+	}
+	return items, s, nil
 }
 
 type UserSubscriptionBenefit struct {
@@ -130,4 +151,50 @@ func ListSubscriptionChangesForSubscription(ctx context.Context, q Q, id uuid.UU
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// creditAllocationsUnion lists settled spending per credit lot of both kinds.
+const creditAllocationsUnion = `SELECT lot_id,source_type,settled_points FROM subscription_credit_allocations
+	UNION ALL SELECT lot_id,source_type,settled_points FROM topup_credit_allocations`
+
+// APISpentByLot returns, per credit lot, the settled points paid for
+// developer API calls.
+func APISpentByLot(ctx context.Context, q Q, lotIDs []uuid.UUID) (map[uuid.UUID]int64, error) {
+	spent := map[uuid.UUID]int64{}
+	if len(lotIDs) == 0 {
+		return spent, nil
+	}
+	rows, err := q.Query(ctx, `SELECT lot_id,sum(settled_points) FROM (`+creditAllocationsUnion+`) a
+		WHERE lot_id = ANY($1) AND source_type = ANY($2) GROUP BY lot_id`, lotIDs, developerAPILedgerSources)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var points int64
+		if err := rows.Scan(&id, &points); err != nil {
+			return nil, err
+		}
+		spent[id] = points
+	}
+	return spent, rows.Err()
+}
+
+// OrderAPISpentPoints is how much of an order's credits (top-up or
+// subscription lots bought by it) developer API calls have used.
+func OrderAPISpentPoints(ctx context.Context, q Q, orderID uuid.UUID) (int64, error) {
+	var points int64
+	err := q.QueryRow(ctx, `SELECT COALESCE(sum(a.settled_points),0) FROM (`+creditAllocationsUnion+`) a
+		WHERE a.source_type = ANY($2) AND a.lot_id IN (
+			SELECT id FROM topup_credit_lots WHERE order_id=$1 UNION ALL SELECT id FROM subscription_credit_lots WHERE order_id=$1)`,
+		orderID, developerAPILedgerSources).Scan(&points)
+	return points, err
+}
+
+// UserAPISpend totals a user's charged developer API calls since from.
+func UserAPISpend(ctx context.Context, q Q, userID uuid.UUID, from time.Time) (points, calls int64, err error) {
+	err = q.QueryRow(ctx, `SELECT COALESCE(sum(price_cents),0),count(*) FROM developer_api_billing_requests
+		WHERE user_id=$1 AND status='succeeded' AND created_at >= $2`, userID, from).Scan(&points, &calls)
+	return points, calls, err
 }

@@ -25,6 +25,10 @@ type DeveloperAPIRequest struct {
 	APIKeyID     *uuid.UUID
 	UsageEventID *uuid.UUID
 	PriceCents   int64
+	// APIModelID and APIModelName record the catalog entry and the name the
+	// caller used, so call history keeps it after renames or removals.
+	APIModelID   string
+	APIModelName string
 	Status       string
 	ExpiresAt    time.Time
 	SettledAt    *time.Time
@@ -62,10 +66,10 @@ func GetDeveloperAPIRequest(ctx context.Context, q Q, billingID string) (*Develo
 
 func InsertDeveloperAPIRequest(ctx context.Context, q Q, item DeveloperAPIRequest) error {
 	_, err := q.Exec(ctx, `INSERT INTO developer_api_billing_requests
-		(billing_id,source_type,user_id,api_key_id,usage_event_id,price_cents,status,expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		(billing_id,source_type,user_id,api_key_id,usage_event_id,price_cents,status,expires_at,api_model_id,api_model_name)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),NULLIF($10,''))`,
 		item.BillingID, item.SourceType, item.UserID, item.APIKeyID, item.UsageEventID,
-		max(item.PriceCents, 0), item.Status, item.ExpiresAt)
+		max(item.PriceCents, 0), item.Status, item.ExpiresAt, item.APIModelID, item.APIModelName)
 	return err
 }
 
@@ -131,6 +135,7 @@ type DeveloperAPICall struct {
 	KeyLabel         *string
 	KeyPrefix        *string
 	ModelID          string
+	APIModelName     string // name the caller used, recorded at call time
 	Units            int
 	Operation        string
 	ErrorCode        string
@@ -161,7 +166,7 @@ func ListDeveloperAPICalls(ctx context.Context, q Q, userID uuid.UUID, keyID *uu
 	}
 	args := append(developerAPICallArgs(userID, keyID), max(limit, 1), max(offset, 0))
 	rows, err := q.Query(ctx, `SELECT r.source_type, r.status, r.price_cents, r.created_at, k.label, k.key_prefix,
-			COALESCE(p.model_id, ''), COALESCE(p.units, 0),
+			COALESCE(p.model_id, ''), COALESCE(r.api_model_name, ''), COALESCE(p.units, 0),
 			COALESCE(p.metadata->>'operation', ''), COALESCE(p.metadata->>'errorCode', ''), COALESCE(p.metadata->>'note', ''),
 			`+tokens("prompt_tokens")+`, `+tokens("completion_tokens")+`, `+tokens("total_tokens")+`
 		FROM (SELECT r.*`+developerAPICallWhere+`
@@ -177,7 +182,7 @@ func ListDeveloperAPICalls(ctx context.Context, q Q, userID uuid.UUID, keyID *uu
 	for rows.Next() {
 		var item DeveloperAPICall
 		if err := rows.Scan(&item.SourceType, &item.Status, &item.PriceCents, &item.CreatedAt, &item.KeyLabel, &item.KeyPrefix,
-			&item.ModelID, &item.Units, &item.Operation, &item.ErrorCode, &item.Note,
+			&item.ModelID, &item.APIModelName, &item.Units, &item.Operation, &item.ErrorCode, &item.Note,
 			&item.PromptTokens, &item.CompletionTokens, &item.TotalTokens); err != nil {
 			return nil, err
 		}

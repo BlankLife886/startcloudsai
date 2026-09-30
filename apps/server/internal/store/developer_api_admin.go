@@ -34,6 +34,7 @@ type AdminDeveloperAPICall struct {
 	KeyLabel          *string
 	KeyPrefix         *string
 	ModelID           string
+	APIModelName      string // API model name the caller used, recorded at call time
 	ProviderID        string
 	RouteID           string
 	Units             int
@@ -125,7 +126,7 @@ func ListAdminDeveloperAPICalls(ctx context.Context, q Q, f AdminDeveloperAPICal
 	rows, err := q.Query(ctx, fmt.Sprintf(`SELECT r.billing_id, r.source_type, r.status, r.price_cents, r.created_at, r.settled_at,
 			r.user_id, u.email::text, u.username, k.label, k.key_prefix,
 			COALESCE(p.model_id, ''), COALESCE(p.provider_id, ''), COALESCE(p.route_id, ''), COALESCE(p.units, 0),
-			COALESCE(p.upstream_cost_cents, 0), COALESCE(p.metadata, '{}'::jsonb)
+			COALESCE(p.upstream_cost_cents, 0), COALESCE(p.metadata, '{}'::jsonb), COALESCE(r.api_model_name, '')
 		%s%s
 		ORDER BY r.created_at DESC, r.billing_id DESC LIMIT $%d OFFSET $%d`,
 		`FROM developer_api_billing_requests r
@@ -143,7 +144,7 @@ func ListAdminDeveloperAPICalls(ctx context.Context, q Q, f AdminDeveloperAPICal
 		var item AdminDeveloperAPICall
 		if err := rows.Scan(&item.BillingID, &item.SourceType, &item.Status, &item.PriceCents, &item.CreatedAt, &item.SettledAt,
 			&item.UserID, &item.UserEmail, &item.Username, &item.KeyLabel, &item.KeyPrefix,
-			&item.ModelID, &item.ProviderID, &item.RouteID, &item.Units, &item.UpstreamCostCents, &item.Metadata); err != nil {
+			&item.ModelID, &item.ProviderID, &item.RouteID, &item.Units, &item.UpstreamCostCents, &item.Metadata, &item.APIModelName); err != nil {
 			return nil, err
 		}
 		items = append(items, &item)

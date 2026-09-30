@@ -177,6 +177,14 @@ func (s *Server) adminOrderAccountingDetail(c *gin.Context, _ *store.User) {
 	}
 	a := rows[0]
 	d := accountingOrderDict(a)
+	// Part of the order's credits used by developer API calls, which users do
+	// not see in their wallet history; support needs it to explain refunds.
+	apiSpent, err := store.OrderAPISpentPoints(ctx, tx, a.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	d["apiSpentPoints"] = apiSpent
 	var planSnapshot json.RawMessage
 	err = tx.QueryRow(ctx, `SELECT snapshot FROM plan_versions WHERE plan_id=$1 AND revision=$2`, a.PlanID, a.PlanRevision).Scan(&planSnapshot)
 	if err != nil && err != pgx.ErrNoRows {

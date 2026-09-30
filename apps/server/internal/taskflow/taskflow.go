@@ -257,6 +257,62 @@ func resolveSelectionPrice(cfg modelconfig.Config, workspace string, model model
 	return modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
 }
 
+// QuoteSelectedImage validates and prices an image request for a model the
+// caller has already chosen, without requiring the model to be bound to a
+// site workspace, at the caller's public unit price (the developer API's
+// catalog price). Capability checks and subscription contract resolution are
+// the same as QuoteTaskPrice.
+func QuoteSelectedImage(ctx context.Context, q store.Q, cfg modelconfig.Config, workspace string, selection modelconfig.Selection, in CreateInput, publicUnit int64, users ...uuid.UUID) (*PriceQuote, error) {
+	in.Params = incomingTaskParams(in.Params, in.TrustedParams)
+	if in.Count < 1 || in.Count > modelconfig.MaxImagesLimit {
+		return nil, apperr.E("validation_error", fmt.Sprintf("count 须在 1-%d 之间", modelconfig.MaxImagesLimit), 422)
+	}
+	if err := ValidateStrictAlphaImageRequest(&selection, in.Params); err != nil {
+		return nil, err
+	}
+	if err := modelconfig.ValidateExactImageSelection(&selection, in.Params); err != nil {
+		return nil, apperr.E("validation_error", err.Error(), 422)
+	}
+	quote := &PriceQuote{Count: in.Count, ConfigVersion: cfg.Version, Workspace: workspace}
+	return quoteSelection(ctx, q, cfg, workspace, selection, in, quote, &publicUnit, users...)
+}
+
+// quoteSelection prices a request on a chosen model. publicUnit, when set,
+// replaces the workspace price as the public price.
+func quoteSelection(ctx context.Context, q store.Q, cfg modelconfig.Config, workspace string, selection modelconfig.Selection, in CreateInput, quote *PriceQuote, publicUnit *int64, users ...uuid.UUID) (*PriceQuote, error) {
+	if selection.Model.Kind == modelconfig.ModelKindImage {
+		if err := validateModelImageCapabilities(selection.Model, in.Params, len(in.InputKeys)); err != nil {
+			return nil, err
+		}
+		if requestedImageCount(in.Type, in.Params, in.Count) > selection.Model.GenerationMaxImages() {
+			return nil, apperr.E("validation_error", fmt.Sprintf("所选模型单次最多生成 %d 张", selection.Model.GenerationMaxImages()), 422)
+		}
+	}
+	resolved := resolveSelectionPrice(cfg, workspace, selection.Model, in.Params)
+	quote.ModelID = selection.Model.ID
+	quote.StandardUnitPriceCents = resolved.PriceCents
+	quote.DiscountUnitPriceCents = resolved.DiscountPriceCents
+	quote.UnitPriceCents = resolved.EffectiveCents
+	quote.TotalPriceCents = resolved.EffectiveCents * int64(in.Count)
+	quote.Overridden = resolved.Overridden
+	if publicUnit != nil {
+		quote.UnitPriceCents = *publicUnit
+		quote.TotalPriceCents = *publicUnit * int64(in.Count)
+	}
+	if len(users) > 0 {
+		feature, _ := trialfeature.ForTask(in.Type, in.Params)
+		toolInput, _ := in.Params["toolInput"].(map[string]any)
+		decision, err := contractpricing.Resolve(ctx, q, contractpricing.Request{UserID: users[0], Feature: feature.Key, Workspace: workspace, ModelID: selection.Model.ID, Channel: store.BillingChannel(ctx), PublicUnitPoints: quote.UnitPriceCents, Count: int64(in.Count), InputLongEdge: int(numericParam(in.Params, "_inputImageLongEdge")), ScaleFactor: numericParam(toolInput, "scale_factor")})
+		if err != nil {
+			return nil, err
+		}
+		quote.Billing = decision
+		quote.UnitPriceCents = decision.UnitPoints
+		quote.TotalPriceCents = decision.UnitPoints * int64(in.Count)
+	}
+	return quote, nil
+}
+
 func QuoteTaskPrice(ctx context.Context, q store.Q, in CreateInput, users ...uuid.UUID) (*PriceQuote, error) {
 	in.Params = incomingTaskParams(in.Params, in.TrustedParams)
 	if !store.Contains(store.TaskTypes, in.Type) || in.Type == "puzzle" {
@@ -309,33 +365,7 @@ func QuoteTaskPrice(ctx context.Context, q store.Q, in CreateInput, users ...uui
 		return nil, apperr.E("validation_error", err.Error(), 422)
 	}
 	if configured {
-		if selection.Model.Kind == modelconfig.ModelKindImage {
-			if err := validateModelImageCapabilities(selection.Model, in.Params, len(in.InputKeys)); err != nil {
-				return nil, err
-			}
-			if requestedImageCount(in.Type, in.Params, in.Count) > selection.Model.GenerationMaxImages() {
-				return nil, apperr.E("validation_error", fmt.Sprintf("所选模型单次最多生成 %d 张", selection.Model.GenerationMaxImages()), 422)
-			}
-		}
-		resolved := resolveSelectionPrice(cfg, workspace, selection.Model, in.Params)
-		quote.ModelID = selection.Model.ID
-		quote.StandardUnitPriceCents = resolved.PriceCents
-		quote.DiscountUnitPriceCents = resolved.DiscountPriceCents
-		quote.UnitPriceCents = resolved.EffectiveCents
-		quote.TotalPriceCents = resolved.EffectiveCents * int64(in.Count)
-		quote.Overridden = resolved.Overridden
-		if len(users) > 0 {
-			feature, _ := trialfeature.ForTask(in.Type, in.Params)
-			toolInput, _ := in.Params["toolInput"].(map[string]any)
-			decision, err := contractpricing.Resolve(ctx, q, contractpricing.Request{UserID: users[0], Feature: feature.Key, Workspace: workspace, ModelID: selection.Model.ID, Channel: store.BillingChannel(ctx), PublicUnitPoints: quote.UnitPriceCents, Count: int64(in.Count), InputLongEdge: int(numericParam(in.Params, "_inputImageLongEdge")), ScaleFactor: numericParam(toolInput, "scale_factor")})
-			if err != nil {
-				return nil, err
-			}
-			quote.Billing = decision
-			quote.UnitPriceCents = decision.UnitPoints
-			quote.TotalPriceCents = decision.UnitPoints * int64(in.Count)
-		}
-		return quote, nil
+		return quoteSelection(ctx, q, cfg, workspace, *selection, in, quote, nil, users...)
 	}
 	if in.Type == "media_tool" || in.Type == "background_remove" ||
 		(workspaceMapped && modelconfig.HasWorkspaceBinding(cfg, workspace)) || modelID != "" {

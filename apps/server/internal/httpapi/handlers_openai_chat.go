@@ -14,11 +14,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
-	"github.com/BlankLife886/startcloudsai/server/internal/trialfeature"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
 )
 
@@ -83,11 +83,17 @@ func (s *Server) openAIChatCompletions(c *gin.Context) {
 		failOpenAI(c, err, "")
 		return
 	}
-	selection := matchOpenAIChatSelection(openAIChatSelections(cfg, key), requestedModel)
-	if selection == nil {
-		failOpenAI(c, modelNotFoundError(requestedModel), "model")
+	entries, err := s.developerCatalog(c.Request.Context())
+	if err != nil {
+		failOpenAI(c, err, "")
 		return
 	}
+	resolved, err := resolveDeveloperModel(c, entries, cfg, key, "chat", requestedModel)
+	if err != nil {
+		failOpenAI(c, err, "model")
+		return
+	}
+	selection := &resolved.Selection
 	if strings.TrimSpace(selection.Provider.BaseURL) == "" || strings.TrimSpace(selection.Provider.APIKey) == "" {
 		failOpenAI(c, apperr.E("provider_misconfigured", "所选对话模型的上游服务尚未配置好，暂不可调用，请联系平台", http.StatusBadGateway), "model")
 		return
@@ -109,7 +115,7 @@ func (s *Server) openAIChatCompletions(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(base, openAIChatTimeout)
 	defer cancel()
-	billing, err := s.openOpenAIChatBilling(c, user.ID, key, cfg, selection)
+	billing, err := s.openOpenAIChatBilling(c, user.ID, key, cfg, resolved)
 	if err != nil {
 		failOpenAI(c, err, "")
 		return
@@ -126,7 +132,7 @@ func (s *Server) openAIChatCompletions(c *gin.Context) {
 		return
 	}
 	defer response.Body.Close()
-	publicModel := openAIPublicModelID(selection.Model)
+	publicModel := resolved.Entry.APIName
 	if stream {
 		s.relayOpenAIChatStream(c, response.Body, billing, publicModel)
 		return
@@ -335,8 +341,9 @@ type openAIChatBilling struct {
 	finished     bool
 }
 
-func (s *Server) openOpenAIChatBilling(c *gin.Context, userID uuid.UUID, key *store.UserAPIKey, cfg modelconfig.Config, selection *modelconfig.Selection) (*openAIChatBilling, error) {
-	priceCents := modelconfig.ResolveWorkspacePrice(cfg, modelconfig.WorkspaceAssistant, selection.Model).EffectiveCents
+func (s *Server) openOpenAIChatBilling(c *gin.Context, userID uuid.UUID, key *store.UserAPIKey, cfg modelconfig.Config, resolved *apicatalog.Resolved) (*openAIChatBilling, error) {
+	selection := &resolved.Selection
+	priceCents := apicatalog.UnitPrice(cfg, *resolved, time.Now())
 	upstreamCost := modelconfig.ResolveUpstreamCost(selection.Model, 0, 0)
 	if priceCents == 0 && !selection.Model.AllowZeroPrice {
 		return nil, apperr.E("model_zero_price_blocked", "所选对话模型尚未设置价格，暂不可调用，请联系平台", http.StatusServiceUnavailable)
@@ -344,15 +351,16 @@ func (s *Server) openOpenAIChatBilling(c *gin.Context, userID uuid.UUID, key *st
 	if priceCents < upstreamCost && !selection.Model.AllowLossLeader {
 		return nil, apperr.E("model_price_inverted", "所选对话模型的价格配置异常，暂不可调用，请联系平台", http.StatusServiceUnavailable)
 	}
-	freeSlot, err := s.acquireDeveloperModelSlot(c.Request.Context(), selection.Model)
+	freeSlot, err := s.acquireDeveloperModelSlot(c.Request.Context(), resolved.Entry)
 	if err != nil {
 		return nil, err
 	}
-	feature, _ := trialfeature.Get(trialfeature.AIAssistantKey)
-	ctx := wallet.WithSubscriptionScope(c.Request.Context(), "api", selection.Model.ID)
+	feature := developerFeature("chat")
+	ctx := wallet.WithSubscriptionScope(c.Request.Context(), "api", resolved.Entry.ID)
 	billing, err := s.reserveDeveloperAPIRequest(ctx, developerAPIReservation{
 		SourceType: openAIChatSourceType, BillingID: "chatcmpl-bill-" + uuid.NewString(),
 		UserID: userID, KeyID: key.ID, ModelID: selection.Model.ID, Feature: feature, PriceCents: priceCents,
+		APIModelID: resolved.Entry.ID, APIModelName: resolved.Entry.APIName,
 	})
 	if err != nil {
 		freeSlot()

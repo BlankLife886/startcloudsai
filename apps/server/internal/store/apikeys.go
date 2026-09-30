@@ -17,13 +17,17 @@ var (
 )
 
 type UserAPIKey struct {
-	ID                     uuid.UUID
-	UserID                 uuid.UUID
-	KeyPrefix              string
-	KeyHash                string
-	Label                  string
-	Status                 string
-	AllowedModelIDs        []string
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	KeyPrefix string
+	KeyHash   string
+	Label     string
+	Status    string
+	// AllowedModelIDs is the legacy site-model allowlist, still written during
+	// the catalog compatibility window so an older build can roll back.
+	AllowedModelIDs []string
+	// AllowedAPIModelIDs lists developer API catalog entries; empty = all.
+	AllowedAPIModelIDs     []string
 	DailyTaskLimit         int
 	MonthlyTaskLimit       int
 	DailySpendLimitCents   int64
@@ -45,7 +49,7 @@ type UserAPIKey struct {
 const userAPIKeyCols = `id,user_id,key_prefix,key_hash,label,status,allowed_model_ids,
 	daily_task_limit,monthly_task_limit,daily_spend_limit_cents,monthly_spend_limit_cents,
 	ip_allowlist,rate_limit_per_minute,daily_byte_limit,auto_frozen_at,freeze_reason,
-	expires_at,last_used_at,last_used_ip,last_error,created_at,updated_at`
+	expires_at,last_used_at,last_used_ip,last_error,created_at,updated_at,allowed_api_model_ids`
 
 func scanUserAPIKey(row pgx.Row) (*UserAPIKey, error) {
 	var key UserAPIKey
@@ -53,9 +57,12 @@ func scanUserAPIKey(row pgx.Row) (*UserAPIKey, error) {
 		&key.AllowedModelIDs, &key.DailyTaskLimit, &key.MonthlyTaskLimit,
 		&key.DailySpendLimitCents, &key.MonthlySpendLimitCents, &key.IPAllowlist,
 		&key.RateLimitPerMinute, &key.DailyByteLimit, &key.AutoFrozenAt, &key.FreezeReason, &key.ExpiresAt,
-		&key.LastUsedAt, &key.LastUsedIP, &key.LastError, &key.CreatedAt, &key.UpdatedAt)
+		&key.LastUsedAt, &key.LastUsedIP, &key.LastError, &key.CreatedAt, &key.UpdatedAt, &key.AllowedAPIModelIDs)
 	if err != nil {
 		return nil, err
+	}
+	if key.AllowedAPIModelIDs == nil {
+		key.AllowedAPIModelIDs = []string{}
 	}
 	return &key, nil
 }
@@ -73,13 +80,20 @@ func InsertUserAPIKey(ctx context.Context, q Q, key *UserAPIKey) (*UserAPIKey, e
 	if key.IPAllowlist == nil {
 		key.IPAllowlist = []string{}
 	}
+	if key.AllowedModelIDs == nil {
+		key.AllowedModelIDs = []string{}
+	}
+	if key.AllowedAPIModelIDs == nil {
+		key.AllowedAPIModelIDs = []string{}
+	}
 	return scanUserAPIKey(q.QueryRow(ctx, `INSERT INTO user_api_keys (
 		id,user_id,key_prefix,key_hash,label,allowed_model_ids,daily_task_limit,monthly_task_limit,
-		daily_spend_limit_cents,monthly_spend_limit_cents,ip_allowlist,rate_limit_per_minute,daily_byte_limit,expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING `+userAPIKeyCols,
+		daily_spend_limit_cents,monthly_spend_limit_cents,ip_allowlist,rate_limit_per_minute,daily_byte_limit,expires_at,
+		allowed_api_model_ids)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING `+userAPIKeyCols,
 		key.ID, key.UserID, key.KeyPrefix, key.KeyHash, key.Label, key.AllowedModelIDs,
 		key.DailyTaskLimit, key.MonthlyTaskLimit, key.DailySpendLimitCents, key.MonthlySpendLimitCents,
-		key.IPAllowlist, key.RateLimitPerMinute, key.DailyByteLimit, key.ExpiresAt))
+		key.IPAllowlist, key.RateLimitPerMinute, key.DailyByteLimit, key.ExpiresAt, key.AllowedAPIModelIDs))
 }
 
 func ListUserAPIKeys(ctx context.Context, q Q, userID uuid.UUID) ([]*UserAPIKey, error) {
@@ -111,8 +125,21 @@ func GetUserAPIKey(ctx context.Context, q Q, userID, id uuid.UUID) (*UserAPIKey,
 
 func RevokeUserAPIKey(ctx context.Context, q Q, userID, id uuid.UUID) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE user_api_keys SET status='revoked',updated_at=now()
-		WHERE id=$1 AND user_id=$2 AND status IN ('active','frozen')`, id, userID)
+		WHERE id=$1 AND user_id=$2 AND status IN ('active','paused','frozen')`, id, userID)
 	return tag.RowsAffected() > 0, err
+}
+
+// SetUserAPIKeyPaused lets the owner stop a Key without revoking it: pausing
+// only moves active to paused and resuming only paused to active, so a frozen
+// Key still needs an admin. It returns nil when the Key was not in that state.
+func SetUserAPIKeyPaused(ctx context.Context, q Q, userID, id uuid.UUID, paused bool) (*UserAPIKey, error) {
+	from, to := "active", "paused"
+	if !paused {
+		from, to = "paused", "active"
+	}
+	item, err := scanUserAPIKey(q.QueryRow(ctx, `UPDATE user_api_keys SET status=$4,updated_at=now()
+		WHERE id=$1 AND user_id=$2 AND status=$3 RETURNING `+userAPIKeyCols, id, userID, from, to))
+	return nilOnNoRows(item, err)
 }
 
 func UpdateUserAPIKey(ctx context.Context, q Q, userID, id uuid.UUID, key *UserAPIKey) (*UserAPIKey, error) {
@@ -122,15 +149,18 @@ func UpdateUserAPIKey(ctx context.Context, q Q, userID, id uuid.UUID, key *UserA
 	if key.AllowedModelIDs == nil {
 		key.AllowedModelIDs = []string{}
 	}
+	if key.AllowedAPIModelIDs == nil {
+		key.AllowedAPIModelIDs = []string{}
+	}
 	item, err := scanUserAPIKey(q.QueryRow(ctx, `UPDATE user_api_keys SET
 		label=$3,allowed_model_ids=$4,daily_task_limit=$5,monthly_task_limit=$6,
 		daily_spend_limit_cents=$7,monthly_spend_limit_cents=$8,ip_allowlist=$9,
-		rate_limit_per_minute=$10,daily_byte_limit=$11,expires_at=$12,updated_at=now()
-		WHERE id=$1 AND user_id=$2 AND status IN ('active','frozen')
+		rate_limit_per_minute=$10,daily_byte_limit=$11,expires_at=$12,allowed_api_model_ids=$13,updated_at=now()
+		WHERE id=$1 AND user_id=$2 AND status IN ('active','paused','frozen')
 		RETURNING `+userAPIKeyCols,
 		id, userID, key.Label, key.AllowedModelIDs, key.DailyTaskLimit, key.MonthlyTaskLimit,
 		key.DailySpendLimitCents, key.MonthlySpendLimitCents, key.IPAllowlist,
-		key.RateLimitPerMinute, key.DailyByteLimit, key.ExpiresAt))
+		key.RateLimitPerMinute, key.DailyByteLimit, key.ExpiresAt, key.AllowedAPIModelIDs))
 	return nilOnNoRows(item, err)
 }
 
@@ -142,7 +172,7 @@ func TouchUserAPIKey(ctx context.Context, q Q, id uuid.UUID, ip string, lastErro
 
 func CountActiveUserAPIKeys(ctx context.Context, q Q, userID uuid.UUID) (int, error) {
 	var count int
-	err := q.QueryRow(ctx, `SELECT count(*) FROM user_api_keys WHERE user_id=$1 AND status IN ('active','frozen')`, userID).Scan(&count)
+	err := q.QueryRow(ctx, `SELECT count(*) FROM user_api_keys WHERE user_id=$1 AND status IN ('active','paused','frozen')`, userID).Scan(&count)
 	return count, err
 }
 
@@ -183,9 +213,9 @@ func recordAPIKeyUsage(ctx context.Context, q Q, apiKeyID, userID uuid.UUID, tas
 	if key.Status != "active" || (key.ExpiresAt != nil && !key.ExpiresAt.After(now)) {
 		return uuid.Nil, ErrAPIKeyInactive
 	}
-	if len(key.AllowedModelIDs) > 0 {
+	if len(key.AllowedAPIModelIDs) > 0 {
 		allowed := false
-		for _, id := range key.AllowedModelIDs {
+		for _, id := range key.AllowedAPIModelIDs {
 			if id == modelID {
 				allowed = true
 				break

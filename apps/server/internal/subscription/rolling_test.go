@@ -70,9 +70,12 @@ func TestScopedSubscriptionFundingAndPartialRelease(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, st)
 	p := rollingPlan(t, st, 1, 100, 300)
+	// An API-only plan scoped to one image model: on the api channel the
+	// scope is the developer API model and the API feature key.
 	p.SubscriptionPolicy.Channels = []string{"api"}
-	p.SubscriptionPolicy.FeatureKeys = []string{"text_to_image"}
+	p.SubscriptionPolicy.FeatureKeys = []string{"developer_api_image"}
 	p.SubscriptionPolicy.ModelIDs = []string{"image-model"}
+	p.SubscriptionPolicy.APIModelIDs = []string{"apim_image"}
 	if err := store.UpdatePlan(ctx, st.Pool, p); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +86,7 @@ func TestScopedSubscriptionFundingAndPartialRelease(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, scope := range []struct{ channel, model, feature string }{{"web", "image-model", "text_to_image"}, {"api", "other-model", "text_to_image"}, {"api", "image-model", "ui_design"}} {
+	for _, scope := range []struct{ channel, model, feature string }{{"web", "image-model", "developer_api_image"}, {"api", "apim_other", "developer_api_image"}, {"api", "image-model", "developer_api_image"}, {"api", "apim_image", "ui_design"}} {
 		err := st.Tx(ctx, func(tx pgx.Tx) error {
 			_, err := wallet.FreezeFeatureCredits(wallet.WithSubscriptionScope(ctx, scope.channel, scope.model), tx, u.ID, 100, scope.feature, "test", uuid.NewString(), nil)
 			return err
@@ -93,9 +96,9 @@ func TestScopedSubscriptionFundingAndPartialRelease(t *testing.T) {
 		}
 		rollingBalance(t, st, u.ID, 100)
 	}
-	billing := wallet.WithSubscriptionScope(ctx, "api", "image-model")
+	billing := wallet.WithSubscriptionScope(ctx, "api", "apim_image")
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		_, err := wallet.FreezeFeatureCredits(billing, tx, u.ID, 120, "text_to_image", "test", "mixed", nil)
+		_, err := wallet.FreezeFeatureCredits(billing, tx, u.ID, 120, "developer_api_image", "test", "mixed", nil)
 		return err
 	}); err != nil {
 		t.Fatal(err)

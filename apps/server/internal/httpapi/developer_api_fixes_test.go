@@ -16,10 +16,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/devapibilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
-	"github.com/BlankLife886/startcloudsai/server/internal/trialfeature"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
 )
 
@@ -139,10 +139,11 @@ func TestDeveloperAPIUpstreamAuthErrorIsNotPassedThrough(t *testing.T) {
 func TestDeveloperAPIReclaimReleasesReservationOfStoppedProcess(t *testing.T) {
 	env := newOpenAIImagesIntegrationEnv(t)
 	ctx := context.Background()
-	feature, _ := trialfeature.ForTask("t2i", map[string]any{})
+	entry := env.apiModel(t, openAIIntegrationModel)
 	billing, err := env.srv.reserveDeveloperAPIRequest(ctx, developerAPIReservation{
 		SourceType: openAIImageBillingSource, BillingID: newOpenAIImageBillingID(),
-		UserID: env.user.ID, KeyID: env.key.ID, ModelID: openAIIntegrationModel, Feature: feature, PriceCents: 20,
+		UserID: env.user.ID, KeyID: env.key.ID, ModelID: openAIIntegrationModel, Feature: developerFeature("image"), PriceCents: 20,
+		APIModelID: entry.ID, APIModelName: entry.APIName,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -241,6 +242,7 @@ func (env *openAIImagesIntegrationEnv) withChatModel(t *testing.T, priceCents in
 		env.key.ID, []string{openAIIntegrationModel, "compat-chat"}); err != nil {
 		t.Fatal(err)
 	}
+	env.rebuildCatalog(t)
 	return upstream
 }
 
@@ -491,6 +493,15 @@ func TestDeveloperAPIImageDisconnectIsChargedOnceProduced(t *testing.T) {
 		t.Fatalf("upstream calls = %d", calls)
 	}
 	env.requireWallet(t, 980, 0)
+	var status, note string
+	if err := env.st.Pool.QueryRow(context.Background(), `SELECT r.status, COALESCE(p.metadata->>'note','')
+		FROM developer_api_billing_requests r LEFT JOIN usage_profit_ledger p ON p.source_id=r.billing_id
+		WHERE r.source_type<>$1`, openAIChatSourceType).Scan(&status, &note); err != nil {
+		t.Fatal(err)
+	}
+	if status != store.DeveloperAPIRequestSucceeded || note != "client_disconnected" {
+		t.Fatalf("image request status=%q note=%q, want succeeded/client_disconnected", status, note)
+	}
 
 	env.setUpstreamStatus(http.StatusInternalServerError)
 	env.serveAndDisconnect(t, env.request(http.MethodPost, "/v1/images/generations", "application/json", "",
@@ -641,5 +652,43 @@ func TestAdminDeveloperAPIPageListsCallsAndTotals(t *testing.T) {
 	}
 	if get(env.srv.adminDeveloperAPICalls, "/api/v1/admin/developer-api/calls?kind=image")["total"] != float64(0) {
 		t.Fatal("kind filter ignored")
+	}
+}
+
+func TestDeveloperAPIKeyCanBePausedAndResumedByItsOwner(t *testing.T) {
+	env := newOpenAIImagesIntegrationEnv(t)
+	ctx := context.Background()
+	token := auth.NewSessionToken()
+	if err := store.InsertSession(ctx, env.st.Pool, env.user.ID, auth.HashToken(token), time.Now().Add(30*24*time.Hour), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	manage := func(action string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/me/api-keys/"+env.key.ID.String()+"/"+action, nil)
+		request.AddCookie(&http.Cookie{Name: env.srv.Cfg.SessionCookieName, Value: token})
+		recorder := httptest.NewRecorder()
+		env.router.ServeHTTP(recorder, request)
+		return recorder
+	}
+	if response := manage("pause"); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"paused"`) {
+		t.Fatalf("pause = %d %s", response.Code, response.Body.String())
+	}
+	requireOpenAIIntegrationStatus(t, env.serve(t, env.request(http.MethodGet, "/v1/models", "", "", nil)), http.StatusForbidden, "api_key_paused")
+	if response := manage("pause"); response.Code != http.StatusConflict {
+		t.Fatalf("pausing a paused Key = %d %s", response.Code, response.Body.String())
+	}
+	if response := manage("resume"); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"active"`) {
+		t.Fatalf("resume = %d %s", response.Code, response.Body.String())
+	}
+	if response := env.serve(t, env.request(http.MethodGet, "/v1/models", "", "", nil)); response.Code != http.StatusOK {
+		t.Fatalf("resumed Key /v1/models = %d %s", response.Code, response.Body.String())
+	}
+	// A frozen Key stays with the admin: the owner can neither pause nor resume it.
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE user_api_keys SET status='frozen' WHERE id=$1`, env.key.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"pause", "resume"} {
+		if response := manage(action); response.Code != http.StatusConflict {
+			t.Fatalf("%s on a frozen Key = %d %s", action, response.Code, response.Body.String())
+		}
 	}
 }

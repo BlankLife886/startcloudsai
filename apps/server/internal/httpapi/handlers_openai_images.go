@@ -3,14 +3,15 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
-	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
 // openAIImageWaitTimeout bounds how long one /v1 image request waits for the
@@ -18,10 +19,13 @@ import (
 const openAIImageWaitTimeout = 240 * time.Second
 
 type openAIModelObject struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID          string  `json:"id"`
+	Object      string  `json:"object"`
+	Created     int64   `json:"created"`
+	OwnedBy     string  `json:"owned_by"`
+	Status      string  `json:"status,omitempty"`
+	SunsetAt    *string `json:"sunset_at,omitempty"`
+	Replacement string  `json:"replacement,omitempty"`
 }
 
 func openAIPublicModelID(model modelconfig.Model) string {
@@ -31,123 +35,6 @@ func openAIPublicModelID(model modelconfig.Model) string {
 	return strings.TrimSpace(model.Name)
 }
 
-// developerAPIOffers reports whether /v1 may run the selection for the Key:
-// the admin offered the model to the API, it is available, it is routed to an
-// OpenAI-wire provider (CRUN is an asynchronous task protocol and cannot
-// satisfy the synchronous /v1 contract), and the Key's model list allows it.
-func developerAPIOffers(selected modelconfig.Selection, key *store.UserAPIKey) bool {
-	model := selected.Model
-	if !model.DeveloperAPI || !model.Available() || selected.Provider.Adapter != modelconfig.AdapterOpenAI {
-		return false
-	}
-	return key == nil || len(key.AllowedModelIDs) == 0 || store.Contains(key.AllowedModelIDs, model.ID)
-}
-
-func openAIFilterPublicModels(cfg modelconfig.Config, key *store.UserAPIKey, workspace, kind string) []modelconfig.Model {
-	models := make([]modelconfig.Model, 0)
-	seenNames := make(map[string]struct{})
-	for _, selected := range modelconfig.PublicModelsForWorkspace(cfg, workspace, kind) {
-		if !developerAPIOffers(selected, key) {
-			continue
-		}
-		model := selected.Model
-		publicID := openAIPublicModelID(model)
-		if publicID == "" {
-			continue
-		}
-		if _, exists := seenNames[publicID]; exists {
-			continue
-		}
-		seenNames[publicID] = struct{}{}
-		models = append(models, model)
-	}
-	return models
-}
-
-func openAIImageModels(cfg modelconfig.Config, key *store.UserAPIKey) []modelconfig.Model {
-	return openAIFilterPublicModels(cfg, key, modelconfig.WorkspaceT2I, modelconfig.ModelKindImage)
-}
-
-func openAIChatModels(cfg modelconfig.Config, key *store.UserAPIKey) []modelconfig.Model {
-	return openAIFilterPublicModels(cfg, key, modelconfig.WorkspaceAssistant, modelconfig.ModelKindChat)
-}
-
-// openAIDeveloperModels returns the combined /v1/models catalog (image + chat),
-// deduped by public display name.
-func openAIDeveloperModels(cfg modelconfig.Config, key *store.UserAPIKey) []modelconfig.Model {
-	models := openAIImageModels(cfg, key)
-	seenNames := make(map[string]struct{}, len(models))
-	for _, model := range models {
-		seenNames[openAIPublicModelID(model)] = struct{}{}
-	}
-	for _, model := range openAIChatModels(cfg, key) {
-		publicID := openAIPublicModelID(model)
-		if _, exists := seenNames[publicID]; exists {
-			continue
-		}
-		seenNames[publicID] = struct{}{}
-		models = append(models, model)
-	}
-	return models
-}
-
-func openAIChatSelections(cfg modelconfig.Config, key *store.UserAPIKey) []modelconfig.Selection {
-	selections := make([]modelconfig.Selection, 0)
-	seenNames := make(map[string]struct{})
-	for _, selected := range modelconfig.PublicModelsForWorkspace(cfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindChat) {
-		if !developerAPIOffers(selected, key) {
-			continue
-		}
-		publicID := openAIPublicModelID(selected.Model)
-		if publicID == "" {
-			continue
-		}
-		if _, exists := seenNames[publicID]; exists {
-			continue
-		}
-		seenNames[publicID] = struct{}{}
-		selections = append(selections, selected)
-	}
-	return selections
-}
-
-// matchOpenAIImageModel finds the model whose /v1 name equals requested. There
-// is no fallback: a caller who asks for a model gets that model or a 404.
-func matchOpenAIImageModel(models []modelconfig.Model, requested string) *modelconfig.Model {
-	for index := range models {
-		if openAIWireModelEqual(openAIPublicModelID(models[index]), requested) {
-			return &models[index]
-		}
-	}
-	return nil
-}
-
-// matchOpenAIChatSelection finds the chat model whose /v1 name equals
-// requested, with no fallback to a default model.
-func matchOpenAIChatSelection(selections []modelconfig.Selection, requested string) *modelconfig.Selection {
-	for index := range selections {
-		if openAIWireModelEqual(openAIPublicModelID(selections[index].Model), requested) {
-			return &selections[index]
-		}
-	}
-	return nil
-}
-
-// openAIWireModelEqual treats '.' and '-' as interchangeable so clients can
-// request gpt-5.5 while the catalog name is gpt-5-5.
-func openAIWireModelEqual(left, right string) bool {
-	normalize := func(value string) string {
-		value = strings.ToLower(strings.TrimSpace(value))
-		return strings.ReplaceAll(value, ".", "-")
-	}
-	return normalize(left) == normalize(right)
-}
-
-func asOpenAIModel(model modelconfig.Model) openAIModelObject {
-	// This catalog has no model-created timestamp; zero explicitly denotes unknown.
-	return openAIModelObject{ID: openAIPublicModelID(model), Object: "model", Created: 0, OwnedBy: "starcloudsai"}
-}
-
 func (s *Server) openAIModels(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	cfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
@@ -155,9 +42,14 @@ func (s *Server) openAIModels(c *gin.Context) {
 		failOpenAI(c, err, "")
 		return
 	}
+	entries, err := s.developerCatalog(c.Request.Context())
+	if err != nil {
+		failOpenAI(c, err, "")
+		return
+	}
 	items := make([]openAIModelObject, 0)
-	for _, model := range openAIDeveloperModels(cfg, openAPIKeyFromContext(c)) {
-		items = append(items, asOpenAIModel(model))
+	for _, listing := range apicatalog.Listed(entries, cfg, keyAllowlist(openAPIKeyFromContext(c)), time.Now()) {
+		items = append(items, asCatalogModel(entries, listing))
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": items})
 }
@@ -169,9 +61,26 @@ func (s *Server) openAIModel(c *gin.Context) {
 		failOpenAI(c, err, "")
 		return
 	}
-	if model := matchOpenAIImageModel(openAIDeveloperModels(cfg, openAPIKeyFromContext(c)), c.Param("model")); model != nil {
-		c.JSON(http.StatusOK, asOpenAIModel(*model))
+	entries, err := s.developerCatalog(c.Request.Context())
+	if err != nil {
+		failOpenAI(c, err, "")
 		return
+	}
+	// Retrieval shows any model the Key may use that is still in service,
+	// including one under maintenance, like the list does.
+	want := apicatalog.NormalizeName(c.Param("model"))
+	for _, listing := range apicatalog.Listed(entries, cfg, keyAllowlist(openAPIKeyFromContext(c)), time.Now()) {
+		if apicatalog.NormalizeName(listing.Entry.APIName) == want || slices.ContainsFunc(listing.Entry.Aliases, func(alias string) bool { return apicatalog.NormalizeName(alias) == want }) {
+			c.JSON(http.StatusOK, asCatalogModel(entries, listing))
+			return
+		}
+	}
+	for _, kind := range []string{"image", "chat"} {
+		if _, err := apicatalog.Match(entries, cfg, keyAllowlist(openAPIKeyFromContext(c)), kind, c.Param("model"), time.Now()); errors.Is(err, apicatalog.ErrRetired) {
+			_, retiredErr := resolveDeveloperModel(nil, entries, cfg, openAPIKeyFromContext(c), kind, c.Param("model"))
+			failOpenAI(c, retiredErr, "model")
+			return
+		}
 	}
 	failOpenAI(c, modelNotFoundError(c.Param("model")), "model")
 }

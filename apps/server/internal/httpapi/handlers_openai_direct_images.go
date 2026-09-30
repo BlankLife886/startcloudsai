@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
@@ -33,28 +34,6 @@ const (
 	// releases reservations left by a process that stopped mid-request.
 	developerAPIPendingTimeout = time.Hour
 )
-
-func openAIImageSelections(cfg modelconfig.Config, key *store.UserAPIKey) []modelconfig.Selection {
-	all := modelconfig.PublicModelsForWorkspace(cfg, modelconfig.WorkspaceT2I, modelconfig.ModelKindImage)
-	result := make([]modelconfig.Selection, 0, len(all))
-	for _, selection := range all {
-		if developerAPIOffers(selection, key) {
-			result = append(result, selection)
-		}
-	}
-	return result
-}
-
-func matchOpenAIImageSelection(cfg modelconfig.Config, key *store.UserAPIKey, requested string) *modelconfig.Selection {
-	selections := openAIImageSelections(cfg, key)
-	requested = strings.TrimSpace(requested)
-	for index := range selections {
-		if openAIWireModelEqual(openAIPublicModelID(selections[index].Model), requested) {
-			return &selections[index]
-		}
-	}
-	return nil
-}
 
 // newOpenAIImageBillingID names one /v1 image request in the wallet ledger.
 // Every request is independent: the gateway never retries, so there is no
@@ -121,11 +100,17 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 		failOpenAI(c, err, "")
 		return
 	}
-	selection := matchOpenAIImageSelection(cfg, key, request.Model)
-	if selection == nil {
-		failOpenAI(c, modelNotFoundError(request.Model), "model")
+	entries, err := s.developerCatalog(ctx)
+	if err != nil {
+		failOpenAI(c, err, "")
 		return
 	}
+	resolved, err := resolveDeveloperModel(c, entries, cfg, key, "image", request.Model)
+	if err != nil {
+		failOpenAI(c, err, "model")
+		return
+	}
+	selection := &resolved.Selection
 	if strings.TrimSpace(selection.Provider.BaseURL) == "" || strings.TrimSpace(selection.Provider.APIKey) == "" {
 		failOpenAI(c, apperr.E("provider_misconfigured", "所选图片模型的上游服务尚未配置好，暂不可调用，请联系平台", http.StatusBadGateway), "model")
 		return
@@ -145,15 +130,26 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 		images = append(images, image)
 	}
 
-	quote, err := taskflow.QuoteTaskPrice(ctx, s.St.Pool, taskflow.CreateInput{
+	// Subscription price locks stopped applying to /v1 when the catalog took
+	// over pricing; they are honoured until the announced cut-off.
+	quoteUsers := []uuid.UUID{}
+	if lockActive, lockErr := apicatalog.ContractLockActive(ctx, s.St.Pool, time.Now()); lockErr != nil {
+		failOpenAI(c, lockErr, "")
+		return
+	} else if lockActive && resolved.Entry.PriceMode == store.DeveloperAPIPriceFollow {
+		quoteUsers = append(quoteUsers, user.ID)
+	}
+	// The catalog price is the public price (it holds announced increases
+	// back); a still-honoured subscription lock is resolved against it.
+	basePrice := apicatalog.UnitPrice(cfg, *resolved, time.Now())
+	quote, err := taskflow.QuoteSelectedImage(ctx, s.St.Pool, cfg, modelconfig.WorkspaceT2I, *selection, taskflow.CreateInput{
 		Type: "t2i", Prompt: request.Prompt, Params: params, Count: request.N,
 		InputKeys: make([]string, len(images)),
-	}, user.ID)
+	}, basePrice, quoteUsers...)
 	if err != nil {
 		failOpenAI(c, err, "")
 		return
 	}
-	basePrice := modelconfig.ResolveWorkspacePrice(cfg, modelconfig.WorkspaceT2I, selection.Model).EffectiveCents
 	upstreamCost := modelconfig.ResolveUpstreamCost(selection.Model, 0, 0)
 	if basePrice == 0 && !selection.Model.AllowZeroPrice {
 		failOpenAI(c, apperr.E("model_zero_price_blocked", "所选图片模型尚未设置价格，暂不可调用，请联系平台", http.StatusServiceUnavailable), "model")
@@ -164,19 +160,20 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 		return
 	}
 
-	release, err := s.acquireDeveloperModelSlot(ctx, selection.Model)
+	release, err := s.acquireDeveloperModelSlot(ctx, resolved.Entry)
 	if err != nil {
 		failOpenAI(c, err, "model")
 		return
 	}
 	defer release()
 
-	feature, _ := trialfeature.ForTask("t2i", params)
-	billingCtx := wallet.WithSubscriptionScope(ctx, "api", selection.Model.ID)
+	feature := developerFeature("image")
+	billingCtx := wallet.WithSubscriptionScope(ctx, "api", resolved.Entry.ID)
 	billingCtx = store.WithBillingDecision(billingCtx, quote.Billing)
 	billing, err := s.reserveDeveloperAPIRequest(billingCtx, developerAPIReservation{
 		SourceType: openAIImageBillingSource, BillingID: newOpenAIImageBillingID(),
 		UserID: user.ID, KeyID: key.ID, ModelID: selection.Model.ID, Feature: feature, PriceCents: quote.TotalPriceCents,
+		APIModelID: resolved.Entry.ID, APIModelName: resolved.Entry.APIName,
 	})
 	if err != nil {
 		failOpenAI(c, err, "")
@@ -213,7 +210,9 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 		failOpenAI(c, err, "")
 		return
 	}
-	if c.Request.Context().Err() != nil {
+	// c.Request carries the detached context; the caller's own connection
+	// state is on the original request.
+	if originalRequest.Context().Err() != nil {
 		record.Note = "client_disconnected"
 	}
 	if err := s.settleDeveloperAPIRequest(billingCtx, billing, user.ID); err != nil {
@@ -228,33 +227,36 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 	c.JSON(http.StatusOK, result)
 }
 
-// acquireDeveloperModelSlot holds one of the model's /v1 concurrency slots
-// set by the admin; 0 means unlimited. The lease outlives the longest request
-// so a crashed process cannot keep a slot forever.
-func (s *Server) acquireDeveloperModelSlot(ctx context.Context, model modelconfig.Model) (func(), error) {
-	limit := int64(model.DeveloperAPIMaxConcurrency)
+// acquireDeveloperModelSlot holds one of the API model's /v1 concurrency
+// slots when the admin set a limit; 0 (the default) means unlimited. The
+// lease outlives the longest request so a crashed process cannot keep a slot.
+func (s *Server) acquireDeveloperModelSlot(ctx context.Context, entry *store.DeveloperAPIModel) (func(), error) {
+	limit := int64(entry.MaxConcurrency)
 	if limit <= 0 || s.ConcurrencyLimiter == nil {
 		return func() {}, nil
 	}
-	allowed, err := s.ConcurrencyLimiter.Acquire(ctx, "developer-api-model", model.ID, limit, openAIImageWaitTimeout+time.Minute)
+	allowed, err := s.ConcurrencyLimiter.Acquire(ctx, "developer-api-model", entry.ID, limit, openAIImageWaitTimeout+time.Minute)
 	if err != nil {
 		return nil, apperr.E("security_limit_unavailable", "请求限流服务暂时不可用，请稍后重试", http.StatusServiceUnavailable)
 	}
 	if !allowed {
-		return nil, apperr.E("model_concurrency_limited", fmt.Sprintf("模型 %q 同时进行的请求已达上限（%d 个），请稍后再发", openAIPublicModelID(model), limit), http.StatusTooManyRequests)
+		return nil, apperr.E("model_concurrency_limited", fmt.Sprintf("模型 %q 同时进行的请求已达上限（%d 个），请稍后再发", entry.APIName, limit), http.StatusTooManyRequests)
 	}
 	return func() {
 		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), directImagePersistenceTimeout)
 		defer cancel()
-		_ = s.ConcurrencyLimiter.Release(releaseCtx, "developer-api-model", model.ID)
+		_ = s.ConcurrencyLimiter.Release(releaseCtx, "developer-api-model", entry.ID)
 	}, nil
 }
 
 type developerAPIReservation struct {
 	SourceType, BillingID, ModelID string
-	UserID, KeyID                  uuid.UUID
-	Feature                        trialfeature.Feature
-	PriceCents                     int64
+	// APIModelID is the catalog entry: it is what the Key allowlist, the
+	// subscription api scope and the call history refer to.
+	APIModelID, APIModelName string
+	UserID, KeyID            uuid.UUID
+	Feature                  trialfeature.Feature
+	PriceCents               int64
 }
 
 type developerAPIBilling struct {
@@ -284,7 +286,7 @@ func (s *Server) reserveDeveloperAPIRequest(ctx context.Context, open developerA
 		if err := trialfeature.Authorize(ctx, tx, open.UserID, open.Feature); err != nil {
 			return err
 		}
-		eventID, err := store.RecordAPIKeyRequest(ctx, tx, open.KeyID, open.UserID, open.ModelID, open.PriceCents, now)
+		eventID, err := store.RecordAPIKeyRequest(ctx, tx, open.KeyID, open.UserID, open.APIModelID, open.PriceCents, now)
 		if err != nil {
 			return mapOpenAIAPIKeyUsageError(err)
 		}
@@ -299,7 +301,8 @@ func (s *Server) reserveDeveloperAPIRequest(ctx context.Context, open developerA
 		}
 		return store.InsertDeveloperAPIRequest(ctx, tx, store.DeveloperAPIRequest{
 			BillingID: open.BillingID, SourceType: open.SourceType, UserID: &open.UserID, APIKeyID: &open.KeyID,
-			UsageEventID: billing.UsageEventID, PriceCents: open.PriceCents, Status: store.DeveloperAPIRequestPending,
+			UsageEventID: billing.UsageEventID, PriceCents: open.PriceCents, APIModelID: open.APIModelID, APIModelName: open.APIModelName,
+			Status:    store.DeveloperAPIRequestPending,
 			ExpiresAt: now.Add(developerAPIPendingTimeout),
 		})
 	})
@@ -310,8 +313,10 @@ func (s *Server) reserveDeveloperAPIRequest(ctx context.Context, open developerA
 }
 
 // releaseDeveloperAPIRequest returns a failed request's credits and Key quota.
-// Timeouts and dropped connections count as failures: the caller is never
-// charged for a result it did not receive. If the release cannot be written,
+// Upstream or platform failures and timeouts are released. A caller leaving is
+// not a failure by itself: an image or non-streamed answer that is produced is
+// still charged, and a stream is released only if it delivered no content
+// (see openAIChatCompletions). If the release cannot be written,
 // the pending row stays and the reclaim job releases it after it expires.
 func (s *Server) releaseDeveloperAPIRequest(parent context.Context, billing *developerAPIBilling, userID uuid.UUID) {
 	ctx, cancel := detachedOpenAIImagePersistenceContext(parent)

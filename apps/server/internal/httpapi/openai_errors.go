@@ -72,6 +72,7 @@ var openAIExplainedServerErrors = map[string]bool{
 	"request_timeout": true, "provider_misconfigured": true, "image_result_unavailable": true,
 	"model_zero_price_blocked": true, "model_price_inverted": true, "security_limit_unavailable": true,
 	"billing_settlement_failed": true, "open_api_disabled": true, "developer_api_disabled": true,
+	"model_unavailable": true,
 }
 
 func failOpenAI(c *gin.Context, err error, param string) {
@@ -116,6 +117,11 @@ func failOpenAI(c *gin.Context, err error, param string) {
 	}
 	if status == http.StatusUnauthorized {
 		c.Header("WWW-Authenticate", "Bearer")
+	}
+	if code == "model_unavailable" {
+		// Rejected before any credits are reserved, so a retry cannot pay twice.
+		c.Header("Retry-After", "60")
+		c.Header("X-Should-Retry", "true")
 	}
 	c.Set(ctxPlatformErrorKey, code)
 	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{

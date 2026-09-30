@@ -1238,6 +1238,13 @@ func activeProviders(cfg Config) map[string]Provider {
 	return providers
 }
 
+// ActiveProvider returns the enabled provider with its first execution route
+// resolved, exactly as public model selection sees it.
+func ActiveProvider(cfg Config, providerID string) (Provider, bool) {
+	provider, ok := activeProviders(cfg)[providerID]
+	return provider, ok
+}
+
 func executionRoutes(provider Provider) []Provider {
 	out := make([]Provider, 0, len(provider.Routes))
 	if !provider.Enabled {

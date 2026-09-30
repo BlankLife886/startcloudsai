@@ -1,10 +1,16 @@
 package httpapi
 
 import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelprovider"
@@ -51,9 +57,33 @@ func (s *Server) adminPutModelConfig(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", err.Error(), 422))
 		return
 	}
+	// Deleting, disabling, pausing or re-routing a site model that a callable
+	// API model points at makes /v1 answer 503; the admin confirms first.
+	if c.Query("confirmApiImpact") != "1" {
+		impacted, err := s.apiModelsBrokenBy(c.Request.Context(), prepared)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		if len(impacted) > 0 {
+			names := make([]string, 0, len(impacted))
+			for _, item := range impacted {
+				names = append(names, fmt.Sprintf("「%s」（%s）", item["apiName"], item["reason"]))
+			}
+			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"success": false, "code": "api_model_impact",
+				"error": "这次保存会让以下开发者 API 模型无法调用（返回 503）：" + strings.Join(names, "、"),
+				"data":  gin.H{"models": impacted}})
+			return
+		}
+	}
 	if err := modelconfig.Save(c.Request.Context(), s.St.Pool, prepared); err != nil {
 		fail(c, err)
 		return
+	}
+	// Site price changes reach following API models now rather than at the
+	// next sweep, so increases are announced right away.
+	if _, err := apicatalog.Reconcile(c.Request.Context(), s.St.Pool, time.Now().UTC()); err != nil {
+		log.Printf("reconcile developer API models after model config save: %v", err)
 	}
 	out, err := modelconfig.AdminView(c.Request.Context(), s.St.Pool, s.Cfg.AppSecret)
 	if err != nil {
@@ -190,4 +220,40 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 		"compatibleCount": catalog.CompatibleCount, "taskModelCount": catalog.TaskModelCount,
 		"catalogSource": catalog.Source, "warning": catalog.Warning,
 	})
+}
+
+// apiModelsBrokenBy lists callable API models whose site model runs under
+// the current configuration but would not under next.
+func (s *Server) apiModelsBrokenBy(ctx context.Context, next modelconfig.Config) ([]gin.H, error) {
+	current, err := modelconfig.Load(ctx, s.St.Pool)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := s.developerCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	impacted := []gin.H{}
+	for _, entry := range entries {
+		if !entry.CallableAt(now) {
+			continue
+		}
+		if _, before := apicatalog.Runnable(current, entry.TargetModelID); !before {
+			continue
+		}
+		if _, after := apicatalog.Runnable(next, entry.TargetModelID); after {
+			continue
+		}
+		reason := "服务商停用或线路不是 OpenAI 协议"
+		if model, found := siteModelByID(next, entry.TargetModelID); !found {
+			reason = "站内模型被删除"
+		} else if !model.Enabled {
+			reason = "站内模型被停用"
+		} else if !model.Available() {
+			reason = "站内模型设为维护"
+		}
+		impacted = append(impacted, gin.H{"id": entry.ID, "apiName": entry.APIName, "targetModelId": entry.TargetModelID, "reason": reason})
+	}
+	return impacted, nil
 }

@@ -9,7 +9,7 @@ import (
 
 // adminBadgeCounts 一次返回后台侧边栏所有徽标数，替代前端对
 // gallery/submissions、statistics、trial-access-applications、feedback
-// 四个端点的分别轮询。各字段口径与原端点一致。
+// 四个端点的分别轮询，并附带订阅退款待审核数。各字段口径与原端点一致。
 func (s *Server) adminBadgeCounts(c *gin.Context, _ *store.User) {
 	ctx := c.Request.Context()
 	var (
@@ -17,6 +17,7 @@ func (s *Server) adminBadgeCounts(c *gin.Context, _ *store.User) {
 		runningTasks             int64
 		pendingTrialApplications int64
 		pendingFeedback          int64
+		pendingRefunds           int64
 	)
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
@@ -46,6 +47,11 @@ func (s *Server) adminBadgeCounts(c *gin.Context, _ *store.User) {
 		pendingFeedback = n
 		return err
 	})
+	group.Go(func() error {
+		// Same filter as the subscription changes page: refunds waiting for
+		// an admin decision.
+		return s.St.Pool.QueryRow(groupCtx, `SELECT count(*) FROM subscription_changes WHERE kind='refund' AND status='reviewing'`).Scan(&pendingRefunds)
+	})
 	if err := group.Wait(); err != nil {
 		fail(c, err)
 		return
@@ -55,5 +61,6 @@ func (s *Server) adminBadgeCounts(c *gin.Context, _ *store.User) {
 		"runningTasks":             runningTasks,             // 排队中 + 运行中任务
 		"pendingTrialApplications": pendingTrialApplications, // 体验资格申请待审核（当前活动）
 		"pendingFeedback":          pendingFeedback,          // 用户反馈待处理（status=open）
+		"pendingRefunds":           pendingRefunds,           // 订阅退款待审核（kind=refund, status=reviewing）
 	})
 }

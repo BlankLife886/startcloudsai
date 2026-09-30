@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
@@ -231,7 +232,24 @@ func newOpenAIImagesIntegrationEnv(t *testing.T) *openAIImagesIntegrationEnv {
 		t.Fatal(err)
 	}
 	env.router = env.srv.Router()
+	env.rebuildCatalog(t)
 	return env
+}
+
+// rebuildCatalog recreates the developer API catalog from the current model
+// config and legacy Key allowlists with the production migration, as the
+// first start after the catalog migration does.
+func (env *openAIImagesIntegrationEnv) rebuildCatalog(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	for _, statement := range []string{`DELETE FROM developer_api_model_events`, `DELETE FROM developer_api_models`, `UPDATE user_api_keys SET allowed_api_model_ids='{}'`} {
+		if _, err := env.st.Pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := apicatalog.EnsureInitialized(ctx, env.st.Pool); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (env *openAIImagesIntegrationEnv) request(method, path, contentType, idempotency string, body io.Reader) *http.Request {
@@ -534,23 +552,48 @@ func (env *openAIImagesIntegrationEnv) updateModel(t *testing.T, change func(*mo
 	}
 }
 
+// apiModel returns the catalog entry for a public name.
+func (env *openAIImagesIntegrationEnv) apiModel(t *testing.T, name string) *store.DeveloperAPIModel {
+	t.Helper()
+	entries, err := store.ListDeveloperAPIModels(context.Background(), env.st.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.APIName == name {
+			return entry
+		}
+	}
+	t.Fatalf("no catalog entry %q", name)
+	return nil
+}
+
+// The catalog, not the site model switches, decides what /v1 offers: the
+// concurrency limit lives on the API model, turning the site model's API
+// switch off no longer hides it, a site model in maintenance answers 503
+// without charging, and a draft entry is neither callable nor listed.
 func TestOpenAIImagesIntegrationHonorsModelAPISwitches(t *testing.T) {
 	env := newOpenAIImagesIntegrationEnv(t)
+	ctx := context.Background()
 	body := `{"model":"compat-image","prompt":"switches"}`
+	entry := env.apiModel(t, openAIIntegrationModel)
 
-	env.updateModel(t, func(model *modelconfig.Model) { model.DeveloperAPIMaxConcurrency = 1 })
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE developer_api_models SET max_concurrency=1 WHERE id=$1`, entry.ID); err != nil {
+		t.Fatal(err)
+	}
 	env.srv.ConcurrencyLimiter = auth.NewMemoryConcurrencyLimiter()
-	if ok, err := env.srv.ConcurrencyLimiter.Acquire(context.Background(), "developer-api-model", openAIIntegrationModel, 1, time.Minute); !ok || err != nil {
+	if ok, err := env.srv.ConcurrencyLimiter.Acquire(ctx, "developer-api-model", entry.ID, 1, time.Minute); !ok || err != nil {
 		t.Fatalf("hold slot ok=%v err=%v", ok, err)
 	}
 	busy := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "", strings.NewReader(body)))
 	requireOpenAIIntegrationStatus(t, busy, http.StatusTooManyRequests, "model_concurrency_limited")
 	env.assertDirectBilling(t, 0, 0)
-	_ = env.srv.ConcurrencyLimiter.Release(context.Background(), "developer-api-model", openAIIntegrationModel)
+	_ = env.srv.ConcurrencyLimiter.Release(ctx, "developer-api-model", entry.ID)
 	requireOpenAIIntegrationStatus(t, env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "", strings.NewReader(body))), http.StatusOK, "")
-	if ok, err := env.srv.ConcurrencyLimiter.Acquire(context.Background(), "developer-api-model", openAIIntegrationModel, 1, time.Minute); !ok || err != nil {
+	if ok, err := env.srv.ConcurrencyLimiter.Acquire(ctx, "developer-api-model", entry.ID, 1, time.Minute); !ok || err != nil {
 		t.Fatal("a finished request did not return its concurrency slot")
 	}
+	_ = env.srv.ConcurrencyLimiter.Release(ctx, "developer-api-model", entry.ID)
 
 	// An unknown name is never swapped for a model the caller did not ask for.
 	callsBefore := env.upstreamCalls
@@ -562,11 +605,22 @@ func TestOpenAIImagesIntegrationHonorsModelAPISwitches(t *testing.T) {
 	}
 
 	env.updateModel(t, func(model *modelconfig.Model) { model.DeveloperAPI = false })
+	requireOpenAIIntegrationStatus(t, env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "", strings.NewReader(body))), http.StatusOK, "")
+
+	env.updateModel(t, func(model *modelconfig.Model) { model.Status = modelconfig.ModelStatusMaintenance })
+	down := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "", strings.NewReader(body)))
+	requireOpenAIIntegrationStatus(t, down, http.StatusServiceUnavailable, "model_unavailable")
+	env.assertDirectBilling(t, 2, 40)
+	env.updateModel(t, func(model *modelconfig.Model) { model.Status = modelconfig.ModelStatusAvailable })
+
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE developer_api_models SET status='draft' WHERE id=$1`, entry.ID); err != nil {
+		t.Fatal(err)
+	}
 	hidden := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "", strings.NewReader(body)))
 	requireOpenAIIntegrationStatus(t, hidden, http.StatusNotFound, "model_not_found")
 	models := env.serve(t, env.request("GET", "/v1/models", "", "", nil))
 	if strings.Contains(models.Body.String(), `"`+openAIIntegrationModel+`"`) {
-		t.Fatalf("a model not offered to the API is listed: %s", models.Body.String())
+		t.Fatalf("a draft API model is listed: %s", models.Body.String())
 	}
 }
 

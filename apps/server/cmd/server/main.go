@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
@@ -52,8 +53,10 @@ func main() {
 		err = runCreateAdmin(cfg, os.Args[2:])
 	case "seed":
 		err = runSeed(cfg)
+	case "api-models-migrate":
+		err = runAPIModelsMigrate(cfg, os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: server <serve|worker|create-admin|seed> [flags]\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: server <serve|worker|create-admin|seed|api-models-migrate> [flags]\n", os.Args[1])
 		os.Exit(2)
 	}
 	if err != nil {
@@ -94,6 +97,53 @@ func runSeed(cfg *config.Config) error {
 	return seedBuiltinContent(ctx, st)
 }
 
+// runAPIModelsMigrate builds the developer API model catalog from today's /v1
+// behaviour. Without --apply it only prints the report and changes nothing
+// (it does not even run schema migrations); with --apply it runs migrations
+// and writes the catalog, Key mappings and subscription policies at once.
+func runAPIModelsMigrate(cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("api-models-migrate", flag.ExitOnError)
+	apply := fs.Bool("apply", false, "写入目录（默认只输出迁移报告）")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *apply {
+		if err := store.Migrate(cfg.DatabaseURL); err != nil {
+			return fmt.Errorf("run migrations: %w", err)
+		}
+	}
+	ctx := context.Background()
+	st, err := newStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	tx, err := st.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	modelCfg, keys, policies, err := apicatalog.LoadMigrationInput(ctx, tx)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	plan := apicatalog.BuildPlan(modelCfg, keys, policies, now)
+	fmt.Print(plan.Report(modelCfg))
+	if !*apply {
+		fmt.Println("\n（演练模式，未写入任何数据；确认后加 --apply 执行）")
+		return nil
+	}
+	if err := apicatalog.Apply(ctx, tx, modelCfg, plan, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("\n已写入 %d 个 API 模型，改写 %d 把 Key、%d 份订阅策略\n", len(plan.Entries), len(plan.Keys), len(plan.Policies))
+	return nil
+}
+
 func runServe(cfg *config.Config) error {
 	if err := storage.ValidateConfig(cfg); err != nil {
 		return err
@@ -112,6 +162,11 @@ func runServe(cfg *config.Config) error {
 	}
 	if err := settings.EncryptStoredSecrets(ctx, st.Pool, cfg.AppSecret); err != nil {
 		return fmt.Errorf("encrypt stored settings: %w", err)
+	}
+	// /v1 resolves models through the catalog; build it on the first start
+	// after the catalog migration so the API never runs with it empty.
+	if err := apicatalog.EnsureInitialized(ctx, st.Pool); err != nil {
+		return fmt.Errorf("initialize developer API model catalog: %w", err)
 	}
 
 	stg, err := storage.New(cfg)

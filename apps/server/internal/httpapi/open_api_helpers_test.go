@@ -12,6 +12,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
+	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 )
 
@@ -101,15 +102,21 @@ func developerCatalogFixture() (modelconfig.Config, modelconfig.Model) {
 	}, wire
 }
 
-func TestNormalizeOpenAPIModelIDs(t *testing.T) {
-	cfg, wire := developerCatalogFixture()
-	ids, err := normalizeOpenAPIModelIDs(cfg, []string{" " + wire.ID + " ", wire.ID, ""})
-	if err != nil || len(ids) != 1 || ids[0] != wire.ID {
-		t.Fatalf("normalized ids = %#v err=%v", ids, err)
+// A Key allowlist accepts callable catalog entries only, and records the
+// site models behind them for the legacy column.
+func TestNormalizeAPIModelIDs(t *testing.T) {
+	entries := []*store.DeveloperAPIModel{
+		{ID: "apim_live", TargetModelID: "model-0000-internal", Status: store.DeveloperAPIModelLive},
+		{ID: "apim_vip", TargetModelID: "model-0000-internal", Status: store.DeveloperAPIModelLive},
+		{ID: "apim_draft", TargetModelID: "model-1111-unbound", Status: store.DeveloperAPIModelDraft},
 	}
-	for _, denied := range []string{"model-1111-unbound", "model-2222-private", "missing"} {
-		if _, err := normalizeOpenAPIModelIDs(cfg, []string{denied}); err == nil {
-			t.Fatalf("model %q should be denied", denied)
+	ids, targets, err := normalizeAPIModelIDs(entries, []string{" apim_live ", "apim_live", "", "apim_vip"})
+	if err != nil || len(ids) != 2 || ids[0] != "apim_live" || len(targets) != 1 || targets[0] != "model-0000-internal" {
+		t.Fatalf("normalized = %#v %#v err=%v", ids, targets, err)
+	}
+	for _, denied := range []string{"apim_draft", "model-0000-internal", "missing"} {
+		if _, _, err := normalizeAPIModelIDs(entries, []string{denied}); err == nil {
+			t.Fatalf("%q should be denied", denied)
 		}
 	}
 }
@@ -141,10 +148,18 @@ func TestAPIKeyDisplayPrefixShowsFourSecretCharacters(t *testing.T) {
 	}
 }
 
+// The console lists callable catalog entries by their catalog id and public
+// name. Workspace binding no longer matters: an entry pointing at a site model
+// that is not bound to text-to-image is still offered; drafts are not.
 func TestDeveloperModelItemsListOnlyV1Models(t *testing.T) {
 	cfg, wire := developerCatalogFixture()
-	items := developerModelItems(cfg)
-	if len(items) != 1 || items[0]["id"] != wire.ID || items[0]["model"] != "gpt-image-2" {
+	entries := []*store.DeveloperAPIModel{
+		{ID: "apim_wire", APIName: "gpt-image-2", Kind: "image", TargetModelID: wire.ID, Status: store.DeveloperAPIModelLive, PriceMode: store.DeveloperAPIPriceFollow},
+		{ID: "apim_unbound", APIName: "unbound-api", Kind: "image", TargetModelID: "model-1111-unbound", Status: store.DeveloperAPIModelLive, PriceMode: store.DeveloperAPIPriceFollow},
+		{ID: "apim_draft", APIName: "private-api", Kind: "image", TargetModelID: "model-2222-private", Status: store.DeveloperAPIModelDraft, PriceMode: store.DeveloperAPIPriceFollow},
+	}
+	items := developerModelItems(entries, cfg)
+	if len(items) != 2 || items[0]["id"] != "apim_wire" || items[0]["model"] != "gpt-image-2" || items[1]["model"] != "unbound-api" {
 		t.Fatalf("developer catalog = %#v", items)
 	}
 }

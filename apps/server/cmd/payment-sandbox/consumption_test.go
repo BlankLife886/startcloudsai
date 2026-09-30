@@ -26,6 +26,7 @@ func TestSandboxSubscriptionConsumption(t *testing.T) {
 	p.SubscriptionPolicy.Channels = []string{"api"}
 	p.SubscriptionPolicy.FeatureKeys = []string{"ui_design"}
 	p.SubscriptionPolicy.ModelIDs = []string{"sandbox-model"}
+	p.SubscriptionPolicy.APIModelIDs = []string{"apim_sandbox"} // what the catalog migration maps it to
 	if err := store.UpdatePlan(ctx, st.Pool, p); err != nil {
 		t.Fatal(err)
 	}

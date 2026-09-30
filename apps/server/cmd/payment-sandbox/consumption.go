@@ -57,6 +57,10 @@ func (l *lab) consumeSubscription(ctx context.Context, key string, subID, operat
 		}
 		if len(sub.Policy.ModelIDs) > 0 {
 			model = sub.Policy.ModelIDs[0]
+			// On the api channel a restricted plan is scoped by API model ids.
+			if channel == "api" && len(sub.Policy.APIModelIDs) > 0 {
+				model = sub.Policy.APIModelIDs[0]
+			}
 		}
 		ctx = wallet.WithSubscriptionScope(ctx, channel, model)
 		reason := "测试模拟使用订阅积分（不调用模型）"

@@ -23,6 +23,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/semaphore"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
@@ -63,6 +64,7 @@ const (
 	typeRankUserProfiles        = "cron:rank_user_profiles"
 	typeEnqueueAllUserProfiles  = "cron:enqueue_all_user_profiles"
 	typeReclaimDeveloperAPI     = "cron:reclaim_developer_api_reservations"
+	typeReconcileAPIModels      = "cron:reconcile_developer_api_models"
 
 	taskCompletionLease         = 5 * time.Minute
 	taskLease                   = 2 * time.Minute
@@ -224,6 +226,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeRankUserProfiles, w.handleRankUserProfiles)
 	mux.HandleFunc(typeEnqueueAllUserProfiles, w.handleEnqueueAllUserProfiles)
 	mux.HandleFunc(typeReclaimDeveloperAPI, w.handleReclaimDeveloperAPI)
+	mux.HandleFunc(typeReconcileAPIModels, w.handleReconcileAPIModels)
 
 	provider := &staticPeriodicConfigProvider{}
 	mgr, err := asynq.NewPeriodicTaskManager(asynq.PeriodicTaskManagerOpts{
@@ -319,6 +322,7 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		periodicConfig("@every 1h", typeRankUserProfiles, 59*time.Minute, 1),
 		periodicConfig("@every 24h", typeEnqueueAllUserProfiles, 23*time.Hour+59*time.Minute, 1),
 		periodicConfig("@every 5m", typeReclaimDeveloperAPI, 4*time.Minute+50*time.Second, 0),
+		periodicConfig("@every 1m", typeReconcileAPIModels, 50*time.Second, 0),
 	}, nil
 }
 
@@ -3756,6 +3760,17 @@ func (w *Worker) handleReclaimDeveloperAPI(ctx context.Context, _ *asynq.Task) e
 	reclaimed, err := devapibilling.Reclaim(ctx, w.St, time.Now().UTC(), 200)
 	if reclaimed > 0 {
 		log.Printf("reclaimed %d expired developer API reservations", reclaimed)
+	}
+	return err
+}
+
+// handleReconcileAPIModels retires developer API models past their sunset,
+// applies due prices and announces site price increases. Request paths
+// already evaluate both lazily; this records them and sends the notices.
+func (w *Worker) handleReconcileAPIModels(ctx context.Context, _ *asynq.Task) error {
+	result, err := apicatalog.Reconcile(ctx, w.St.Pool, time.Now().UTC())
+	if result != (apicatalog.ReconcileResult{}) {
+		log.Printf("developer API models reconciled: retired=%d announced=%d applied=%d", result.Retired, result.Announced, result.Applied)
 	}
 	return err
 }

@@ -222,7 +222,7 @@ func (s *Server) userCreditLots(c *gin.Context, export bool) {
 	var output bytes.Buffer
 	output.WriteString("\xEF\xBB\xBF")
 	writer := csv.NewWriter(&output)
-	_ = writer.Write([]string{"批次编号", "来源", "套餐", "订单号", "订阅编号", "发放积分", "可用", "任务冻结", "变更冻结", "已消费", "已过期", "权益回收", "冻结原因", "充值锁价资格", "每元积分", "到期时间", "入账时间"})
+	_ = writer.Write([]string{"批次编号", "来源", "套餐", "订单号", "订阅编号", "发放积分", "可用", "任务冻结", "变更冻结", "已消费", "其中API消费", "已过期", "权益回收", "冻结原因", "充值锁价资格", "每元积分", "到期时间", "入账时间"})
 	for _, l := range items {
 		orderID, subID, expiry, rate := "", "", "", ""
 		if l.OrderID != nil {
@@ -249,7 +249,7 @@ func (s *Server) userCreditLots(c *gin.Context, export bool) {
 		} else if l.HoldReason == "upgrade" {
 			hold = "升级待支付"
 		}
-		_ = writer.Write(safeCSVRow(l.ID.String(), bucket, l.Name, orderID, subID, fmt.Sprint(l.GrantedPoints), fmt.Sprint(l.AvailablePoints), fmt.Sprint(l.FrozenPoints), fmt.Sprint(l.HeldPoints), fmt.Sprint(l.SpentPoints), fmt.Sprint(l.ExpiredPoints), fmt.Sprint(l.RevokedPoints), hold, eligibility, rate, expiry, l.CreatedAt.In(promptDayLocation).Format("2006-01-02 15:04:05")))
+		_ = writer.Write(safeCSVRow(l.ID.String(), bucket, l.Name, orderID, subID, fmt.Sprint(l.GrantedPoints), fmt.Sprint(l.AvailablePoints), fmt.Sprint(l.FrozenPoints), fmt.Sprint(l.HeldPoints), fmt.Sprint(l.SpentPoints), fmt.Sprint(l.APISpentPoints), fmt.Sprint(l.ExpiredPoints), fmt.Sprint(l.RevokedPoints), hold, eligibility, rate, expiry, l.CreatedAt.In(promptDayLocation).Format("2006-01-02 15:04:05")))
 	}
 	writer.Flush()
 	if err := writer.Error(); err != nil {

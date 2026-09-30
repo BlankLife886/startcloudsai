@@ -166,7 +166,7 @@ func adminDeveloperAPICallDict(call *store.AdminDeveloperAPICall, names develope
 	_ = json.Unmarshal(metadata.Usage, &tokens)
 	view := developerAPICallDict(&store.DeveloperAPICall{
 		SourceType: call.SourceType, Status: call.Status, PriceCents: call.PriceCents, CreatedAt: call.CreatedAt,
-		KeyLabel: call.KeyLabel, KeyPrefix: call.KeyPrefix, ModelID: call.ModelID, Units: call.Units,
+		KeyLabel: call.KeyLabel, KeyPrefix: call.KeyPrefix, ModelID: call.ModelID, APIModelName: call.APIModelName, Units: call.Units,
 		Operation: metadata.Operation, ErrorCode: metadata.ErrorCode, Note: metadata.Note,
 		PromptTokens: tokens.Prompt, CompletionTokens: tokens.Completion, TotalTokens: tokens.Total,
 	}, names.models)

@@ -40,45 +40,6 @@ func newAPISecret() (string, error) {
 	return "sk-sc-" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-// developerModelItems is the console view of the /v1 catalog. `model` is the
-// exact value /v1 accepts; `id` is only used as the value of a Key's model
-// allowlist and is never shown to integrators.
-func developerModelItems(cfg modelconfig.Config) []gin.H {
-	models := openAIDeveloperModels(cfg, nil)
-	items := make([]gin.H, 0, len(models))
-	for _, model := range models {
-		items = append(items, gin.H{
-			"id": model.ID, "model": openAIPublicModelID(model), "name": model.Name, "kind": model.Kind,
-			"priceCents": modelconfig.EffectivePrice(model), "maxImages": model.GenerationMaxImages(),
-			"maxReferenceImages": model.MaxReferenceImages, "resolutions": model.Resolutions,
-		})
-	}
-	return items
-}
-
-func normalizeOpenAPIModelIDs(cfg modelconfig.Config, values []string) ([]string, error) {
-	available := map[string]bool{}
-	for _, model := range openAIDeveloperModels(cfg, nil) {
-		available[model.ID] = true
-	}
-	seen := map[string]bool{}
-	result := make([]string, 0, len(values))
-	for _, raw := range values {
-		id := strings.TrimSpace(raw)
-		if id == "" {
-			continue
-		}
-		if !available[id] {
-			return nil, apperr.E("validation_error", "allowedModelIds: 包含未开放或不存在的模型", 422)
-		}
-		if !seen[id] {
-			seen[id] = true
-			result = append(result, id)
-		}
-	}
-	return result, nil
-}
-
 func (s *Server) openAPIOnly(handler gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !s.developerAPIEnabled(c) {
@@ -165,7 +126,7 @@ func (s *Server) openAPIOnly(handler gin.HandlerFunc) gin.HandlerFunc {
 	}
 }
 
-// apiKeyUsableError explains why a Key cannot authenticate. A frozen or
+// apiKeyUsableError explains why a Key cannot authenticate. A frozen, paused or
 // expired Key gets its own code so the owner knows to unfreeze or rotate it
 // rather than assuming the secret was mistyped.
 func apiKeyUsableError(key *store.UserAPIKey, now time.Time) error {
@@ -178,6 +139,8 @@ func apiKeyUsableError(key *store.UserAPIKey, now time.Time) error {
 			message += "（原因：" + strings.TrimSpace(*key.FreezeReason) + "）"
 		}
 		return apperr.E("api_key_frozen", message, 403)
+	case key.Status == "paused":
+		return apperr.E("api_key_paused", "API Key 已被停用，请在开发者控制台重新启用", 403)
 	case key.Status != "active":
 		return apperr.E("api_key_invalid", "API Key 已失效", 401)
 	case key.ExpiresAt != nil && !key.ExpiresAt.After(now):
@@ -239,7 +202,7 @@ func apiKeyDisplayPrefix(stored string) string {
 func userAPIKeyDict(key *store.UserAPIKey, usage store.APIKeyUsageSummary) gin.H {
 	return gin.H{
 		"id": key.ID.String(), "prefix": apiKeyDisplayPrefix(key.KeyPrefix), "label": key.Label, "status": key.Status,
-		"allowedModelIds": key.AllowedModelIDs,
+		"allowedModelIds": key.AllowedAPIModelIDs,
 		"dailyTaskLimit":  key.DailyTaskLimit, "monthlyTaskLimit": key.MonthlyTaskLimit,
 		"dailySpendLimitCents": key.DailySpendLimitCents, "monthlySpendLimitCents": key.MonthlySpendLimitCents,
 		"ipAllowlist": key.IPAllowlist, "rateLimitPerMinute": key.RateLimitPerMinute,
@@ -326,7 +289,7 @@ func (s *Server) createMyAPIKey(c *gin.Context) {
 	}
 	key, err := store.InsertUserAPIKey(c.Request.Context(), s.St.Pool, &store.UserAPIKey{
 		UserID: user.ID, KeyPrefix: secret[:min(18, len(secret))], KeyHash: hashAPISecret(secret), Label: settings.Label,
-		AllowedModelIDs: settings.AllowedModelIDs, DailyTaskLimit: settings.DailyTaskLimit,
+		AllowedModelIDs: settings.AllowedModelIDs, AllowedAPIModelIDs: settings.AllowedAPIModelIDs, DailyTaskLimit: settings.DailyTaskLimit,
 		MonthlyTaskLimit: settings.MonthlyTaskLimit, DailySpendLimitCents: settings.DailySpendLimitCents,
 		MonthlySpendLimitCents: settings.MonthlySpendLimitCents, IPAllowlist: settings.IPAllowlist,
 		RateLimitPerMinute: settings.RateLimitPerMinute, DailyByteLimit: settings.DailyByteLimit, ExpiresAt: settings.ExpiresAt,
@@ -364,7 +327,7 @@ func (s *Server) patchMyAPIKey(c *gin.Context) {
 		return
 	}
 	key, err := store.UpdateUserAPIKey(c.Request.Context(), s.St.Pool, user.ID, id, &store.UserAPIKey{
-		Label: settings.Label, AllowedModelIDs: settings.AllowedModelIDs,
+		Label: settings.Label, AllowedModelIDs: settings.AllowedModelIDs, AllowedAPIModelIDs: settings.AllowedAPIModelIDs,
 		DailyTaskLimit: settings.DailyTaskLimit, MonthlyTaskLimit: settings.MonthlyTaskLimit,
 		DailySpendLimitCents: settings.DailySpendLimitCents, MonthlySpendLimitCents: settings.MonthlySpendLimitCents,
 		IPAllowlist: settings.IPAllowlist, RateLimitPerMinute: settings.RateLimitPerMinute,
@@ -388,7 +351,8 @@ func (s *Server) patchMyAPIKey(c *gin.Context) {
 
 type apiKeySettings struct {
 	Label                  string
-	AllowedModelIDs        []string
+	AllowedModelIDs        []string // site models behind AllowedAPIModelIDs (legacy column)
+	AllowedAPIModelIDs     []string
 	DailyTaskLimit         int
 	MonthlyTaskLimit       int
 	DailySpendLimitCents   int64
@@ -461,16 +425,16 @@ func (s *Server) parseAPIKeySettings(c *gin.Context, body *createAPIKeyInput) (*
 		body.DailyByteLimit < 1<<20 || body.DailyByteLimit > 1<<40 {
 		return nil, apperr.E("validation_error", "API Key 的每分钟请求或每日流量额度无效", 422)
 	}
-	cfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
+	entries, err := s.developerCatalog(c.Request.Context())
 	if err != nil {
 		return nil, err
 	}
-	allowedModelIDs, err := normalizeOpenAPIModelIDs(cfg, body.AllowedModelIDs)
+	apiModelIDs, siteModelIDs, err := normalizeAPIModelIDs(entries, body.AllowedModelIDs)
 	if err != nil {
 		return nil, err
 	}
 	return &apiKeySettings{
-		Label: body.Label, AllowedModelIDs: allowedModelIDs,
+		Label: body.Label, AllowedModelIDs: siteModelIDs, AllowedAPIModelIDs: apiModelIDs,
 		DailyTaskLimit: body.DailyTaskLimit, MonthlyTaskLimit: body.MonthlyTaskLimit,
 		DailySpendLimitCents: body.DailySpendLimitCents, MonthlySpendLimitCents: body.MonthlySpendLimitCents,
 		IPAllowlist: allowlist, RateLimitPerMinute: body.RateLimitPerMinute,
@@ -499,6 +463,43 @@ func (s *Server) revokeMyAPIKey(c *gin.Context) {
 		return
 	}
 	respondNoContent(c)
+}
+
+// pauseMyAPIKey and resumeMyAPIKey let the owner stop a Key and start it again
+// without changing its secret; a frozen or revoked Key is left alone.
+func (s *Server) pauseMyAPIKey(c *gin.Context)  { s.setMyAPIKeyPaused(c, true) }
+func (s *Server) resumeMyAPIKey(c *gin.Context) { s.setMyAPIKeyPaused(c, false) }
+
+func (s *Server) setMyAPIKeyPaused(c *gin.Context, paused bool) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		fail(c, apperr.E("validation_error", "id: 无效", 422))
+		return
+	}
+	key, err := store.SetUserAPIKeyPaused(c.Request.Context(), s.St.Pool, user.ID, id, paused)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if key == nil {
+		message := "只有可用的 Key 可以停用"
+		if !paused {
+			message = "只有已停用的 Key 可以重新启用"
+		}
+		fail(c, apperr.E("api_key_state_conflict", message, 409))
+		return
+	}
+	usage, err := store.GetAPIKeyUsageSummary(c.Request.Context(), s.St.Pool, key.ID, time.Now().UTC())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, userAPIKeyDict(key, usage))
 }
 
 func (s *Server) rotateMyAPIKey(c *gin.Context) {
@@ -538,7 +539,7 @@ func (s *Server) rotateMyAPIKey(c *gin.Context) {
 		var insertErr error
 		replacement, insertErr = store.InsertUserAPIKey(c.Request.Context(), tx, &store.UserAPIKey{
 			UserID: existing.UserID, KeyPrefix: secret[:min(18, len(secret))], KeyHash: hashAPISecret(secret),
-			Label: existing.Label, AllowedModelIDs: existing.AllowedModelIDs,
+			Label: existing.Label, AllowedModelIDs: existing.AllowedModelIDs, AllowedAPIModelIDs: existing.AllowedAPIModelIDs,
 			DailyTaskLimit: existing.DailyTaskLimit, MonthlyTaskLimit: existing.MonthlyTaskLimit,
 			DailySpendLimitCents: existing.DailySpendLimitCents, MonthlySpendLimitCents: existing.MonthlySpendLimitCents,
 			IPAllowlist: existing.IPAllowlist, RateLimitPerMinute: existing.RateLimitPerMinute,
@@ -569,5 +570,10 @@ func (s *Server) myOpenAPIModels(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"items": developerModelItems(cfg)})
+	entries, err := s.developerCatalog(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"items": developerModelItems(entries, cfg)})
 }

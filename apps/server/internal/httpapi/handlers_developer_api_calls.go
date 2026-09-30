@@ -84,7 +84,10 @@ func developerAPICallDict(call *store.DeveloperAPICall, modelNames map[string]st
 			operation = "编辑图片"
 		}
 	}
-	model := modelNames[call.ModelID]
+	model := call.APIModelName
+	if model == "" {
+		model = modelNames[call.ModelID]
+	}
 	if model == "" && call.ModelID != "" {
 		model = "已下线的模型"
 	}
@@ -117,4 +120,24 @@ func developerAPICallDict(call *store.DeveloperAPICall, modelNames map[string]st
 		item["tokens"] = gin.H{"prompt": call.PromptTokens, "completion": call.CompletionTokens, "total": call.TotalTokens}
 	}
 	return item
+}
+
+// myAPIUsageSummary is the one-line developer API total shown on the wallet
+// and subscription pages, since API charges are kept out of wallet history.
+// The month follows UTC, like the Key quotas.
+func (s *Server) myAPIUsageSummary(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	points, calls, err := store.UserAPISpend(c.Request.Context(), s.St.Pool, user.ID, monthStart)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	ok(c, gin.H{"monthPoints": points, "monthCalls": calls, "monthStart": monthStart.Format(time.RFC3339)})
 }
