@@ -319,6 +319,21 @@ html.color-scheme-dark .main-content.main--orders-console {
   min-width: 0;
   min-height: 0;
 }
+/* The developer console is a full-height workspace; it scrolls inside itself. */
+.main-content.main--developer-console {
+  padding-top: 0;
+  padding-bottom: 0;
+  height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.main-content.main--developer-console > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
 @media (max-width: 820px) {
   .main-content.main--orders-console {
     display: block;

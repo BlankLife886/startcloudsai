@@ -1,7 +1,7 @@
 import {useEffect, useRef, useState} from 'react';
 import {Popover, Select} from 'radix-ui';
-import {CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Minus, Plus} from 'lucide-react';
-import {localDate} from './presentation.js';
+import {CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Image, MessageSquareText, Minus, Plus, Search} from 'lucide-react';
+import {MODEL_STATUSES, localDate, modelNotes} from './presentation.js';
 import './Controls.css';
 
 // Keep popups in the console theme and, for forms, inside the native dialog's top layer.
@@ -38,6 +38,66 @@ export function ConsoleSelect({label, value, onChange, options, disabled = false
   </span>;
 }
 
+const MODEL_KINDS = [['image', '图片模型', Image], ['chat', '对话模型', MessageSquareText]];
+
+// ModelChecklist shows one kind at a time behind tabs (with picked/total per
+// kind), a search box and a card list that scrolls on its own.
+export function ModelChecklist({models, value, onChange, disabled = false}) {
+  const kinds = MODEL_KINDS.filter(([kind]) => models.some(model => model.kind === kind));
+  const [kind, setKind] = useState(() => (kinds.find(([id]) => models.some(model => model.kind === id && value.includes(model.id))) || kinds[0] || [])[0]);
+  const [query, setQuery] = useState('');
+  const needle = query.trim().toLowerCase();
+  const toggle = id => onChange(value.includes(id) ? value.filter(item => item !== id) : [...value, id]);
+  const setMany = (ids, on) => onChange(on ? [...new Set([...value, ...ids])] : value.filter(id => !ids.includes(id)));
+  if (!models.length) return <p className="dap-model-empty">暂无可用模型</p>;
+  const ofKind = models.filter(model => model.kind === kind);
+  const shown = ofKind.filter(model => `${model.model} ${model.name}`.toLowerCase().includes(needle));
+  const allShown = shown.length > 0 && shown.every(model => value.includes(model.id));
+  return <div className="dap-model-picker">
+    <div className="dap-model-tabs" role="tablist" aria-label="模型类型">
+      {kinds.map(([id, label, Icon]) => {
+        const group = models.filter(model => model.kind === id);
+        const picked = group.filter(model => value.includes(model.id)).length;
+        return <button key={id} type="button" role="tab" aria-selected={kind === id} className={kind === id ? 'active' : ''} onClick={() => setKind(id)}><Icon size={15}/>{label}<small className={picked ? 'has-picked' : ''}>{picked}/{group.length}</small></button>;
+      })}
+    </div>
+    <div className="dap-model-toolbar">
+      <label className="dap-model-search"><Search size={14}/><input value={query} disabled={disabled} onChange={event => setQuery(event.target.value)} placeholder="搜索模型" aria-label="搜索模型"/></label>
+      <button type="button" className="dap-model-clear" disabled={disabled || !shown.length} onClick={() => setMany(shown.map(model => model.id), !allShown)}>{allShown ? '取消全选' : '全选'}</button>
+      {value.length > 0 && <button type="button" className="dap-model-clear" disabled={disabled} onClick={() => onChange([])}>清空全部（{value.length}）</button>}
+    </div>
+    <div className="dap-model-cards" role="tabpanel">
+      {shown.map(model => <label key={model.id} className={`dap-model-card${value.includes(model.id) ? ' is-selected' : ''}`}>
+        <Checkbox checked={value.includes(model.id)} disabled={disabled} onChange={() => toggle(model.id)}/>
+        <span className="dap-model-card-text"><b>{model.model}{model.status && model.status !== 'live' && <em className={`dap-model-flag is-${model.status}`}>{MODEL_STATUSES[model.status]?.[0]}</em>}</b>{modelNotes(model)[0] ? <small>{modelNotes(model)[0][1]}</small> : model.name && model.name !== model.model && <small>{model.name}</small>}</span>
+        <span className="dap-model-price"><b>{Number(model.priceCents || 0).toLocaleString('zh-CN')}</b> 积分/次起</span>
+      </label>)}
+      {!shown.length && <p className="dap-model-empty">没有匹配的模型</p>}
+    </div>
+  </div>;
+}
+
+// ModelSelect is a full-width field that opens the model cards in a large
+// dropdown panel of the same width. Ticks apply at once; clicking outside or
+// Escape closes it, so there is no confirm button.
+export function ModelSelect({models, value, onChange, disabled = false}) {
+  const trigger = useRef(null);
+  const container = usePopupContainer(trigger);
+  const [open, setOpen] = useState(false);
+  const names = value.map(id => models.find(model => model.id === id)?.model).filter(Boolean);
+  return <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Trigger ref={trigger} type="button" className="dap-model-trigger" aria-label="选择模型" disabled={disabled}>
+      {names.length ? <><span className="dap-model-trigger-names">{names.join('、')}</span><span className="dap-model-trigger-count">{names.length} 个</span></> : <span className="dap-model-placeholder">点击选择模型</span>}
+      <ChevronDown size={16}/>
+    </Popover.Trigger>
+    {container && <Popover.Portal container={container}>
+      <Popover.Content className="dap-model-panel" aria-label="选择模型" sideOffset={8} collisionPadding={16} align="start" onEscapeKeyDown={event => event.stopPropagation()}>
+        <ModelChecklist models={models} value={value} onChange={onChange}/>
+      </Popover.Content>
+    </Popover.Portal>}
+  </Popover.Root>;
+}
+
 export function Checkbox({switchStyle = false, ...props}) {
   return <span className={`dap-check-control${switchStyle ? ' is-switch' : ''}`}>
     <input type="checkbox" role={switchStyle ? 'switch' : undefined} {...props}/>
@@ -45,7 +105,7 @@ export function Checkbox({switchStyle = false, ...props}) {
   </span>;
 }
 
-export function NumberField({label, value, onChange, min, max, step = 1, ...props}) {
+export function NumberField({label, value, onChange, min, max, step = 1, unit, ...props}) {
   const input = useRef(null);
   const adjust = direction => {
     if (step !== 'any') {
@@ -63,6 +123,7 @@ export function NumberField({label, value, onChange, min, max, step = 1, ...prop
   };
   return <span className="dap-number-field">
     <input {...props} ref={input} type="number" inputMode={step === 'any' ? 'decimal' : 'numeric'} aria-label={label} min={min} max={max} step={step} value={value} onChange={event => onChange(event.target.value)}/>
+    {unit && <span className="dap-number-unit" aria-hidden="true">{unit}</span>}
     <span className="dap-number-actions" data-click-guard="repeat">
       <button type="button" aria-label={`减少 ${label}`} disabled={props.disabled || (value !== '' && Number(value) <= min)} onClick={() => adjust(-1)}><Minus size={13}/></button>
       <button type="button" aria-label={`增加 ${label}`} disabled={props.disabled || (value !== '' && Number(value) >= max)} onClick={() => adjust(1)}><Plus size={13}/></button>

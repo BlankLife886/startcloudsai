@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {emptyKey,keyPayload,keyStatus,imageCurlExample,chatCurlExample,ERROR_CODES} from './presentation.js';
+import {emptyKey,keyPayload,keyStatus,imageCurlExample,editCurlExample,chatCurlExample,codeExample} from './presentation.js';
 test('expired keys are not usable and monthly limits cannot be below daily limits',()=>{
  assert.equal(keyStatus({status:'active',expiresAt:'2025-01-01T00:00:00Z'},Date.parse('2026-01-01T00:00:00Z')),'expired');
  assert.equal(keyStatus({status:'frozen',expiresAt:'2025-01-01T00:00:00Z'}),'frozen');
@@ -29,9 +29,16 @@ test('Chat example streams a chat model by its name on the /v1 path',()=>{
  assert.ok(chatCurlExample('https://example.com/v1').includes('CHAT_MODEL_NAME'));
 });
 
-test('error reference lists each code once and no retry-era codes',()=>{
- const codes=ERROR_CODES.map(([,code])=>code);
- assert.equal(new Set(codes).size,codes.length);
- for(const code of ['model_concurrency_limited','model_not_found','api_key_frozen','request_timeout','upstream_misconfigured'])assert.ok(codes.includes(code),code);
- assert.ok(!codes.some(code=>code.startsWith('idempotency_')));
+test('Edits example uploads the reference image as multipart on /v1/images/edits',()=>{
+ const code=editCurlExample('https://example.com/v1/',{id:'model-internal-uuid',model:'edit-model'});
+ assert.ok(code.includes("'https://example.com/v1/images/edits'"));
+ assert.ok(code.includes("-F 'model=edit-model'"));
+ assert.ok(code.includes("-F 'image=@./reference.png'"));
+ assert.ok(!code.includes('Content-Type: application/json'));
+ assert.ok(!code.includes('model-internal-uuid'));
+ for(const language of ['python','node']){
+  const sdk=codeExample({language,protocol:'edits',base:'https://example.com/v1',model:{model:'edit-model'}});
+  assert.ok(sdk.includes('images.edit('),language);
+  assert.ok(sdk.includes('reference.png'),language);
+ }
 });

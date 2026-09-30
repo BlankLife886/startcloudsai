@@ -32,6 +32,13 @@ export function revokeAPIKey(id) {
   });
 }
 
+// Pausing keeps the secret; the Key answers 403 api_key_paused until resumed.
+export function setAPIKeyPaused(id, paused) {
+  return apiPost(`/me/api-keys/${encodeURIComponent(id)}/${paused ? "pause" : "resume"}`, null, {
+    fallbackMessage: paused ? "API Key 停用失败" : "API Key 启用失败",
+  });
+}
+
 export function rotateAPIKey(id) {
   return apiPost(`/me/api-keys/${encodeURIComponent(id)}/rotate`, null, {
     fallbackMessage: "API Key 轮换失败",

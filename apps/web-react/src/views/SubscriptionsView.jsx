@@ -1,3 +1,4 @@
+import { ApiUsageSummary } from "../features/developer-api/ApiUsageSummary.jsx";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router";
@@ -431,6 +432,7 @@ export function SubscriptionsView() {
                   </> : "历史消耗未独立记录"}</small>
                 </div>
               </dl>
+              <ApiUsageSummary />
               {current.expiredPoints > 0 ? <p className="subscription-legacy">历史周期已失效 {formatPoints(current.expiredPoints)}，不计为创作消费。</p> : null}
               {current.skippedCycles > 0 ? <p className="subscription-legacy">已跳过 {current.skippedCycles} 个过期周期，不累积补发额度。</p> : null}
               {current.upgradeReclaimedPoints > 0 ? <p className="subscription-legacy">历史升级已置换回收 {formatPoints(current.upgradeReclaimedPoints)}，不计为创作消费。</p> : null}
@@ -438,7 +440,7 @@ export function SubscriptionsView() {
               <section className="subscription-scope" aria-label="订阅权益">
                 <header><h2>{stopped ? '原订阅权益' : '订阅权益'}</h2>{current.contract && <span>权益版本 v{current.contract.planRevision}</span>}</header>
                 <dl>
-                  <div><dt>价格保护</dt><dd>{current.contract ? current.contract.lockModelPrices ? current.contract.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分' : '按实时价格计费' : '历史订阅按实时价格计费'}</dd></div>
+                  <div><dt>价格保护</dt><dd>{current.contract ? current.contract.lockModelPrices ? current.contract.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分' : '按实时价格计费' : '历史订阅按实时价格计费'}{current.contract?.lockModelPrices && <small>站内创作适用；开发者 API 按控制台「模型」页的价格计费</small>}</dd></div>
                   {current.contract && <div><dt>额外并发</dt><dd>+{current.contract.concurrencyBonus ?? 0} 张</dd></div>}
                   {!stopped && data.concurrency && <div><dt>并发上限</dt><dd>{data.concurrency.imageLimit ?? data.concurrency.limit} 张<small>基础 {data.concurrency.base} + 订阅 {data.concurrency.planBonus ?? data.concurrency.bonus}{data.concurrency.manualBonus > 0 ? ` + 专属追加 ${data.concurrency.manualBonus}` : ''}，所有生图场景共用</small></dd></div>}
                   {!stopped && data.concurrency?.chatLimit != null && <div><dt>对话并发上限</dt><dd>{data.concurrency.chatLimit} 次<small>与图片额度独立</small></dd></div>}

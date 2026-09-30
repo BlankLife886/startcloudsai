@@ -1,3 +1,4 @@
+import { ApiUsageSummary } from "../features/developer-api/ApiUsageSummary.jsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageEntryLink as Link } from "../page-control/PageEntryLink.jsx";
 import { downloadWalletBill, getWallet, getWalletSummary, listWalletLedger } from "@react/legacy-modules/services/meApi.js";
@@ -721,6 +722,7 @@ export function WalletView() {
                 <small><Link to="/subscriptions">查看发放与适用范围</Link></small>
               </article> : null}
             </div>
+            <ApiUsageSummary />
             {showTrial ? (
               <aside
                 className={`wallet-trial${trial.rewardStatus === "redeemed" ? " is-used" : ""}`}

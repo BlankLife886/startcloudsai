@@ -1,0 +1,19 @@
+.api-usage-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(91, 77, 255, 0.07);
+  color: var(--text-secondary, #5f6475);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.api-usage-summary svg { flex: none; color: #5b4dff; }
+.api-usage-summary b { color: var(--text-primary, #1a1c24); font-weight: 650; }
+.api-usage-summary a { margin-left: auto; color: #5b4dff; font-weight: 600; white-space: nowrap; }
+html.color-scheme-dark .api-usage-summary { background: rgba(139, 123, 255, 0.12); color: #a7aec0; }
+html.color-scheme-dark .api-usage-summary b { color: #f2f3f7; }
+html.color-scheme-dark .api-usage-summary svg, html.color-scheme-dark .api-usage-summary a { color: #a397ff; }
