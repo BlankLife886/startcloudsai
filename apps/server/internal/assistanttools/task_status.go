@@ -27,6 +27,10 @@ var (
 	taskStatusOpaquePattern = regexp.MustCompile(`\b[A-Za-z0-9_-]{32,}\b`)
 )
 
+// taskStatusOwnTaskPattern matches 任务 referring to the user's own work:
+// "我的任务", "我最近失败的任务", "刚才那个任务".
+var taskStatusOwnTaskPattern = regexp.MustCompile(`(我|刚才|刚刚|这个|这条|那个|那条|最近|上一个|上次)[^，。？?！!,]{0,8}任务`)
+
 type taskStatusInput struct {
 	Scope  string `json:"scope"`
 	Limit  int    `json:"limit"`
@@ -79,10 +83,17 @@ func TaskStatusRequested(prompt string) bool {
 	if !hasStatus {
 		return false
 	}
-	if strings.Contains(text, "任务") {
+	// Programming and system-design questions mention 任务 and 失败 without
+	// asking about the user's own generations.
+	for _, term := range []string{"代码", "函数", "脚本", "程序", "写一个", "怎么实现", "如何实现", "定时任务", "celery", "cron", "pending"} {
+		if strings.Contains(text, term) {
+			return false
+		}
+	}
+	if taskStatusOwnTaskPattern.MatchString(text) {
 		return true
 	}
-	for _, subject := range []string{"我的任务", "这条任务", "刚才的任务", "最近任务", "任务id", "任务 id", "任务编号", "生成任务", "生图", "图片", "那张图", "这张图", "生成"} {
+	for _, subject := range []string{"任务id", "任务 id", "任务编号", "生成任务", "生图", "图片", "那张图", "这张图", "生成"} {
 		if strings.Contains(text, subject) {
 			return true
 		}

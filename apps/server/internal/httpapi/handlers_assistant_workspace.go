@@ -784,10 +784,10 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		}
 	}
 	if engineV2 {
-		// v2 decides what each turn needs itself; the user does not pick a mode.
+		// v2 serves Q&A and Agent turns; image mode keeps its own pipeline.
 		// Attachments and image parameters join as v2 gains those capabilities.
-		if body.Mode != "agent" {
-			fail(c, apperr.E("validation_error", "新版助手只接受 agent 模式", 422))
+		if body.Mode == "image" {
+			fail(c, apperr.E("validation_error", "新版助手暂不处理图片模式", 422))
 			return
 		}
 		if len(body.ReferenceImages) > 0 || len(body.Attachments) > 0 || len(body.ImagePlanItems) > 0 ||

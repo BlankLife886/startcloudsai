@@ -41,9 +41,23 @@ func assistantRunUsesV2(run *store.AssistantRun) bool {
 const (
 	assistantV2IntentAnswer  = "answer"
 	assistantV2IntentMyData  = "my_data"
-	assistantV2IntentCreate  = "create"
-	assistantV2IntentAccount = "account"
+	assistantV2IntentCreate    = "create"
+	assistantV2IntentWeb       = "web"
+	assistantV2IntentWorkspace = "workspace"
+	assistantV2IntentAccount   = "account"
 )
+
+// assistantV2DelegatesIntent reports intents whose capabilities still live in
+// the original engine (image proposals, web search, workspace tools). Those
+// turns are handed to it within the same run, so nothing the original Agent
+// could do is lost while v2 grows.
+func assistantV2DelegatesIntent(intent string) bool {
+	switch intent {
+	case assistantV2IntentCreate, assistantV2IntentWeb, assistantV2IntentWorkspace:
+		return true
+	}
+	return false
+}
 
 func assistantV2DecisionQuestions() []decision.Question {
 	return []decision.Question{
@@ -53,7 +67,9 @@ func assistantV2DecisionQuestions() []decision.Question {
 			Options: []decision.Option{
 				{ID: assistantV2IntentAnswer, Description: "直接回答：闲聊、知识问答、写作、平台功能怎么用"},
 				{ID: assistantV2IntentMyData, Description: "查询用户本人的数据：用量、消耗、积分去向、创作次数、成功率、明细记录"},
-				{ID: assistantV2IntentCreate, Description: "要求生成、修改或处理图片和设计"},
+				{ID: assistantV2IntentCreate, Description: "要求生成、修改或重绘图片和设计"},
+				{ID: assistantV2IntentWeb, Description: "需要联网查找最新的外部信息（新闻、价格、公开资料）"},
+				{ID: assistantV2IntentWorkspace, Description: "要求执行站内工具：抠图、放大、压缩、导出交付包、发送到工作台、网页截图、找参考图、导入商品链接"},
 				{ID: assistantV2IntentAccount, Description: "账户与支付：充值、购买或退订套餐、订单、退款、修改密码、API Key"},
 			},
 		},
@@ -68,14 +84,17 @@ var assistantV2MyDataPattern = regexp.MustCompile(`(花了|花哪|花在|花费|
 
 // assistantV2Rules answer only when the text makes the answer obvious, with
 // deliberately low confidence; everything else is left to the defaults.
-func assistantV2Rules() decision.Rules {
+func assistantV2Rules(prompt string) decision.Rules {
 	return decision.Rules{
-		"intent": func(state string) (decision.Answer, bool) {
-			last := state
-			if index := strings.LastIndex(state, "用户："); index >= 0 {
-				last = state[index:]
-			}
-			if assistantV2MyDataPattern.MatchString(last) {
+		"intent": func(string) (decision.Answer, bool) {
+			switch {
+			case assistantPromptRequestsWebSearch(prompt):
+				return decision.Answer{Choice: assistantV2IntentWeb, Confidence: 0.5}, true
+			case assistantForcedWorkspaceTool(prompt) != "":
+				return decision.Answer{Choice: assistantV2IntentWorkspace, Confidence: 0.5}, true
+			case assistanttools.ImageActionRequested(prompt):
+				return decision.Answer{Choice: assistantV2IntentCreate, Confidence: 0.5}, true
+			case assistantV2MyDataPattern.MatchString(prompt):
 				return decision.Answer{Choice: assistantV2IntentMyData, Confidence: 0.4}, true
 			}
 			return decision.Answer{Choice: assistantV2IntentAnswer, Confidence: 0.2}, true
@@ -86,8 +105,8 @@ func assistantV2Rules() decision.Rules {
 
 // assistantV2Decider builds the decision chain: the decision model (override
 // or the assistant page's default chat model) first, rules as fallback.
-func (w *Worker) assistantV2Decider(ctx context.Context) decision.Decider {
-	chain := decision.Chain{Fallback: assistantV2Rules(), Timeout: assistantV2DecisionTimeout}
+func (w *Worker) assistantV2Decider(ctx context.Context, prompt string) decision.Decider {
+	chain := decision.Chain{Fallback: assistantV2Rules(prompt), Timeout: assistantV2DecisionTimeout}
 	if w.St == nil {
 		return chain
 	}
@@ -252,7 +271,7 @@ func (w *Worker) executeAssistantV2(ctx context.Context, run *store.AssistantRun
 	client = client.WithMaxOutputTokens(
 		assistantParamInt(run.Params, "_chatMaxOutputTokens", assistantDefaultOutputTokens),
 	).WithReasoningEffort(assistantParamString(run.Params, "reasoningEffort", ""))
-	return w.runAssistantV2(ctx, run, client, w.assistantV2Decider(ctx))
+	return w.runAssistantV2(ctx, run, client, w.assistantV2Decider(ctx, run.Prompt))
 }
 
 // runAssistantV2 is the orchestration itself, with the chat client and the
@@ -272,6 +291,10 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	decided := w.assistantV2Decide(ctx, decider, assistantV2DecisionState(history, run))
 	w.publishAssistantDebug(ctx, run, "decision_done", fmt.Sprintf("%s（置信度 %.2f，来源 %s）",
 		decided.Intent, decided.Confidence, decided.Response.Provider))
+	if assistantV2DelegatesIntent(decided.Intent) && !decided.Clarify {
+		w.publishAssistantDebug(ctx, run, "delegate", "交给原有引擎处理："+decided.Intent)
+		return w.executeAssistantRunLegacy(ctx, run)
+	}
 
 	payload, _, err := w.prepareAssistantContext(ctx, run, kind, assistantV2SystemPrompt(run, time.Now(), decided), history, nil, false, "thinking")
 	if err != nil {
@@ -420,7 +443,8 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	attachAssistantToolSteps(metadata, toolSteps)
 	metadata["engine"] = AssistantEngineV2
 	metadata["systemPromptVersion"] = assistantV2SystemVersion
-	metadata["decision"] = decided.metadata()
+	// Underscore keys stay server-side: the decision is for evaluation, not display.
+	metadata["_decision"] = decided.metadata()
 	if len(dataViews) > 0 {
 		metadata["dataViews"] = dataViews
 	}

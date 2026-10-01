@@ -586,6 +586,12 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 	if assistantRunUsesV2(run) {
 		return w.executeAssistantV2(ctx, run)
 	}
+	return w.executeAssistantRunLegacy(ctx, run)
+}
+
+// executeAssistantRunLegacy is the original engine. v2 delegates the turns
+// whose capabilities have not moved over yet.
+func (w *Worker) executeAssistantRunLegacy(ctx context.Context, run *store.AssistantRun) error {
 	mode := assistantExecutionMode(run.Mode, run.Prompt)
 	if store.AssistantRunIsImage(run) {
 		mode = "image"

@@ -153,7 +153,7 @@ func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	decider := decision.Chain{Fallback: assistantV2Rules()}
+	decider := decision.Chain{Fallback: assistantV2Rules(fixture.run.Prompt)}
 	worker := &Worker{St: fixture.st}
 	if err := worker.runAssistantV2(ctx, fixture.run, client, decider); err != nil {
 		t.Fatalf("run v2: %v", err)
@@ -171,7 +171,7 @@ func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 	if message.Metadata["engine"] != AssistantEngineV2 {
 		t.Fatalf("engine metadata = %#v", message.Metadata["engine"])
 	}
-	decided, _ := message.Metadata["decision"].(map[string]any)
+	decided, _ := message.Metadata["_decision"].(map[string]any)
 	if decided["intent"] != assistantV2IntentMyData || decided["provider"] != "rules" {
 		t.Fatalf("decision = %#v", decided)
 	}
@@ -227,7 +227,7 @@ func TestAssistantV2ScopesStatsToTheRunOwner(t *testing.T) {
 	defer server.Close()
 	client, _ := sub2api.New(server.URL, "test-key", "gpt-test", "", 30)
 	worker := &Worker{St: fixture.st}
-	if err := worker.runAssistantV2(ctx, fixture.run, client, decision.Chain{Fallback: assistantV2Rules()}); err != nil {
+	if err := worker.runAssistantV2(ctx, fixture.run, client, decision.Chain{Fallback: assistantV2Rules(fixture.run.Prompt)}); err != nil {
 		t.Fatalf("run v2: %v", err)
 	}
 }
@@ -259,5 +259,29 @@ func TestAssistantV2ClarifiesWithoutToolsWhenDecisionSaysSo(t *testing.T) {
 	}
 	if len(upstream.requests) != 1 {
 		t.Fatalf("requests = %d", len(upstream.requests))
+	}
+}
+
+func TestAssistantV2RulesRouteUnsupportedTurnsToTheOriginalEngine(t *testing.T) {
+	cases := map[string]string{
+		"请联网搜索今天的科技新闻":   assistantV2IntentWeb,
+		"帮我生成一张猫咪海报":     assistantV2IntentCreate,
+		"导出交付包":          assistantV2IntentWorkspace,
+		"这个月积分花哪了":       assistantV2IntentMyData,
+		"物联网设备怎么配网":      assistantV2IntentAnswer,
+		"帮我写一段 618 商品文案": assistantV2IntentAnswer,
+	}
+	for prompt, want := range cases {
+		response, err := assistantV2Rules(prompt).Decide(context.Background(), decision.Request{State: "用户：" + prompt, Questions: assistantV2DecisionQuestions()})
+		if err != nil {
+			t.Fatalf("%s: %v", prompt, err)
+		}
+		if got := response.Answers["intent"].Choice; got != want {
+			t.Fatalf("%s: intent = %s, want %s", prompt, got, want)
+		}
+		delegates := want == assistantV2IntentWeb || want == assistantV2IntentCreate || want == assistantV2IntentWorkspace
+		if assistantV2DelegatesIntent(want) != delegates {
+			t.Fatalf("%s: delegation mismatch", prompt)
+		}
 	}
 }

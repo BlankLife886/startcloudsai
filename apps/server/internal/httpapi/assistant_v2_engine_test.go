@@ -45,7 +45,7 @@ func TestAssistantRunAcceptsV2EngineAndTimezone(t *testing.T) {
 
 	for name, body := range map[string]map[string]any{
 		"unknown engine": {"engine": "v9", "mode": "agent"},
-		"chat mode":      {"engine": "v2", "mode": "chat"},
+		"image mode":     {"engine": "v2", "mode": "image"},
 		"attachments":    {"engine": "v2", "mode": "agent", "referenceImages": []any{map[string]any{"dataUrl": "data:image/png;base64,AA=="}}},
 	} {
 		body["conversationId"] = conversation["id"]
@@ -54,6 +54,20 @@ func TestAssistantRunAcceptsV2EngineAndTimezone(t *testing.T) {
 		if rejected.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("%s: status %d body %s", name, rejected.Code, rejected.Body.String())
 		}
+	}
+
+	// Q&A mode is served by v2 as well.
+	response = env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"], "prompt": "我这周创作了几次", "mode": "chat", "engine": "v2", "queue": true,
+	}, token)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("chat v2 run: %d %s", response.Code, response.Body.String())
+	}
+	payload, _ = decode(t, response)
+	runPayload, _ = payload["run"].(map[string]any)
+	chatRun, _ := store.GetAssistantRun(context.Background(), env.st.Pool, uuid.MustParse(fmt.Sprint(runPayload["id"])))
+	if chatRun.Params["_engine"] != "v2" || chatRun.Mode != "chat" {
+		t.Fatalf("chat v2 run = mode %s params %#v", chatRun.Mode, chatRun.Params)
 	}
 
 	// An invalid timezone is dropped rather than failing the request.

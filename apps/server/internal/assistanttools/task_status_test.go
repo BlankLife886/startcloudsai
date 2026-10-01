@@ -25,7 +25,8 @@ func TestTaskStatusRequestedOnlyMatchesStatusQuestions(t *testing.T) {
 			t.Fatalf("expected task status intent for %q", prompt)
 		}
 	}
-	for _, prompt := range []string{"帮我生成一张图片", "任务系统是什么", "解释一下图片模型"} {
+	for _, prompt := range []string{"帮我生成一张图片", "任务系统是什么", "解释一下图片模型",
+		"帮我写一个定时任务失败自动重试的Go函数", "Celery任务状态一直是PENDING怎么排查", "这个积分规则怎么设计比较好，任务完成给多少"} {
 		if TaskStatusRequested(prompt) {
 			t.Fatalf("unexpected task status intent for %q", prompt)
 		}
