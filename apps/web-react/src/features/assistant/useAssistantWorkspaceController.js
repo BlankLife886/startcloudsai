@@ -46,7 +46,6 @@ import notificationService from "@react/legacy-modules/services/notification.js"
 import {
   conversationTitle,
   formatTime,
-  assistantPromptRequestsAgent,
   assistantSendMode,
   assistantMessageMatchesRun,
   imageCountFromPrompt,
@@ -58,6 +57,7 @@ import {
 import { assistantStreamEventIsTerminal, mergeAssistantDebugTrace, mergeAssistantMessageSnapshot, mergeAssistantStreamText } from "./domain/assistantStreamMerge.js";
 import { mergeAssistantToolSteps } from "./domain/assistantToolSteps.js";
 import { mergePersistedAssistantMessage, resolveAssistantRetryIdentity } from "./domain/assistantRetryPolicy.js";
+import { mergeServerMessages } from "./domain/assistantConversationRefresh.js";
 import { promptNeedsRecentVisual, resolveVisualContext } from "./domain/visualContext.js";
 import { assistantRunGuidance } from "./domain/assistantGuidance.js";
 import { assistantImageBatchLimit, constrainAssistantImageModels } from "./domain/assistantImageLimits.js";
@@ -136,6 +136,14 @@ import {
 } from "./assistantWorkspaceCore.jsx";
 import { closestNavigatorTurn } from "./AssistantMessageComponents.jsx";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+
+function browserTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    return "";
+  }
+}
 
 const PENDING_ASSISTANT_CANCELS_KEY = "starclouds:assistant-pending-cancels";
 
@@ -684,6 +692,51 @@ export function useAssistantWorkspaceController() {
     }
   }, [patchConversation]);
   loadEarlierMessagesRef.current = loadEarlierMessages;
+
+  // Fetch the open conversation fresh: a turn may have finished in another
+  // tab or device, or while this tab was not watching it.
+  const refreshConversationRef = useRef(null);
+  const refreshConversation = useCallback(async (conversationId) => {
+    if (!conversationId || loadingEarlierRef.current) return;
+    refreshConversationRef.current?.abort();
+    const controller = new AbortController();
+    refreshConversationRef.current = controller;
+    try {
+      const page = await getAssistantConversation(conversationId, { signal: controller.signal });
+      // Only a well-formed page can say what the conversation contains.
+      if (controller.signal.aborted || !mountedRef.current || !Array.isArray(page?.messages)) return;
+      const serverMessages = page.messages;
+      patchConversation(conversationId, (conversation) => {
+        const firstServerId = serverMessages[0]?.id;
+        const keepsOlder = Boolean(firstServerId) && conversation.messages.findIndex((message) => message.id === firstServerId) > 0;
+        return {
+          ...conversation,
+          messages: mergeServerMessages(conversation.messages, serverMessages),
+          hasMoreMessages: keepsOlder ? conversation.hasMoreMessages : Boolean(page?.hasMoreMessages),
+        };
+      });
+    } catch {
+      // The next switch or focus retries; the cached copy stays usable.
+    } finally {
+      if (refreshConversationRef.current === controller) refreshConversationRef.current = null;
+    }
+  }, [patchConversation]);
+
+  useEffect(() => {
+    if (!auth.isAuthenticated || !activeId || loading) return undefined;
+    void refreshConversation(activeId);
+    const onVisible = () => {
+      if (document.visibilityState === "hidden") return;
+      void refreshConversation(activeIdRef.current);
+    };
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+      refreshConversationRef.current?.abort();
+    };
+  }, [activeId, auth.isAuthenticated, loading, refreshConversation]);
 
   const submitMessageFeedback = useCallback(async (message, rating) => {
     const conversationId = activeConversation?.id;
@@ -1269,7 +1322,7 @@ export function useAssistantWorkspaceController() {
           ? listAssistantConversations({ signal: controller.signal })
           : Promise.resolve([]),
         signedIn
-          ? listActiveAssistantRuns({ signal: controller.signal })
+          ? listActiveAssistantRuns({ workspace: "assistant", signal: controller.signal })
           : Promise.resolve([]),
         fetchRuntimeConfig(),
       ]);
@@ -1359,7 +1412,7 @@ export function useAssistantWorkspaceController() {
           else if (pendingMode !== "image" && availableConversation.some((item) => item.model === pending.config.model)) setConversationModel(pending.config.model);
         }
       }
-      if (runResult.status === "fulfilled" && runResult.value.length) {
+      if (runResult.status === "fulfilled") {
         const runs = runResult.value.filter((item) => rows.some((conversation) => conversation.id === item.conversationId));
         const running = runs.filter((run) => run.status === "running");
         setActiveRuns(Object.fromEntries(running.map((run) => [run.conversationId, run])));
@@ -2309,7 +2362,7 @@ export function useAssistantWorkspaceController() {
   }, [clearConversationRun, monitorRun, patchConversation]);
 
   // 返回 true 表示任务已经创建；返回 false 表示这次没能创建出来，调用方需要把入口还给用户。
-  const launchRun = useCallback(async ({ conversationId, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId = "", proposalSourceMessageId = "", autoApproved = false, maskEdit = null }) => {
+  const launchRun = useCallback(async ({ conversationId, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId = "", proposalSourceMessageId = "", autoApproved = false, maskEdit = null, onNotCreated = null }) => {
     const controller = new AbortController();
     let launchedRun = {};
     try {
@@ -2325,7 +2378,19 @@ export function useAssistantWorkspaceController() {
       });
       if (imageSettings.sizeError) throw new Error(imageSettings.sizeError);
       const includeImageParameters = responseMode === "image" || responseMode === "agent";
+      // Q&A and Agent turns go to the v2 engine, which hands image creation,
+      // web search and workspace tools back to the original engine itself.
+      // Inputs v2 does not read yet keep the original path.
+      const useEngineV2 = responseMode !== "image"
+        && !(userMessage.referenceImages || []).length
+        && !(userMessage.attachments || []).length
+        && !userMessage.quoted
+        && !userMessage.skill
+        && !maskEdit
+        && !proposalSourceMessageId
+        && !(assistantMessage.imagePlanItems || userMessage.imagePlanItems || []).length;
       const created = await createAssistantRun({
+        ...(useEngineV2 ? { engine: "v2", timezone: browserTimezone() } : {}),
         conversationId,
         idempotencyKey: assistantMessage.id,
         prompt,
@@ -2395,6 +2460,7 @@ export function useAssistantWorkspaceController() {
       }
       clearConversationRun(conversationId, launchedRun.id);
       removeQueuedRun(launchedRun.id);
+      if (!launchedRun.id && error?.name !== "AbortError") onNotCreated?.(error);
       return false;
     } finally {
       if (launchedRun.id && runControllersRef.current.get(launchedRun.id) === controller) runControllersRef.current.delete(launchedRun.id);
@@ -2559,7 +2625,21 @@ export function useAssistantWorkspaceController() {
     setQuotedMessage(null);
     scrollToBottom();
     controller.abort();
-    await launchRun({ conversationId: conversation.id, prompt, userMessage, assistantMessage, responseMode });
+    const sentDraft = draftRef.current;
+    const sentReferences = references;
+    const sentDocuments = documents;
+    await launchRun({
+      conversationId: conversation.id, prompt, userMessage, assistantMessage, responseMode,
+      onNotCreated: () => {
+        // Nothing was created: put the user's input back unless they have
+        // already started typing something new.
+        if (!mountedRef.current || draftRef.current.trim()) return;
+        setDraft(sentDraft || prompt);
+        setReferences(sentReferences);
+        setDocuments(sentDocuments);
+        if (currentQuote) setQuotedMessage(currentQuote);
+      },
+    });
   }, [activeConversation, activeReasoningEffort, activeRuns, availableRatios, conversationHasWork, conversationModel, conversationModels, creationType, documents, generationCount, generationQuality, generationRatio, generationResolution, generationSize, imageModel, imageModels, launchRun, maxImages, maxReferences, patchConversation, quotedMessage, references, scrollToBottom, selectedImageModel]);
 
   useEffect(() => {
@@ -2640,10 +2720,6 @@ export function useAssistantWorkspaceController() {
       } else if (documents.some((item) => item.status !== "ready")) {
         notificationService.warning("请移除解析失败的文档后再发送");
       }
-      return;
-    }
-    if (creationType === "chat" && assistantPromptRequestsAgent(draftText)) {
-      notificationService.info("问答模式仅提供回答，请切换到 Agent 或图片模式执行此操作");
       return;
     }
     const { responseMode, sendModel, requestedCount } = resolveAssistantSend(draftText);

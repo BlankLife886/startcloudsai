@@ -1067,6 +1067,11 @@ function renderAssistantMarkdownHtml(content, { streaming = false } = {}) {
   const root = document.createElement("div");
   root.innerHTML = clean;
   root.querySelectorAll("a").forEach((link) => {
+    const href = link.getAttribute("href") || "";
+    if (href.startsWith("/") && !href.startsWith("//")) {
+      link.dataset.inApp = "true";
+      return;
+    }
     link.target = "_blank";
     link.rel = "noopener noreferrer";
   });

@@ -255,9 +255,15 @@ function abortError() {
   }
 }
 
+// Long runs are never abandoned: after a few minutes polling slows down
+// instead of stopping, so a slow generation still lands on screen. Callers
+// that want a hard limit pass maxWaitMs.
+const SLOW_POLL_AFTER_MS = 5 * 60 * 1000
+const SLOW_POLL_MS = 5000
+
 export async function waitForAssistantRun(
   id,
-  { signal, onUpdate, intervalMs = 700, maxWaitMs = 15 * 60 * 1000 } = {},
+  { signal, onUpdate, intervalMs = 700, maxWaitMs = 0 } = {},
 ) {
   const startedAt = Date.now()
   let transientFailures = 0
@@ -285,7 +291,7 @@ export async function waitForAssistantRun(
     }
     onUpdate?.(data)
     if (['succeeded', 'failed', 'canceled'].includes(data?.run?.status)) return data
-    await waitForAssistantDelay(intervalMs, signal)
+    await waitForAssistantDelay(Date.now() - startedAt > SLOW_POLL_AFTER_MS ? Math.max(intervalMs, SLOW_POLL_MS) : intervalMs, signal)
   }
 }
 

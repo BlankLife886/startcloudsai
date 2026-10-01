@@ -178,22 +178,20 @@ test.describe('React assistant workspace contract', () => {
 
     await expect(page.locator('.message--assistant')).toContainText('已完成你的创作请求。')
     expect(conversationBody).toEqual({ title: '新对话', workspace: 'assistant' })
+    // Q&A mode no longer blocks or re-labels the request in the browser: it
+    // goes to the v2 engine and the server decides whether the turn needs the
+    // Agent (it upgrades image requests and attaches the image catalog).
     expect(runBody).toMatchObject({
       conversationId: 'conversation-new',
       prompt: '请帮我设计一个简洁的品牌图标',
       userMessageContent: '请帮我设计一个简洁的品牌图标',
-      mode: 'agent',
+      mode: 'chat',
+      engine: 'v2',
       referenceImages: [],
       model: 'chat-basic',
       count: 1,
-      serviceKey: 'assistant_image',
-      ratio: 'auto',
-      resolution: '1K',
-      requestSize: 'auto',
-      width: 1024,
-      height: 1024,
-      quality: 'low',
     })
+    expect(typeof runBody.timezone).toBe('string')
     expect(runBody.clientUserMessageId).toMatch(/^[0-9a-f-]{36}$/)
     expect(runBody.clientAssistantMessageId).toMatch(/^[0-9a-f-]{36}$/)
   })

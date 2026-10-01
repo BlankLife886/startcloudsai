@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate } from "react-router";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { formatMessageDate, generatedImageRatioLabel, messageDateTime, messageStatus, uid } from "./domain/assistantMessages.js";
@@ -64,6 +65,7 @@ import {
   useElapsedMs,
 } from "./assistantWorkspaceCore.jsx";
 import { AssistantPreviewImage, ModelMenuPrice } from "./AssistantWorkspaceUi.jsx";
+import { AssistantDataViews } from "./AssistantDataViews.jsx";
 
 
 function GeneratedImageGrid({ message, imageModels, loadedImages, failedImages, imageRetryVersions, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference }) {
@@ -151,6 +153,7 @@ function AssistantReasoningToggle({ text, pending, open, onToggle }) {
 }
 
 function AssistantMarkdown({ content, streaming, highlightQuery = "" }) {
+  const navigate = useNavigate();
   const rootRef = useRef(null);
   const targetRef = useRef("");
   const revealedRef = useRef("");
@@ -254,6 +257,13 @@ function AssistantMarkdown({ content, streaming, highlightQuery = "" }) {
   useEffect(() => () => stopStream(), []);
 
   const handleClick = async (event) => {
+    // In-app links (e.g. /wallet) open inside the app instead of a new tab.
+    const inApp = event.target.closest("a[data-in-app='true']");
+    if (inApp && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+      event.preventDefault();
+      navigate(inApp.getAttribute("href"));
+      return;
+    }
     const button = event.target.closest("[data-copy-code]");
     const block = button?.closest(".assistant-code");
     const code = block?.dataset.code ?? block?.querySelector(".assistant-code-raw")?.value;
@@ -1441,6 +1451,7 @@ function AssistantMessageRow({ message, turnId, showDate, expanded, copied, gene
             {message.role === "assistant" && <AssistantPlan steps={message.plan} />}
             {message.role === "assistant" && message.kind === "proposal" && message.proposal && <AgentProposal message={message} imageModels={imageModels} generating={generating} executed={proposalExecuted} attachedReferences={attachedReferences} autoApprove={autoApprove} autoApproveBudgetCents={autoApproveBudgetCents} autoApproved={autoApproved} maxMessageCharacters={maxMessageCharacters} onChange={onProposalChange} onDismiss={onProposalDismiss} onRestore={onProposalRestore} onApprove={onProposalApprove} onOpenImage={onOpenImage} />}
             {message.role === "assistant" && message.kind !== "proposal" && message.content && message.content !== message.error ? <AssistantMarkdown content={message.content} streaming={message.pending} highlightQuery={searchHit ? searchQuery : ""} /> : message.role !== "assistant" && message.content && message.content !== message.error ? <p>{searchHit ? highlightSearchNodes(message.content, searchQuery) : message.content}</p> : null}
+            {message.role === "assistant" && <AssistantDataViews views={message.dataViews} />}
             {message.role === "assistant" && <AssistantWebSources searches={message.webSearches} />}
             {message.role === "assistant" && <AssistantArtifacts items={message.artifacts} />}
             {message.role === "assistant" && <AssistantToolActions actions={message.toolActions} busyId={toolActionBusyId} onExecute={(action) => onToolAction?.(message, action)} />}

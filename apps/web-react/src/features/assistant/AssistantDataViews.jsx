@@ -1,5 +1,7 @@
+// 统计与明细结果卡片：v2 引擎的数据工具返回结构化结果，这里按原界面风格渲染。
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
+import './assistant-data-views.css'
 
 const TIME_DIMENSIONS = new Set(['day', 'week', 'month'])
 const ORDERED_DIMENSIONS = new Set(['weekday', 'hour'])
@@ -58,14 +60,14 @@ function niceMax(value) {
 
 function StatTiles({ metrics, totals, previousTotals }) {
   return (
-    <div className="av2-tiles">
+    <div className="assistant-data-tiles">
       {metrics.map((metric) => {
         const delta = previousTotals ? formatDelta(totals[metric.id], previousTotals[metric.id], metric.unit) : null
         return (
-          <div className="av2-tile" key={metric.id}>
-            <span className="av2-tile-label">{metric.label}</span>
-            <strong className="av2-tile-value">{formatMetricValue(totals[metric.id], metric.unit)}</strong>
-            {delta && <span className="av2-tile-delta"><span aria-hidden="true">{delta.arrow}</span> {delta.text}</span>}
+          <div className="assistant-data-tile" key={metric.id}>
+            <span className="assistant-data-tile-label">{metric.label}</span>
+            <strong className="assistant-data-tile-value">{formatMetricValue(totals[metric.id], metric.unit)}</strong>
+            {delta && <span className="assistant-data-tile-delta"><span aria-hidden="true">{delta.arrow}</span> {delta.text}</span>}
           </div>
         )
       })}
@@ -97,33 +99,33 @@ function TrendChart({ metric, rows, dimension }) {
   }
   const active = hover >= 0 ? points[hover] : null
   return (
-    <figure className="av2-chart" ref={ref}>
+    <figure className="assistant-data-chart" ref={ref}>
       <figcaption>{metric.label}</figcaption>
       <svg width={width} height={height} role="img" aria-label={`${metric.label}趋势`}
         onMouseMove={onMove} onMouseLeave={() => setHover(-1)}>
         {ticks.map((tick) => (
           <g key={tick}>
-            <line className="av2-grid" x1={pad.left} x2={width - pad.right} y1={y(tick)} y2={y(tick)} />
-            <text className="av2-axis" x={pad.left - 6} y={y(tick) + 4} textAnchor="end">{formatMetricValue(tick, metric.unit === '%' ? '%' : '')}</text>
+            <line className="assistant-data-grid" x1={pad.left} x2={width - pad.right} y1={y(tick)} y2={y(tick)} />
+            <text className="assistant-data-axis" x={pad.left - 6} y={y(tick) + 4} textAnchor="end">{formatMetricValue(tick, metric.unit === '%' ? '%' : '')}</text>
           </g>
         ))}
         {points.map((point, index) => (index % labelEvery === 0 || index === points.length - 1) && (
-          <text key={point.label} className="av2-axis" x={x(index)} y={height - 6} textAnchor="middle">{String(point.label).slice(5) || point.label}</text>
+          <text key={point.label} className="assistant-data-axis" x={x(index)} y={height - 6} textAnchor="middle">{String(point.label).slice(5) || point.label}</text>
         ))}
-        <path className="av2-area" d={area} />
-        <path className="av2-line" d={line} />
+        <path className="assistant-data-area" d={area} />
+        <path className="assistant-data-line" d={line} />
         {points.length > 0 && (
-          <circle className="av2-dot" cx={x(points.length - 1)} cy={y(points[points.length - 1].value)} r="4" />
+          <circle className="assistant-data-dot" cx={x(points.length - 1)} cy={y(points[points.length - 1].value)} r="4" />
         )}
         {active && (
           <g>
-            <line className="av2-crosshair" x1={x(hover)} x2={x(hover)} y1={pad.top} y2={pad.top + plotHeight} />
-            <circle className="av2-dot" cx={x(hover)} cy={y(active.value)} r="4" />
+            <line className="assistant-data-crosshair" x1={x(hover)} x2={x(hover)} y1={pad.top} y2={pad.top + plotHeight} />
+            <circle className="assistant-data-dot" cx={x(hover)} cy={y(active.value)} r="4" />
           </g>
         )}
       </svg>
       {active && (
-        <div className="av2-tooltip" style={{ left: Math.min(width - 140, Math.max(0, x(hover) - 70)) }}>
+        <div className="assistant-data-tooltip" style={{ left: Math.min(width - 140, Math.max(0, x(hover) - 70)) }}>
           <span>{active.label}</span>
           <strong>{formatMetricValue(active.value, metric.unit)}</strong>
         </div>
@@ -144,7 +146,7 @@ function BarChart({ metric, rows, dimension }) {
   const plot = Math.max(40, width - labelWidth - valueWidth - 16)
   const max = Math.max(...items.map((item) => item.value), 0) || 1
   return (
-    <figure className="av2-chart" ref={ref}>
+    <figure className="assistant-data-chart" ref={ref}>
       <figcaption>{metric.label}{rows.length > MAX_BARS ? `（前 ${MAX_BARS} 项）` : ''}</figcaption>
       <svg width={width} height={height} role="img" aria-label={`${metric.label}对比`}>
         {items.map((item, index) => {
@@ -156,10 +158,10 @@ function BarChart({ metric, rows, dimension }) {
           const path = length <= 0 ? '' : `M${x0},${top} H${x0 + length - radius} Q${x0 + length},${top} ${x0 + length},${top + radius} V${top + thickness - radius} Q${x0 + length},${top + thickness} ${x0 + length - radius},${top + thickness} H${x0} Z`
           return (
             <g key={item.label} onMouseEnter={() => setHover(index)} onMouseLeave={() => setHover(-1)} className={hover === index ? 'is-hover' : ''}>
-              <rect className="av2-hit" x="0" y={index * band} width={width} height={band} />
-              <text className="av2-bar-label" x={labelWidth} y={top + thickness - 3} textAnchor="end">{item.label}</text>
-              <path className="av2-bar" d={path} />
-              <text className="av2-bar-value" x={x0 + length + 6} y={top + thickness - 3}>{formatMetricValue(item.value, metric.unit)}</text>
+              <rect className="assistant-data-hit" x="0" y={index * band} width={width} height={band} />
+              <text className="assistant-data-bar-label" x={labelWidth} y={top + thickness - 3} textAnchor="end">{item.label}</text>
+              <path className="assistant-data-bar" d={path} />
+              <text className="assistant-data-bar-value" x={x0 + length + 6} y={top + thickness - 3}>{formatMetricValue(item.value, metric.unit)}</text>
             </g>
           )
         })}
@@ -170,8 +172,8 @@ function BarChart({ metric, rows, dimension }) {
 
 function StatsTable({ metrics, dimensions, rows, totals, showPrevious }) {
   return (
-    <div className="av2-table-wrap">
-      <table className="av2-table">
+    <div className="assistant-data-table-wrap">
+      <table className="assistant-data-table">
         <thead>
           <tr>
             {dimensions.map((dimension) => <th key={dimension.id} scope="col">{dimension.label}</th>)}
@@ -224,27 +226,27 @@ function StatsView({ data }) {
   if (!metrics.length) return null
   const range = data?.range
   return (
-    <section className="av2-data" aria-label="统计结果">
-      <header className="av2-data-head">
+    <section className="assistant-data" aria-label="统计结果">
+      <header className="assistant-data-head">
         <span>{range?.label}{range?.from ? ` · ${range.from} 至 ${range.to}` : ''}</span>
-        {data?.previousRange && <span className="av2-data-sub">对比 {data.previousRange.from} 至 {data.previousRange.to}</span>}
+        {data?.previousRange && <span className="assistant-data-sub">对比 {data.previousRange.from} 至 {data.previousRange.to}</span>}
       </header>
       <StatTiles metrics={metrics} totals={totals} previousTotals={previousTotals} />
       {chart}
-      {dimensions.length > 1 && !showTable && <p className="av2-data-note">分组较多，已用表格展示。</p>}
+      {dimensions.length > 1 && !showTable && <p className="assistant-data-note">分组较多，已用表格展示。</p>}
       {dimensions.length > 0 && (
         <>
           {(showTable || dimensions.length > 1) && (
             <StatsTable metrics={metrics} dimensions={dimensions} rows={rows} totals={totals} showPrevious={false} />
           )}
           {dimensions.length === 1 && (
-            <button type="button" className="av2-link-button" onClick={() => setShowTable((value) => !value)}>
+            <button type="button" className="assistant-data-toggle" onClick={() => setShowTable((value) => !value)}>
               {showTable ? '收起表格' : '查看表格'}
             </button>
           )}
         </>
       )}
-      {data?.truncated && <p className="av2-data-note">结果较多，只展示了前 500 组。</p>}
+      {data?.truncated && <p className="assistant-data-note">结果较多，只展示了前 500 组。</p>}
     </section>
   )
 }
@@ -253,15 +255,15 @@ function RecordsView({ data }) {
   const records = Array.isArray(data?.records) ? data.records : []
   const type = data?.type
   if (!records.length) {
-    return <section className="av2-data"><p className="av2-data-note">这段时间没有相关记录。</p></section>
+    return <section className="assistant-data"><p className="assistant-data-note">这段时间没有相关记录。</p></section>
   }
   return (
-    <section className="av2-data" aria-label="明细记录">
-      <header className="av2-data-head">
+    <section className="assistant-data" aria-label="明细记录">
+      <header className="assistant-data-head">
         <span>{type === 'creations' ? '创作记录' : type === 'income' ? '入账明细' : '消耗明细'} · {data?.range?.label}</span>
       </header>
-      <div className="av2-table-wrap">
-        <table className="av2-table">
+      <div className="assistant-data-table-wrap">
+        <table className="assistant-data-table">
           <thead>
             <tr>
               <th scope="col">时间</th>
@@ -278,7 +280,7 @@ function RecordsView({ data }) {
                 <td>{record.workspaceLabel}</td>
                 <td>{type === 'creations' ? record.statusLabel : record.sourceLabel}</td>
                 <td className="is-number">{type === 'creations' ? (record.images || 0) : formatMetricValue(record.points)}</td>
-                <td className="av2-record-text">
+                <td className="assistant-data-record-text">
                   {record.link ? <Link to={record.link}>{record.prompt || record.note || '查看'}</Link> : (record.prompt || record.note || '—')}
                 </td>
               </tr>
@@ -286,12 +288,17 @@ function RecordsView({ data }) {
           </tbody>
         </table>
       </div>
-      {data?.hasMore && <p className="av2-data-note">还有更多记录，可以让我按条件继续筛选。</p>}
+      {data?.hasMore && <p className="assistant-data-note">还有更多记录，可以让我按条件继续筛选。</p>}
     </section>
   )
 }
 
-export function V2DataView({ view }) {
+export function AssistantDataViews({ views }) {
+  if (!Array.isArray(views) || !views.length) return null
+  return views.map((view, index) => <AssistantDataView key={`${view?.tool || 'view'}-${index}`} view={view} />)
+}
+
+export function AssistantDataView({ view }) {
   if (view?.view === 'stats') return <StatsView data={view.data} />
   if (view?.view === 'records') return <RecordsView data={view.data} />
   return null
