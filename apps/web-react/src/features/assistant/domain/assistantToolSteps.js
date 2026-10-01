@@ -17,6 +17,8 @@ const TOOL_LABELS = {
   delivery_export: '导出交付包',
   site_operator: '站内操作',
   propose_image_action: '整理图片方案',
+  my_stats_query: '统计我的数据',
+  my_records_list: '查看我的明细',
 }
 
 const TOOL_ICONS = {
@@ -35,6 +37,8 @@ const TOOL_ICONS = {
   delivery_export: 'bi-file-earmark-zip',
   site_operator: 'bi-compass',
   propose_image_action: 'bi-sliders',
+  my_stats_query: 'bi-bar-chart-line',
+  my_records_list: 'bi-list-ul',
 }
 
 // 摘要优先读这些字段：覆盖现有工具 schema，未知工具回落到第一个短字符串。
