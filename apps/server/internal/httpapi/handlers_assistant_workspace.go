@@ -102,6 +102,10 @@ type assistantRunIn struct {
 	MaskRect                 string                      `json:"maskRect"`
 	CanvasSnapshot           json.RawMessage             `json:"canvasSnapshot"`
 	Queue                    bool                        `json:"queue"`
+	// Engine "v2" routes the run to the rebuilt assistant orchestrator.
+	Engine string `json:"engine"`
+	// Timezone is the browser's IANA zone; v2 uses it for date questions.
+	Timezone string `json:"timezone"`
 	// InlineText asks a chat run to answer in the message body only: no downloadable-file (files_create) mode, even
 	// when the prompt happens to mention files. Canvas plugins that parse the reply (e.g. generated HTML) rely on it.
 	InlineText bool `json:"inlineText"`
@@ -767,6 +771,36 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		return
 	}
 	requestedMode := body.Mode
+	body.Engine = strings.TrimSpace(body.Engine)
+	engineV2 := body.Engine == assistantEngineV2
+	if body.Engine != "" && !engineV2 {
+		fail(c, apperr.E("validation_error", "engine: 不支持的助手引擎", 422))
+		return
+	}
+	body.Timezone = strings.TrimSpace(body.Timezone)
+	if body.Timezone != "" {
+		if _, tzErr := time.LoadLocation(body.Timezone); tzErr != nil || len(body.Timezone) > 64 || body.Timezone == "Local" {
+			body.Timezone = ""
+		}
+	}
+	if engineV2 {
+		// v2 decides what each turn needs itself; the user does not pick a mode.
+		// Attachments and image parameters join as v2 gains those capabilities.
+		if body.Mode != "agent" {
+			fail(c, apperr.E("validation_error", "新版助手只接受 agent 模式", 422))
+			return
+		}
+		if len(body.ReferenceImages) > 0 || len(body.Attachments) > 0 || len(body.ImagePlanItems) > 0 ||
+			body.MaskImage != nil || len(body.CanvasSnapshot) > 0 {
+			fail(c, apperr.E("validation_error", "新版助手暂不支持附件和图片参数", 422))
+			return
+		}
+		if workspace := strings.TrimSpace(body.Workspace); workspace != "" && workspace != modelconfig.WorkspaceAssistant {
+			fail(c, apperr.E("validation_error", "新版助手只用于 AI 助手工作区", 422))
+			return
+		}
+		body.ServiceKey = ""
+	}
 	body.Attachments, err = normalizeAssistantFileAttachments(body.Attachments)
 	if err != nil {
 		fail(c, err)
@@ -901,7 +935,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		return
 	}
 	editableKind := ""
-	if workspace == modelconfig.WorkspaceAssistant && body.Mode != "image" {
+	if workspace == modelconfig.WorkspaceAssistant && body.Mode != "image" && !engineV2 {
 		editableKind = assistanttools.DedicatedEditableFileKindRequested(body.Prompt, len(body.Attachments) > 0)
 	}
 	if editableKind != "" {
@@ -1196,6 +1230,12 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		"serviceKey": body.ServiceKey, "fastMode": body.FastMode, "_serviceProvider": serviceProvider,
 		"requestedMode": requestedMode,
 		"workspace":     workspace,
+	}
+	if engineV2 {
+		params["_engine"] = assistantEngineV2
+	}
+	if body.Timezone != "" {
+		params["timezone"] = body.Timezone
 	}
 	if len(imagePlanItems) > 0 {
 		params["imagePlanItems"] = imagePlanItems
@@ -1703,6 +1743,9 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	respondCreated(c, payload)
 }
+
+// assistantEngineV2 matches worker.AssistantEngineV2.
+const assistantEngineV2 = "v2"
 
 func assistantToolExecutionMode(workspace, mode, prompt string) string {
 	if workspace == modelconfig.WorkspaceAssistant && mode == "chat" && assistanttools.AgentExecutionRequested(prompt) {

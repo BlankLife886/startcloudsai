@@ -34,6 +34,26 @@ const (
 	RiskWrite Risk = "write"
 )
 
+// Level grades what a tool does to the user, and therefore what approval the
+// v2 orchestrator needs before running it:
+//
+//   - LevelRead: reads the user's own data; runs directly.
+//   - LevelSpend: consumes points; runs within an approved budget or after a
+//     per-step confirmation, depending on the user's payment setting.
+//   - LevelChange: modifies or deletes user content; needs confirmation and
+//     should be undoable.
+//
+// Account and payment operations (purchases, refunds, passwords, API keys)
+// have no level on purpose: the assistant explains and links to the page
+// where the user acts, but never performs them.
+type Level string
+
+const (
+	LevelRead   Level = "read"
+	LevelSpend  Level = "spend"
+	LevelChange Level = "change"
+)
+
 type Manifest struct {
 	ID          string
 	Version     string
@@ -42,11 +62,13 @@ type Manifest struct {
 }
 
 type Definition struct {
-	Name           string
-	Description    string
-	InputSchema    map[string]any
-	Permissions    []Permission
-	Risk           Risk
+	Name        string
+	Description string
+	InputSchema map[string]any
+	Permissions []Permission
+	Risk        Risk
+	// Level defaults from Risk: read → LevelRead, write → LevelChange.
+	Level          Level
 	Timeout        time.Duration
 	MaxResultBytes int
 	Strict         bool
@@ -60,6 +82,8 @@ type Invocation struct {
 	Arguments          json.RawMessage
 	Permissions        map[Permission]bool
 	FileIDs            []uuid.UUID
+	// Timezone is the user's IANA zone for date-bucketed tools.
+	Timezone string
 }
 
 type Result struct {
@@ -125,6 +149,23 @@ func (r *Registry) Register(manifest Manifest) error {
 		if definition.Risk != RiskRead && definition.Risk != RiskWrite {
 			return fmt.Errorf("assistant tool %s has invalid risk %q", definition.Name, definition.Risk)
 		}
+		switch definition.Level {
+		case "":
+			definition.Level = LevelRead
+			if definition.Risk == RiskWrite {
+				definition.Level = LevelChange
+			}
+		case LevelRead:
+			if definition.Risk != RiskRead {
+				return fmt.Errorf("assistant tool %s is level read but risk %q", definition.Name, definition.Risk)
+			}
+		case LevelSpend, LevelChange:
+			if definition.Risk != RiskWrite {
+				return fmt.Errorf("assistant tool %s is level %s but risk %q", definition.Name, definition.Level, definition.Risk)
+			}
+		default:
+			return fmt.Errorf("assistant tool %s has invalid level %q", definition.Name, definition.Level)
+		}
 		if definition.Timeout <= 0 {
 			definition.Timeout = 10 * time.Second
 		}
@@ -151,6 +192,36 @@ func (r *Registry) Has(name string) bool {
 	}
 	_, ok := r.tools[strings.TrimSpace(name)]
 	return ok
+}
+
+// Level reports a registered tool's level; ok is false for unknown tools.
+func (r *Registry) Level(name string) (Level, bool) {
+	if r == nil {
+		return "", false
+	}
+	tool, ok := r.tools[strings.TrimSpace(name)]
+	return tool.def.Level, ok
+}
+
+// Names lists every registered tool name, sorted.
+func (r *Registry) Names() []string {
+	if r == nil {
+		return nil
+	}
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Domain reports which manifest registered a tool.
+func (r *Registry) Domain(name string) string {
+	if r == nil {
+		return ""
+	}
+	return r.tools[strings.TrimSpace(name)].pluginID
 }
 
 func (r *Registry) Definitions(names []string) ([]sub2api.FunctionTool, error) {

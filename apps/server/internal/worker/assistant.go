@@ -583,6 +583,9 @@ func (w *Worker) clearAssistantMessageOutputMetadataTx(ctx context.Context, q st
 }
 
 func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRun) error {
+	if assistantRunUsesV2(run) {
+		return w.executeAssistantV2(ctx, run)
+	}
 	mode := assistantExecutionMode(run.Mode, run.Prompt)
 	if store.AssistantRunIsImage(run) {
 		mode = "image"
