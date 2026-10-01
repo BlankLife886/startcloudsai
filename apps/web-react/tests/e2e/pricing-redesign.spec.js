@@ -444,11 +444,11 @@ test('pricing request failure keeps preview and empty states usable', async ({ p
   await expect(page.locator('.pp-plan.is-loading')).toHaveCount(0)
 })
 
-for (const [status, message] of [['pending', '你有一笔未支付订单'], ['uncertain', '你有一笔支付结果待核实的订单'], ['paid', '你有一笔正在确认到账的订单']]) {
+for (const [status, message] of [['pending', '你有一笔未支付订单'], ['confirming', '你有一笔正在确认到账的订单']]) {
   test(`plan selection warns about an existing ${status} order before checkout`, async ({ page }) => {
     await page.route('**/api/v1/auth/session', route => fulfillJson(route, { user: { id: 'pricing-user', email: 'pricing@example.com' } }))
     await page.route('**/api/v1/plans', route => fulfillJson(route, { items: plans, paymentEnabled: true, paymentMethods: ['alipay'] }))
-    await page.route('**/api/v1/orders?*', route => fulfillJson(route, { items: new URL(route.request().url()).searchParams.get('status') === status ? [{ id: 'existing', planId: 'monthly', planName: '专业创作者计划', amountCents: 9900, status }] : [] }))
+    await page.route('**/api/v1/orders?*', route => fulfillJson(route, { items: new URL(route.request().url()).searchParams.get('status') === 'unsettled' ? [{ id: 'existing', planId: 'monthly', planName: '专业创作者计划', amountCents: 9900, status: 'pending', ...(status === 'confirming' ? { paidAt: '2026-08-11T04:00:00Z', paymentState: 'confirming' } : {}) }] : [] }))
     let creates = 0
     await page.route('**/api/v1/orders', route => { creates++; return fulfillJson(route, {}) })
     await page.goto('/pricing')
@@ -472,7 +472,7 @@ test('plan selection can retry a failed order check and still reuse the same pla
   let failCheck = true
   await page.route('**/api/v1/orders?*', route => failCheck
     ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ success: false }) })
-    : fulfillJson(route, { items: new URL(route.request().url()).searchParams.get('status') === 'pending' ? [{ id: 'existing', planId: 'pack', status: 'pending' }] : [] }))
+    : fulfillJson(route, { items: new URL(route.request().url()).searchParams.get('status') === 'unsettled' ? [{ id: 'existing', planId: 'pack', status: 'pending' }] : [] }))
   await page.goto('/pricing')
   await page.getByRole('button', { name: '选择此方案', exact: true }).click()
   const dialog = page.getByRole('dialog')

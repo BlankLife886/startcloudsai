@@ -25,7 +25,7 @@ func TestSubscriptionLifecycleAPI(t *testing.T) {
 	ctx := context.Background()
 	st := testdb.Setup(t)
 	user, seed := makeOrder(t, st)
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, seed.ID, "failed"); err != nil {
+	if _, err := store.CloseOrder(ctx, st.Pool, seed.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
 	makePlan := func(tier int, price, points int64) *store.Plan {

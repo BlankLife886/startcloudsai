@@ -5,7 +5,7 @@ import { useLocale } from "../i18n/index.js";
 import { apiGet, apiPost } from "../legacy-modules/services/apiClient.js";
 import { formatCents, formatPoints } from "../legacy-modules/services/billingApi.js";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
-import { CheckoutOrderStage, mergePaymentOrder } from "./CheckoutOrderStage.jsx";
+import { CheckoutOrderStage, isUnsettledOrder, mergePaymentOrder } from "./CheckoutOrderStage.jsx";
 import { PaymentMethodSwitch } from "./PaymentMethodSwitch.jsx";
 import { upgradeComparison } from './subscriptionUpgrade.js';
 import "@react/legacy-styles/generated/views/PricingView.css";
@@ -14,7 +14,7 @@ import "./PricingCheckout.css";
 
 function mergeObservedOrder(previous, next) {
   if (previous?.status === "completed" && next.status !== "completed") return previous;
-  if (["cancelled", "expired", "failed"].includes(previous?.status) && ["pending", "uncertain"].includes(next.status)) return previous;
+  if (["cancelled", "expired", "failed"].includes(previous?.status) && next.status === "pending") return previous;
   return mergePaymentOrder(previous, next);
 }
 
@@ -63,7 +63,7 @@ export function SubscriptionUpgradeCheckout({ quoteId, returnLabel = '返回订�
         }
         if (controller.signal.aborted) return;
         setMethods(paymentMethods);
-        setCheckout({ plan, quote, order, method: order?.paymentMethod || paymentMethods[0], checking: false, loading: false, error: order?.syncError || "" });
+        setCheckout({ plan, quote, order, method: order?.paymentMethod || paymentMethods[0], checking: false, loading: false, error: "" });
       } catch (error) {
         if (!controller.signal.aborted) setCheckout({ plan: {}, checking: false, checkFailed: true, error: error.message });
       }
@@ -91,7 +91,7 @@ export function SubscriptionUpgradeCheckout({ quoteId, returnLabel = '返回订�
 
   useEffect(() => {
     const order = checkout.order;
-    if (!order?.id || !["pending", "uncertain", "paid"].includes(order.status)) return;
+    if (!order?.id || !isUnsettledOrder(order)) return;
     const controller = new AbortController();
     let timer, inFlight = false, stopped = false;
     const poll = async () => {
@@ -105,8 +105,8 @@ export function SubscriptionUpgradeCheckout({ quoteId, returnLabel = '返回订�
         if (next?.id !== order.id) throw new Error("无法确认订单状态");
         const wallet = next.status === "completed" ? await apiGet("/me/wallet", { signal: controller.signal }).catch(() => null) : null;
         if (controller.signal.aborted) return;
-        terminal = ["completed", "cancelled", "expired", "failed"].includes(next.status);
-        setCheckout(value => value.order?.id === order.id ? { ...value, order: mergeObservedOrder(value.order, next), error: next.syncError || "" } : value);
+        terminal = !isUnsettledOrder(next);
+        setCheckout(value => value.order?.id === order.id ? { ...value, order: mergeObservedOrder(value.order, next), error: "" } : value);
         if (wallet) window.dispatchEvent(new CustomEvent("starclouds:wallet-updated", { detail: wallet }));
         if (terminal) callbacks.current.onChanged();
       } catch (error) {
@@ -136,7 +136,7 @@ export function SubscriptionUpgradeCheckout({ quoteId, returnLabel = '返回订�
       if (next.subscriptionChangeId !== quoteId) throw new Error("升级订单信息不匹配，请查看我的订单");
       const wallet = next.status === "completed" ? await apiGet("/me/wallet", { signal: controller.signal }).catch(() => null) : null;
       if (!mounted.current) return;
-      setCheckout(value => ({ ...value, order: mergeObservedOrder(value.order, next), method: next.paymentMethod || value.method, loading: false, cancelConfirm: false, error: next.syncError || "" }));
+      setCheckout(value => ({ ...value, order: mergeObservedOrder(value.order, next), method: next.paymentMethod || value.method, loading: false, cancelConfirm: false, error: "" }));
       callbacks.current.onChanged();
       if (wallet) window.dispatchEvent(new CustomEvent("starclouds:wallet-updated", { detail: wallet }));
     } catch (error) {
@@ -154,7 +154,7 @@ export function SubscriptionUpgradeCheckout({ quoteId, returnLabel = '返回订�
     <header className="pp-checkout__head"><div><h2 id="subscription-payment-title"><Wallet size={22} />{t("订阅升级支付")}</h2></div><button type="button" className="pp-icon-button" aria-label={t("关闭")} title={t("关闭")} disabled={checkout.loading} onClick={onClose}><X size={18} /></button></header>
     {checkout.checking ? <div className="pp-checkout__confirming" role="status"><LoaderCircle className="is-spinning" size={30} /><strong>{t("正在读取升级订单")}</strong></div>
       : checkout.checkFailed ? <div className="pp-checkout__confirming"><p className="pp-checkout__error" role="alert">{checkout.error}</p><button className="pp-checkout__submit" onClick={() => setVersion(value => value + 1)}><RefreshCw size={17} />{t("重新读取")}</button><Link to="/orders">{t("查看我的订单")}</Link></div>
-      : checkout.order ? <CheckoutOrderStage key={checkout.order.id} checkout={checkout} now={now} quotaText={checkout.plan.name} upgradeReturnLabel={returnLabel} onClose={onClose} onRetry={onClose} onCancel={() => changeOrder(true)} onRequestCancel={() => setCheckout(value => ({ ...value, cancelConfirm: true }))} onKeepPaying={() => setCheckout(value => ({ ...value, cancelConfirm: false }))} t={t} />
+      : checkout.order ? <CheckoutOrderStage key={checkout.order.id} checkout={checkout} now={now} quotaText={checkout.plan.name} upgradeReturnLabel={returnLabel} onClose={onClose} onRetry={onClose} onCancel={() => changeOrder(true)} onRequestCancel={() => setCheckout(value => ({ ...value, cancelConfirm: true }))} onKeepPaying={() => setCheckout(value => ({ ...value, cancelConfirm: false }))} onClaimPaid={claimed => setCheckout(value => ({ ...value, claimedPaid: claimed }))} t={t} />
       : checkout.quote?.status === "completed" ? <div className="pp-checkout__confirming"><strong>{t("订阅升级已完成")}</strong><button className="pp-checkout__submit" onClick={onClose}>{t(returnLabel)}</button></div>
       : <div className="pp-checkout__body">
         <div className="pp-upgrade-scroll" role="region" aria-label={t('升级方案与抵扣明细')} tabIndex={0}>

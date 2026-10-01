@@ -2,44 +2,52 @@ package store
 
 import (
 	"context"
-	"github.com/google/uuid"
 	"time"
+
+	"github.com/google/uuid"
 )
 
+// PrepareOrderPayment records the chosen method on a pending order right before
+// the provider order is created. If the process dies before the provider answer
+// is bound, the reconciler fails the order after two minutes.
 func PrepareOrderPayment(ctx context.Context, q Q, id uuid.UUID, method string) (*Order, error) {
-	return scanOrder(q.QueryRow(ctx, `UPDATE orders SET status='uncertain',payment_method=COALESCE(payment_method,$2),
-	 provider_pay_amount_cents=COALESCE(provider_pay_amount_cents,amount_cents),reconcile_after=now()+interval '1 minute',reconcile_lease_id=NULL,reconcile_lease_until=NULL
- WHERE id=$1 AND status IN ('pending','uncertain') AND provider_order_id IS NULL RETURNING `+orderCols, id, method))
+	return scanOrder(q.QueryRow(ctx, `UPDATE orders SET payment_method=$2,provider_pay_amount_cents=amount_cents,
+	 reconcile_after=now()+interval '2 minutes',reconcile_lease_id=NULL,reconcile_lease_until=NULL
+ WHERE id=$1 AND status='pending' AND provider_order_id IS NULL RETURNING `+orderCols, id, method))
 }
 
-func MarkOrderUncertain(ctx context.Context, q Q, id uuid.UUID) error {
-	_, err := q.Exec(ctx, `UPDATE orders SET status='uncertain' WHERE id=$1 AND status='pending'`, id)
+// RecordOrderPayment persists provider-confirmed payment before delivery runs in
+// its own transaction, so a delivery failure never loses the receipt.
+func RecordOrderPayment(ctx context.Context, q Q, id uuid.UUID) error {
+	_, err := q.Exec(ctx, `UPDATE orders SET paid_at=COALESCE(paid_at,now()),reconcile_after=now()+interval '30 seconds'
+	 WHERE id=$1 AND status<>'completed'`, id)
 	return err
 }
 
-func MarkOrderPaymentVerified(ctx context.Context, q Q, id uuid.UUID) error {
-	_, err := q.Exec(ctx, `UPDATE orders SET status='paid',paid_at=COALESCE(paid_at,now()),reconcile_after=now() WHERE id=$1 AND status IN ('uncertain','failed','cancelled')`, id)
+// MarkOrderChecked throttles provider lookups and keeps the latest lookup error.
+// It returns false when another caller checked the order within minInterval.
+func MarkOrderChecked(ctx context.Context, q Q, id uuid.UUID, minInterval time.Duration) (bool, error) {
+	tag, err := q.Exec(ctx, `UPDATE orders SET last_reconciled_at=now()
+	 WHERE id=$1 AND (last_reconciled_at IS NULL OR last_reconciled_at<=now()-make_interval(secs=>$2))`, id, minInterval.Seconds())
+	return tag.RowsAffected() > 0, err
+}
+
+func SetOrderCheckError(ctx context.Context, q Q, id uuid.UUID, message *string) error {
+	_, err := q.Exec(ctx, `UPDATE orders SET provider_check_error=$2 WHERE id=$1`, id, message)
 	return err
 }
 
-func ResolveUnboundOrderNotCreated(ctx context.Context, q Q, id uuid.UUID) (*Order, error) {
-	return scanOrder(q.QueryRow(ctx, `WITH closed AS (
- UPDATE orders SET status='failed',reconcile_after='infinity',reconcile_lease_id=NULL,reconcile_lease_until=NULL
- WHERE id=$1 AND status='uncertain' AND provider_order_id IS NULL RETURNING `+orderCols+`
-), changed_quotes AS (
- UPDATE subscription_changes SET status='cancelled',updated_at=now()
- WHERE id IN (SELECT subscription_change_id FROM closed) AND kind='upgrade' AND status='pending'
-) SELECT `+orderCols+` FROM closed`, id))
-}
-
-// Claims are short leases: failed processes cannot permanently remove work from the queue.
+// ClaimOrdersForReconciliation leases due orders that can still change state:
+// pending orders, paid-but-undelivered orders, and recently closed orders that
+// may still receive a late payment. Claims are short leases so a crashed
+// process cannot remove work from the queue.
 func ClaimOrdersForReconciliation(ctx context.Context, q Q, now time.Time, limit int) ([]*Order, error) {
 	token := uuid.New()
 	rows, err := q.Query(ctx, `UPDATE orders SET reconcile_lease_id=$3,reconcile_lease_until=$1+interval '2 minutes'
  WHERE id IN (SELECT id FROM orders WHERE provider='lanjing' AND reconcile_after<=$1
  AND (reconcile_lease_until IS NULL OR reconcile_lease_until<$1)
- AND (status IN ('pending','uncertain','paid','failed') OR created_at>=$1-interval '30 days')
- ORDER BY CASE WHEN status IN ('pending','uncertain','paid') THEN 0 ELSE 1 END,reconcile_after,created_at,id
+ AND (`+UnsettledOrderSQL+` OR (status IN ('expired','cancelled','failed') AND provider_order_id IS NOT NULL AND created_at>=$1-interval '25 hours'))
+ ORDER BY CASE WHEN `+UnsettledOrderSQL+` THEN 0 ELSE 1 END,reconcile_after,created_at,id
  LIMIT $2 FOR UPDATE SKIP LOCKED) RETURNING `+orderCols, now, min(max(limit, 1), 50), token)
 	if err != nil {
 		return nil, err

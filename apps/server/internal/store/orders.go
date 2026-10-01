@@ -18,7 +18,8 @@ const orderCols = `id, user_id, plan_id, amount_cents, grant_cents, bonus_cents,
 	provider_order_id, provider_pay_amount_cents, payment_method, provider_pay_url, requires_manual_amount,
 	provider_expires_at, paid_at, completed_at, created_at,
 	plan_name_snapshot, plan_kind_snapshot, plan_duration_days_snapshot, plan_daily_grant_snapshot, subscription_ends_at,
-	reconcile_attempts, reconcile_lease_id, subscription_starts_at,subscription_policy_snapshot,subscription_change_id,price_lock_eligible_snapshot,plan_revision_snapshot,recharge_policy_snapshot`
+	reconcile_attempts, reconcile_lease_id, subscription_starts_at,subscription_policy_snapshot,subscription_change_id,price_lock_eligible_snapshot,plan_revision_snapshot,recharge_policy_snapshot,
+	last_reconciled_at, provider_check_error`
 
 func scanOrder(row pgx.Row) (*Order, error) {
 	var o Order
@@ -26,7 +27,8 @@ func scanOrder(row pgx.Row) (*Order, error) {
 		&o.Provider, &o.ProviderOrderID, &o.ProviderPayAmountCents, &o.PaymentMethod,
 		&o.ProviderPayURL, &o.RequiresManualAmount, &o.ProviderExpiresAt,
 		&o.PaidAt, &o.CompletedAt, &o.CreatedAt,
-		&o.PlanName, &o.PlanKind, &o.PlanDurationDays, &o.PlanDailyGrantCents, &o.SubscriptionEndsAt, &o.ReconcileAttempts, &o.ReconcileLeaseID, &o.SubscriptionStartsAt, &o.SubscriptionPolicy, &o.SubscriptionChangeID, &o.PriceLockEligible, &o.PlanRevision, &o.RechargePolicy)
+		&o.PlanName, &o.PlanKind, &o.PlanDurationDays, &o.PlanDailyGrantCents, &o.SubscriptionEndsAt, &o.ReconcileAttempts, &o.ReconcileLeaseID, &o.SubscriptionStartsAt, &o.SubscriptionPolicy, &o.SubscriptionChangeID, &o.PriceLockEligible, &o.PlanRevision, &o.RechargePolicy,
+		&o.LastReconciledAt, &o.ProviderCheckError)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +57,7 @@ func getOrInsertPendingOrder(ctx context.Context, st *Store, userID, planID uuid
 			return err
 		}
 		existing, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderCols+` FROM orders
-			WHERE user_id = $1 AND status IN ('pending','uncertain','paid')
+			WHERE user_id = $1 AND `+UnsettledOrderSQL+`
 			ORDER BY (plan_id <> $2) DESC, created_at DESC LIMIT 1`, userID, planID))
 		if err == nil {
 			if existing.PlanID != planID || existing.RechargePolicy != nil {
@@ -114,9 +116,14 @@ func GetUserOrder(ctx context.Context, q Q, userID, id uuid.UUID) (*Order, error
 	return nilOnNoRows(o, err)
 }
 
-func ListPendingOrdersForUser(ctx context.Context, q Q, userID uuid.UUID) ([]*Order, error) {
+// UnsettledOrderSQL matches orders that block another checkout: awaiting payment,
+// or paid by the provider but not yet delivered.
+const UnsettledOrderSQL = `(status='pending' OR (paid_at IS NOT NULL AND status<>'completed'))`
+
+// ListUnsettledOrdersForUser returns the user's orders matching UnsettledOrderSQL.
+func ListUnsettledOrdersForUser(ctx context.Context, q Q, userID uuid.UUID) ([]*Order, error) {
 	rows, err := q.Query(ctx, `SELECT `+orderCols+` FROM orders
-		WHERE user_id = $1 AND status IN ('pending','uncertain','paid')
+		WHERE user_id = $1 AND `+UnsettledOrderSQL+`
 		ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -133,37 +140,38 @@ func ListPendingOrdersForUser(ctx context.Context, q Q, userID uuid.UUID) ([]*Or
 	return orders, rows.Err()
 }
 
-func SetOrderProviderDetails(ctx context.Context, q Q, id uuid.UUID, providerOrderID string, payAmountCents int64,
-	paymentMethod, payURL string, requiresManualAmount bool, expiresAt *time.Time,
+// BindOrderProvider stores the provider order created for a local order. It
+// binds at most once; a different provider ID never overwrites the first one.
+// Checkout binds only pending orders; an administrator may attach the provider
+// order of a closed order found in the provider console (requirePending=false).
+func BindOrderProvider(ctx context.Context, q Q, id uuid.UUID, providerOrderID string, payAmountCents int64,
+	paymentMethod, payURL string, requiresManualAmount bool, expiresAt *time.Time, requirePending bool,
 ) (*Order, error) {
-	return scanOrder(q.QueryRow(ctx,
+	o, err := scanOrder(q.QueryRow(ctx,
 		`UPDATE orders SET provider_order_id = $2, provider_pay_amount_cents = $3, payment_method = $4,
 			provider_pay_url = $5, requires_manual_amount = $6, provider_expires_at = $7,
-			status = CASE WHEN status='uncertain' THEN 'pending' ELSE status END, reconcile_after=now(),
-			reconcile_lease_id=NULL,reconcile_lease_until=NULL
-		 WHERE id = $1 AND (provider_order_id IS NULL OR provider_order_id=$2)
-		 AND (provider_pay_amount_cents IS NULL OR provider_pay_amount_cents=$3)
-		 AND (payment_method IS NULL OR payment_method=$4) RETURNING `+orderCols,
-		id, providerOrderID, payAmountCents, paymentMethod, payURL, requiresManualAmount, expiresAt))
+			reconcile_after=now()+interval '10 seconds', reconcile_attempts=0,
+			reconcile_lease_id=NULL, reconcile_lease_until=NULL, provider_check_error=NULL
+		 WHERE id = $1 AND provider_order_id IS NULL AND (status='pending' OR NOT $8) RETURNING `+orderCols,
+		id, providerOrderID, payAmountCents, paymentMethod, payURL, requiresManualAmount, expiresAt, requirePending))
+	if err == pgx.ErrNoRows {
+		return nil, ErrOrderAlreadyBound
+	}
+	return o, err
 }
 
-func UpdateOrderPaymentDisplay(ctx context.Context, q Q, id uuid.UUID, payURL string, requiresManualAmount bool, expiresAt *time.Time) (*Order, error) {
-	return scanOrder(q.QueryRow(ctx,
-		`UPDATE orders SET
-			provider_pay_url = CASE WHEN btrim($2) <> '' THEN $2 ELSE provider_pay_url END,
-			requires_manual_amount = $3,
-			provider_expires_at = COALESCE($4, provider_expires_at)
-		 WHERE id = $1 RETURNING `+orderCols,
-		id, payURL, requiresManualAmount, expiresAt))
-}
+var ErrOrderAlreadyBound = errors.New("order is already bound or no longer pending")
 
-func TransitionPendingOrderStatus(ctx context.Context, q Q, id uuid.UUID, status string) (bool, error) {
+// CloseOrder moves an unpaid pending order to a closed status. Orders with a
+// recorded payment are never closed. A pending upgrade quote closes with it.
+func CloseOrder(ctx context.Context, q Q, id uuid.UUID, status string) (bool, error) {
 	if status != "failed" && status != "expired" && status != "cancelled" {
-		return false, fmt.Errorf("unsupported pending order transition: %s", status)
+		return false, fmt.Errorf("unsupported order close status: %s", status)
 	}
 	var changed bool
 	err := q.QueryRow(ctx, `WITH closed AS (
- UPDATE orders SET status=$2 WHERE id=$1 AND status IN ('pending','uncertain') RETURNING subscription_change_id
+ UPDATE orders SET status=$2, reconcile_after=now()+interval '10 minutes', reconcile_attempts=0
+ WHERE id=$1 AND status='pending' AND paid_at IS NULL RETURNING subscription_change_id
 ), changed_quotes AS (
  UPDATE subscription_changes SET status='cancelled',updated_at=now()
  WHERE id IN (SELECT subscription_change_id FROM closed) AND kind='upgrade' AND status='pending'
@@ -171,12 +179,14 @@ func TransitionPendingOrderStatus(ctx context.Context, q Q, id uuid.UUID, status
 	return changed, err
 }
 
-// CompleteOrderUpdate 条件更新 pending/paid/expired → completed，返回是否抢到。
-// expired 也允许由签名回调或主动对账恢复，避免关闭与支付回调竞态导致漏发权益。
+// CompleteOrderUpdate marks any not-yet-completed order completed and reports
+// whether this call won. Closed orders are included: a verified payment that
+// arrives after expiry or cancellation must still be delivered.
 func CompleteOrderUpdate(ctx context.Context, q Q, id uuid.UUID, now time.Time) (bool, error) {
 	tag, err := q.Exec(ctx,
-		`UPDATE orders SET status = 'completed', completed_at = $2, paid_at = COALESCE(paid_at, $2)
-		 WHERE id = $1 AND status IN ('pending', 'paid', 'expired')`, id, now)
+		`UPDATE orders SET status = 'completed', completed_at = $2, paid_at = COALESCE(paid_at, $2),
+		 reconcile_after='infinity', reconcile_attempts=0, provider_check_error=NULL
+		 WHERE id = $1 AND status <> 'completed'`, id, now)
 	if err != nil {
 		return false, err
 	}
@@ -199,7 +209,13 @@ func listOrders(ctx context.Context, q Q, userID *uuid.UUID, status string, user
 		args = append(args, *userID)
 		sql += fmt.Sprintf(` AND user_id = $%d`, len(args))
 	}
-	if status != "" {
+	switch status {
+	case "":
+	case "unsettled":
+		sql += ` AND ` + UnsettledOrderSQL
+	case "confirming":
+		sql += ` AND paid_at IS NOT NULL AND status<>'completed'`
+	default:
 		args = append(args, status)
 		sql += fmt.Sprintf(` AND status = $%d`, len(args))
 	}
@@ -232,22 +248,21 @@ func listOrders(ctx context.Context, q Q, userID *uuid.UUID, status string, user
 }
 
 type OrderSummary struct {
-	Total     int64 `json:"total"`
-	Pending   int64 `json:"pending"`
-	Paid      int64 `json:"paid"`
-	Completed int64 `json:"completed"`
-	Expired   int64 `json:"expired"`
-	Cancelled int64 `json:"cancelled"`
-	Failed    int64 `json:"failed"`
-	Uncertain int64 `json:"uncertain"`
+	Total      int64 `json:"total"`
+	Pending    int64 `json:"pending"`
+	Confirming int64 `json:"confirming"`
+	Completed  int64 `json:"completed"`
+	Expired    int64 `json:"expired"`
+	Cancelled  int64 `json:"cancelled"`
+	Failed     int64 `json:"failed"`
 }
 
 func GetUserOrderSummary(ctx context.Context, q Q, userID uuid.UUID) (*OrderSummary, error) {
 	var summary OrderSummary
-	err := q.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE status='pending'),
-	 count(*) FILTER (WHERE status='paid'), count(*) FILTER (WHERE status='completed'),
-	 count(*) FILTER (WHERE status='expired'), count(*) FILTER (WHERE status='failed'), count(*) FILTER (WHERE status='uncertain'), count(*) FILTER (WHERE status='cancelled')
-	 FROM orders WHERE user_id=$1 AND `+orderVisibleSQL("orders"), userID).Scan(&summary.Total, &summary.Pending, &summary.Paid, &summary.Completed, &summary.Expired, &summary.Failed, &summary.Uncertain, &summary.Cancelled)
+	err := q.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE status='pending' AND paid_at IS NULL),
+	 count(*) FILTER (WHERE paid_at IS NOT NULL AND status<>'completed'), count(*) FILTER (WHERE status='completed'),
+	 count(*) FILTER (WHERE status='expired' AND paid_at IS NULL), count(*) FILTER (WHERE status='failed' AND paid_at IS NULL), count(*) FILTER (WHERE status='cancelled' AND paid_at IS NULL)
+	 FROM orders WHERE user_id=$1 AND `+orderVisibleSQL("orders"), userID).Scan(&summary.Total, &summary.Pending, &summary.Confirming, &summary.Completed, &summary.Expired, &summary.Failed, &summary.Cancelled)
 	return &summary, err
 }
 

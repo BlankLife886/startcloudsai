@@ -5,7 +5,7 @@ import { fulfillJson } from './helpers/authMocks.js';
 async function setup(page) {
   await installVisualBaseline(page);
   const state = { fail:false, catalog:{ baseConcurrency:6,paymentEnabled:true,paymentMethods:['wechat'],items:[
-    {id:'recharge',name:'灵活充值',kind:'topup',priceCents:100,grantCents:250,maxRechargeYuan:1000,priceLockEligible:true,rechargePolicy:{pointsPerYuan:250,priceLockMinYuan:60}},
+    {id:'pack',name:'标准额度包',kind:'topup',priceCents:3000,grantCents:3000,bonusCents:0,priceLockEligible:true},
     {id:'sub',name:'周度方案',kind:'subscription',revision:2,priceCents:3990,dailyGrantCents:500,durationDays:7,subscriptionPolicy:{refundWindowHours:3,concurrencyBonus:2,lockModelPrices:true}},
     {id:'other',name:'灵活方案',kind:'subscription',revision:1,priceCents:6990,dailyGrantCents:800,durationDays:7,subscriptionPolicy:{refundWindowHours:0,concurrencyBonus:4,lockModelPrices:false}},
   ]}};
@@ -25,23 +25,21 @@ async function openQuestion(page, name) {
   return faq.locator('.pp-faq__item.is-open');
 }
 
-test('FAQ follows changes to recharge rules, payment methods and search results',async({page})=>{
+test('FAQ follows changes to top-up rules, payment methods and search results',async({page})=>{
   const state=await setup(page);
   await page.goto('/pricing');
-  let answer=await openQuestion(page,'可以自定义充值金额吗？最低充值多少？');
-  await expect(answer).toContainText('1–1,000 元');
-  await expect(answer).toContainText('250 积分');
-  state.catalog.items[0].rechargePolicy.pointsPerYuan=80;
-  state.catalog.items[0].rechargePolicy.priceLockMinYuan=120;
+  await expect(page.locator('#pricing-faq').getByRole('button',{name:'可以自定义充值金额吗？最低充值多少？'})).toHaveCount(0);
+  let answer=await openQuestion(page,'所有额度包都享受订阅锁价吗？');
+  await expect(answer).toContainText('有效合格订阅下可接受锁价');
+  state.catalog.items[0].priceLockEligible=false;
   state.catalog.paymentMethods=['alipay'];
   await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
-  await expect(answer).toContainText('80 积分');
-  await expect(answer).not.toContainText('250 积分');
+  await expect(answer).toContainText('不接受订阅锁价');
   answer=await openQuestion(page,'现在可以购买套餐吗？');
   await expect(answer.locator('.pp-faq__facts')).toContainText('支持支付宝');
   await expect(answer.locator('.pp-faq__facts')).not.toContainText('微信支付');
   const search=page.getByRole('searchbox',{name:'搜索购买与计费问题'});
-  await search.fill('满 120 元');
+  await search.fill('不接受订阅锁价');
   await expect(page.locator('#pricing-faq .pp-faq__item')).toHaveCount(1);
   await expect(page.locator('#pricing-faq .pp-faq__item')).toContainText('所有额度包都享受订阅锁价吗？');
 });

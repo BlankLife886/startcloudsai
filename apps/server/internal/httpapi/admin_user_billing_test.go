@@ -22,10 +22,7 @@ func TestAdminUserBillingShowsImmutableLotsAndRefundHolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := rechargeTestPlan(t, env.st)
-	order, _, err := store.GetOrInsertRechargeOrder(ctx, env.st, u.ID, p.ID, 30, p.Revision, "mock")
-	if err != nil {
-		t.Fatal(err)
-	}
+	order := insertHistoricRechargeOrder(t, env.st, u.ID, p, 30)
 	if _, err := (&Server{St: env.st, Cfg: env.cfg}).completeOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
@@ -108,10 +105,7 @@ func TestAdminCreditLotsConsumptionAndPaging(t *testing.T) {
 	}
 	p := rechargeTestPlan(t, env.st)
 	for range 3 {
-		o, _, err := store.GetOrInsertRechargeOrder(ctx, env.st, u.ID, p.ID, 1, p.Revision, "mock")
-		if err != nil {
-			t.Fatal(err)
-		}
+		o := insertHistoricRechargeOrder(t, env.st, u.ID, p, 1)
 		if _, err := (&Server{St: env.st, Cfg: env.cfg}).completeOrder(ctx, o); err != nil {
 			t.Fatal(err)
 		}

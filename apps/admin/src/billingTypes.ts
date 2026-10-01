@@ -17,7 +17,20 @@ export interface BillingOrder {
   expiresAt?: string | null; subscriptionStartsAt?: string | null; subscriptionEndsAt?: string | null;
   subscriptionChangeId?: string | null; priceLockEligible?: boolean;
   rechargePolicy?: { pointsPerYuan: number; priceLockMinYuan: number } | null;
+  paymentState?: string; checkError?: string | null;
   finance: OrderFinance;
+}
+type TagType = 'success' | 'warning' | 'danger' | 'info' | 'primary';
+// Order status as shown to operators. A provider-confirmed payment (paidAt) that
+// has not been delivered yet is "到账中" whatever the stored status is.
+export function orderStatusMeta(order: Pick<BillingOrder, 'status' | 'paidAt'> & { paymentState?: string }): { label: string; type: TagType } {
+  if (order.status !== 'completed' && order.paidAt) return { label: '已收款·到账中', type: 'primary' };
+  if (order.status === 'pending' && order.paymentState === 'timed_out') return { label: '待支付·已超时', type: 'warning' };
+  const meta: Record<string, { label: string; type: TagType }> = {
+    pending: { label: '待支付', type: 'warning' }, completed: { label: '已完成', type: 'success' },
+    cancelled: { label: '已取消', type: 'info' }, expired: { label: '已过期', type: 'info' }, failed: { label: '失败', type: 'danger' },
+  };
+  return meta[order.status] || { label: order.status || '未知', type: 'info' };
 }
 export const orderKindLabels: Record<string, string> = { topup: '固定额度包', recharge: '自定义充值', subscription: '订阅开通', upgrade: '升级补差价', legacy: '历史记录' };
 export const deliveryLabels: Record<string, string> = { delivered: '已发放', pending: '待发放', missing: '缺少发放记录', not_due: '尚未收款' };

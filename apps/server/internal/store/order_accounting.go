@@ -59,14 +59,14 @@ const orderAccountingCTE = `WITH linked AS (
  (SELECT s.id FROM subscriptions s WHERE s.order_id=o.id LIMIT 1)) AS account_subscription_id,
  CASE WHEN o.subscription_change_id IS NOT NULL THEN 'upgrade' WHEN o.recharge_policy_snapshot IS NOT NULL THEN 'recharge'
  WHEN o.plan_kind_snapshot='subscription' THEN 'subscription' WHEN o.plan_kind_snapshot='topup' THEN 'topup' ELSE 'legacy' END AS account_kind,
- o.status IN ('paid','completed') AS receipt_confirmed,
- CASE WHEN o.status IN ('paid','completed') THEN COALESCE(o.provider_pay_amount_cents,o.amount_cents) ELSE 0 END AS received_cents,
+ (o.paid_at IS NOT NULL OR o.status='completed') AS receipt_confirmed,
+ CASE WHEN o.paid_at IS NOT NULL OR o.status='completed' THEN COALESCE(o.provider_pay_amount_cents,o.amount_cents) ELSE 0 END AS received_cents,
  CASE WHEN o.status='completed' THEN CASE WHEN
  EXISTS(SELECT 1 FROM wallet_ledger l WHERE l.user_id=o.user_id AND l.source_type='order' AND l.source_id=o.id::text AND l.kind='grant')
  OR EXISTS(SELECT 1 FROM subscription_periods p WHERE p.order_id=o.id)
  OR EXISTS(SELECT 1 FROM subscriptions s WHERE s.order_id=o.id)
  OR (ch.kind='upgrade' AND ch.status='completed') THEN 'delivered' ELSE 'missing' END
- WHEN o.status='paid' THEN 'pending' ELSE 'not_due' END AS delivery
+ WHEN o.paid_at IS NOT NULL THEN 'pending' ELSE 'not_due' END AS delivery
  FROM orders o LEFT JOIN users u ON u.id=o.user_id LEFT JOIN subscription_changes ch ON ch.id=o.subscription_change_id
 ), payment_groups AS (
  SELECT account_subscription_id,count(*) AS paid_count FROM linked WHERE receipt_confirmed AND received_cents>0 AND account_subscription_id IS NOT NULL GROUP BY account_subscription_id
@@ -119,7 +119,7 @@ func (f OrderFilter) where() (string, []any) {
 		add("id=$%d", *f.ID)
 	}
 	if f.PendingOnly {
-		clauses = append(clauses, "status IN ('pending','uncertain','paid')")
+		clauses = append(clauses, UnsettledOrderSQL)
 	}
 	if f.From != nil {
 		add("created_at >= $%d", *f.From)
@@ -190,7 +190,7 @@ func SummarizeOrderAccounting(ctx context.Context, q Q, f OrderFilter) (OrderAcc
 	sql := orderAccountingCTE + `, selected AS(SELECT * FROM book WHERE ` + where + `), refund_scope AS(
  SELECT account_subscription_id,max(paid_count) AS all_paid,count(*) FILTER(WHERE receipt_confirmed AND received_cents>0) AS selected_paid,max(refund_total) AS amount
  FROM selected WHERE account_subscription_id IS NOT NULL GROUP BY account_subscription_id)
- SELECT count(*),count(*) FILTER(WHERE receipt_confirmed),count(*) FILTER(WHERE status IN ('pending','uncertain','paid')),
+ SELECT count(*),count(*) FILTER(WHERE receipt_confirmed),count(*) FILTER(WHERE ` + UnsettledOrderSQL + `),
  COALESCE(sum(received_cents),0),
  COALESCE((SELECT sum(amount) FROM refund_scope WHERE selected_paid>0 AND selected_paid=all_paid),0),
  COALESCE((SELECT sum(amount) FROM refund_scope WHERE selected_paid>0 AND all_paid>1),0),

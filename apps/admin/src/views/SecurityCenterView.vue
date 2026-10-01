@@ -57,7 +57,7 @@ const hashDraft = ref({ sha256: "", reason: "" });
 const recoveryDialog = ref(false);
 const recovering = ref(false);
 const recoverySupported = ref(false);
-const recoveryDraft = ref({ orderId: "", providerOrderId: "", resolution: "link", note: "" });
+const recoveryDraft = ref({ orderId: "", providerOrderId: "" });
 
 // 各表服务端分页；计数来自服务端（带上限，超过时显示"N+"），不再由已加载的前 200 条推算。
 const PAGE_SIZE = 20;
@@ -114,7 +114,7 @@ function severityLabel(value: string) {
 }
 
 function outcomeType(value: string) {
-  return ["matched", "manual_not_created"].includes(value) ? "success" : value === "repaired" ? "warning" : "danger";
+  return ["matched", "closed", "manual_not_created"].includes(value) ? "success" : value === "repaired" ? "warning" : "danger";
 }
 
 function outcomeLabel(value: string) {
@@ -122,8 +122,15 @@ function outcomeLabel(value: string) {
     ({
       matched: "一致",
       repaired: "已自动补单",
+      closed: "已按渠道状态关闭",
       provider_error: "上游查询失败",
-      provider_id_missing: "待补充渠道单号",
+      provider_id_missing: "缺少云端订单号",
+      create_result_unknown: "建单无响应",
+      close_result_unknown: "关单结果不明",
+      fixed_qr_missing: "缺少固定金额收款码",
+      invalid_provider_identity: "渠道返回身份不符",
+      invalid_provider_order: "渠道订单不可支付",
+      provider_binding_failed: "云端单号绑定失败",
       manual_not_created: "人工确认未建单",
       identity_or_amount_mismatch: "订单信息不一致",
       paid_amount_mismatch: "实付金额不一致",
@@ -253,42 +260,20 @@ async function runReconciliation() {
 
 function openRecovery(orderId = "") {
   if (recovering.value || !recoverySupported.value) return;
-  recoveryDraft.value = { orderId, providerOrderId: "", resolution: "link", note: "" };
+  recoveryDraft.value = { orderId, providerOrderId: "" };
   recoveryDialog.value = true;
-}
-
-async function confirmNotCreated(orderId: string) {
-  if (recovering.value || !recoverySupported.value) return;
-  const { value: note } = await ElMessageBox.prompt(
-    "请确认已在支付渠道后台核对：没有建立渠道订单，也没有收到款项。",
-    "确认未建单",
-    { inputPlaceholder: "例如：蓝鲸订单列表未找到，支付宝无收款记录", inputValidator: (value) => value.trim().length >= 6 ? true : "请填写至少 6 个字的核查说明", confirmButtonText: "确认并解除待核实", type: "warning" },
-  );
-  recovering.value = true;
-  try {
-    const result = await request<{ outcomes: Record<string, number> }>("/api/v1/admin/payment-reconciliations/run", {
-      method: "POST", silent: true, body: { orderId, providerOrderId: "", resolution: "not_created", note: note.trim() },
-    });
-    const outcome = Object.keys(result.outcomes)[0];
-    if (outcome === "manual_not_created") ElMessage.success("已解除待核实，用户可以重新支付");
-    else ElMessage.warning(outcomeLabel(outcome || "provider_error"));
-    await load();
-  } catch (error) {
-    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "订单处理失败");
-  } finally { recovering.value = false; }
 }
 
 async function recoverPayment() {
   if (recovering.value || !recoverySupported.value) return;
   recovering.value = true;
   try {
-    const notCreated = recoveryDraft.value.resolution === "not_created";
-    if (notCreated) await ElMessageBox.confirm("仅在渠道后台已确认未建单、未收款时继续，查询超时不能作为未建单依据。操作将保留审计记录。", "确认核查结果", { type: "warning" });
+    // The server checks the cloud order's merchant order ID and amount before attaching it.
     const result = await request<{ outcomes: Record<string, number> }>("/api/v1/admin/payment-reconciliations/run", {
-      method: "POST", silent: true, body: { orderId: recoveryDraft.value.orderId.trim(), providerOrderId: notCreated ? "" : recoveryDraft.value.providerOrderId.trim(), resolution: notCreated ? "not_created" : "", note: recoveryDraft.value.note.trim() },
+      method: "POST", silent: true, body: { orderId: recoveryDraft.value.orderId.trim(), providerOrderId: recoveryDraft.value.providerOrderId.trim() },
     });
     const outcome = Object.keys(result.outcomes)[0];
-    if (["matched", "repaired", "manual_not_created"].includes(outcome || "")) {
+    if (["matched", "repaired", "closed"].includes(outcome || "")) {
       ElMessage.success(outcomeLabel(outcome));
       recoveryDialog.value = false;
     } else ElMessage.warning(outcomeLabel(outcome || "provider_error"));
@@ -325,7 +310,7 @@ onMounted(() => void load());
       <template #actions>
         <el-button v-if="tab === 'uploads'" type="primary" :icon="Plus" @click="hashDialog = true">添加规则</el-button>
         <el-button v-if="tab === 'payments'" type="primary" :icon="Search" :loading="running" @click="runReconciliation">立即核对</el-button>
-        <el-button v-if="tab === 'payments' && recoverySupported" :icon="Plus" @click="openRecovery()">关联渠道单号</el-button>
+        <el-button v-if="tab === 'payments' && recoverySupported" :icon="Plus" @click="openRecovery()">关联云端订单号</el-button>
         <el-button @click="router.push('/platform-logs?category=security')">安全日志</el-button>
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
       </template>
@@ -413,8 +398,7 @@ onMounted(() => void load());
           <el-table-column label="核对时间" width="116"><template #default="{ row }"><span class="tnum">{{ shortTime(row.checkedAt) }}</span></template></el-table-column>
           <el-table-column label="处理" width="180" align="right">
             <template #default="{ row }">
-              <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text size="small" type="success" @click="confirmNotCreated(row.orderId)">确认未建单</el-button>
-              <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text size="small" @click="openRecovery(row.orderId)">补录单号</el-button>
+              <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text size="small" @click="openRecovery(row.orderId)">补录云端单号</el-button>
               <el-button v-if="recoverySupported && ['close_result_unknown','provider_binding_failed','create_result_unknown'].includes(row.outcome)" text size="small" @click="openRecovery(row.orderId)">继续核查</el-button>
             </template>
           </el-table-column>
@@ -482,15 +466,13 @@ onMounted(() => void load());
     </el-drawer>
 
     <AdminDialog
-      v-model="recoveryDialog" title="核查并恢复订单" :icon="Search" width="520px" confirm-text="核查订单"
+      v-model="recoveryDialog" title="关联云端订单号" :icon="Search" width="520px" confirm-text="校验并关联"
       :confirm-loading="recovering" :show-close="!recovering" :show-cancel="!recovering" :close-on-click-modal="!recovering" :close-on-press-escape="!recovering"
-      :confirm-disabled="recovering || !recoveryDraft.orderId.trim() || (recoveryDraft.resolution === 'link' ? !recoveryDraft.providerOrderId.trim() : recoveryDraft.note.trim().length < 6)" @confirm="recoverPayment"
+      :confirm-disabled="recovering || !recoveryDraft.orderId.trim() || !recoveryDraft.providerOrderId.trim()" @confirm="recoverPayment"
     >
       <el-form label-position="top">
         <el-form-item label="平台订单号"><el-input v-model="recoveryDraft.orderId" :disabled="recovering" maxlength="36" /></el-form-item>
-        <el-form-item label="核查方式"><el-radio-group v-model="recoveryDraft.resolution" :disabled="recovering"><el-radio-button value="link">关联渠道单号</el-radio-button><el-radio-button value="not_created">确认未建单</el-radio-button></el-radio-group></el-form-item>
-        <el-form-item v-if="recoveryDraft.resolution === 'link'" label="渠道单号"><el-input v-model="recoveryDraft.providerOrderId" :disabled="recovering" maxlength="128" /></el-form-item>
-        <el-form-item v-else label="渠道核查依据"><el-input v-model="recoveryDraft.note" type="textarea" :disabled="recovering" maxlength="300" show-word-limit /></el-form-item>
+        <el-form-item label="云端订单号（蓝鲸后台订单列表中，商户订单号等于平台订单号的那一笔）"><el-input v-model="recoveryDraft.providerOrderId" :disabled="recovering" maxlength="128" /></el-form-item>
       </el-form>
     </AdminDialog>
 

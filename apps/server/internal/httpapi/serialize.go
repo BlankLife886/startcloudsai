@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -636,10 +637,6 @@ func planDict(p *store.Plan, includeAdmin bool) gin.H {
 		"recommended":        p.Recommended,
 		"sort":               p.Sort,
 	}
-	if p.RechargePolicy != nil {
-		d["minRechargeYuan"] = 1
-		d["maxRechargeYuan"] = p.RechargePolicy.MaxYuan()
-	}
 	if includeAdmin {
 		d["active"] = p.Active
 		d["createdAt"] = isoValue(p.CreatedAt)
@@ -648,7 +645,18 @@ func planDict(p *store.Plan, includeAdmin bool) gin.H {
 	return d
 }
 
-func orderDict(o *store.Order, payURL *string) gin.H {
+func orderDict(o *store.Order) gin.H {
+	now := time.Now()
+	// The QR code is only handed out while it can still be paid, so a stale
+	// code is never shown next to an order that already expired or was paid.
+	var payURL *string
+	if paymentQRAvailable(o, now, 0) {
+		payURL = normalizedPaymentURL(o.ProviderPayURL)
+	}
+	var checkError *string
+	if o.ProviderCheckError != nil && o.Status != "completed" {
+		checkError = o.ProviderCheckError
+	}
 	return gin.H{
 		"planRevision":           o.PlanRevision,
 		"rechargePolicy":         o.RechargePolicy,
@@ -664,7 +672,8 @@ func orderDict(o *store.Order, payURL *string) gin.H {
 		"subscriptionEndsAt":     iso(o.SubscriptionEndsAt),
 		"subscriptionStartsAt":   iso(o.SubscriptionStartsAt),
 		"status":                 o.Status,
-		"recoveryRequired":       o.Status == "uncertain",
+		"paymentState":           orderPaymentState(o, now),
+		"checkError":             checkError,
 		"amountCents":            o.AmountCents,
 		"grantCents":             o.GrantCents,
 		"bonusCents":             o.BonusCents,
@@ -675,7 +684,7 @@ func orderDict(o *store.Order, payURL *string) gin.H {
 		"payAmountCents":         o.ProviderPayAmountCents,
 		"paymentMethod":          o.PaymentMethod,
 		"providerOrderId":        o.ProviderOrderID,
-		"payUrl":                 normalizedPaymentURL(firstNonEmptyString(payURL, o.ProviderPayURL)),
+		"payUrl":                 payURL,
 		"requiresManualAmount":   o.RequiresManualAmount,
 		"expiresAt":              iso(o.ProviderExpiresAt),
 		"paidAt":                 iso(o.PaidAt),
@@ -703,7 +712,7 @@ func firstNonEmptyString(preferred, fallback *string) *string {
 }
 
 func adminOrderDict(o *store.Order, user *store.User) gin.H {
-	d := orderDict(o, nil)
+	d := orderDict(o)
 	d["userId"] = o.UserID.String()
 	d["providerOrderId"] = o.ProviderOrderID
 	if user != nil {

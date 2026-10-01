@@ -262,25 +262,32 @@ func InsertPaymentCallbackEvent(ctx context.Context, q Q, fingerprint string, or
 	tag, err := q.Exec(ctx, `INSERT INTO payment_callback_events
 		(fingerprint,order_id,provider_order_id,amount_cents,paid_amount_cents,client_ip,signature_valid,outcome,detail)
 		VALUES ($1,$2,NULLIF($3,''),$4,$5,NULLIF($6,'')::inet,$7,$8,NULLIF($9,''))
-		ON CONFLICT (fingerprint) DO UPDATE SET replay_count=payment_callback_events.replay_count+1,last_seen_at=now()`,
+		ON CONFLICT (fingerprint) DO UPDATE SET replay_count=payment_callback_events.replay_count+1,last_seen_at=now(),
+		outcome=EXCLUDED.outcome,detail=EXCLUDED.detail`,
 		fingerprint, orderID, providerOrderID, amount, paidAmount, ip, signatureValid, outcome, detail)
 	return tag.RowsAffected() > 0, err
 }
 
 func InsertPaymentReconciliation(ctx context.Context, q Q, item PaymentReconciliation) error {
-	_, err := q.Exec(ctx, `INSERT INTO payment_reconciliations
-		(order_id,provider,local_status,provider_state,expected_amount_cents,provider_amount_cents,provider_paid_amount_cents,outcome,detail)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, item.OrderID, item.Provider, item.LocalStatus,
-		item.ProviderState, item.ExpectedAmountCents, item.ProviderAmountCents, item.ProviderPaidAmountCents,
-		item.Outcome, item.Detail)
+	_, err := RecordPaymentReconciliation(ctx, q, item)
 	return err
+}
+
+// RecordPaymentReconciliation inserts a reconciliation row and returns its ID and check time.
+func RecordPaymentReconciliation(ctx context.Context, q Q, item PaymentReconciliation) (PaymentReconciliation, error) {
+	err := q.QueryRow(ctx, `INSERT INTO payment_reconciliations
+		(order_id,provider,local_status,provider_state,expected_amount_cents,provider_amount_cents,provider_paid_amount_cents,outcome,detail)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,checked_at`, item.OrderID, item.Provider, item.LocalStatus,
+		item.ProviderState, item.ExpectedAmountCents, item.ProviderAmountCents, item.ProviderPaidAmountCents,
+		item.Outcome, item.Detail).Scan(&item.ID, &item.CheckedAt)
+	return item, err
 }
 
 func ListPaymentReconciliations(ctx context.Context, q Q, issuesOnly bool, limit int) ([]*PaymentReconciliation, error) {
 	rows, err := q.Query(ctx, `SELECT id,order_id,provider,local_status,provider_state,expected_amount_cents,
 		provider_amount_cents,provider_paid_amount_cents,outcome,detail,checked_at FROM
 		(SELECT DISTINCT ON (order_id) * FROM payment_reconciliations ORDER BY order_id,id DESC) latest
-		WHERE ($1=false OR outcome NOT IN ('matched','repaired','manual_not_created')) ORDER BY id DESC LIMIT $2`, issuesOnly, min(max(limit, 1), 200))
+		WHERE ($1=false OR outcome NOT IN ('matched','repaired','closed','manual_not_created')) ORDER BY id DESC LIMIT $2`, issuesOnly, min(max(limit, 1), 200))
 	if err != nil {
 		return nil, err
 	}

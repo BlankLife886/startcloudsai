@@ -6,7 +6,7 @@ test('sandbox consumes a chosen number of subscription credits without creating 
   let spent = 0, submitted
   await page.route('**/__sandbox/state', route => route.fulfill({ json: {
     mode: 'normal', clock: '2026-09-07T04:00:00Z', creates: 1, checked: 0, gateways: [],
-    accounts: [{ account: { key: 'demo', name: '支付测试', email: 'demo@payment.test' }, balance: 100 - spent, summary: { total: 1, uncertain: 0 }, subscription: { ID: 'sub-one', BillingVersion: 2, Status: 'active', DailyGrantCents: 100 }, subscriptionAvailable: 100 - spent, subscriptionSpent: spent, subscriptionHeld: 0 }],
+    accounts: [{ account: { key: 'demo', name: '支付测试', email: 'demo@payment.test' }, balance: 100 - spent, summary: { total: 1, confirming: 0 }, subscription: { ID: 'sub-one', BillingVersion: 2, Status: 'active', DailyGrantCents: 100 }, subscriptionAvailable: 100 - spent, subscriptionSpent: spent, subscriptionHeld: 0 }],
   } }))
   await page.route('**/__sandbox/action', route => {
     submitted = route.request().postDataJSON()
@@ -30,7 +30,7 @@ test('sandbox consumes a chosen number of subscription credits without creating 
 test('sandbox disables consumption while refund credits are held', async ({ page }) => {
   await page.route('**/__sandbox/state', route => route.fulfill({ json: {
     mode: 'normal', clock: '2026-09-07T04:00:00Z', creates: 1, checked: 0, gateways: [],
-    accounts: [{ account: { key: 'demo', name: '支付测试', email: 'demo@payment.test' }, balance: 0, summary: { total: 1, uncertain: 0 }, subscription: { ID: 'sub-one', BillingVersion: 2, Status: 'refunding', DailyGrantCents: 100 }, subscriptionAvailable: 0, subscriptionSpent: 1, subscriptionHeld: 99 }],
+    accounts: [{ account: { key: 'demo', name: '支付测试', email: 'demo@payment.test' }, balance: 0, summary: { total: 1, confirming: 0 }, subscription: { ID: 'sub-one', BillingVersion: 2, Status: 'refunding', DailyGrantCents: 100 }, subscriptionAvailable: 0, subscriptionSpent: 1, subscriptionHeld: 99 }],
   } }))
   await page.goto('/__sandbox/')
   await expect(page.locator('.account')).toContainText('退订冻结 99')

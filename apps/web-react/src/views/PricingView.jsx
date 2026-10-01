@@ -34,8 +34,6 @@ import gsap from "gsap";
 import "@react/legacy-styles/generated/views/PricingView.css";
 import "./PricingView.css";
 import "./PricingCheckout.css";
-import { CustomRecharge } from './CustomRecharge.jsx';
-import { rechargeCheckoutPlan } from './rechargeQuote.js';
 import { useAuth } from "../auth/AuthContext.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { ModelCatalogIcon, ModelMaintenanceBadge, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
@@ -43,7 +41,7 @@ import { useLocale } from "../i18n/index.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import { pricingFaqCategories } from "./pricingFaqs.js";
 import { buildPricingFaqs } from './pricingFaqData.js';
-import { CheckoutOrderStage, checkoutCountdown, mergePaymentOrder } from "./CheckoutOrderStage.jsx";
+import { CheckoutOrderStage, checkoutCountdown, isConfirmingOrder, isUnsettledOrder, mergePaymentOrder } from "./CheckoutOrderStage.jsx";
 import { PaymentMethodSwitch } from "./PaymentMethodSwitch.jsx";
 import { SubscriptionUpgradeCheckout } from './SubscriptionUpgradeCheckout.jsx';
 import { SubscriptionPurchaseBenefits } from './SubscriptionPurchaseBenefits.jsx';
@@ -218,13 +216,11 @@ async function apiPost(path, body = null, signal) {
   return payload.data;
 }
 
+// Unsettled = awaiting payment, or paid but not yet delivered.
 async function fetchUnsettledOrders(signal) {
-  const groups = await Promise.all(["pending", "uncertain", "paid"].map(async (status) => {
-    const data = await apiGet(`/orders?status=${status}&limit=100`, signal);
-    if (!Array.isArray(data?.items)) throw new Error("订单状态暂时无法读取");
-    return data.items;
-  }));
-  return groups.flat().filter((order) => ["pending", "uncertain", "paid"].includes(order.status));
+  const data = await apiGet("/orders?status=unsettled&limit=100", signal);
+  if (!Array.isArray(data?.items)) throw new Error("订单状态暂时无法读取");
+  return data.items.filter(isUnsettledOrder);
 }
 
 function formatPoints(points, { withUnit = true } = {}) {
@@ -334,7 +330,7 @@ function planFeatures(plan, baseConcurrency = 4) {
   const rights = plan.kind === 'subscription'
     ? [policy.lockModelPrices === false ? '模型按实时价格计费' : policy.allowTopupPriceLock ? '订阅及合格额度包享价格保护' : '订阅积分享价格保护',
       `并发 +${policy.concurrencyBonus > 0 ? policy.concurrencyBonus : 0} 张`]
-    : [plan.priceLockEligible ? plan.rechargePolicy ? `单笔满${plan.rechargePolicy.priceLockMinYuan}元可接受订阅锁价` : '有效合格订阅下可享价格保护' : '按实时模型价格消费'];
+    : [plan.priceLockEligible ? '有效合格订阅下可享价格保护' : '按实时模型价格消费'];
   return [...new Set([...base, ...rights])];
 }
 
@@ -866,7 +862,7 @@ export function PricingView() {
   const [orderSnapshot, setOrderSnapshot] = useState({ userId: null, items: [] });
   const orderRevisionRef = useRef(0);
   const unsettledOrders = orderSnapshot.userId === user?.id ? orderSnapshot.items : [];
-  const unpaidOrderCount = unsettledOrders.filter((order) => order.status === "pending").length;
+  const unpaidOrderCount = unsettledOrders.filter((order) => order.status === "pending" && !isConfirmingOrder(order)).length;
   const hasPaymentCountdown = unsettledOrders.some((order) => order.status === "pending" && order.expiresAt)
     || Boolean(checkout?.order?.status === "pending" && checkout.order.expiresAt);
   const [dark, setDark] = useState(
@@ -977,7 +973,7 @@ export function PricingView() {
       try {
         const items = await fetchUnsettledOrders(controller.signal);
         if (controller.signal.aborted) return;
-        const blockedOrder = items.find((order) => order.subscriptionChangeId || order.planId !== planId || (checkout.plan.rechargeAmountYuan != null && order.amountCents !== checkout.plan.priceCents));
+        const blockedOrder = items.find((order) => order.subscriptionChangeId || order.planId !== planId);
         const existing = items.find((order) => !order.subscriptionChangeId && order.planId === planId);
         let order = null;
         if (!blockedOrder && existing) {
@@ -1001,7 +997,7 @@ export function PricingView() {
           ? { ...value, checking: false, blockedOrder, checkFailed: false, order,
             plan: order ? { ...value.plan, name: order.planName || value.plan.name, priceCents: order.amountCents, grantCents: order.grantCents, bonusCents: order.bonusCents } : latestPlan || value.plan,
             subscriptionAccepted: false,
-            method: order?.paymentMethod || value.method, error: order?.syncError || "" } : value);
+            method: order?.paymentMethod || value.method, claimedPaid: false, error: "" } : value);
       } catch (error) {
         if (controller.signal.aborted) return;
         setCheckout((value) => value?.checking && value.plan.id === planId
@@ -1010,7 +1006,7 @@ export function PricingView() {
     };
     checkOrders();
     return () => controller.abort();
-  }, [checkout?.checking, checkout?.plan?.id, checkout?.plan?.rechargeAmountYuan, user?.id, refreshPlanCatalog]);
+  }, [checkout?.checking, checkout?.plan?.id, user?.id, refreshPlanCatalog]);
 
   useEffect(() => {
     const observer = new MutationObserver(() =>
@@ -1058,7 +1054,7 @@ export function PricingView() {
 
   useEffect(() => {
     const order = checkout?.order;
-    if (!order?.id || !["pending", "uncertain", "paid"].includes(order.status)) return undefined;
+    if (!order?.id || !isUnsettledOrder(order)) return undefined;
     const controller = new AbortController();
     let stopped = false;
     let timer = null;
@@ -1087,7 +1083,7 @@ export function PricingView() {
 			? { ...value, order: mergePaymentOrder(value.order, current), error: "" }
             : value,
         );
-        if (["cancelled", "expired", "failed"].includes(current?.status)) return;
+        if (!isUnsettledOrder(current)) return;
       } catch (error) {
         if (error?.name === "AbortError" || stopped) return;
         setCheckout((value) =>
@@ -1220,7 +1216,7 @@ export function PricingView() {
     orderRevisionRef.current++;
     setOrderSnapshot((value) => {
       const items = value.userId === user?.id ? value.items.filter((item) => item.id !== order.id) : [];
-      if (["pending", "uncertain", "paid"].includes(order.status)) items.unshift(order);
+      if (isUnsettledOrder(order)) items.unshift(order);
       return { userId: user?.id, items };
     });
   }
@@ -1244,9 +1240,6 @@ export function PricingView() {
       bonusCents: order.bonusCents,
       dailyGrantCents: order.dailyGrantCents,
       durationDays: order.durationDays,
-      rechargePolicy: order.rechargePolicy,
-      rechargeAmountYuan: order.rechargePolicy ? order.amountCents / 100 : undefined,
-      maxRechargeYuan: order.rechargePolicy ? Math.min(100000, Math.floor(1000000000 / order.rechargePolicy.pointsPerYuan)) : undefined,
       revision: order.planRevision,
     });
   }
@@ -1292,7 +1285,7 @@ export function PricingView() {
       return;
     }
     setCheckout({
-      plan: rechargeCheckoutPlan(plan, plan.rechargeAmountYuan ?? '1'),
+      plan,
       method: paymentMethods[0] || "alipay",
       order: null,
       checking: true,
@@ -1305,7 +1298,6 @@ export function PricingView() {
   }
   async function createPaymentOrder(method) {
     if (!checkout?.plan?.id || checkout.loading || checkout.checking || checkout.checkFailed || checkout.blockedOrder || checkoutRequest.current) return;
-    if (checkout.plan.rechargePolicy && checkout.plan.rechargeAmountYuan == null) return;
     if (checkout.plan.kind === 'subscription' && !checkout.subscriptionAccepted) return;
     const controller = new AbortController();
     const planId = checkout.plan.id;
@@ -1315,7 +1307,6 @@ export function PricingView() {
       const order = await apiPost("/orders", {
         planId: checkout.plan.id,
         paymentMethod: method,
-        ...(checkout.plan.rechargePolicy ? { amountYuan: checkout.plan.rechargeAmountYuan, expectedPlanRevision: checkout.plan.revision } : {}),
         ...(checkout.plan.kind === 'subscription' ? { expectedPlanRevision: checkout.plan.revision } : {}),
       }, controller.signal);
       if (controller.signal.aborted) return;
@@ -1390,7 +1381,6 @@ export function PricingView() {
     return formatCents(plan.priceCents);
   }
   function planSuffix(plan) {
-    if (plan.rechargePolicy) return '起';
     if (plan.kind === "topup") return "";
     if (plan.priceMode === "coming") return "支付接入后开放";
     if (plan.suffix) return plan.suffix;
@@ -1481,9 +1471,9 @@ export function PricingView() {
               {visiblePlans.map((plan) => {
                 const quota = plan.preview ? null : plan.kind === "subscription"
                   ? Number(plan.dailyGrantCents || 0)
-                  : plan.rechargePolicy ? Number(plan.rechargePolicy.pointsPerYuan) : Number(plan.grantCents || 0) + Number(plan.bonusCents || 0);
+                  : Number(plan.grantCents || 0) + Number(plan.bonusCents || 0);
                 const existingOrder = unsettledOrders.find((order) => !order.subscriptionChangeId && order.planId === plan.id);
-                const countdown = existingOrder?.status === "pending" ? checkoutCountdown(existingOrder.expiresAt, checkoutNow) : null;
+                const countdown = existingOrder?.status === "pending" && !isConfirmingOrder(existingOrder) ? checkoutCountdown(existingOrder.expiresAt, checkoutNow) : null;
                 const locked = planLocked(plan) && !existingOrder;
                 const subscriptionBlocked = plan.kind === "subscription" && (currentSubscription?.active || currentSubscription?.blockingPurchase || Boolean(user?.id && upgradeFrom)) && !existingOrder;
                 const upgradeReason = upgradeSource ? upgradeBlockReason(upgradeSource,plan,upgradeChanges) : '当前订阅不可升级';
@@ -1525,11 +1515,11 @@ export function PricingView() {
                       >
                         {locked && <LockKeyhole size={14} aria-hidden="true" />}
                         {existingOrder ? <>
-                          <span>{t(existingOrder.status === "pending" ? countdown?.expired ? "支付待确认" : "去支付" : existingOrder.status === "uncertain" ? "订单待核实" : "到账确认中")}</span>
+                          <span>{t(isConfirmingOrder(existingOrder) ? "到账确认中" : countdown?.expired || existingOrder.paymentState === "timed_out" ? "支付待确认" : "去支付")}</span>
                           {countdown?.label && !countdown.expired && <span className="pp-plan__countdown" aria-label={t(`剩余支付时间 ${countdown.label}`)}>
                             <Clock3 size={13} aria-hidden="true" /><span>{countdown.label}</span>
                           </span>}
-                        </> : subscriptionLoading && plan.kind === 'subscription' ? t('读取订阅中') : isCurrentPlan ? t('当前订阅') : subscriptionUnavailable ? t(subscriptionBlocked ? '暂不支持升级' : '订阅状态待确认') : upgradeBusy === plan.id ? t('计算差价中') : subscriptionBlocked ? t(upgradeAvailable ? '升级至此方案' : '暂不支持升级') : locked ? t("暂不可用") : isUsagePlan(plan) ? t("开始创作") : t(plan.rechargePolicy ? '自定义金额' : "选择此方案")}
+                        </> : subscriptionLoading && plan.kind === 'subscription' ? t('读取订阅中') : isCurrentPlan ? t('当前订阅') : subscriptionUnavailable ? t(subscriptionBlocked ? '暂不支持升级' : '订阅状态待确认') : upgradeBusy === plan.id ? t('计算差价中') : subscriptionBlocked ? t(upgradeAvailable ? '升级至此方案' : '暂不支持升级') : locked ? t("暂不可用") : isUsagePlan(plan) ? t("开始创作") : t("选择此方案")}
                         {!locked && !existingOrder && !subscriptionUnavailable && (!subscriptionBlocked || upgradeAvailable) && (
                           <span className="pp-plan__go" aria-hidden="true">
                             <ArrowRight size={16} />
@@ -1542,9 +1532,9 @@ export function PricingView() {
                       <div className="pp-plan__quota">
                         <div>
                           <strong>{quota === null ? "—" : formatPoints(quota, { withUnit: false })}</strong>
-                          <span className="pp-plan__quota-unit">{t("积分")}{plan.kind === "subscription" ? ` / ${t("天")}` : plan.rechargePolicy ? ` / ${t('元')}` : ""}</span>
+                          <span className="pp-plan__quota-unit">{t("积分")}{plan.kind === "subscription" ? ` / ${t("天")}` : ""}</span>
                         </div>
-                        <small>{!plan.preview && t(plan.kind === "subscription" ? "自开通时起每24小时重置" : plan.rechargePolicy ? '整数金额，1元起充' : "一次性入账")}</small>
+                        <small>{!plan.preview && t(plan.kind === "subscription" ? "自开通时起每24小时重置" : "一次性入账")}</small>
                       </div>
                       <ul>{planFeatures(plan, baseConcurrency).map(feature => <li key={feature}><Check size={15} aria-hidden="true" /><span>{t(feature)}</span></li>)}</ul>
                     </div>
@@ -1627,9 +1617,9 @@ export function PricingView() {
             ) : checkout.blockedOrder ? (
               <div className="pp-checkout__confirming" role="alert">
                 <Clock3 size={30} aria-hidden="true" />
-                <strong>{t(checkout.blockedOrder.status === "pending" ? "你有一笔未支付订单" : checkout.blockedOrder.status === "uncertain" ? "你有一笔支付结果待核实的订单" : "你有一笔正在确认到账的订单")}</strong>
+                <strong>{t(isConfirmingOrder(checkout.blockedOrder) ? "你有一笔正在确认到账的订单" : "你有一笔未支付订单")}</strong>
                 <span>{t(checkout.blockedOrder.planName || "套餐订单")} · {formatCents(checkout.blockedOrder.amountCents)}</span>
-                <span>{t(checkout.blockedOrder.status === "pending" ? "请先完成支付或取消该订单，再选择其他套餐。" : "请等待该订单处理完成，再选择其他套餐，请勿重复支付。")}</span>
+                <span>{t(isConfirmingOrder(checkout.blockedOrder) ? "请等待该订单到账，再选择其他套餐，请勿重复支付。" : "请先完成支付，或在「我的订单」中取消后再选择其他套餐。如已付款请勿重复支付。")}</span>
                 <Link className="pp-checkout__submit" to="/orders" onClick={() => setCheckout(null)}>
                   {t("查看我的订单")}<ArrowRight size={17} aria-hidden="true" />
                 </Link>
@@ -1643,16 +1633,17 @@ export function PricingView() {
                 onCancel={cancelPaymentOrder}
                 onRequestCancel={() => setCheckout((value) => ({ ...value, cancelConfirm: true, error: "" }))}
                 onKeepPaying={() => setCheckout((value) => ({ ...value, cancelConfirm: false }))}
+                onClaimPaid={(claimed) => setCheckout((value) => ({ ...value, claimedPaid: claimed }))}
                 onRetry={() =>
                   checkout.order?.subscriptionChangeId ? navigate("/subscriptions") : startCheckout(checkout.plan)
                 }
                 t={t}
               />
             ) : (
-              <div className={`pp-checkout__body${checkout.plan.rechargePolicy ? ' pp-custom-recharge' : ''}`}>
+              <div className="pp-checkout__body">
                 <div className="pp-checkout__hero" data-dialog-motion-item>
                   <div className="pp-checkout__summary">
-                    <strong>{checkout.plan.rechargePolicy && checkout.plan.rechargeAmountYuan == null ? '--' : t(formatCents(checkout.plan.priceCents))}</strong>
+                    <strong>{t(formatCents(checkout.plan.priceCents))}</strong>
                     {quotaLine(checkout.plan) && (
                       <span className="pp-checkout__quota">
                         <Coins size={16} aria-hidden="true" />
@@ -1662,7 +1653,6 @@ export function PricingView() {
                   </div>
                   <img className="pp-checkout__art" src="/pricing/subscription-upgrade.webp" alt="" />
                 </div>
-                {checkout.plan.rechargePolicy && <CustomRecharge plan={checkout.plan} disabled={checkout.loading} t={t} onChange={input => setCheckout(value => ({ ...value, plan: rechargeCheckoutPlan(value.plan, input), error: '', errorCode: '' }))} />}
                 {checkout.plan.kind === 'subscription' && <SubscriptionPurchaseBenefits plan={checkout.plan} t={t} />}
                 <PaymentMethodSwitch methods={paymentMethods} value={checkout.method} onChange={method => setCheckout(value => ({ ...value, method }))} disabled={checkout.loading} t={t} />
                 {checkout.error && <p className="pp-checkout__error" role="alert">{t(checkout.error)}</p>}
@@ -1676,7 +1666,7 @@ export function PricingView() {
                   type="button"
                   className="pp-checkout__submit"
                   data-dialog-motion-item
-                  disabled={checkout.loading || (checkout.plan.rechargePolicy && checkout.plan.rechargeAmountYuan == null) || (checkout.plan.kind === 'subscription' && (!checkout.subscriptionAccepted || checkout.errorCode === 'plan_changed'))}
+                  disabled={checkout.loading || (checkout.plan.kind === 'subscription' && (!checkout.subscriptionAccepted || checkout.errorCode === 'plan_changed'))}
                   onClick={() => createPaymentOrder(checkout.method)}
                 >
                   {checkout.loading ? (

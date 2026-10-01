@@ -104,15 +104,15 @@ func TestOrderDetailDoesNotExposeUnvalidatedProviderData(t *testing.T) {
 	response := authRequest(t, (&Server{Cfg: cfg, St: st, LanjingPay: client}).Router(), http.MethodGet, "/api/v1/orders/"+order.ID.String(), nil, &http.Cookie{Name: cfg.SessionCookieName, Value: token})
 	var body struct {
 		Data struct {
-			PayURL    string `json:"payUrl"`
-			SyncError string `json:"syncError"`
-			PlanName  string `json:"planName"`
+			PayURL     string `json:"payUrl"`
+			CheckError string `json:"checkError"`
+			PlanName   string `json:"planName"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != 200 || body.Data.PayURL != "https://qr.example/pay" || body.Data.SyncError == "" || body.Data.PlanName != "基础包" {
+	if response.Code != 200 || body.Data.PayURL != "https://qr.example/pay" || body.Data.CheckError == "" || body.Data.PlanName != "基础包" {
 		t.Fatalf("unsafe detail: %s", response.Body.String())
 	}
 }
@@ -121,7 +121,7 @@ func TestOrderCreationRejectsStalePlanPrice(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	user, order := makeOrder(t, st)
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, order.ID, "failed"); err != nil {
+	if _, err := store.CloseOrder(ctx, st.Pool, order.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.Pool.Exec(ctx, `UPDATE plans SET price_cents=1990 WHERE id=$1`, order.PlanID); err != nil {

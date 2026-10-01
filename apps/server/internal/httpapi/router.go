@@ -98,6 +98,7 @@ type Server struct {
 	c2aCallbackRoutes  func(context.Context, uuid.UUID) ([]store.AsyncPendingRoute, error)
 	enqueueImagePoll   func(context.Context, string, string, string, int, time.Duration) error
 	pageControls       pageControlCache
+	paymentChannel     paymentChannelCache
 	backgroundCancel   context.CancelFunc
 	backgroundWG       sync.WaitGroup
 }

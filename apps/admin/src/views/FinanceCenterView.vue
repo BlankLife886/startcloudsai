@@ -6,8 +6,8 @@ import AdminDateRange from '@/components/AdminDateRange.vue'
 import CursorPager from '@/components/CursorPager.vue'
 import { useFinanceWorkspace } from '@/useFinanceWorkspace'
 const financeTime = (value?: string) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'
-const orderTagType = (status?: string) => status === 'completed' ? 'success' : status === 'uncertain' || status === 'paid' ? 'warning' : status === 'failed' ? 'danger' : 'info'
-const { orderActions, activeTab, days, query, orderStatus, range, cashSummary, orders, reconciliations, changes, summary, selectedOrderId, detailVisible, runningRecon, recoverySupported, outcomeLabels, receivedCents, filteredOrders, tabs, money, points, statusLabel, changeLabel, outcomeType, openOrder, load, runReconciliation, confirmNotCreated, loading, loadError, reconciliationReport, orderList, reconTotal, reconIssueTotal, reconPage, changeTotal, changePage, changeRecordPage, profitPager } = useFinanceWorkspace()
+const orderTagType = (status?: string) => status === 'completed' ? 'success' : status === 'pending' ? 'warning' : status === 'failed' ? 'danger' : 'info'
+const { orderActions, activeTab, days, query, orderStatus, range, cashSummary, orders, reconciliations, changes, summary, selectedOrderId, detailVisible, runningRecon, outcomeLabels, receivedCents, filteredOrders, tabs, money, points, statusLabel, changeLabel, outcomeType, openOrder, load, runReconciliation, loading, loadError, reconciliationReport, orderList, reconTotal, reconIssueTotal, reconPage, changeTotal, changePage, changeRecordPage, profitPager } = useFinanceWorkspace()
 // The overview tabs show recent rows; filters, detail actions and refund
 // review live on the full pages.
 const fullPage: Record<string, { to: string; label: string }> = {
@@ -52,7 +52,7 @@ const openOrderRow = (row: { id: string }) => openOrder(row.id)
         </nav>
         <div class="finance-toolbar__right">
           <el-select v-if="activeTab === 'orders'" v-model="orderStatus" clearable placeholder="全部状态" class="finance-status" @change="load">
-            <el-option label="已完成" value="completed" /><el-option label="待核实" value="uncertain" /><el-option label="待到账" value="paid" /><el-option label="失败" value="failed" />
+            <el-option label="已完成" value="completed" /><el-option label="待支付" value="pending" /><el-option label="已过期" value="expired" /><el-option label="已取消" value="cancelled" /><el-option label="失败" value="failed" />
           </el-select>
           <el-button v-else-if="activeTab === 'reconcile'" type="primary" :icon="Search" :loading="runningRecon" @click="runReconciliation">立即核对</el-button>
           <span v-else-if="activeTab === 'costs'" class="finance-note">积分口径 · 近 {{ days }} 日 · 最多 50 个模型</span>
@@ -89,7 +89,6 @@ const openOrderRow = (row: { id: string }) => openOrder(row.id)
           <el-table-column label="操作" width="170" fixed="right">
             <template #default="{ row }">
               <el-button text size="small" :loading="orderActions.checkingOrderId.value === row.orderId" :disabled="Boolean(orderActions.checkingOrderId.value)" @click="orderActions.checkOrder(row)">核对</el-button>
-              <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text type="warning" size="small" @click="confirmNotCreated(row)">确认未建单</el-button>
             </template>
           </el-table-column>
         </el-table>

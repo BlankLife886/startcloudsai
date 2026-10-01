@@ -2,6 +2,9 @@ import { expect, test } from '@playwright/test'
 import { installVisualBaseline } from './helpers/visualBaseline.js'
 import { fulfillJson } from './helpers/authMocks.js'
 
+const isUnsettled = o => Boolean(o) && (o.status === 'pending' || (Boolean(o.paidAt) && o.status !== 'completed'))
+const matchesStatus = (o, status) => status === 'unsettled' ? isUnsettled(o) : Boolean(o) && (!status || o.status === status)
+
 const policy = { version: 2, series: 'creative', tier: 1, channels: ['web', 'api'], featureKeys: ['text_to_image'], modelIds: [] }
 const sub = { id: 'sub-one', planId: 'base', planName: '创作订阅', status: 'active', billingVersion: 2, canChange: true, startsAt: '2026-08-11T02:30:00Z', endsAt: '2026-08-14T02:30:00Z', nextGrantAt: '2026-08-12T02:30:00Z', dailyPoints: 100, issuedPoints: 100, availablePoints: 100, frozenPoints: 0, spentPoints: 0, grantedCycles: 1, totalCycles: 3, policy }
 const target = { id: 'pro', name: '进阶订阅', kind: 'subscription', priceCents: 6000, durationDays: 3, dailyGrantCents: 200, subscriptionPolicy: { ...policy, tier: 2 } }
@@ -26,7 +29,7 @@ async function setup(page, theme = 'light') {
   await page.route('**/api/v1/me/subscription-changes/upgrade-quote', route => fulfillJson(route, quote))
   await page.route('**/api/v1/me/subscriptions/sub-one/refund-preview', route => fulfillJson(route, { estimatedAmountCents: 3000, requiresReview: true }))
   await page.route('**/api/v1/me/subscriptions/sub-one/refund', route => { state.refundRequests++; state.changes = [{ id: 'refund-one', subscriptionId: sub.id, kind: 'refund', status: 'reviewing', amountCents: 3000, reason: '购买错误申请退款', createdAt: sub.startsAt }]; return fulfillJson(route, state.changes[0]) })
-  await page.route('**/api/v1/orders?*', route => { const status = new URL(route.request().url()).searchParams.get('status'); return fulfillJson(route, { items: state.hasUpgradeOrder && (!status || status === state.orderStatus) ? [order()] : [] }) })
+  await page.route('**/api/v1/orders?*', route => { const status = new URL(route.request().url()).searchParams.get('status'); return fulfillJson(route, { items: state.hasUpgradeOrder && matchesStatus(order(), status) ? [order()] : [] }) })
   await page.route('**/api/v1/orders/upgrade-order', route => fulfillJson(route, order()))
   await page.route('**/api/v1/orders/upgrade-order/close', route => { state.cancelRequests++; state.orderStatus = 'cancelled'; quote.status = 'cancelled'; return fulfillJson(route, order()) })
   await page.route('**/api/v1/orders', route => { state.orderRequests++; state.hasUpgradeOrder = true; state.method = route.request().postDataJSON().paymentMethod; quote.status = 'pending'; expect(route.request().postDataJSON().upgradeQuoteId).toBe('upgrade-quote'); return fulfillJson(route, order()) })

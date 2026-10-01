@@ -186,31 +186,3 @@ func TestLegacySubscriptionMigrationPreservesRateAndFillsMissingDates(t *testing
 		t.Fatalf("legacy period=%d %v", periods, err)
 	}
 }
-
-func TestRecoveryMigrationRefusesToDiscardUncertainOrders(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	user := newUser(t, st)
-	plan := newSubPlan(t, st, 5, 100)
-	order := newOrder(t, st, user.ID, plan)
-	if _, err := store.PrepareOrderPayment(ctx, st.Pool, order.ID, "alipay"); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("pgx", st.Pool.Config().ConnString())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.DownTo(ctx, 123); err == nil {
-		t.Fatal("rollback discarded uncertain state")
-	}
-	var status string
-	err = st.Pool.QueryRow(ctx, `SELECT status FROM orders WHERE id=$1`, order.ID).Scan(&status)
-	if err != nil || status != "uncertain" {
-		t.Fatalf("failed rollback was not atomic: %s %v", status, err)
-	}
-}

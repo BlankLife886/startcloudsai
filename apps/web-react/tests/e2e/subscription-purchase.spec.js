@@ -2,6 +2,9 @@ import {test,expect} from '@playwright/test'
 import {installVisualBaseline} from './helpers/visualBaseline.js'
 import {fulfillJson} from './helpers/authMocks.js'
 
+const isUnsettled = o => Boolean(o) && (o.status === 'pending' || (Boolean(o.paidAt) && o.status !== 'completed'))
+const matchesStatus = (o, status) => status === 'unsettled' ? isUnsettled(o) : Boolean(o) && (!status || o.status === status)
+
 const consent='我已了解订阅权益、积分重置及退款规则'
 async function setup(page,theme='light',kind='subscription') {
   await installVisualBaseline(page)
@@ -11,7 +14,7 @@ async function setup(page,theme='light',kind='subscription') {
   await page.route('**/api/v1/me/subscription',route=>fulfillJson(route,{active:false,blockingPurchase:false}))
   await page.route('**/api/v1/me/subscriptions',route=>fulfillJson(route,{items:[],changes:[]}))
   await page.route('**/api/v1/plans',route=>fulfillJson(route,{items:[state.plan],paymentEnabled:true,paymentMethods:['alipay','wechat']}))
-  await page.route('**/api/v1/orders?*',route=>{const status=new URL(route.request().url()).searchParams.get('status');return fulfillJson(route,{items:state.order && (!status || status===state.order.status)?[state.order]:[]})})
+  await page.route('**/api/v1/orders?*',route=>{const status=new URL(route.request().url()).searchParams.get('status');return fulfillJson(route,{items:matchesStatus(state.order, status)?[state.order]:[]})})
   await page.route('**/api/v1/orders/purchase-order',route=>fulfillJson(route,state.order))
   await page.route('**/api/v1/orders',route=>{
     const body=route.request().postDataJSON();state.requests.push(body)

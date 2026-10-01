@@ -45,9 +45,6 @@ interface Plan {
 }
 
 interface PlanForm {
-  customAmount: boolean;
-  pointsPerYuan: number;
-  priceLockMinYuan: number;
   lockModelPrices: boolean;
   allowTopupPriceLock: boolean;
   priceLockEligible: boolean;
@@ -89,7 +86,6 @@ const statusFilter = ref<"" | "active" | "inactive">("");
 
 function defaultForm(): PlanForm {
   return {
-    customAmount: true, pointsPerYuan: 100, priceLockMinYuan: 30,
     lockModelPrices: true, allowTopupPriceLock: false, priceLockEligible: false, concurrencyBonus: 0, canvasProjectBonus: 0,
     series: "general", tier: 1, channels: ["web", "api"], featureKeys: [], modelIdsText: "", apiModelIds: [], refundWindowHours: 3,
     code: "",
@@ -203,9 +199,6 @@ function openEdit(row: unknown) {
   editingId.value = plan.id;
   Object.assign(form, {
     ...defaultForm(),
-    customAmount: Boolean(plan.rechargePolicy),
-    pointsPerYuan: plan.rechargePolicy?.pointsPerYuan ?? 100,
-    priceLockMinYuan: plan.rechargePolicy?.priceLockMinYuan ?? 30,
     priceLockEligible: plan.priceLockEligible ?? false,
     lockModelPrices: plan.subscriptionPolicy?.lockModelPrices ?? true,
     allowTopupPriceLock: plan.subscriptionPolicy?.allowTopupPriceLock ?? false,
@@ -248,9 +241,6 @@ function parseFeatures() {
 }
 
 function validateForm() {
-  if (form.kind === 'topup' && form.customAmount && (!Number.isInteger(form.pointsPerYuan) || form.pointsPerYuan < 1 || form.pointsPerYuan > 1000000 || !Number.isInteger(form.priceLockMinYuan) || form.priceLockMinYuan < 1 || form.priceLockMinYuan > Math.min(1000, Math.floor(1000000000 / form.pointsPerYuan)))) {
-    ElMessage.warning('请检查每元积分和锁价门槛，均须为范围内的正整数'); return false;
-  }
   form.code = form.code.trim().toLowerCase();
   form.name = form.name.trim();
   form.description = form.description.trim();
@@ -271,7 +261,7 @@ function validateForm() {
     ElMessage.warning("销售价格不能为负数");
     return false;
   }
-  if (form.kind === "topup" && !form.customAmount && form.grantPoints + form.bonusPoints <= 0) {
+  if (form.kind === "topup" && form.grantPoints + form.bonusPoints <= 0) {
     ElMessage.warning("积分包的发放积分必须大于 0");
     return false;
   }
@@ -292,16 +282,15 @@ function validateForm() {
 
 function buildPayload() {
   return {
-    rechargePolicy: form.kind === 'topup' && form.customAmount ? { pointsPerYuan: form.pointsPerYuan, priceLockMinYuan: form.priceLockMinYuan } : null,
     priceLockEligible: form.kind === 'topup' && form.priceLockEligible,
     code: form.code,
     name: form.name,
     description: form.description,
     badge: form.badge,
     kind: form.kind,
-    priceCents: form.kind === 'topup' && form.customAmount ? 100 : Math.round(Number(form.priceYuan || 0) * 100),
-    grantCents: form.kind === "topup" ? form.customAmount ? form.pointsPerYuan : normalizePoints(form.grantPoints) : 0,
-    bonusCents: form.kind === "topup" && !form.customAmount ? normalizePoints(form.bonusPoints) : 0,
+    priceCents: Math.round(Number(form.priceYuan || 0) * 100),
+    grantCents: form.kind === "topup" ? normalizePoints(form.grantPoints) : 0,
+    bonusCents: form.kind === "topup" ? normalizePoints(form.bonusPoints) : 0,
     durationDays:
       form.kind === "subscription" ? Math.round(form.durationDays) : 0,
     dailyGrantCents:
@@ -439,7 +428,7 @@ function formatMoney(cents: number) {
 
 function valueSummary(row: unknown) {
   const plan = row as Plan;
-  if (plan.rechargePolicy) return `每1元 ${formatPoints(plan.rechargePolicy.pointsPerYuan)} 积分 · 整数金额充值`;
+  if (plan.rechargePolicy) return `自定义金额充值（已下线）· 每1元 ${formatPoints(plan.rechargePolicy.pointsPerYuan)} 积分`;
   if (plan.kind === "subscription") {
     return `${plan.durationDays} 天 · 每24小时 ${formatPoints(plan.dailyGrantCents)} 积分`;
   }
@@ -660,7 +649,7 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
               ]"
             />
           </el-form-item>
-          <el-form-item v-if="form.kind !== 'topup' || !form.customAmount" label="销售价格（元）" required>
+          <el-form-item label="销售价格（元）" required>
             <el-input-number
               v-model="form.priceYuan"
               :min="0"
@@ -671,7 +660,6 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
           </el-form-item>
         </div>
 
-        <el-form-item v-if="form.kind === 'topup'" label="充值方式"><el-switch v-model="form.customAmount" active-text="自定义整数金额，最低1元" inactive-text="固定额度包" /></el-form-item>
 
         <el-form-item label="套餐说明">
           <el-input
@@ -685,11 +673,7 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
         </el-form-item>
 
         <div class="plan-form__grid">
-          <template v-if="form.kind === 'topup' && form.customAmount">
-            <el-form-item label="每1元兑换积分" required><el-input-number v-model="form.pointsPerYuan" :min="1" :max="1000000" :precision="0" /></el-form-item>
-            <el-form-item label="接受订阅锁价的最低单笔金额（元）" required><el-input-number v-model="form.priceLockMinYuan" :min="1" :max="Math.min(1000, Math.floor(1000000000 / Math.max(form.pointsPerYuan, 1)))" :precision="0" /></el-form-item>
-          </template>
-          <template v-else-if="form.kind === 'topup'">
+          <template v-if="form.kind === 'topup'">
             <el-form-item label="基础积分" required>
               <el-input-number
                 v-model="form.grantPoints"

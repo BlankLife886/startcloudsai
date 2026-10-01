@@ -34,7 +34,7 @@ func TestExpiredOrderRemovalPreservesPaymentRecovery(t *testing.T) {
 	remove := func(id uuid.UUID) int {
 		return env.do(t, "DELETE", "/api/v1/admin/orders/"+id.String(), nil, adminToken).Code
 	}
-	for _, status := range []string{"pending", "uncertain", "paid", "completed", "cancelled", "failed"} {
+	for _, status := range []string{"pending", "completed", "cancelled", "failed"} {
 		_, _, o := makeOrder(status)
 		if code := remove(o.ID); code != 409 {
 			t.Fatalf("deleted %s: %d", status, code)

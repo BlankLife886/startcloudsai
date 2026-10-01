@@ -480,7 +480,7 @@ func (s *Server) adminSubscriptionChangeDetail(c *gin.Context, _ *store.User) {
 	}
 	orderItems := make([]gin.H, 0, len(orders))
 	for _, o := range orders {
-		orderItems = append(orderItems, orderDict(o, nil))
+		orderItems = append(orderItems, orderDict(o))
 	}
 	ledgerItems := make([]gin.H, 0, len(ledger))
 	for _, e := range ledger {

@@ -371,7 +371,7 @@ func requestRefund(ctx context.Context, st *store.Store, userID, subID uuid.UUID
 			return apperr.E("refund_not_available", "当前订阅不可自助退订，旧版订阅请联系支持核查", 409)
 		}
 		var open bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM subscription_changes c WHERE c.subscription_id=$1 AND ((c.kind='refund' AND c.status IN ('reviewing','processing')) OR (c.kind='upgrade' AND EXISTS(SELECT 1 FROM orders o WHERE o.subscription_change_id=c.id AND o.status IN ('pending','uncertain','paid')))))`, subID).Scan(&open); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM subscription_changes c WHERE c.subscription_id=$1 AND ((c.kind='refund' AND c.status IN ('reviewing','processing')) OR (c.kind='upgrade' AND EXISTS(SELECT 1 FROM orders o WHERE o.subscription_change_id=c.id AND (o.status='pending' OR (o.paid_at IS NOT NULL AND o.status<>'completed'))))))`, subID).Scan(&open); err != nil {
 			return err
 		}
 		if open {

@@ -52,7 +52,7 @@ onBeforeUnmount(()=>controller?.abort());
 function filterLots(){lotPage.value=1;load()}
 function order(id:string | null){if(id)router.push({path:'/orders',query:{search:id,orderId:id}})}
 function changes(id:string){router.push({path:'/subscription-changes',query:{search:id}})}
-const statusLabel=(s:string)=>({active:'生效中',refunding:'退订处理中',cancelled:'已退订',expired:'已到期',pending:'待支付',uncertain:'待核实',paid:'到账确认中',reviewing:'审核中',processing:'退款处理中'}[s]||s);
+const statusLabel=(s:string)=>({active:'生效中',refunding:'退订处理中',cancelled:'已退订',expired:'已到期',pending:'待支付',reviewing:'审核中',processing:'退款处理中'}[s]||s);
 async function exportLots(){
  exporting.value=true;
  try{await downloadAdminCsv(`/api/v1/admin/users/${props.userId}/credit-lots/export`,{bucket:bucket.value,state:state.value},'积分批次.csv')}

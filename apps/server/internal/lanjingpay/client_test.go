@@ -2,7 +2,6 @@ package lanjingpay
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -138,84 +137,6 @@ func TestGetOrderAcceptsStringTimestamp(t *testing.T) {
 	}
 }
 
-func TestCheckOrderParsesAndVerifiesConfirmation(t *testing.T) {
-	secret := "check-secret"
-	var form url.Values
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/checkOrder" || r.Method != http.MethodPost {
-			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
-		}
-		if err := r.ParseForm(); err != nil {
-			t.Fatal(err)
-		}
-		form = r.PostForm
-		values := url.Values{
-			"payId": {"local-order"}, "param": {"local-order"}, "type": {"2"},
-			"price": {"10.00"}, "reallyPrice": {"10.00"},
-		}
-		values.Set("sign", MD5("local-order", "local-order", "2", "10.00", "10.00", secret))
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"code": 1, "msg": "成功", "data": server.URL + "/notify?" + values.Encode(),
-		})
-	}))
-	defer server.Close()
-
-	client, err := New(server.URL, secret, server.URL+"/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	confirmation, err := client.CheckOrder(context.Background(), "cloud-order")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(form) != 1 || form.Get("orderId") != "cloud-order" {
-		t.Fatalf("check form = %#v", form)
-	}
-	if confirmation.MerchantOrderID != "local-order" || confirmation.Param != "local-order" ||
-		confirmation.Type != Alipay || confirmation.Price != "10.00" || confirmation.ReallyPrice != "10.00" {
-		t.Fatalf("confirmation = %#v", confirmation)
-	}
-}
-
-func TestCheckOrderRejectsUnpaidTamperedAndMalformedResponses(t *testing.T) {
-	secret := "check-secret"
-	tests := []struct {
-		name     string
-		response func(string) any
-		apiCode  int
-	}{
-		{name: "unpaid", apiCode: -1, response: func(string) any { return nil }},
-		{name: "tampered signature", apiCode: 1, response: func(baseURL string) any {
-			return baseURL + "/notify?payId=local-order&param=local-order&type=2&price=10.00&reallyPrice=10.00&sign=invalid"
-		}},
-		{name: "malformed callback URL", apiCode: 1, response: func(string) any { return "not-a-callback-url" }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			var server *httptest.Server
-			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"code": test.apiCode, "msg": "not paid", "data": test.response(server.URL),
-				})
-			}))
-			defer server.Close()
-			client, err := New(server.URL, secret, server.URL+"/notify", time.Second, true)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := client.CheckOrder(context.Background(), "cloud-order"); err == nil {
-				t.Fatal("CheckOrder should reject response")
-			} else if test.apiCode == -1 {
-				var apiErr *APIError
-				if !errors.As(err, &apiErr) || apiErr.Code != -1 {
-					t.Fatalf("unpaid error = %v", err)
-				}
-			}
-		})
-	}
-}
-
 func TestVerifyCallback(t *testing.T) {
 	client := &Client{secret: "secret"}
 	signature := MD5("pay", "param", "2", "10", "10.01", "secret")
@@ -227,19 +148,17 @@ func TestVerifyCallback(t *testing.T) {
 	}
 }
 
-func TestIsTerminalOrderError(t *testing.T) {
-	for _, message := range []string{"云端订单编号不存在", "订单已过期", "订单已关闭", "order not found", "order expired"} {
-		if !IsTerminalOrderError(&APIError{Code: -1, Message: message}) {
-			t.Fatalf("terminal error %q not recognized", message)
-		}
+func TestIsOrderNotFound(t *testing.T) {
+	if !IsOrderNotFound(&APIError{Code: -1, Message: "云端订单编号不存在"}) {
+		t.Fatal("provider not-found answer not recognized")
 	}
 	for _, err := range []error{
 		&APIError{Code: -1, Message: "订单未支付"},
-		&APIError{Code: -1, Message: "服务繁忙"},
+		&APIError{Code: 1, Message: "不存在"},
 		errors.New("network unavailable"),
 	} {
-		if IsTerminalOrderError(err) {
-			t.Fatalf("non-terminal error recognized: %v", err)
+		if IsOrderNotFound(err) {
+			t.Fatalf("unexpected not-found: %v", err)
 		}
 	}
 }

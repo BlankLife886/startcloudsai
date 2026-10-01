@@ -174,7 +174,7 @@ func GetOrInsertUpgradeOrder(ctx context.Context, st *Store, userID, changeID uu
 		if sub == nil || sub.Status != "active" || sub.Revision != c.ExpectedRevision || !sub.EndsAt.After(at) {
 			return ErrSubscriptionChangeInvalid
 		}
-		pending, err := ListPendingOrdersForUser(ctx, tx, userID)
+		pending, err := ListUnsettledOrdersForUser(ctx, tx, userID)
 		if err != nil {
 			return err
 		}

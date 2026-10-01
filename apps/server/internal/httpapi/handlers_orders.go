@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -115,22 +114,13 @@ func (s *Server) createOrder(c *gin.Context) {
 		fail(c, apperr.E("plan_not_found", "套餐不存在或已下架", 404))
 		return
 	}
-	if plan.RechargePolicy != nil {
-		if body.AmountYuan == nil || body.ExpectedPlanRevision == nil || body.UpgradeQuoteID != "" {
-			fail(c, apperr.E("validation_error", "自定义充值须提供整数元金额及当前配置版本，不能用于订阅升级", 422))
-			return
-		}
-		if *body.ExpectedPlanRevision != plan.Revision {
-			fail(c, apperr.E("plan_changed", "充值规则已更新，请刷新后确认到账积分", 409))
-			return
-		}
-		plan, err = store.QuoteRecharge(plan, *body.AmountYuan)
-		if err != nil {
-			fail(c, apperr.E("validation_error", err.Error(), 422))
-			return
-		}
-	} else if body.AmountYuan != nil || (body.ExpectedPlanRevision != nil && (plan.Kind != "subscription" || body.UpgradeQuoteID != "")) {
-		fail(c, apperr.E("validation_error", "该套餐不支持自定义充值金额", 422))
+	// Custom-amount top-up is retired: only fixed-amount QR codes are configured.
+	if plan.RechargePolicy != nil || body.AmountYuan != nil {
+		fail(c, apperr.E("custom_recharge_retired", "自定义金额充值已下线，请选择固定额度包", 422))
+		return
+	}
+	if body.ExpectedPlanRevision != nil && (plan.Kind != "subscription" || body.UpgradeQuoteID != "") {
+		fail(c, apperr.E("validation_error", "该套餐不支持指定方案版本", 422))
 		return
 	}
 	if plan.Kind == "subscription" && body.ExpectedPlanRevision != nil {
@@ -179,9 +169,6 @@ func (s *Server) createOrder(c *gin.Context) {
 		}
 	}
 	createPending := func() (*store.Order, bool, error) {
-		if body.AmountYuan != nil {
-			return store.GetOrInsertRechargeOrder(ctx, s.St, user.ID, plan.ID, *body.AmountYuan, *body.ExpectedPlanRevision, "lanjing")
-		}
 		if upgradeID != nil {
 			return store.GetOrInsertUpgradeOrder(ctx, s.St, user.ID, *upgradeID, s.subscriptionNow())
 		}
@@ -190,271 +177,98 @@ func (s *Server) createOrder(c *gin.Context) {
 		}
 		return store.GetOrInsertPendingOrder(ctx, s.St, user.ID, plan.ID, plan.PriceCents, plan.GrantCents, plan.BonusCents, "lanjing", s.subscriptionNow())
 	}
-	existingOrders, err := store.ListPendingOrdersForUser(ctx, s.St.Pool, user.ID)
+	unsettled, err := store.ListUnsettledOrdersForUser(ctx, s.St.Pool, user.ID)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	for _, existing := range existingOrders {
-		if existing.RechargePolicy != nil && body.AmountYuan == nil {
-			fail(c, userUnsettledOrderError())
-			return
-		}
-		if body.AmountYuan != nil && (existing.RechargePolicy == nil || existing.AmountCents != plan.PriceCents) {
-			fail(c, userUnsettledOrderError())
-			return
-		}
-		if (upgradeID == nil) != (existing.SubscriptionChangeID == nil) || (upgradeID != nil && *upgradeID != *existing.SubscriptionChangeID) {
-			fail(c, userUnsettledOrderError())
-			return
-		}
-		if existing.PlanID != plan.ID {
-			fail(c, userUnsettledOrderError())
-			return
-		}
-	}
-	var reusable *store.Order
-	for _, existing := range existingOrders {
-		if existing.Provider != "lanjing" {
-			fail(c, apperr.E("payment_order_conflict", "该套餐存在其他渠道的待处理订单", 409))
-			return
-		}
-		if existing.Status == "uncertain" || existing.Status == "paid" || existing.ProviderOrderID == nil {
-			if existing.Status == "pending" {
-				if err := store.MarkOrderUncertain(ctx, s.St.Pool, existing.ID); err != nil {
-					fail(c, err)
-					return
-				}
-				existing, err = store.GetOrder(ctx, s.St.Pool, existing.ID)
-				if err != nil {
-					fail(c, err)
-					return
-				}
-			}
-			out := orderDict(existing, nil)
-			out["reused"] = true
-			c.JSON(http.StatusAccepted, gin.H{"success": true, "data": out})
-			return
-		}
-		if reusable == nil && (body.AmountYuan != nil || orderMatchesCheckout(existing, plan, paymentType)) {
-			reusable = existing
-		}
-	}
-	for _, existing := range existingOrders {
-		if reusable != nil && existing.ID == reusable.ID {
-			continue
-		}
-		if _, err := s.cancelPendingLanjingOrder(ctx, existing); err != nil {
-			log.Printf("close duplicate lanjing order %s: %v", existing.ID, err)
-			fail(c, apperr.E("payment_order_conflict", "该套餐存在无法自动关闭的待支付订单，请先在我的订单中取消", 409))
-			return
-		}
-	}
-	if reusable != nil {
-		fresh, remote, syncErr := s.syncLanjingOrder(ctx, reusable)
+	for _, existing := range unsettled {
+		lookupCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		fresh, _, syncErr := s.syncLanjingOrder(lookupCtx, client, existing)
+		cancel()
 		if syncErr != nil {
-			log.Printf("sync reusable lanjing order %s: %v", reusable.ID, syncErr)
-			fail(c, apperr.E("payment_provider_error", "现有待支付订单暂时无法读取，请稍后重试", 502))
-			return
+			log.Printf("sync unsettled order %s before checkout: %v", existing.ID, syncErr)
 		}
-		if fresh.Status == "pending" {
-			out := lanjingOrderDict(fresh, remote)
+		switch {
+		case fresh.Status == "completed" || (fresh.Status != "pending" && fresh.PaidAt == nil):
+			continue // settled by the sync above
+		case fresh.PaidAt != nil:
+			fail(c, apperr.E("payment_confirming", "你有一笔已付款的订单正在到账，请稍候，请勿重复支付", 409))
+			return
+		case !orderMatchesCheckout(fresh, plan, paymentType, upgradeID):
+			fail(c, userUnsettledOrderError())
+			return
+		case fresh.ProviderOrderID == nil:
+			fail(c, apperr.E("payment_order_creating", "订单正在创建，请稍候", 409))
+			return
+		case paymentQRAvailable(fresh, time.Now(), minReusableQRTime):
+			out := orderDict(fresh)
 			out["reused"] = true
 			ok(c, out)
 			return
+		default:
+			// The QR code is (nearly) expired; the provider has not closed it yet.
+			fail(c, apperr.E("payment_order_expiring", "上一笔订单即将超时，请 1 分钟后再下单；如已付款请勿重复支付", 409))
+			return
 		}
+	}
+	if !s.paymentChannelOnline(ctx, client) {
+		fail(c, apperr.E("payment_channel_offline", "收款通道暂时离线，请稍后再试", 503))
+		return
 	}
 	order, created, err := createPending()
 	if err != nil {
-		if errors.Is(err, store.ErrAlreadySubscribed) {
+		switch {
+		case errors.Is(err, store.ErrAlreadySubscribed):
 			err = apperr.E("subscription_exists", "已有有效订阅，请前往我的订阅管理", 409)
-		}
-		if errors.Is(err, store.ErrSubscriptionChangeInvalid) {
+		case errors.Is(err, store.ErrSubscriptionChangeInvalid):
 			err = apperr.E("upgrade_quote_invalid", "升级报价已失效，请重新获取", 409)
-		}
-		if errors.Is(err, store.ErrUserUnsettledOrder) {
+		case errors.Is(err, store.ErrUserUnsettledOrder):
 			err = userUnsettledOrderError()
-		}
-		if errors.Is(err, store.ErrOrderPlanChanged) {
+		case errors.Is(err, store.ErrOrderPlanChanged):
 			err = apperr.E("plan_changed", "套餐已更新，请重新选择方案", 409)
 		}
 		fail(c, err)
 		return
 	}
 	if !created {
-		if upgradeID != nil && store.Contains([]string{"completed", "cancelled", "expired", "failed"}, order.Status) {
-			ok(c, orderDict(order, nil))
+		// A concurrent checkout of this user created the order first, or an
+		// upgrade quote already has its (single) order.
+		if order.Status == "pending" {
+			fail(c, apperr.E("payment_order_creating", "订单正在创建，请稍候", 409))
 			return
 		}
-		if order.Provider != "lanjing" {
-			fail(c, apperr.E("payment_order_conflict", "该套餐已有待支付订单，请先处理现有订单", 409))
-			return
-		}
-		if order.ProviderOrderID == nil {
-			if err := store.MarkOrderUncertain(ctx, s.St.Pool, order.ID); err != nil {
-				fail(c, err)
-				return
-			}
-			fresh, err := store.GetOrder(ctx, s.St.Pool, order.ID)
-			if err != nil {
-				fail(c, err)
-				return
-			}
-			c.JSON(http.StatusAccepted, gin.H{"success": true, "data": orderDict(fresh, nil)})
-			return
-		}
-		fresh, remote, syncErr := s.syncLanjingOrder(ctx, order)
-		if syncErr != nil {
-			log.Printf("sync existing lanjing order %s: %v", order.ID, syncErr)
-			if order.ProviderPayURL != nil {
-				out := orderDict(order, nil)
-				out["reused"] = true
-				ok(c, out)
-				return
-			}
-			fail(c, apperr.E("payment_provider_error", "现有待支付订单暂时无法读取，请稍后重试", 502))
-			return
-		}
-		if fresh.Status == "pending" {
-			var out gin.H
-			if remote != nil {
-				out = lanjingOrderDict(fresh, remote)
-			} else {
-				out = orderDict(fresh, nil)
-			}
-			out["reused"] = true
-			ok(c, out)
-			return
-		}
-		order, created, err = createPending()
-		if err != nil {
-			if errors.Is(err, store.ErrAlreadySubscribed) {
-				err = apperr.E("subscription_exists", "已有有效订阅，请前往我的订阅管理", 409)
-			}
-			if errors.Is(err, store.ErrSubscriptionChangeInvalid) {
-				err = apperr.E("upgrade_quote_invalid", "升级报价已失效，请重新获取", 409)
-			}
-			if errors.Is(err, store.ErrUserUnsettledOrder) {
-				err = userUnsettledOrderError()
-			}
-			if errors.Is(err, store.ErrOrderPlanChanged) {
-				err = apperr.E("plan_changed", "套餐已更新，请重新选择方案", 409)
-			}
-			fail(c, err)
-			return
-		}
-		if !created {
-			fail(c, apperr.E("payment_order_creating", "该套餐订单正在创建，请稍后重试", 409))
-			return
-		}
+		fail(c, apperr.E("upgrade_quote_invalid", "升级报价已使用，请重新获取", 409))
+		return
 	}
 	order, err = store.PrepareOrderPayment(ctx, s.St.Pool, order.ID, lanjingPaymentMethod(paymentType))
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	remote, err := client.CreateOrder(ctx, lanjingpay.CreateOrderInput{
-		MerchantOrderID: order.ID.String(),
-		Param:           order.ID.String(),
-		Type:            paymentType,
-		AmountCents:     order.AmountCents,
-	})
+	order, err = s.openLanjingPayment(ctx, client, order, paymentType)
 	if err != nil {
-		if lanjingpay.IsDefinitiveCreateRejection(err) {
-			if _, updateErr := store.TransitionPendingOrderStatus(context.WithoutCancel(ctx), s.St.Pool, order.ID, "failed"); updateErr != nil {
-				fail(c, updateErr)
-				return
-			}
-			fail(c, apperr.E("payment_create_rejected", "支付渠道暂时无法创建订单，本单已结束，请稍后重试", 502))
-			return
-		}
-		log.Printf("create lanjing payment for order %s: %v", order.ID, err)
-		c.JSON(http.StatusAccepted, gin.H{"success": true, "data": orderDict(order, nil)})
+		fail(c, err)
 		return
 	}
-	if err := validateRemoteOrder(order, remote, true, true); err != nil {
-		s.closeRejectedPayment(ctx, client, order, remote, err)
-		log.Printf("invalid lanjing payment response for order %s: %v", order.ID, err)
-		if errors.Is(err, errProviderAdjustedAmount) {
-			fail(c, apperr.E("payment_amount_conflict", "支付渠道实际金额与订单金额不一致，请稍后重试", 409))
-			return
-		}
-		fail(c, apperr.E("payment_provider_error", "支付渠道返回异常，请稍后重试", 502))
-		return
-	}
-	if remote.Type != paymentType {
-		s.closeRejectedPayment(ctx, client, order, remote, fmt.Errorf("payment type mismatch"))
-		log.Printf("invalid lanjing payment type for order %s: requested=%d returned=%d", order.ID, paymentType, remote.Type)
-		fail(c, apperr.E("payment_provider_error", "支付渠道返回异常，请稍后重试", 502))
-		return
-	}
-	payAmountCents, _ := remote.ReallyPriceCents()
-	var expiresAt *time.Time
-	if value := remote.ExpiresAt(); !value.IsZero() {
-		expiresAt = &value
-	}
-	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer persistCancel()
-	updated, err := store.SetOrderProviderDetails(persistCtx, s.St.Pool, order.ID, remote.ProviderOrderID,
-		payAmountCents, lanjingPaymentMethod(remote.Type), remote.PayURL, remote.IsAuto == 1, expiresAt)
-	if err != nil {
-		log.Printf("persist lanjing payment for order %s: %v", order.ID, err)
-		s.recordPaymentCreationIssue(persistCtx, order, "provider_binding_failed", "渠道已建单但本站未能绑定渠道单号，需人工关联后核查", remote.ProviderOrderID)
-		c.JSON(http.StatusAccepted, gin.H{"success": true, "data": orderDict(order, nil)})
-		return
-	}
-	respondCreated(c, lanjingOrderDict(updated, remote))
+	respondCreated(c, orderDict(order))
 }
 
 func userUnsettledOrderError() error {
-	return apperr.E("user_unsettled_order", "你已有一笔待处理订单，请先在「我的订单」中完成支付或取消；待核实或到账确认中的订单需等待处理完成", http.StatusConflict)
+	return apperr.E("user_unsettled_order", "你有一笔未支付订单，请先完成支付，或在「我的订单」中取消后再下单", http.StatusConflict)
 }
 
-func orderMatchesCheckout(order *store.Order, plan *store.Plan, paymentType lanjingpay.PaymentType) bool {
-	if order == nil || plan == nil || order.Provider != "lanjing" || order.ProviderOrderID == nil ||
-		order.AmountCents != plan.PriceCents || order.GrantCents != plan.GrantCents || order.BonusCents != plan.BonusCents ||
-		order.PaymentMethod == nil {
+// orderMatchesCheckout reports whether a pending order is the same purchase
+// the user is starting again, so its QR code can be shown instead of a new one.
+func orderMatchesCheckout(order *store.Order, plan *store.Plan, paymentType lanjingpay.PaymentType, upgradeID *uuid.UUID) bool {
+	if order.PlanID != plan.ID || order.AmountCents != plan.PriceCents || order.PaymentMethod == nil ||
+		*order.PaymentMethod != lanjingPaymentMethod(paymentType) {
 		return false
 	}
-	if order.PlanKind != nil && (*order.PlanKind != plan.Kind || order.PlanDurationDays != plan.DurationDays || order.PlanDailyGrantCents != plan.DailyGrantCents) {
+	if (upgradeID == nil) != (order.SubscriptionChangeID == nil) || (upgradeID != nil && *upgradeID != *order.SubscriptionChangeID) {
 		return false
 	}
-	return *order.PaymentMethod == lanjingPaymentMethod(paymentType)
-}
-
-func (s *Server) resolveLanjingPay(ctx context.Context) (*lanjingpay.Client, settings.LanjingPayConfig, error) {
-	if s.LanjingPay != nil {
-		return s.LanjingPay, settings.LanjingPayConfig{
-			Enabled: true, AlipayEnabled: true, WechatEnabled: true,
-		}, nil
-	}
-	if s.Cfg == nil || s.St == nil {
-		return nil, settings.LanjingPayConfig{}, nil
-	}
-	env := settings.LanjingPayConfig{
-		Enabled:       s.Cfg.LanjingPayEnabled(),
-		BaseURL:       s.Cfg.LanjingPayBaseURL,
-		Secret:        s.Cfg.LanjingPaySecret,
-		NotifyURL:     s.Cfg.LanjingPayNotifyURL,
-		TimeoutSecs:   s.Cfg.LanjingPayTimeoutSecs,
-		AlipayEnabled: true,
-		WechatEnabled: true,
-	}
-	resolved, err := settings.ResolveLanjingPay(ctx, s.St.Pool, env, s.Cfg.AppSecret)
-	if err != nil || !resolved.Enabled {
-		return nil, resolved, err
-	}
-	if resolved.Secret == "" || resolved.NotifyURL == "" || resolved.BaseURL == "" {
-		return nil, resolved, fmt.Errorf("enabled payment configuration is incomplete")
-	}
-	client, err := lanjingpay.New(
-		resolved.BaseURL,
-		resolved.Secret,
-		resolved.NotifyURL,
-		time.Duration(resolved.TimeoutSecs)*time.Second,
-		s.Cfg.AppEnv != "production",
-	)
-	return client, resolved, err
+	return order.GrantCents == plan.GrantCents && order.BonusCents == plan.BonusCents
 }
 
 func (s *Server) listOrders(c *gin.Context) {
@@ -464,7 +278,7 @@ func (s *Server) listOrders(c *gin.Context) {
 		return
 	}
 	status := strings.TrimSpace(c.Query("status"))
-	if status != "" && !store.Contains(store.OrderStatuses, status) {
+	if status != "" && status != "unsettled" && status != "confirming" && !store.Contains(store.OrderStatuses, status) {
 		fail(c, apperr.E("validation_error", "无效的订单状态", 422))
 		return
 	}
@@ -503,7 +317,7 @@ func (s *Server) listOrders(c *gin.Context) {
 		return
 	}
 	page := buildPage(rows, limit, func(o *store.Order) gin.H {
-		out := orderDict(o, nil)
+		out := orderDict(o)
 		if plan := plans[o.PlanID]; o.PlanKind == nil && plan != nil {
 			out["planName"] = plan.Name
 			out["planKind"] = plan.Kind
@@ -515,7 +329,6 @@ func (s *Server) listOrders(c *gin.Context) {
 	page["summary"] = summary
 	ok(c, page)
 }
-
 func (s *Server) getOrder(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
@@ -536,17 +349,8 @@ func (s *Server) getOrder(c *gin.Context) {
 		fail(c, apperr.E("order_not_found", "订单不存在", 404))
 		return
 	}
-	fresh, remote, err := s.syncLanjingOrder(c.Request.Context(), order)
-	if fresh != nil {
-		order = fresh
-	}
-	out := orderDict(order, nil)
-	if err != nil {
-		log.Printf("sync lanjing order %s: %v", order.ID, err)
-		out["syncError"] = "支付渠道暂时无法确认状态，请稍后刷新"
-	} else if remote != nil {
-		out = lanjingOrderDict(order, remote)
-	}
+	order = s.refreshUserOrder(c.Request.Context(), order)
+	out := orderDict(order)
 	if order.PlanKind == nil {
 		if plan, planErr := store.GetPlan(c.Request.Context(), s.St.Pool, order.PlanID); planErr == nil && plan != nil {
 			out["planName"], out["planKind"] = plan.Name, plan.Kind
@@ -554,170 +358,6 @@ func (s *Server) getOrder(c *gin.Context) {
 		}
 	}
 	ok(c, out)
-}
-
-func parseLanjingPaymentType(method string) (lanjingpay.PaymentType, error) {
-	switch strings.ToLower(strings.TrimSpace(method)) {
-	case "wechat":
-		return lanjingpay.Wechat, nil
-	case "alipay":
-		return lanjingpay.Alipay, nil
-	default:
-		return 0, apperr.E("validation_error", "paymentMethod: 仅支持 alipay 或 wechat", 422)
-	}
-}
-
-func lanjingPaymentMethod(paymentType lanjingpay.PaymentType) string {
-	switch paymentType {
-	case lanjingpay.Wechat:
-		return "wechat"
-	case lanjingpay.Alipay:
-		return "alipay"
-	default:
-		return ""
-	}
-}
-
-func expectedProviderPayAmount(order *store.Order) int64 {
-	if order.ProviderPayAmountCents != nil {
-		return *order.ProviderPayAmountCents
-	}
-	return order.AmountCents
-}
-
-func validateRemoteOrder(order *store.Order, remote *lanjingpay.Order, requirePayURL, acceptNewPayAmount bool) error {
-	if remote == nil || remote.ProviderOrderID == "" || (requirePayURL && remote.PayURL == "") {
-		return fmt.Errorf("missing provider order data")
-	}
-	if remote.MerchantOrderID != order.ID.String() {
-		return fmt.Errorf("merchant order mismatch")
-	}
-	if order.ProviderOrderID != nil && remote.ProviderOrderID != *order.ProviderOrderID {
-		return fmt.Errorf("provider order mismatch")
-	}
-	priceCents, err := remote.PriceCents()
-	if err != nil || priceCents != order.AmountCents {
-		return fmt.Errorf("price mismatch")
-	}
-	payAmountCents, err := remote.ReallyPriceCents()
-	if err != nil || payAmountCents <= 0 {
-		return fmt.Errorf("invalid paid amount")
-	}
-	paymentMethod := lanjingPaymentMethod(remote.Type)
-	if paymentMethod == "" {
-		return fmt.Errorf("invalid payment type")
-	}
-	if payAmountCents != order.AmountCents {
-		return fmt.Errorf("%w: expected %d, got %d", errProviderAdjustedAmount, order.AmountCents, payAmountCents)
-	}
-	if order.PaymentMethod != nil && paymentMethod != *order.PaymentMethod {
-		return fmt.Errorf("payment type mismatch")
-	}
-	if remote.IsAuto != 0 && remote.IsAuto != 1 {
-		return fmt.Errorf("invalid manual amount flag")
-	}
-	if remote.State < -1 || remote.State > 2 {
-		return fmt.Errorf("invalid provider state")
-	}
-	if requirePayURL && remote.State != 0 {
-		return fmt.Errorf("new provider order is not pending")
-	}
-	return nil
-}
-
-func validatePaymentConfirmation(order *store.Order, confirmation *lanjingpay.PaymentConfirmation) error {
-	if confirmation == nil || confirmation.MerchantOrderID != order.ID.String() || confirmation.Param != order.ID.String() {
-		return fmt.Errorf("merchant order mismatch")
-	}
-	paymentMethod := lanjingPaymentMethod(confirmation.Type)
-	if paymentMethod == "" || (order.PaymentMethod != nil && paymentMethod != *order.PaymentMethod) {
-		return fmt.Errorf("payment type mismatch")
-	}
-	priceCents, err := lanjingpay.ParseCents(confirmation.Price)
-	if err != nil || priceCents != order.AmountCents {
-		return fmt.Errorf("price mismatch")
-	}
-	paidAmountCents, err := lanjingpay.ParseCents(confirmation.ReallyPrice)
-	if err != nil || paidAmountCents != expectedProviderPayAmount(order) {
-		return fmt.Errorf("paid amount mismatch")
-	}
-	return nil
-}
-
-func isLanjingUnpaid(err error) bool {
-	var apiErr *lanjingpay.APIError
-	return errors.As(err, &apiErr) && apiErr.Code == -1
-}
-
-func lanjingOrderDict(order *store.Order, remote *lanjingpay.Order) gin.H {
-	payURL := remote.PayURL
-	out := orderDict(order, &payURL)
-	out["providerOrderId"] = remote.ProviderOrderID
-	out["paymentMethod"] = lanjingPaymentMethod(remote.Type)
-	if cents, err := remote.ReallyPriceCents(); err == nil {
-		out["payAmountCents"] = cents
-	}
-	if remote.IsAuto == 0 || remote.IsAuto == 1 {
-		out["requiresManualAmount"] = remote.IsAuto == 1
-	}
-	out["providerState"] = remote.State
-	if expiresAt := remote.ExpiresAt(); !expiresAt.IsZero() {
-		out["expiresAt"] = isoValue(expiresAt)
-	}
-	return out
-}
-
-func (s *Server) syncLanjingOrder(ctx context.Context, order *store.Order) (*store.Order, *lanjingpay.Order, error) {
-	if order.Provider != "lanjing" || order.ProviderOrderID == nil || (order.Status != "pending" && order.Status != "paid" && order.Status != "uncertain") {
-		return order, nil, nil
-	}
-	client, _, err := s.resolveLanjingPay(ctx)
-	if err != nil || client == nil {
-		if err == nil {
-			err = fmt.Errorf("payment provider unavailable")
-		}
-		return order, nil, err
-	}
-	remote, err := client.GetOrder(ctx, *order.ProviderOrderID)
-	if err != nil {
-		return order, nil, err
-	}
-	if err := validateRemoteOrder(order, remote, false, false); err != nil {
-		return order, remote, err
-	}
-	var expiresAt *time.Time
-	if value := remote.ExpiresAt(); !value.IsZero() {
-		expiresAt = &value
-	}
-	updated, err := store.UpdateOrderPaymentDisplay(ctx, s.St.Pool, order.ID, remote.PayURL, remote.IsAuto == 1, expiresAt)
-	if err != nil {
-		return order, remote, err
-	}
-	order = updated
-	confirmation, checkErr := client.CheckOrder(ctx, *order.ProviderOrderID)
-	if checkErr == nil {
-		if err := validatePaymentConfirmation(order, confirmation); err != nil {
-			return order, remote, fmt.Errorf("invalid lanjing payment confirmation: %w", err)
-		}
-		completed, err := s.completeVerifiedOrder(ctx, order)
-		return completed, remote, err
-	}
-	if !isLanjingUnpaid(checkErr) {
-		return order, remote, checkErr
-	}
-	switch remote.State {
-	case 1, 2:
-		completed, err := s.completeVerifiedOrder(ctx, order)
-		return completed, remote, err
-	case -1:
-		if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
-			return order, remote, err
-		}
-		fresh, err := store.GetOrder(ctx, s.St.Pool, order.ID)
-		return fresh, remote, err
-	default:
-		return order, remote, nil
-	}
 }
 
 func (s *Server) closeOrder(c *gin.Context) {
@@ -741,185 +381,15 @@ func (s *Server) closeOrder(c *gin.Context) {
 		fail(c, apperr.E("order_not_found", "订单不存在", 404))
 		return
 	}
-	if order.Status == "uncertain" {
-		fail(c, apperr.E("payment_verification_pending", "支付结果正在核实，暂不能取消或重复下单", 409))
-		return
-	}
-	if order.Status != "pending" {
-		ok(c, orderDict(order, nil))
-		return
-	}
-	order, err = s.cancelPendingLanjingOrder(ctx, order)
+	order, err = s.cancelLanjingOrder(ctx, order)
 	if err != nil {
-		log.Printf("close lanjing order %s: %v", orderID, err)
-		fail(c, apperr.E("payment_provider_error", "订单暂时无法关闭，请稍后重试", 502))
+		fail(c, err)
 		return
 	}
-	ok(c, orderDict(order, nil))
+	ok(c, orderDict(order))
 }
 
-func (s *Server) cancelPendingLanjingOrder(ctx context.Context, order *store.Order) (*store.Order, error) {
-	if order == nil || order.Status != "pending" {
-		return order, nil
-	}
-	if order.Provider == "lanjing" && order.ProviderOrderID == nil {
-		if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "cancelled"); err != nil {
-			return order, err
-		}
-		return store.GetOrder(ctx, s.St.Pool, order.ID)
-	}
-	client, _, configErr := s.resolveLanjingPay(ctx)
-	if configErr != nil || client == nil || order.Provider != "lanjing" || order.ProviderOrderID == nil {
-		return order, fmt.Errorf("payment provider unavailable")
-	}
-	if closeErr := client.CloseOrder(ctx, *order.ProviderOrderID); closeErr != nil {
-		confirmation, checkErr := client.CheckOrder(ctx, *order.ProviderOrderID)
-		if checkErr == nil {
-			if err := validatePaymentConfirmation(order, confirmation); err != nil {
-				return order, fmt.Errorf("invalid lanjing payment confirmation: %w", err)
-			}
-			return s.completeVerifiedOrder(ctx, order)
-		}
-		fresh, _, syncErr := s.syncLanjingOrder(ctx, order)
-		if syncErr == nil && fresh != nil && (fresh.Status == "completed" || fresh.Status == "expired") {
-			return fresh, nil
-		}
-		if lanjingpay.IsTerminalOrderError(closeErr) || lanjingpay.IsTerminalOrderError(checkErr) ||
-			lanjingpay.IsTerminalOrderError(syncErr) {
-			if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
-				return order, err
-			}
-			return store.GetOrder(ctx, s.St.Pool, order.ID)
-		}
-		return order, closeErr
-	}
-	if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "cancelled"); err != nil {
-		return order, err
-	}
-	return store.GetOrder(ctx, s.St.Pool, order.ID)
-}
-
-func (s *Server) lanjingPaymentNotify(c *gin.Context) {
-	if s.UsageLimiter != nil {
-		_, allowed, err := s.UsageLimiter.Take(c.Request.Context(), "payment-callback-ip", c.ClientIP(), 120, 1, time.Minute)
-		if err != nil {
-			c.String(http.StatusServiceUnavailable, "callback_protection_unavailable")
-			return
-		}
-		if !allowed {
-			c.Header("Retry-After", "60")
-			c.String(http.StatusTooManyRequests, "rate_limited")
-			return
-		}
-	}
-	payID := strings.TrimSpace(c.Query("payId"))
-	param := strings.TrimSpace(c.Query("param"))
-	paymentType := strings.TrimSpace(c.Query("type"))
-	price := strings.TrimSpace(c.Query("price"))
-	reallyPrice := strings.TrimSpace(c.Query("reallyPrice"))
-	signature := strings.TrimSpace(c.Query("sign"))
-	fingerprint := paymentCallbackFingerprint(payID, param, paymentType, price, reallyPrice, signature)
-	outcome, detail := "invalid_request", ""
-	var orderID *uuid.UUID
-	var providerOrderID string
-	var amountCents, paidAmountCents *int64
-	signatureValid := false
-	defer func() {
-		auditCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, _ = store.InsertPaymentCallbackEvent(auditCtx, s.St.Pool, fingerprint, orderID, providerOrderID,
-			amountCents, paidAmountCents, c.ClientIP(), signatureValid, outcome, detail)
-	}()
-	client, _, err := s.resolveLanjingPay(c.Request.Context())
-	if err != nil || client == nil {
-		outcome, detail = "provider_unavailable", "支付配置不可用"
-		c.String(http.StatusServiceUnavailable, "payment_unavailable")
-		return
-	}
-	if payID == "" || param == "" || price == "" || reallyPrice == "" || signature == "" {
-		c.String(http.StatusBadRequest, "invalid_request")
-		return
-	}
-	parsedPaymentType, err := strconv.Atoi(paymentType)
-	callbackPaymentMethod := lanjingPaymentMethod(lanjingpay.PaymentType(parsedPaymentType))
-	if err != nil || callbackPaymentMethod == "" {
-		outcome = "invalid_type"
-		c.String(http.StatusBadRequest, "invalid_type")
-		return
-	}
-	signatureValid = client.VerifyCallback(payID, param, paymentType, price, reallyPrice, signature)
-	if !signatureValid {
-		outcome = "invalid_signature"
-		c.String(http.StatusUnauthorized, "error_sign")
-		return
-	}
-	parsedOrderID, err := uuid.Parse(payID)
-	if err != nil || param != payID {
-		outcome = "invalid_order"
-		c.String(http.StatusBadRequest, "invalid_order")
-		return
-	}
-	orderID = &parsedOrderID
-	priceCents, err := lanjingpay.ParseCents(price)
-	if err != nil {
-		outcome = "invalid_price"
-		c.String(http.StatusBadRequest, "invalid_price")
-		return
-	}
-	amountCents = &priceCents
-	reallyPriceCents, err := lanjingpay.ParseCents(reallyPrice)
-	if err != nil || reallyPriceCents <= 0 {
-		outcome = "invalid_paid_amount"
-		c.String(http.StatusBadRequest, "invalid_really_price")
-		return
-	}
-	paidAmountCents = &reallyPriceCents
-	ctx := c.Request.Context()
-	order, err := store.GetOrder(ctx, s.St.Pool, parsedOrderID)
-	if err != nil {
-		outcome, detail = "database_error", err.Error()
-		log.Printf("read callback order %s: %v", payID, err)
-		c.String(http.StatusInternalServerError, "error")
-		return
-	}
-	if order == nil || order.Provider != "lanjing" || order.AmountCents != priceCents {
-		outcome = "order_mismatch"
-		c.String(http.StatusBadRequest, "invalid_order")
-		return
-	}
-	if order.ProviderOrderID != nil {
-		providerOrderID = *order.ProviderOrderID
-	}
-	if order.PaymentMethod != nil && callbackPaymentMethod != *order.PaymentMethod {
-		outcome, detail = "payment_method_mismatch", "支付渠道与订单不一致"
-		s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, ClientIP: c.ClientIP(),
-			Category: "payment_method_mismatch", Severity: "critical", Score: 100, Action: "blocked",
-			Reason: detail, Metadata: map[string]any{"orderId": order.ID.String(), "expected": *order.PaymentMethod, "actual": callbackPaymentMethod}})
-		c.String(http.StatusBadRequest, "invalid_type")
-		return
-	}
-	expectedPayAmountCents := expectedProviderPayAmount(order)
-	if reallyPriceCents != expectedPayAmountCents {
-		outcome, detail = "amount_mismatch", "实付金额与订单金额不一致"
-		s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, ClientIP: c.ClientIP(),
-			Category: "payment_amount_mismatch", Severity: "critical", Score: 100, Action: "blocked",
-			Reason: detail, Metadata: map[string]any{"orderId": order.ID.String(), "expected": expectedPayAmountCents, "paid": reallyPriceCents}})
-		c.String(http.StatusBadRequest, "invalid_really_price")
-		return
-	}
-	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-	defer settleCancel()
-	if _, err := s.completeVerifiedOrder(settleCtx, order); err != nil {
-		outcome, detail = "completion_failed", err.Error()
-		log.Printf("complete callback order %s: %v", payID, err)
-		c.String(http.StatusInternalServerError, "error")
-		return
-	}
-	outcome, detail = "completed", ""
-	c.String(http.StatusOK, "success")
-}
-
-// completeOrder 完成订单：pending/paid → completed，同一事务内按套餐类型分叉——
+// completeOrder 完成订单：任一未完成状态 → completed，同一事务内按套餐类型分叉——
 // kind=topup 幂等入账 grant+bonus；kind=subscription 创建/顺延订阅并发放首日额度
 // （ledger 不记录订阅本金，额度发放时逐日记）。
 // 已 completed 的订单视为幂等重放，直接返回成功，不重复入账
@@ -953,6 +423,18 @@ func (s *Server) completeOrderWithProof(ctx context.Context, order *store.Order,
 			plan.Name = *order.PlanName
 		}
 	}
+	if !verified && (order.Status == "cancelled" || order.Status == "failed") {
+		// Only provider-confirmed payments may revive an order the user or the
+		// provider closed.
+		return nil, apperr.E("order_not_payable", "订单当前状态不可完成", 400)
+	}
+	if verified {
+		// The receipt is committed on its own so a failed delivery below is
+		// retried by the reconciler instead of being forgotten.
+		if err := store.RecordOrderPayment(ctx, s.St.Pool, order.ID); err != nil {
+			return nil, err
+		}
+	}
 	var result *store.Order
 	var sub *store.Subscription
 	completedNow := false
@@ -960,11 +442,6 @@ func (s *Server) completeOrderWithProof(ctx context.Context, order *store.Order,
 		completedNow = false
 		sub = nil
 		return s.St.Tx(ctx, func(tx pgx.Tx) error {
-			if verified {
-				if err := store.MarkOrderPaymentVerified(ctx, tx, order.ID); err != nil {
-					return err
-				}
-			}
 			won, err := store.CompleteOrderUpdate(ctx, tx, order.ID, time.Now().UTC())
 			if err != nil {
 				return err
@@ -1146,5 +623,5 @@ func (s *Server) paymentWebhook(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, orderDict(order, nil))
+	ok(c, orderDict(order))
 }

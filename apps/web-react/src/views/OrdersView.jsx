@@ -26,14 +26,14 @@ import {
   listOrders,
 } from "@react/legacy-modules/services/billingApi.js";
 import { refreshWalletSnapshot } from "@react/legacy-modules/services/walletSync.js";
+import { isConfirmingOrder, isUnsettledOrder } from "./CheckoutOrderStage.jsx";
 import "./OrdersView.css";
 
 const PAGE_SIZE = 12;
 const STATUS_OPTIONS = [
   ["", "全部"],
   ["pending", "待支付"],
-  ["uncertain", "待核实"],
-  ["paid", "确认中"],
+  ["confirming", "到账中"],
   ["completed", "已完成"],
   ["cancelled", "已取消"],
   ["expired", "已过期"],
@@ -42,8 +42,7 @@ const STATUS_OPTIONS = [
 
 const STATUS_META = {
   pending: { label: "待支付", tone: "pending" },
-  uncertain: { label: "待核实", tone: "confirm" },
-  paid: { label: "确认中", tone: "confirm" },
+  confirming: { label: "到账中", tone: "confirm" },
   completed: { label: "已完成", tone: "success" },
   cancelled: { label: "已取消", tone: "muted" },
   expired: { label: "已过期", tone: "muted" },
@@ -131,13 +130,18 @@ function subscriptionEndAt(order) {
   return new Date(time).toISOString();
 }
 
-function isLiveOrder(order) {
-  return order && ["pending", "uncertain", "paid"].includes(order.status);
+// A paid order shows as "confirming" whatever its status until delivery completes.
+function displayStatus(order) {
+  return isConfirmingOrder(order) ? "confirming" : order?.status;
 }
 
 function isPaymentExpired(order, now) {
   const remain = remainingMs(order?.expiresAt, now);
-  return order?.status === "pending" && remain !== null && remain <= 0;
+  return order?.status === "pending" && !isConfirmingOrder(order) && (order?.paymentState === "timed_out" || (remain !== null && remain <= 0));
+}
+
+function canShowPaymentQR(order, now) {
+  return order?.status === "pending" && !isConfirmingOrder(order) && order.paymentState === "awaiting_payment" && Boolean(order.payUrl) && !isPaymentExpired(order, now);
 }
 
 function remainingMs(expiresAt, now) {
@@ -200,13 +204,10 @@ function mergeOrderDetails(previous, current) {
   if (!previous) return current;
   if (!current) return previous;
   if (previous.id !== current.id) return current;
-  const merged = { ...previous, ...current };
-  if (isLiveOrder(current) && !current.payUrl && previous.payUrl) merged.payUrl = previous.payUrl;
-  if (!isLiveOrder(current)) merged.payUrl = null;
+  // The server only returns payUrl while the QR code may be paid; never keep an old one.
+  const merged = { ...previous, ...current, payUrl: current.payUrl ?? null, checkError: current.checkError ?? null };
   if (!current.expiresAt && previous.expiresAt) merged.expiresAt = previous.expiresAt;
-  if (!current.payUrl && previous.requiresManualAmount) merged.requiresManualAmount = true;
   for (const key of ["planName", "planKind"]) if (current[key] == null) merged[key] = previous[key];
-  merged.syncError = current.syncError || "";
   return merged;
 }
 
@@ -291,7 +292,7 @@ function OrderDetail({ order, copiedValue, onCopy, cancelConfirm, cancelPrompt, 
     <div className="order-sheet">
       <div className={`order-sheet__sum is-${order.status || "unknown"}`}>
         <div className="order-sheet__amount">
-        <span>{["paid", "completed"].includes(order.status) ? "实付" : order.status === "pending" ? "应付" : "订单金额"}</span>
+        <span>{order.paidAt || order.status === "completed" ? "实付" : order.status === "pending" ? "应付" : "订单金额"}</span>
         <strong>{formatYuan(paid)}</strong>
         {adjusted ? <p>标价 {formatYuan(order.amountCents)}</p> : null}
         </div>
@@ -345,9 +346,9 @@ function OrderDetail({ order, copiedValue, onCopy, cancelConfirm, cancelPrompt, 
       </dl>
       </section>
       {order.planSnapshotAvailable === false && <p className="order-dialog__state">历史订单未保存套餐快照，套餐信息仅供参考，购买金额和积分以订单记录为准。</p>}
-      {order.status === "pending" && (
+      {order.status === "pending" && !isConfirmingOrder(order) && (
         <div className="order-sheet__foot">
-          {order.status === "pending" && !cancelConfirm && (
+          {!cancelConfirm && (
             <button className="order-sheet__ghost" type="button" onClick={onAskCancel}>取消订单</button>
           )}
           {cancelPrompt}
@@ -475,7 +476,7 @@ export function OrdersView() {
       setNow(Date.now());
       setSelected(value => value?.id === id ? mergeOrderDetails(value, current) : value);
       setOrders(values => values.map(value => value.id === id ? mergeOrderDetails(value, current) : value));
-      setDetailError(current.syncError || "");
+      setDetailError("");
       if (current.status !== previousStatus) {
         if (current.status === "completed") void refreshWalletSnapshot().catch(() => null);
         void load(cursor, { quiet: true });
@@ -514,7 +515,7 @@ export function OrdersView() {
     return () => controllerRef.current?.abort();
   }, [load]);
 
-  const hasLiveOrders = orders.some(isLiveOrder);
+  const hasLiveOrders = orders.some(isUnsettledOrder);
   useEffect(() => {
     if (!hasLiveOrders) return undefined;
     let stopped = false;
@@ -545,7 +546,7 @@ export function OrdersView() {
   }, [selected?.id]);
 
   useEffect(() => {
-    if (!selected?.id || !isLiveOrder(selected)) return undefined;
+    if (!selected?.id || !isUnsettledOrder(selected)) return undefined;
     let stopped = false;
     let timer;
     const poll = async () => {
@@ -586,11 +587,11 @@ export function OrdersView() {
     };
   }, [dismissOrder, selected?.id]);
 
-  const pageStats = { awaiting: summary?.pending, confirming: summary?.paid, completed: summary?.completed, expired: summary?.expired };
+  const pageStats = { awaiting: summary?.pending, confirming: summary?.confirming, completed: summary?.completed, expired: summary?.expired };
 
   const dayGroups = useMemo(() => groupOrdersByDay(orders), [orders]);
   const firstPending = useMemo(
-    () => orders.find((order) => order.status === "pending" && !isPaymentExpired(order, now)) || null,
+    () => orders.find((order) => order.status === "pending" && !isConfirmingOrder(order) && !isPaymentExpired(order, now)) || null,
     [now, orders],
   );
 
@@ -724,8 +725,8 @@ export function OrdersView() {
                   <span>完成</span>
                   <strong>{pageStats.completed ?? "—"}</strong>
                 </button>
-                <button type="button" className={status === "paid" ? "is-on" : ""} onClick={() => filterSummary(status === "paid" ? "" : "paid")}>
-                  <span>确认中</span>
+                <button type="button" className={status === "confirming" ? "is-on" : ""} onClick={() => filterSummary(status === "confirming" ? "" : "confirming")}>
+                  <span>到账中</span>
                   <strong>{pageStats.confirming ?? "—"}</strong>
                 </button>
                 <button type="button" className={status === "expired" ? "is-on" : ""} onClick={() => filterSummary(status === "expired" ? "" : "expired")}>
@@ -781,7 +782,7 @@ export function OrdersView() {
           ) : null}
 
           {notice && <div className="orders-alert" role="status"><span>{notice}</span><button type="button" onClick={() => setNotice("")}>关闭</button></div>}
-          {signedIn && summary?.uncertain > 0 && <div className="orders-alert" role="status"><CircleAlert size={16} aria-hidden="true" /><span>{summary.uncertain} 笔订单正在核实支付结果，请勿重复下单。</span><button type="button" onClick={() => filterSummary("uncertain")}>查看待核实订单</button></div>}
+          {signedIn && summary?.confirming > 0 && <div className="orders-alert" role="status"><CircleAlert size={16} aria-hidden="true" /><span>{summary.confirming} 笔订单已付款，正在确认到账，请勿重复支付。</span><button type="button" onClick={() => filterSummary("confirming")}>查看到账中订单</button></div>}
 
           {signedIn && error ? (
             <div className="orders-alert" role="alert">
@@ -843,7 +844,7 @@ export function OrdersView() {
                               }
                             }}
                           >
-                            <StatusBadge status={order.status} remain={remain} />
+                            <StatusBadge status={displayStatus(order)} remain={remain} />
                             <span className="orders-row__method">{paymentMethodMeta(order.paymentMethod).short}</span>
                             <b>{formatYuan(actualAmount)}</b>
                             <span className={`orders-row__kind is-${order.planKind === "subscription" ? "sub" : "topup"}`}>
@@ -905,7 +906,7 @@ export function OrdersView() {
               <div className="order-dialog__lead">
                 <div className="order-dialog__tags">
                   <StatusBadge
-                    status={selected.status}
+                    status={displayStatus(selected)}
                     remain={selected.status === "pending" ? remainingMs(selected.expiresAt, now) : null}
                   />
                   <KindMark kind={selected.planKind} />
@@ -924,7 +925,7 @@ export function OrdersView() {
             <div className="order-dialog__body">
             {detailLoading ? (
               <div className="order-dialog__loading"><LoaderCircle className="is-spinning" size={22} /> 正在读取支付状态</div>
-            ) : selected.status === "pending" && selected.payUrl && !isPaymentExpired(selected, now) && !detailError && !selected.syncError ? (
+            ) : canShowPaymentQR(selected, now) && !detailError ? (
               <div className="order-dialog__payment">
                 <div className="order-dialog__qr">
                   <span className="order-dialog__qr-method">{paymentMethodMeta(selected.paymentMethod).label}</span>
@@ -951,7 +952,7 @@ export function OrdersView() {
                       <TicketMeter order={selected} now={now} />
                     </div>
                   ) : null}
-                  {selected.requiresManualAmount ? <p className="order-pay__warn">扫码后请手动输入页面显示的应付金额，金额必须完全一致。</p> : null}
+                  {selected.checkError ? <p className="order-pay__warn">支付状态确认暂时异常，系统会自动重试；如已付款请勿重复支付。</p> : null}
                   <div className="order-dialog__actions">
                     <a href={selected.payUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开支付</a>
                     {!cancelConfirm && <button type="button" onClick={() => setCancelConfirm(true)}>取消订单</button>}
@@ -969,11 +970,11 @@ export function OrdersView() {
                 onAskCancel={() => setCancelConfirm(true)}
               />
             )}
-            {!detailLoading && isPaymentExpired(selected, now) && <div className="order-dialog__state" role="status">支付时间已截止，二维码已停止展示。请刷新确认最终支付状态。</div>}
-            {!detailLoading && selected.status === "paid" && <div className="order-dialog__state" role="status">已收到付款，正在确认积分到账，请勿重复支付。</div>}
-            {!detailLoading && selected.status === "uncertain" && <div className="order-dialog__state" role="status">订单已记录，支付渠道结果正在核实。请勿重复下单；如需人工核查，请提供平台订单号和渠道交易记录。</div>}
-            {!detailLoading && selected.status === "pending" && !selected.payUrl && !isPaymentExpired(selected, now) && <div className="order-dialog__state" role="status">支付链接暂不可用，请刷新订单状态。</div>}
-            {["cancelled", "expired", "failed"].includes(selected.status) && <div className="order-dialog__state"><Link to="/pricing">重新选择套餐</Link></div>}
+            {!detailLoading && isPaymentExpired(selected, now) && <div className="order-dialog__state" role="status">支付时间已截止，二维码已停止展示，正在向支付渠道确认结果。如果你已付款，请勿重复支付，系统会自动到账。</div>}
+            {!detailLoading && isConfirmingOrder(selected) && <div className="order-dialog__state" role="status">已收到付款，正在确认积分到账，请勿重复支付。</div>}
+            {!detailLoading && selected.paymentState === "creating" && <div className="order-dialog__state" role="status">支付订单正在创建，请稍后刷新。</div>}
+            {!detailLoading && selected.checkError && !canShowPaymentQR(selected, now) && isUnsettledOrder(selected) && <div className="order-dialog__state" role="status">支付渠道暂时无法确认结果，系统会自动重试。如长时间未到账，请联系客服并提供订单号。</div>}
+            {["cancelled", "expired", "failed"].includes(selected.status) && !isConfirmingOrder(selected) && <div className="order-dialog__state">如果你在订单关闭前已经付款，系统会自动补单到账，请勿重复支付。<Link to="/pricing">重新选择套餐</Link></div>}
             {detailError && <div className="order-dialog__error" role="alert">{detailError}<button type="button" disabled={detailRefreshing || closing} onClick={() => void refreshDetails(selected.id)}>重试</button></div>}
             </div>
             {!detailLoading && selected.status === "completed" && <footer className="order-dialog__footer">

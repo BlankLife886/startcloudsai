@@ -1,5 +1,4 @@
 import { pricingFaqs } from './pricingFaqs.js';
-import { rechargeAmountLimit } from './rechargeQuote.js';
 import { subscriptionRefundHours } from './subscriptionTerms.js';
 
 const integer = (value, min = 0) => Number.isSafeInteger(value) && value >= min;
@@ -20,16 +19,6 @@ function protectionText(policy) {
   return policy.lockModelPrices === false ? '模型按实时价格计费' : policy.allowTopupPriceLock ? '订阅及合格额度包享价格保护' : '仅订阅积分享价格保护';
 }
 
-function rechargeFacts(plans) {
-  return plans.filter(p => p.kind === 'topup' && p.rechargePolicy).map(plan => {
-    const rate = plan.rechargePolicy.pointsPerYuan;
-    const limit = rechargeAmountLimit(plan);
-    return field(name(plan), integer(rate, 1) && integer(limit, 1)
-      ? `单笔 1–${number(limit)} 元（整数）；每 1 元兑换 ${number(rate)} 积分`
-      : unknown);
-  });
-}
-
 // Builds customer-facing facts from the same catalog as checkout. Never use the
 // preview catalog or a default plan's numeric terms when a request fails.
 export function buildPricingFaqs({ catalog = null, status = 'loading', subscription = null, accountConcurrency = null } = {}) {
@@ -37,33 +26,18 @@ export function buildPricingFaqs({ catalog = null, status = 'loading', subscript
   const plans = ready ? catalog.items.filter(p => p && p.active !== false && !p.preview) : [];
   const subscriptions = plans.filter(p => p.kind === 'subscription');
   const packs = plans.filter(p => p.kind === 'topup');
-  const recharge = rechargeFacts(plans);
   const facts = {};
   const notices = {};
-  const dynamicIds = ['custom-recharge', 'points-money', 'topup-protection', 'contract-pricing', 'contract-concurrency', 'buy', 'unused-refund', 'plan-difference'];
+  const dynamicIds = ['topup-protection', 'contract-pricing', 'contract-concurrency', 'buy', 'unused-refund', 'plan-difference'];
   for (const id of dynamicIds) {
     facts[id] = [];
     notices[id] = ready ? '' : status === 'loading' ? '正在读取当前规则…' : '当前规则暂时无法读取，请刷新后查看或在购买确认页核对。';
   }
 
   if (ready) {
-    facts['custom-recharge'] = recharge;
-    facts['points-money'] = recharge;
-    if (!recharge.length) {
-      notices['custom-recharge'] = '当前未上架自定义充值方案。';
-      notices['points-money'] = '当前未上架自定义充值，固定额度包按各自标注的金额和积分购买。';
-    }
     facts['topup-protection'] = packs.map(plan => {
       let value = '不接受订阅锁价，按实时模型价格消费';
-      if (plan.priceLockEligible) {
-        value = '有效合格订阅下可接受锁价';
-        if (plan.rechargePolicy) {
-          const threshold = plan.rechargePolicy.priceLockMinYuan;
-          value = integer(threshold, 1) && threshold <= rechargeAmountLimit(plan)
-            ? `单笔满 ${number(threshold)} 元可接受锁价，仍需有效合格订阅支持`
-            : unknown;
-        }
-      }
+      if (plan.priceLockEligible) value = '有效合格订阅下可接受锁价';
       return field(name(plan), value);
     });
     if (!packs.length) notices['topup-protection'] = '当前没有在售额度包。';
@@ -84,7 +58,6 @@ export function buildPricingFaqs({ catalog = null, status = 'loading', subscript
     }
     facts['plan-difference'] = plans.map(plan => field(name(plan), plan.kind === 'subscription'
       ? integer(plan.durationDays, 1) && integer(plan.dailyGrantCents) ? `完整 ${number(plan.durationDays)} 天，每天重置为 ${number(plan.dailyGrantCents)} 积分` : unknown
-      : plan.rechargePolicy ? '自定义金额充值，按本方案比例一次到账'
       : integer(plan.priceCents, 1) && integer(plan.grantCents) && integer(plan.bonusCents ?? 0)
         ? `¥${(plan.priceCents / 100).toFixed(2)}，一次到账 ${number(plan.grantCents + (plan.bonusCents ?? 0))} 积分` : unknown));
     if (!plans.length) notices['plan-difference'] = '当前没有在售方案。';

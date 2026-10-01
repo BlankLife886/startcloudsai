@@ -36,12 +36,12 @@ export function useFinanceWorkspace() {
   const orders = orderList.items, filteredOrders = orderList.items
   const summary = computed(() => profit.value.summary || {}), profitRows = computed(() => profit.value.items || [])
   const profitPager = useClientPagination(() => profitRows.value, 20)
-  const isSettledOutcome = (v: string) => ['matched', 'repaired', 'manual_not_created'].includes(v)
+  const isSettledOutcome = (v: string) => ['matched', 'repaired', 'closed', 'manual_not_created'].includes(v)
   const issueCount = computed(() => reconciliations.value.filter(item => !isSettledOutcome(item.outcome)).length)
   const receivedCents = computed(() => cashSummary.value?.receivedCents)
   const loading = computed(() => orderList.loading.value || extraLoading.value)
-  const statusLabels: Record<string, string> = { completed: '已完成', paid: '已收款待到账', pending: '待支付', uncertain: '待核实', failed: '失败', expired: '已过期', cancelled: '已取消', active: '生效中', reviewing: '审核中', processing: '处理中', rejected: '已驳回' }
-  const outcomeLabels: Record<string, string> = { matched: '金额一致', repaired: '已自动补齐', provider_id_missing: '缺少渠道单号', provider_error: '渠道查询失败', paid_amount_mismatch: '实付金额不一致', identity_or_amount_mismatch: '订单信息不一致', repair_failed: '补单失败', manual_not_created: '已确认未建单', create_result_unknown: '建单结果不明', close_result_unknown: '关单结果不明', local_terminal_mismatch: '终态冲突', local_ahead: '本站状态超前' }
+  const statusLabels: Record<string, string> = { completed: '已完成', pending: '待支付', failed: '失败', expired: '已过期', cancelled: '已取消', active: '生效中', reviewing: '审核中', processing: '处理中', rejected: '已驳回' }
+  const outcomeLabels: Record<string, string> = { matched: '与渠道一致', repaired: '已自动补齐', closed: '已按渠道关闭', provider_id_missing: '缺少云端单号', provider_error: '渠道查询失败', paid_amount_mismatch: '实付金额不一致', identity_or_amount_mismatch: '订单信息不一致', repair_failed: '已收款发放失败', manual_not_created: '已确认未建单', create_result_unknown: '建单无响应', close_result_unknown: '关单结果不明', fixed_qr_missing: '缺少固定金额收款码', invalid_provider_identity: '渠道返回身份不符', invalid_provider_order: '渠道订单不可支付', provider_binding_failed: '渠道单号绑定失败', local_terminal_mismatch: '终态冲突', local_ahead: '本站状态超前' }
   const money = (v?: number | null) => v == null ? '—' : `${v < 0 ? '-' : ''}¥${(Math.abs(v) / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const points = (v?: number) => v == null ? '—' : v.toLocaleString('zh-CN')
   const statusLabel = (v?: string) => statusLabels[v || ''] || v || '未知'
@@ -87,13 +87,6 @@ export function useFinanceWorkspace() {
       await load()
     } catch(e) { reconciliationReport.value = `核对未完成：${e instanceof Error ? e.message : '渠道请求失败'}，请检查渠道配置或稍后重试。` } finally { runningRecon.value = false }
   }
-  async function confirmNotCreated(item: { orderId?: string }) {
-    try {
-      const { value } = await ElMessageBox.prompt('仅在渠道后台确认没有建立订单、没有收到款项后继续。', '确认未建单', { inputValidator: v => v.trim().length >= 6 || '请填写至少 6 个字的核查依据', type: 'warning' })
-      await request('/api/v1/admin/payment-reconciliations/run', { method: 'POST', body: { orderId: item.orderId, resolution: 'not_created', note: value }, silent: true })
-      ElMessage.success('核查结果已记录'); await load()
-    } catch(e) { if(e !== 'cancel' && e !== 'close') ElMessage.error(e instanceof Error ? e.message : '处理失败') }
-  }
   async function checkOrder(raw: unknown) {
     const item = raw as Reconciliation
     if (!item?.orderId) return
@@ -109,6 +102,6 @@ export function useFinanceWorkspace() {
   }
   onMounted(load)
   const orderActions = { checkingOrderId, checkOrder }
-  return { orderActions, activeTab, days, query, orderStatus, range, applied, cashSummary, orders, reconciliations, changes, summary, profitRows, selectedOrderId, detailVisible, runningRecon, recoverySupported, statusLabels, outcomeLabels, issueCount, receivedCents, filteredOrders, tabs, money, points, statusLabel, changeLabel, outcomeType, openOrder, load, runReconciliation, confirmNotCreated, loading, loadError, reconciliationReport, orderList, reconTotal, reconIssueTotal, reconPage, changeTotal, changePage, changeRecordPage, profitPager }
+  return { orderActions, activeTab, days, query, orderStatus, range, applied, cashSummary, orders, reconciliations, changes, summary, profitRows, selectedOrderId, detailVisible, runningRecon, recoverySupported, statusLabels, outcomeLabels, issueCount, receivedCents, filteredOrders, tabs, money, points, statusLabel, changeLabel, outcomeType, openOrder, load, runReconciliation, loading, loadError, reconciliationReport, orderList, reconTotal, reconIssueTotal, reconPage, changeTotal, changePage, changeRecordPage, profitPager }
 }
 

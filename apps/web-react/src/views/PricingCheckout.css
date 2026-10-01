@@ -348,9 +348,14 @@
 .pp-checkout-backdrop .pp-checkout__error { width: 100%; margin: 0; text-align: center; }
 .pp-checkout-backdrop .pp-checkout__body > .pp-checkout__notice { border-radius: 999px; }
 .pp-checkout-backdrop .pp-checkout__decision { display: grid; align-content: center; width: 100%; min-height: 56px; }
-.pp-checkout-backdrop .pp-checkout__pay-actions { display: flex; justify-content: center; }
+.pp-checkout-backdrop .pp-checkout__pay-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .pp-checkout-backdrop .pp-checkout__pay-actions button { min-width: 104px; min-height: 36px; padding: 6px 12px; border: 0; background: none; color: var(--checkout-muted); font-size: 12px; font-weight: 500; }
 .pp-checkout-backdrop .pp-checkout__pay-actions button:hover:not(:disabled) { color: #c25159; background: rgb(190 69 78 / 6%); }
+.pp-checkout-backdrop .pp-checkout__pay-actions button.is-primary { border-radius: 999px; color: #fff; font-weight: 600; background: linear-gradient(90deg, #7a4de8 0%, #5b6df2 52%, #4d8cff 100%); }
+.pp-checkout-backdrop .pp-checkout__pay-actions button.is-primary:hover:not(:disabled) { color: #fff; background: linear-gradient(90deg, #6c40dc 0%, #4f60e6 52%, #3f7ef2 100%); }
+.pp-checkout-backdrop .pp-checkout__expired > span,
+.pp-checkout-backdrop .pp-checkout__confirming > span { max-width: 320px; color: var(--checkout-muted); font-size: 13px; line-height: 1.6; text-align: center; }
+.pp-checkout-backdrop .pp-checkout__link { min-height: 32px; padding: 4px 12px; border: 0; border-radius: 999px; background: none; color: var(--checkout-muted); font-size: 13px; text-decoration: underline; cursor: pointer; }
 .pp-checkout-backdrop .pp-checkout__confirm { gap: 6px; margin: 0; padding: 0; border: 0; background: none; }
 .pp-checkout-backdrop .pp-checkout__confirm > div:first-child { text-align: center; }
 .pp-checkout-backdrop .pp-checkout__confirm strong { color: var(--checkout-ink); font-size: 13px; }
@@ -428,17 +433,6 @@
   pointer-events: none;
   user-select: none;
   filter: drop-shadow(0 14px 18px rgb(48 90 180 / 18%));
-}
-.pp-checkout-backdrop .pp-custom-recharge .pp-checkout__hero { grid-template-columns: minmax(0,1fr) 96px; min-height: 108px; gap: 12px; margin-bottom: 16px; }
-.pp-checkout-backdrop .pp-custom-recharge .pp-checkout__art { width: 96px; height: 96px; }
-.pp-checkout-backdrop .pp-custom-recharge .pp-checkout__summary { gap: 10px; padding-top: 0; }
-.pp-checkout-backdrop .pp-custom-recharge .pp-checkout__summary strong { max-width: 100%; font-size: clamp(28px,5vw,44px); overflow-wrap: anywhere; }
-.pp-checkout-backdrop .pp-custom-recharge .pp-checkout__quota { min-height: 28px; padding: 5px 10px; font-size: 12px; line-height: 1.4; }
-@media(max-width:520px) {
-  .pp-checkout-backdrop .pp-custom-recharge .pp-checkout__hero { grid-template-columns: minmax(0,1fr) 72px; min-height: 88px; gap: 8px; margin-bottom: 12px; }
-  .pp-checkout-backdrop .pp-custom-recharge .pp-checkout__art { width: 72px; height: 72px; }
-  .pp-recharge__protection { grid-template-columns: 17px minmax(0,1fr); }
-  .pp-recharge__protection em { grid-column: 2; justify-self: start; }
 }
 .pp-checkout-backdrop .pp-pay-methods {
   --method-highlight: #e4f1ff;

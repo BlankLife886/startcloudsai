@@ -20,12 +20,12 @@ func TestAdminOrderAccountingUsesConfirmedReceipts(t *testing.T) {
 	for _, state := range []struct {
 		status string
 		amount int64
-	}{{"cancelled", 200}, {"paid", 1000}, {"completed", 3000}} {
+	}{{"cancelled", 200}, {"confirming", 1000}, {"completed", 3000}} {
 		o, err := store.InsertOrder(ctx, env.st.Pool, u.ID, seed.PlanID, state.amount, 100, 0, "mock")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := env.st.Pool.Exec(ctx, `UPDATE orders SET status=$2,paid_at=CASE WHEN $2 IN ('paid','completed') THEN now() ELSE NULL END,provider_pay_amount_cents=CASE WHEN $2='paid' THEN 1001 ELSE NULL END WHERE id=$1`, o.ID, state.status); err != nil {
+		if _, err := env.st.Pool.Exec(ctx, `UPDATE orders SET status=CASE WHEN $2='confirming' THEN 'pending' ELSE $2 END,paid_at=CASE WHEN $2 IN ('confirming','completed') THEN now() ELSE NULL END,provider_pay_amount_cents=CASE WHEN $2='confirming' THEN 1001 ELSE NULL END WHERE id=$1`, o.ID, state.status); err != nil {
 			t.Fatal(err)
 		}
 	}

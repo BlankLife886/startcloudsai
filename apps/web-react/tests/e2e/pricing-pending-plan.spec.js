@@ -2,6 +2,9 @@ import { expect, test } from '@playwright/test'
 import { installVisualBaseline } from './helpers/visualBaseline.js'
 import { fulfillJson } from './helpers/authMocks.js'
 
+const isUnsettled = o => Boolean(o) && (o.status === 'pending' || (Boolean(o.paidAt) && o.status !== 'completed'))
+const matchesStatus = (o, status) => status === 'unsettled' ? isUnsettled(o) : Boolean(o) && (!status || o.status === status)
+
 const plans = [
   { id: 'basic', name: '基础额度包', kind: 'topup', priceCents: 990, grantCents: 1200 },
   { id: 'plus', name: '进阶额度包', kind: 'topup', priceCents: 2990, grantCents: 3800 },
@@ -14,7 +17,7 @@ async function setup(page, initial = pending) {
   await page.route('**/api/v1/auth/session', route => fulfillJson(route, { user: { id: 'pending-user', email: 'pending@example.com' } }))
   await page.route('**/api/v1/plans', route => fulfillJson(route, { items: plans, paymentEnabled: true, paymentMethods: ['alipay'] }))
   const state = { order: initial, creates: 0, detailReads: 0 }
-  await page.route('**/api/v1/orders?*', route => fulfillJson(route, { items: state.order?.status === new URL(route.request().url()).searchParams.get('status') ? [state.order] : [] }))
+  await page.route('**/api/v1/orders?*', route => fulfillJson(route, { items: matchesStatus(state.order, new URL(route.request().url()).searchParams.get('status')) ? [state.order] : [] }))
   await page.route('**/api/v1/orders/pending-one', route => { state.detailReads++; return fulfillJson(route, state.order) })
   await page.route('**/api/v1/orders/pending-one/close', route => { state.order = { ...state.order, status: 'cancelled' }; return fulfillJson(route, state.order) })
   await page.route('**/api/v1/orders', route => { state.creates++; state.order = pending; return fulfillJson(route, pending) })
@@ -77,14 +80,15 @@ test('elapsed countdown does not invent an expiry or create a replacement order'
   const state = await setup(page, { ...pending, expiresAt: '2026-08-11T03:59:00Z' })
   await page.goto('/pricing')
   await page.getByRole('button', { name: '支付待确认', exact: true }).click()
-  await expect(page.getByRole('dialog')).toContainText('支付时间已截止')
+  await expect(page.getByRole('dialog')).toContainText('正在向支付渠道确认付款结果')
+  await expect(page.getByRole('dialog')).toContainText('请勿重复支付')
   await expect(page.getByRole('dialog').locator('canvas')).toHaveCount(0)
   expect(state.creates).toBe(0)
 })
 
-for (const [status, label] of [['uncertain', '订单待核实'], ['paid', '到账确认中']]) {
+for (const [status, label] of [['confirming', '到账确认中']]) {
   test(`${status} plan does not offer another payment`, async ({ page }) => {
-    const state = await setup(page, { ...pending, status })
+    const state = await setup(page, { ...pending, paidAt: '2026-08-11T04:00:00Z', paymentState: status, payUrl: null })
     await page.goto('/pricing')
     await page.getByRole('button', { name: label, exact: true }).click()
     await expect(page.getByRole('dialog').getByRole('status')).toBeVisible()

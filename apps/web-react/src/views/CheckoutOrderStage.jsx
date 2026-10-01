@@ -26,14 +26,22 @@ export function checkoutCountdown(expiresAt, now) {
   };
 }
 
+// The server decides whether a QR code may still be paid; a missing payUrl in
+// the latest response means it must no longer be shown, so it is never
+// carried over from an earlier response.
 export function mergePaymentOrder(previous, current) {
 	if (!previous) return current;
 	if (!current) return previous;
-	const merged = { ...previous, ...current };
-	if (!current.payUrl && previous.payUrl) merged.payUrl = previous.payUrl;
-	if (!current.expiresAt && previous.expiresAt) merged.expiresAt = previous.expiresAt;
-	if (!current.payUrl && previous.requiresManualAmount) merged.requiresManualAmount = true;
-	return merged;
+	return { ...previous, ...current, payUrl: current.payUrl ?? null, checkError: current.checkError ?? null };
+}
+
+// paidAt is set as soon as the provider confirms payment, independent of status.
+export function isConfirmingOrder(order) {
+	return order?.paymentState === "confirming" || Boolean(order?.paidAt && order?.status !== "completed");
+}
+
+export function isUnsettledOrder(order) {
+	return order?.status === "pending" || isConfirmingOrder(order);
 }
 
 function successGrant(plan) {
@@ -45,12 +53,15 @@ function successGrant(plan) {
   return total > 0 ? { caption: "共入账", points: formatPoints(total, { withUnit: false }) } : null;
 }
 
-export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel, onRequestCancel, onKeepPaying, onRetry, upgradeReturnLabel = '返回订阅管理', t }) {
+export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel, onRequestCancel, onKeepPaying, onRetry, onClaimPaid, upgradeReturnLabel = '返回订阅管理', t }) {
   const order = checkout.order;
   const status = order.status;
-  const terminal = ["cancelled", "expired", "failed"].includes(status);
   const completed = status === "completed";
-  const confirming = ["paid", "uncertain"].includes(status);
+  const confirming = isConfirmingOrder(order);
+  const terminal = ["cancelled", "expired", "failed"].includes(status) && !confirming;
+  // The user says they paid, or the QR deadline passed: stop showing the code
+  // so nobody pays twice, and wait for the provider's answer.
+  const waiting = !completed && !confirming && status === "pending" && (checkout.claimedPaid || order.paymentState === "timed_out" || order.paymentState === "creating" || checkoutCountdown(order.expiresAt, now).expired);
   const [successReady, setSuccessReady] = useState(completed);
   const rootRef = useRef(null);
   const burstRef = useRef(null);
@@ -58,7 +69,7 @@ export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel
   const lastStatusRef = useRef(status);
 
   if (!completed) {
-    lastLiveRef.current = confirming ? "confirming" : "pay";
+    lastLiveRef.current = confirming ? "confirming" : waiting ? "waiting" : "pay";
     lastStatusRef.current = status;
   }
 
@@ -131,6 +142,7 @@ export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel
       <div className="pp-checkout__expired">
         <Clock3 size={38} aria-hidden="true" />
         <strong>{t(order.status === "cancelled" ? "支付订单已取消" : order.status === "failed" ? "支付订单创建失败" : "支付订单已过期")}</strong>
+        {order.status !== "failed" && <span>{t("如果你已经付款，请勿重复支付，系统会自动补单到账；长时间未到账请联系客服并提供订单号。")}</span>}
         <button type="button" onClick={onRetry}>
           <RefreshCw size={17} aria-hidden="true" />
           {t(order.subscriptionChangeId ? upgradeReturnLabel : "重新创建")}
@@ -170,9 +182,21 @@ export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel
       ) : liveKind === "confirming" ? (
         <div className="pp-checkout__confirming" data-checkout-scene="live" role="status">
           <Clock3 size={30} aria-hidden="true" />
-          <strong>{t(liveStatus === "uncertain" ? "订单已记录，正在核实支付渠道结果" : "已收到付款，正在确认积分到账")}</strong>
+          <strong>{t("已收到付款，正在确认积分到账")}</strong>
           <span>{t("请勿重复下单或支付")}</span>
-          {liveStatus === "uncertain" && <Link to="/orders">{t("查看我的订单")}</Link>}
+          <Link to="/orders">{t("查看我的订单")}</Link>
+          {checkout.error && <p className="pp-checkout__error">{t(checkout.error)}</p>}
+        </div>
+      ) : liveKind === "waiting" ? (
+        <div className="pp-checkout__confirming" data-checkout-scene="live" role="status">
+          <LoaderCircle className="is-spinning" size={30} aria-hidden="true" />
+          <strong>{t(order.paymentState === "creating" ? "正在创建支付订单" : "正在向支付渠道确认付款结果")}</strong>
+          <span>{t("如果你已经付款，请勿重复支付，到账通常在 1 分钟内完成。")}</span>
+          {order.checkError && <p className="pp-checkout__error">{t("支付渠道暂时无法确认，系统会自动重试。")}</p>}
+          {checkout.claimedPaid && order.paymentState === "awaiting_payment" && !checkoutCountdown(order.expiresAt, now).expired && (
+            <button type="button" className="pp-checkout__link" onClick={() => onClaimPaid?.(false)}>{t("还没付款，返回二维码")}</button>
+          )}
+          <Link to="/orders">{t("查看我的订单")}</Link>
           {checkout.error && <p className="pp-checkout__error">{t(checkout.error)}</p>}
         </div>
       ) : (
@@ -182,6 +206,7 @@ export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel
           onCancel={onCancel}
           onRequestCancel={onRequestCancel}
           onKeepPaying={onKeepPaying}
+          onClaimPaid={onClaimPaid}
           t={t}
         />
       )}
@@ -197,7 +222,7 @@ export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel
   );
 }
 
-function PaymentQRCode({ checkout, now, onCancel, onRequestCancel, onKeepPaying, t }) {
+function PaymentQRCode({ checkout, now, onCancel, onRequestCancel, onKeepPaying, onClaimPaid, t }) {
   const order = checkout.order;
   const rootRef = useRef(null);
   const keepPayingRef = useRef(null);
@@ -205,7 +230,7 @@ function PaymentQRCode({ checkout, now, onCancel, onRequestCancel, onKeepPaying,
   const amount = formatCents(order.payAmountCents ?? order.amountCents);
   const method = (order.paymentMethod || checkout.method) === "wechat" ? "wechat" : "alipay";
   const paymentName = method === "wechat" ? "微信" : "支付宝";
-  const qrPaused = countdown.expired || Boolean(checkout.error);
+  const qrPaused = countdown.expired || !order.payUrl;
 
   useGSAP(() => {
     const root = rootRef.current;
@@ -306,8 +331,8 @@ function PaymentQRCode({ checkout, now, onCancel, onRequestCancel, onKeepPaying,
           <div className={`pp-checkout__qr${qrPaused ? " is-paused" : ""}`}>
             {qrPaused ? <div className="pp-checkout__qr-paused" role="status">
               <Clock3 size={30} aria-hidden="true" />
-              <strong>{t(checkout.error ? "暂时无法确认支付状态" : "支付时间已截止")}</strong>
-              <span>{t("正在确认订单状态")}</span>
+              <strong>{t("支付时间已截止")}</strong>
+              <span>{t("正在确认订单状态，如已付款请勿重复支付")}</span>
             </div> : (
               <>
                 <QRCode
@@ -334,17 +359,19 @@ function PaymentQRCode({ checkout, now, onCancel, onRequestCancel, onKeepPaying,
           {!qrPaused && countdown.label && <strong>{countdown.label}</strong>}
         </div>
       </div>
-      {order.requiresManualAmount && (
-        <p className="pp-checkout__notice">
-          {t(`扫码后请手动输入 ${amount}，付款金额必须完全一致`)}
-        </p>
+      {(checkout.error || order.checkError) && (
+        <p className="pp-checkout__error">{t(checkout.error || "支付状态确认暂时异常，系统会自动重试；如已付款请勿重复支付。")}</p>
       )}
-      {checkout.error && <p className="pp-checkout__error">{t(checkout.error)}</p>}
       <div className="pp-checkout__decision">
         <div className="pp-checkout__pay-actions">
           <button type="button" disabled={checkout.loading || checkout.cancelConfirm} onClick={onRequestCancel}>
             {t("取消订单")}
           </button>
+          {onClaimPaid && (
+            <button type="button" className="is-primary" disabled={checkout.loading || checkout.cancelConfirm} onClick={() => onClaimPaid(true)}>
+              {t("我已完成支付")}
+            </button>
+          )}
         </div>
       </div>
       {checkout.cancelConfirm && order.status !== "completed" && (
@@ -359,7 +386,7 @@ function PaymentQRCode({ checkout, now, onCancel, onRequestCancel, onKeepPaying,
         >
           <div className="pp-checkout__cancel-card">
             <strong id="pp-checkout-cancel-title">{t("确认取消订单？")}</strong>
-            <span>{t("确认后当前二维码将失效，未付款不会产生扣款。")}</span>
+            <span>{t("确认后当前二维码将失效。如果你已经扫码付款，请不要取消，等待到账即可。")}</span>
             <div>
               <button ref={keepPayingRef} type="button" disabled={checkout.loading} onClick={onKeepPaying}>{t("返回支付")}</button>
               <button type="button" disabled={checkout.loading} onClick={onCancel}>

@@ -2,9 +2,9 @@
 import { ref, watch, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import { CopyDocument, Refresh } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { request, isRequestAborted } from '@/request';
-import { billingMoney, deliveryLabels, orderKindLabels, type BillingOrder } from '@/billingTypes';
+import { billingMoney, deliveryLabels, orderKindLabels, orderStatusMeta, type BillingOrder } from '@/billingTypes';
 import { formatPoints, formatTime } from '@/utils';
 import SubscriptionAuditTrail from './SubscriptionAuditTrail.vue';
 
@@ -39,11 +39,32 @@ const changeLabel = (status: string) => ({ reviewing:'审核中',processing:'退
 const subscriptionLabel = (status?:string) => ({active:'生效中',refunding:'退订处理中',cancelled:'已退订',expired:'已到期'}[status || ''] || '未关联');
 function changes(id: string) { router.push({ path: '/subscription-changes', query: { search: id } }); }
 async function copy(value:string){try{await navigator.clipboard.writeText(value);ElMessage.success('已复制')}catch{ElMessage.error('复制失败，请手动选择复制')}}
+const outcomeLabels: Record<string,string> = { matched:'与渠道一致', repaired:'渠道已收款，已补齐到账', closed:'已按渠道状态关闭', provider_error:'渠道查询失败', provider_id_missing:'没有云端订单号', identity_or_amount_mismatch:'渠道订单信息不一致', repair_failed:'已收款但发放失败' };
+const verifying = ref(false);
+// Asks the provider for the live state now; a paid order is delivered on the spot.
+async function verify(providerOrderId?: string) {
+  if (!data.value || verifying.value) return;
+  verifying.value = true;
+  try {
+    const body = providerOrderId ? { orderId: data.value.id, providerOrderId } : { orderId: data.value.id, resolution: 'check' };
+    const result = await request<{ result: { outcome: string; detail?: string | null } }>('/api/v1/admin/payment-reconciliations/run', { method: 'POST', body, silent: true });
+    const outcome = result.result?.outcome || '';
+    ElMessage({ type: ['matched','repaired','closed'].includes(outcome) ? 'success' : 'warning', message: `${outcomeLabels[outcome] || outcome}${result.result?.detail ? '：' + result.result.detail : ''}`, duration: 6000 });
+    await load();
+  } catch (e) { ElMessage.error(e instanceof Error ? e.message : '核实失败'); }
+  finally { verifying.value = false; }
+}
+async function attachProviderOrder() {
+  try {
+    const { value } = await ElMessageBox.prompt('在蓝鲸后台找到这笔订单（商户订单号即平台订单号），填入它的云端订单号。系统会先向渠道校验订单号、金额一致后再关联。', '关联云端订单号', { inputPattern: /^\S{1,128}$/, inputErrorMessage: '请输入云端订单号', confirmButtonText: '校验并关联', cancelButtonText: '取消' });
+    await verify(value.trim());
+  } catch { /* cancelled */ }
+}
 </script>
 
 <template>
   <div v-loading="loading" class="accounting-detail">
-    <div class="accounting-detail__toolbar"><span>订单详情</span><div><el-button v-if="data?.finance.subscriptionId && data.status==='completed'" size="small" @click="chainVisible=!chainVisible">{{ chainVisible?'返回订单详情':'完整订阅链路' }}</el-button><el-button :icon="Refresh" size="small" :loading="loading" @click="load">刷新</el-button></div></div>
+    <div class="accounting-detail__toolbar"><span>订单详情</span><div><el-button v-if="data && data.provider === 'lanjing' && data.status !== 'completed'" size="small" type="primary" :loading="verifying" @click="verify()">向渠道核实</el-button><el-button v-if="data && data.provider === 'lanjing' && !data.providerOrderId && data.status !== 'completed'" size="small" :disabled="verifying" @click="attachProviderOrder">关联云端订单号</el-button><el-button v-if="data?.finance.subscriptionId && data.status==='completed'" size="small" @click="chainVisible=!chainVisible">{{ chainVisible?'返回订单详情':'完整订阅链路' }}</el-button><el-button :icon="Refresh" size="small" :loading="loading" @click="load">刷新</el-button></div></div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <template v-if="data">
       <SubscriptionAuditTrail v-if="chainVisible" :order-id="data.id" :revision="0" />
@@ -56,9 +77,12 @@ async function copy(value:string){try{await navigator.clipboard.writeText(value)
       </div>
       <el-alert v-if="data.finance.refundNeedsAllocation" type="warning" :closable="false" :title="`关联订阅已确认退款 ${billingMoney(data.finance.relatedRefundCents)}，但未记录逐单归属；此金额不能重复计入每笔付款。`" />
       <el-alert v-if="data.apiSpentPoints" type="info" :closable="false" :title="`本单积分中已有 ${formatPoints(data.apiSpentPoints)} 用于API 调用。API 消费不显示在用户钱包明细里，只在API 调用控制台的调用记录中；退款核算时按已使用计入。`" />
+      <el-alert v-if="data.checkError" type="warning" :closable="false" :title="`最近一次向渠道查询失败：${data.checkError}`" />
+      <el-alert v-if="data.status !== 'completed' && data.paidAt" type="error" :closable="false" title="渠道已确认收款，但权益尚未发放。系统会自动重试；如持续失败请查看处理时间线中的原因。" />
       <el-alert v-if="data.finance.delivery === 'missing'" type="error" :closable="false" title="订单已完成，但未找到对应的权益发放记录，请核查积分流水或订阅记录。" />
       <el-descriptions :column="2" border size="small">
         <el-descriptions-item label="用户"><el-button link type="primary" @click="router.push({path:'/users',query:{userId:data.userId,search:data.userEmail || data.userId}})">{{ data.username || data.userEmail }}</el-button></el-descriptions-item>
+        <el-descriptions-item label="订单状态"><el-tag :type="orderStatusMeta(data).type" size="small">{{ orderStatusMeta(data).label }}</el-tag></el-descriptions-item>
         <el-descriptions-item label="订单类型">{{ orderKindLabels[data.finance.kind] }}</el-descriptions-item>
         <el-descriptions-item label="支付方式">{{ data.paymentMethod === 'alipay' ? '支付宝' : data.paymentMethod === 'wechat' ? '微信支付' : '未记录' }}</el-descriptions-item>
         <el-descriptions-item label="渠道应付">{{ billingMoney(data.providerPayAmountCents ?? data.amountCents) }}</el-descriptions-item>
@@ -86,7 +110,7 @@ async function copy(value:string){try{await navigator.clipboard.writeText(value)
         </template>
         <el-descriptions-item v-else-if="data.planKind === 'subscription'" label="价格保护记录" :span="2">本次购买的历史记录不完整，不以当前套餐配置代替。</el-descriptions-item>
         <el-descriptions-item label="平台订单号" :span="2">{{ data.id }}<el-button text :icon="CopyDocument" title="复制平台订单号" aria-label="复制平台订单号" @click="copy(data.id)" /></el-descriptions-item>
-        <el-descriptions-item label="渠道订单号" :span="2">{{ data.providerOrderId || '未记录' }}<el-button v-if="data.providerOrderId" text :icon="CopyDocument" title="复制渠道订单号" aria-label="复制渠道订单号" @click="copy(data.providerOrderId)" /></el-descriptions-item>
+        <el-descriptions-item label="云端订单号" :span="2">{{ data.providerOrderId || '未记录' }}<el-button v-if="data.providerOrderId" text :icon="CopyDocument" title="复制渠道订单号" aria-label="复制渠道订单号" @click="copy(data.providerOrderId)" /></el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatTime(data.createdAt) }}</el-descriptions-item>
         <el-descriptions-item label="支付时间">{{ formatTime(data.paidAt) }}</el-descriptions-item>
         <el-descriptions-item label="完成时间">{{ formatTime(data.completedAt) }}</el-descriptions-item>

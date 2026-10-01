@@ -247,8 +247,9 @@ func (s *Server) adminOrderAccountingDetail(c *gin.Context, _ *store.User) {
 	if a.CompletedAt != nil {
 		timeline = append(timeline, orderTimelineEvent{At: *a.CompletedAt, Title: "订单完成", Detail: "权益状态以发放记录为准", Actor: "平台"})
 	}
-	events, err := tx.Query(ctx, `SELECT created_at,'支付回调',outcome||CASE WHEN signature_valid THEN '（验签通过）' ELSE '（验签未通过）' END,'支付渠道' FROM payment_callback_events WHERE order_id=$1
- UNION ALL SELECT checked_at,'支付对账',outcome,'平台' FROM payment_reconciliations WHERE order_id=$1
+	// Payment rows carry "outcome\x1fdetail"; paymentEventDetail turns them into readable text.
+	events, err := tx.Query(ctx, `SELECT created_at,'支付回调',outcome||chr(31)||CASE WHEN signature_valid THEN '验签通过' ELSE '验签未通过' END||COALESCE('；'||detail,''),'支付渠道' FROM payment_callback_events WHERE order_id=$1
+ UNION ALL SELECT checked_at,'渠道核对',outcome||chr(31)||COALESCE(detail,''),'平台' FROM payment_reconciliations WHERE order_id=$1
  UNION ALL SELECT e.occurred_at,'订阅变更',e.public_message,COALESCE((SELECT username FROM admin_accounts WHERE id=e.actor_id),'用户或系统') FROM subscription_change_events e JOIN subscription_changes ch ON ch.id=e.change_id WHERE ch.subscription_id=$2
  ORDER BY 1 DESC LIMIT 201`, id, a.Finance.SubscriptionID)
 	if err != nil {
@@ -262,6 +263,7 @@ func (s *Server) adminOrderAccountingDetail(c *gin.Context, _ *store.User) {
 			break
 		}
 		eventCount++
+		e.Detail = paymentEventDetail(e.Detail)
 		if eventCount <= 200 {
 			timeline = append(timeline, e)
 		}
@@ -370,4 +372,30 @@ func (s *Server) adminExportOrderAccounting(c *gin.Context, _ *store.User) {
 	c.Header("Cache-Control", "no-store")
 	c.Header("Content-Disposition", `attachment; filename="orders-`+time.Now().UTC().Format("20060102-150405")+`.csv"`)
 	c.Data(200, "text/csv; charset=utf-8", output.Bytes())
+}
+
+var paymentOutcomeLabels = map[string]string{
+	"completed": "已入账", "delivery_pending": "已记录收款，发放待重试", "order_mismatch": "金额或支付方式与订单不符，未入账",
+	"order_not_found": "订单不存在", "invalid_order": "订单号无法识别", "invalid_signature": "签名错误，已拒绝",
+	"invalid_request": "参数不完整", "provider_unavailable": "支付配置不可用", "database_error": "数据库错误，等待渠道重试",
+	"matched": "与渠道一致", "repaired": "渠道已收款，已补齐到账", "closed": "已按渠道状态关闭", "provider_error": "渠道查询失败",
+	"provider_id_missing": "没有云端订单号", "identity_or_amount_mismatch": "渠道订单信息不一致", "repair_failed": "已收款但发放失败",
+	"create_result_unknown": "建单请求无响应", "close_result_unknown": "关单结果不明", "fixed_qr_missing": "缺少固定金额收款码",
+	"invalid_provider_identity": "渠道返回的订单身份不符", "invalid_provider_order": "渠道订单不可支付", "provider_binding_failed": "云端单号绑定失败",
+	"manual_not_created": "人工确认未建单",
+}
+
+func paymentEventDetail(raw string) string {
+	outcome, detail, found := strings.Cut(raw, "\x1f")
+	if !found {
+		return raw
+	}
+	label := paymentOutcomeLabels[outcome]
+	if label == "" {
+		label = outcome
+	}
+	if detail = strings.TrimSpace(detail); detail != "" {
+		return label + "（" + detail + "）"
+	}
+	return label
 }

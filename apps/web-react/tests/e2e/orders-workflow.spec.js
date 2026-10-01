@@ -6,9 +6,10 @@ const base = {
   id: 'order-a', planId: 'plan-a', planName: '基础创作包', planKind: 'topup', status: 'pending',
   amountCents: 990, payAmountCents: 989, grantCents: 1000, bonusCents: 200,
   createdAt: '2026-08-11T03:55:00Z', expiresAt: '2026-08-11T04:10:00Z',
-  payUrl: 'https://qr.example/pay-a', paymentMethod: 'alipay', requiresManualAmount: true,
+  payUrl: 'https://qr.example/pay-a', paymentMethod: 'alipay', paymentState: 'awaiting_payment',
 }
-const summary = { total: 31, pending: 9, paid: 2, completed: 18, expired: 1, failed: 1 }
+const confirming = { ...base, paidAt: '2026-08-11T04:00:00Z', paymentState: 'confirming', payUrl: null }
+const summary = { total: 31, pending: 9, confirming: 2, completed: 18, expired: 1, failed: 1 }
 
 test.beforeEach(async ({ page }) => {
   await installVisualBaseline(page)
@@ -42,7 +43,7 @@ test('orders keep exact cents, global totals, server search and expiry-safe paym
   await page.locator('.orders-row').click()
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByRole('link', { name: '打开支付' })).toBeVisible()
-  await expect(dialog.locator('.order-dialog__paycopy > strong')).toHaveText('¥9.89')
+  await expect(dialog.locator('.order-pay__amount strong')).toHaveText('¥9.89')
   await page.route('**/api/v1/orders/order-a', route => fulfillJson(route, { ...base, expiresAt: '2026-08-11T03:59:00Z' }))
   await dialog.getByRole('button', { name: '刷新订单状态' }).click()
   await expect(dialog.getByRole('link', { name: '打开支付' })).toHaveCount(0)
@@ -69,16 +70,15 @@ test('closing a detail prevents a late response from reopening or replacing anot
   await expect(page.getByRole('dialog').getByRole('heading', { level: 2 })).toHaveText('专业创作包')
 })
 
-test('sync failure blocks payment until retry succeeds and clears the warning', async ({ page }) => {
-  await page.route('**/api/v1/orders/order-a', route => fulfillJson(route, { ...base, syncError: '支付渠道暂时无法确认状态，请稍后刷新' }))
+test('provider check failure warns against paying twice and clears after a good check', async ({ page }) => {
+  await page.route('**/api/v1/orders/order-a', route => fulfillJson(route, { ...base, checkError: 'lanjing pay /getOrder: HTTP 502' }))
   await page.goto('/orders')
   await page.locator('.orders-row').click()
   const dialog = page.getByRole('dialog')
-  await expect(dialog.getByRole('alert')).toContainText('暂时无法确认')
-  await expect(dialog.getByRole('link', { name: '打开支付' })).toHaveCount(0)
+  await expect(dialog).toContainText('如已付款请勿重复支付')
   await page.route('**/api/v1/orders/order-a', route => fulfillJson(route, base))
-  await dialog.getByRole('button', { name: '重试', exact: true }).click()
-  await expect(dialog.getByRole('alert')).toHaveCount(0)
+  await dialog.getByRole('button', { name: '刷新订单状态' }).click()
+  await expect(dialog).not.toContainText('支付状态确认暂时异常')
   await expect(dialog.getByRole('link', { name: '打开支付' })).toBeVisible()
 })
 
@@ -169,7 +169,7 @@ test('checkout keeps QR payment and cancellation without an external payment but
 test('checkout continues confirming paid orders without showing another payment QR', async ({ page }) => {
   await page.route('**/api/v1/orders?*', route => fulfillJson(route, { items: [] }))
   await page.route('**/api/v1/plans', route => fulfillJson(route, { items: [{ id: 'plan-a', name: '基础创作包', kind: 'topup', priceCents: 990, grantCents: 1000 }], paymentEnabled: true, paymentMethods: ['alipay'] }))
-  await page.route('**/api/v1/orders', route => fulfillJson(route, { ...base, status: 'paid' }))
+  await page.route('**/api/v1/orders', route => fulfillJson(route, confirming))
   await page.route('**/api/v1/orders/order-a', route => fulfillJson(route, { ...base, status: 'completed', completedAt: '2026-08-11T04:00:00Z' }))
   await page.goto('/pricing')
   await page.getByRole('button', { name: '选择此方案', exact: true }).click()
@@ -214,15 +214,15 @@ test('checkout shows a persisted cancellation without confusing it with expiry',
   await expect(dialog.locator('.pp-checkout__qr')).toHaveCount(0)
 })
 
-test('uncertain orders cannot be paid or cancelled and can recover on refresh', async ({ page }) => {
-  const uncertain = { ...base, status: 'uncertain' }
-  await page.route('**/api/v1/orders?*', route => fulfillJson(route, { items: [uncertain], summary: { ...summary, uncertain: 1 } }))
-  await page.route('**/api/v1/orders/order-a', route => fulfillJson(route, uncertain))
+test('paid orders awaiting delivery cannot be paid or cancelled and complete on refresh', async ({ page }) => {
+  await page.route('**/api/v1/orders?*', route => fulfillJson(route, { items: [confirming], summary: { ...summary, confirming: 1 } }))
+  await page.route('**/api/v1/orders/order-a', route => fulfillJson(route, confirming))
   await page.goto('/orders')
-  await expect(page.getByText('1 笔订单正在核实支付结果，请勿重复下单。')).toBeVisible()
+  await expect(page.getByText('1 笔订单已付款，正在确认到账，请勿重复支付。')).toBeVisible()
+  await expect(page.locator('.orders-row .orders-status')).toContainText('到账中')
   await page.locator('.orders-row').click()
   const dialog = page.getByRole('dialog')
-  await expect(dialog).toContainText('支付渠道结果正在核实')
+  await expect(dialog).toContainText('已收到付款，正在确认积分到账')
   await expect(dialog.getByRole('link', { name: '打开支付' })).toHaveCount(0)
   await expect(dialog.getByRole('button', { name: '取消订单', exact: true })).toHaveCount(0)
   await page.route('**/api/v1/orders/order-a', route => fulfillJson(route, { ...base, status: 'completed', completedAt: '2026-08-11T04:00:00Z' }))
@@ -285,21 +285,39 @@ for (const [theme, width] of [['light', 1280], ['dark', 390]]) {
   })
 }
 
-test('uncertain checkout keeps polling without exposing repeat payment actions', async ({ page }) => {
+test('timed-out checkout hides the QR code and keeps polling until the provider answers', async ({ page }) => {
   await page.route('**/api/v1/orders?*', route => fulfillJson(route, { items: [] }))
   let creates = 0
   let polls = 0
   await page.route('**/api/v1/plans', route => fulfillJson(route, { items: [{ id: 'plan-a', name: '基础创作包', kind: 'topup', priceCents: 990, grantCents: 1000 }], paymentEnabled: true, paymentMethods: ['alipay'] }))
-  await page.route('**/api/v1/orders', route => { creates++; return fulfillJson(route, { ...base, status: 'uncertain', payUrl: null }, 202) })
-  await page.route('**/api/v1/orders/order-a', route => { polls++; return fulfillJson(route, { ...base, status: 'uncertain', payUrl: null }) })
+  const timedOut = { ...base, paymentState: 'timed_out', payUrl: null }
+  await page.route('**/api/v1/orders', route => { creates++; return fulfillJson(route, timedOut, 201) })
+  await page.route('**/api/v1/orders/order-a', route => { polls++; return fulfillJson(route, timedOut) })
   await page.goto('/pricing')
   await page.getByRole('button', { name: '选择此方案', exact: true }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByRole('button', { name: '使用支付宝支付', exact: true }).click()
-  await expect(dialog.getByRole('status')).toContainText('正在核实支付渠道结果')
+  await expect(dialog.getByRole('status')).toContainText('正在向支付渠道确认付款结果')
+  await expect(dialog).toContainText('请勿重复支付')
   await expect(dialog.locator('.pp-checkout__qr, .pp-checkout__submit')).toHaveCount(0)
   await expect.poll(() => polls).toBeGreaterThan(1)
   expect(creates).toBe(1)
   await page.route('**/api/v1/orders/order-a', route => fulfillJson(route, { ...base, status: 'completed' }))
+  await expect(dialog).toContainText('支付成功，积分已到账')
+})
+
+test('"paid" claim hides the QR code so the user does not pay twice', async ({ page }) => {
+  await page.route('**/api/v1/orders?*', route => fulfillJson(route, { items: [] }))
+  await page.route('**/api/v1/plans', route => fulfillJson(route, { items: [{ id: 'plan-a', name: '基础创作包', kind: 'topup', priceCents: 990, grantCents: 1000 }], paymentEnabled: true, paymentMethods: ['alipay'] }))
+  await page.route('**/api/v1/orders', route => fulfillJson(route, base, 201))
+  await page.goto('/pricing')
+  await page.getByRole('button', { name: '选择此方案', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByRole('button', { name: '使用支付宝支付', exact: true }).click()
+  await expect(dialog.locator('.pp-checkout__qr')).toBeVisible()
+  await dialog.getByRole('button', { name: '我已完成支付', exact: true }).click()
+  await expect(dialog.locator('.pp-checkout__qr')).toHaveCount(0)
+  await expect(dialog.getByRole('status')).toContainText('正在向支付渠道确认付款结果')
+  await page.route('**/api/v1/orders/order-a', route => fulfillJson(route, { ...base, status: 'completed', paymentState: 'completed', payUrl: null, completedAt: '2026-08-11T04:00:00Z' }))
   await expect(dialog).toContainText('支付成功，积分已到账')
 })

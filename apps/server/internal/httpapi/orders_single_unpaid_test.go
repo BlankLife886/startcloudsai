@@ -7,13 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
-	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 	"github.com/gin-gonic/gin"
@@ -25,16 +23,9 @@ func TestSingleUnpaidOrderAcrossPlans(t *testing.T) {
 	ctx := context.Background()
 	user, existing := makeOrder(t, st)
 	_, otherPlanOrder := makeOrder(t, st)
-	var calls atomic.Int32
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		http.Error(w, "simulated uncertain create", 504)
-	}))
-	defer provider.Close()
-	client, err := lanjingpay.New(provider.URL, "test", provider.URL+"/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fake := newFakeLanjing(t)
+	fake.ShiftEqual = false
+	client := fake.client()
 	cfg := config.Load()
 	token := auth.NewSessionToken()
 	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
@@ -43,16 +34,14 @@ func TestSingleUnpaidOrderAcrossPlans(t *testing.T) {
 	cookie := &http.Cookie{Name: cfg.SessionCookieName, Value: token}
 	router := (&Server{Cfg: cfg, St: st, LanjingPay: client}).Router()
 	body := gin.H{"planId": otherPlanOrder.PlanID.String(), "paymentMethod": "alipay"}
-	for _, status := range []string{"pending", "uncertain", "paid"} {
-		if _, err := st.Pool.Exec(ctx, `UPDATE orders SET status=$2,provider='lanjing' WHERE id=$1`, existing.ID, status); err != nil {
-			t.Fatal(err)
-		}
-		response := authRequest(t, router, "POST", "/api/v1/orders", body, cookie)
-		if response.Code != 409 || !strings.Contains(response.Body.String(), "user_unsettled_order") {
-			t.Fatalf("%s: %d %s", status, response.Code, response.Body.String())
-		}
+	if _, err := st.Pool.Exec(ctx, `UPDATE orders SET status='pending',provider='lanjing' WHERE id=$1`, existing.ID); err != nil {
+		t.Fatal(err)
 	}
-	if calls.Load() != 0 {
+	response := authRequest(t, router, "POST", "/api/v1/orders", body, cookie)
+	if response.Code != 409 || !strings.Contains(response.Body.String(), "user_unsettled_order") {
+		t.Fatalf("pending: %d %s", response.Code, response.Body.String())
+	}
+	if fake.count("/createOrder") != 0 {
 		t.Fatal("blocked checkout contacted provider")
 	}
 	count, err := store.CountOrdersByUser(ctx, st.Pool, user.ID)
@@ -64,12 +53,12 @@ func TestSingleUnpaidOrderAcrossPlans(t *testing.T) {
 			t.Fatal(err)
 		}
 		response := authRequest(t, router, "POST", "/api/v1/orders", body, cookie)
-		if response.Code != 202 {
+		if response.Code != 201 {
 			t.Fatalf("%s should allow a new checkout: %d %s", status, response.Code, response.Body.String())
 		}
 	}
-	if calls.Load() != 4 {
-		t.Fatalf("provider calls=%d, want 4", calls.Load())
+	if fake.count("/createOrder") != 4 {
+		t.Fatalf("provider calls=%d, want 4", fake.count("/createOrder"))
 	}
 }
 
@@ -78,19 +67,11 @@ func TestConcurrentCrossPlanCheckoutsCreateOneProviderOrder(t *testing.T) {
 	ctx := context.Background()
 	user, seed := makeOrder(t, st)
 	_, otherPlanOrder := makeOrder(t, st)
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, seed.ID, "failed"); err != nil {
+	if _, err := store.CloseOrder(ctx, st.Pool, seed.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
-	var calls atomic.Int32
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		http.Error(w, "simulated uncertain create", 504)
-	}))
-	defer provider.Close()
-	client, err := lanjingpay.New(provider.URL, "test", provider.URL+"/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fake := newFakeLanjing(t)
+	client := fake.client()
 	cfg := config.Load()
 	token := auth.NewSessionToken()
 	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
@@ -115,10 +96,11 @@ func TestConcurrentCrossPlanCheckoutsCreateOneProviderOrder(t *testing.T) {
 	close(responses)
 	var orderID string
 	for response := range responses {
-		if response.Code == 409 && strings.Contains(response.Body.String(), "user_unsettled_order") {
+		if response.Code == 409 && (strings.Contains(response.Body.String(), "user_unsettled_order") ||
+			strings.Contains(response.Body.String(), "payment_order_creating")) {
 			continue
 		}
-		if response.Code != 202 {
+		if response.Code != 201 && response.Code != 200 {
 			t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
 		}
 		var body struct {
@@ -134,11 +116,11 @@ func TestConcurrentCrossPlanCheckoutsCreateOneProviderOrder(t *testing.T) {
 		}
 		orderID = body.Data.ID
 	}
-	if calls.Load() != 1 || orderID == "" {
-		t.Fatalf("provider calls=%d, order=%s", calls.Load(), orderID)
+	if fake.count("/createOrder") != 1 || orderID == "" {
+		t.Fatalf("provider calls=%d, order=%s", fake.count("/createOrder"), orderID)
 	}
 	var unsettled int
-	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM orders WHERE user_id=$1 AND status IN ('pending','uncertain','paid')`, user.ID).Scan(&unsettled); err != nil {
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM orders WHERE user_id=$1 AND `+store.UnsettledOrderSQL, user.ID).Scan(&unsettled); err != nil {
 		t.Fatal(err)
 	}
 	if unsettled != 1 {

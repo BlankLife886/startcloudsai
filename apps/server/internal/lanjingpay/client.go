@@ -61,14 +61,6 @@ type ServerState struct {
 	LastPayment   time.Time
 }
 
-type PaymentConfirmation struct {
-	MerchantOrderID string
-	Param           string
-	Type            PaymentType
-	Price           string
-	ReallyPrice     string
-}
-
 func (o *Order) PriceCents() (int64, error)       { return ParseCents(o.Price) }
 func (o *Order) ReallyPriceCents() (int64, error) { return ParseCents(o.ReallyPrice) }
 
@@ -91,37 +83,11 @@ func (e *APIError) Error() string {
 	return e.Message
 }
 
-func IsTerminalOrderError(err error) bool {
+// IsOrderNotFound reports the provider's answer for an unknown cloud order ID.
+// The provider uses code -1 for every failure, so the message is the only signal.
+func IsOrderNotFound(err error) bool {
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
-		return false
-	}
-	message := strings.ToLower(strings.TrimSpace(apiErr.Message))
-	for _, marker := range []string{"不存在", "已过期", "已关闭", "not found", "expired", "closed"} {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func IsDefinitiveCreateRejection(err error) bool {
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Code != -1 {
-		return false
-	}
-	message := strings.ToLower(strings.TrimSpace(apiErr.Message))
-	for _, ambiguous := range []string{"重复", "已存在", "超时", "duplicate", "exists", "timeout"} {
-		if strings.Contains(message, ambiguous) {
-			return false
-		}
-	}
-	for _, reason := range []string{"签名错误", "签名验证失败", "金额格式错误", "金额必须大于", "参数缺失", "余额不足", "无可用收款码", "未配置收款码", "invalid signature", "invalid amount", "missing parameter"} {
-		if strings.Contains(message, reason) {
-			return true
-		}
-	}
-	return false
+	return errors.As(err, &apiErr) && apiErr.Code == -1 && strings.Contains(apiErr.Message, "不存在")
 }
 
 func New(baseURL, secret, notifyURL string, timeout time.Duration, allowPrivate bool) (*Client, error) {
@@ -234,80 +200,6 @@ func (c *Client) GetOrder(ctx context.Context, providerOrderID string) (*Order, 
 		return nil, errors.New("provider order ID is required")
 	}
 	return c.orderRequest(ctx, "/getOrder", url.Values{"orderId": {providerOrderID}})
-}
-
-func (c *Client) CheckOrder(ctx context.Context, providerOrderID string) (*PaymentConfirmation, error) {
-	providerOrderID = strings.TrimSpace(providerOrderID)
-	if providerOrderID == "" {
-		return nil, errors.New("provider order ID is required")
-	}
-	var response responseEnvelope[string]
-	if err := c.postForm(ctx, "/checkOrder", url.Values{"orderId": {providerOrderID}}, &response); err != nil {
-		return nil, err
-	}
-	if response.Code != 1 || strings.TrimSpace(response.Data) == "" {
-		return nil, &APIError{Code: response.Code, Message: response.Message}
-	}
-	callbackURL, err := url.Parse(strings.TrimSpace(response.Data))
-	if err != nil || callbackURL.Scheme == "" || callbackURL.Host == "" {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: invalid callback URL")
-	}
-	if callbackURL.Scheme != "http" && callbackURL.Scheme != "https" {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: unsupported callback URL scheme")
-	}
-	values := callbackURL.Query()
-	payID, err := requiredSingleQueryValue(values, "payId")
-	if err != nil {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
-	}
-	param, err := requiredSingleQueryValue(values, "param")
-	if err != nil {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
-	}
-	paymentTypeValue, err := requiredSingleQueryValue(values, "type")
-	if err != nil {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
-	}
-	price, err := requiredSingleQueryValue(values, "price")
-	if err != nil {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
-	}
-	reallyPrice, err := requiredSingleQueryValue(values, "reallyPrice")
-	if err != nil {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
-	}
-	signature, err := requiredSingleQueryValue(values, "sign")
-	if err != nil {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
-	}
-	paymentTypeNumber, err := strconv.Atoi(paymentTypeValue)
-	if err != nil || (PaymentType(paymentTypeNumber) != Wechat && PaymentType(paymentTypeNumber) != Alipay) {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: invalid payment type")
-	}
-	if _, err := ParseCents(price); err != nil {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: invalid price: %w", err)
-	}
-	if _, err := ParseCents(reallyPrice); err != nil {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: invalid paid amount: %w", err)
-	}
-	if !c.VerifyCallback(payID, param, paymentTypeValue, price, reallyPrice, signature) {
-		return nil, fmt.Errorf("lanjing pay /checkOrder: invalid callback signature")
-	}
-	return &PaymentConfirmation{
-		MerchantOrderID: payID,
-		Param:           param,
-		Type:            PaymentType(paymentTypeNumber),
-		Price:           price,
-		ReallyPrice:     reallyPrice,
-	}, nil
-}
-
-func requiredSingleQueryValue(values url.Values, key string) (string, error) {
-	items := values[key]
-	if len(items) != 1 || strings.TrimSpace(items[0]) == "" {
-		return "", fmt.Errorf("callback parameter %s must appear exactly once", key)
-	}
-	return strings.TrimSpace(items[0]), nil
 }
 
 func (c *Client) CloseOrder(ctx context.Context, providerOrderID string) error {

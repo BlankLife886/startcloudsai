@@ -437,7 +437,7 @@ func TestSubscriptionCollateralRejectsLegacySettlement(t *testing.T) {
 }
 
 func TestClosedUpgradeClearsPendingChange(t *testing.T) {
-	for _, status := range []string{"cancelled", "expired", "failed", "not_created"} {
+	for _, status := range []string{"cancelled", "expired", "failed"} {
 		t.Run(status, func(t *testing.T) {
 			st := testdb.Setup(t)
 			ctx := context.Background()
@@ -453,14 +453,7 @@ func TestClosedUpgradeClearsPendingChange(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if status == "not_created" {
-				if _, err := store.PrepareOrderPayment(ctx, st.Pool, order.ID, "alipay"); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := store.ResolveUnboundOrderNotCreated(ctx, st.Pool, order.ID); err != nil {
-					t.Fatal(err)
-				}
-			} else if changed, err := store.TransitionPendingOrderStatus(ctx, st.Pool, order.ID, status); err != nil || !changed {
+			if changed, err := store.CloseOrder(ctx, st.Pool, order.ID, status); err != nil || !changed {
 				t.Fatalf("close: %v %v", changed, err)
 			}
 			change, err := store.GetSubscriptionChange(ctx, st.Pool, quote.ID, false)

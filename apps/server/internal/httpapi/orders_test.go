@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -53,9 +52,14 @@ func prepareLanjingOrder(t *testing.T, st *store.Store, order *store.Order, prov
 	if _, err := st.Pool.Exec(ctx, `UPDATE orders SET provider = 'lanjing' WHERE id = $1`, order.ID); err != nil {
 		t.Fatal(err)
 	}
-	order, err := store.SetOrderProviderDetails(ctx, st.Pool, order.ID, providerOrderID, payAmountCents,
-		paymentMethod, "https://qr.example/pay", true, nil)
+	expiresAt := time.Now().Add(5 * time.Minute)
+	order, err := store.BindOrderProvider(ctx, st.Pool, order.ID, providerOrderID, payAmountCents,
+		paymentMethod, "https://qr.example/pay", false, &expiresAt, true)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Due for reconciliation right away, as if the first check interval passed.
+	if _, err := st.Pool.Exec(ctx, `UPDATE orders SET reconcile_after=now() WHERE id=$1`, order.ID); err != nil {
 		t.Fatal(err)
 	}
 	return order
@@ -75,120 +79,12 @@ func lanjingCallbackPath(client *lanjingpay.Client, orderID, paymentType, price,
 
 func TestOrderDictNormalizesStoredPaymentURL(t *testing.T) {
 	encoded := "https%3A%2F%2Fqr.alipay.com%2Fstored"
-	order := &store.Order{ID: uuid.New(), PlanID: uuid.New(), ProviderPayURL: &encoded, CreatedAt: time.Now()}
-	out := orderDict(order, nil)
+	providerID, expiresAt := "provider-stored", time.Now().Add(time.Minute)
+	order := &store.Order{ID: uuid.New(), PlanID: uuid.New(), Status: "pending", ProviderOrderID: &providerID,
+		ProviderPayURL: &encoded, ProviderExpiresAt: &expiresAt, CreatedAt: time.Now()}
+	out := orderDict(order)
 	if got := out["payUrl"]; got == nil || *(got.(*string)) != "https://qr.alipay.com/stored" {
 		t.Fatalf("payUrl = %#v", got)
-	}
-}
-
-func TestCreateLanjingOrderPersistsProviderPaymentSnapshot(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	user, seedOrder := makeOrder(t, st)
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, seedOrder.ID, "failed"); err != nil {
-		t.Fatal(err)
-	}
-	createCalls := 0
-	merchantOrderID := ""
-
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/createOrder" && r.URL.Path != "/getOrder" && r.URL.Path != "/checkOrder" {
-			http.NotFound(w, r)
-			return
-		}
-		if err := r.ParseForm(); err != nil {
-			t.Errorf("parse provider form: %v", err)
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
-		}
-		if r.URL.Path == "/createOrder" {
-			createCalls++
-			merchantOrderID = r.Form.Get("payId")
-			if got := r.Form.Get("type"); got != "2" {
-				t.Errorf("payment type = %q, want 2", got)
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/checkOrder" {
-			_ = json.NewEncoder(w).Encode(gin.H{"code": -1, "msg": "not paid", "data": nil})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": gin.H{
-			"payId": merchantOrderID, "orderId": "provider-adjusted", "payType": 2,
-			"price": 9.90, "reallyPrice": 9.90, "payUrl": "https://qr.example/pay",
-			"isAuto": 1, "state": 0, "timeOut": 5, "date": time.Now().UnixMilli(),
-		}})
-	}))
-	defer provider.Close()
-	client, err := lanjingpay.New(provider.URL, "create-secret", provider.URL+"/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.Load()
-	token := auth.NewSessionToken()
-	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
-	recorder := authRequest(t, srv.Router(), http.MethodPost, "/api/v1/orders", gin.H{
-		"planId": seedOrder.PlanID.String(), "paymentMethod": "alipay",
-	}, &http.Cookie{Name: cfg.SessionCookieName, Value: token})
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("create order = %d %s", recorder.Code, recorder.Body.String())
-	}
-	var response struct {
-		Data struct {
-			ID              string `json:"id"`
-			PayAmountCents  int64  `json:"payAmountCents"`
-			PaymentMethod   string `json:"paymentMethod"`
-			ProviderOrderID string `json:"providerOrderId"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
-	if response.Data.PayAmountCents != 990 || response.Data.PaymentMethod != "alipay" || response.Data.ProviderOrderID != "provider-adjusted" {
-		t.Fatalf("payment response = %+v", response.Data)
-	}
-	createdID, err := uuid.Parse(response.Data.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := store.GetOrder(ctx, st.Pool, createdID)
-	if err != nil || created == nil {
-		t.Fatalf("get created order: order=%v err=%v", created, err)
-	}
-	if created.ProviderPayAmountCents == nil || *created.ProviderPayAmountCents != 990 || created.PaymentMethod == nil || *created.PaymentMethod != "alipay" {
-		t.Fatalf("stored payment snapshot = amount %v method %v", created.ProviderPayAmountCents, created.PaymentMethod)
-	}
-	if created.ProviderPayURL == nil || *created.ProviderPayURL != "https://qr.example/pay" ||
-		created.RequiresManualAmount == nil || !*created.RequiresManualAmount || created.ProviderExpiresAt == nil {
-		t.Fatalf("stored display snapshot = url %v manual %v expires %v", created.ProviderPayURL, created.RequiresManualAmount, created.ProviderExpiresAt)
-	}
-	reused := authRequest(t, srv.Router(), http.MethodPost, "/api/v1/orders", gin.H{
-		"planId": seedOrder.PlanID.String(), "paymentMethod": "alipay",
-	}, &http.Cookie{Name: cfg.SessionCookieName, Value: token})
-	if reused.Code != http.StatusOK {
-		t.Fatalf("reuse order = %d %s", reused.Code, reused.Body.String())
-	}
-	var reusedResponse struct {
-		Data struct {
-			ID     string `json:"id"`
-			Reused bool   `json:"reused"`
-			PayURL string `json:"payUrl"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(reused.Body.Bytes(), &reusedResponse); err != nil {
-		t.Fatal(err)
-	}
-	if reusedResponse.Data.ID != response.Data.ID || !reusedResponse.Data.Reused || reusedResponse.Data.PayURL == "" || createCalls != 1 {
-		t.Fatalf("reused payment response = %+v createCalls=%d", reusedResponse.Data, createCalls)
-	}
-	var pendingCount int
-	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM orders WHERE user_id=$1 AND plan_id=$2 AND status='pending'`,
-		user.ID, seedOrder.PlanID).Scan(&pendingCount); err != nil || pendingCount != 1 {
-		t.Fatalf("pending order count = %d err=%v", pendingCount, err)
 	}
 }
 
@@ -196,7 +92,7 @@ func TestPendingOrderCreationSerialized(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	user, seedOrder := makeOrder(t, st)
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, seedOrder.ID, "failed"); err != nil {
+	if _, err := store.CloseOrder(ctx, st.Pool, seedOrder.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
 	const attempts = 12
@@ -243,144 +139,6 @@ func TestPendingOrderCreationSerialized(t *testing.T) {
 	}
 	if resultCount != attempts || createdCount != 1 {
 		t.Fatalf("results=%d created=%d, want %d/1", resultCount, createdCount, attempts)
-	}
-}
-
-func TestCreateOrderClosesDuplicateAndMismatchedPendingOrders(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	user, reusable := makeOrder(t, st)
-	reusable = prepareLanjingOrder(t, st, reusable, "provider-reusable", reusable.AmountCents, "alipay")
-	adjusted, err := store.InsertOrder(ctx, st.Pool, user.ID, reusable.PlanID, reusable.AmountCents,
-		reusable.GrantCents+1, reusable.BonusCents, "lanjing")
-	if err != nil {
-		t.Fatal(err)
-	}
-	adjusted = prepareLanjingOrder(t, st, adjusted, "provider-adjusted-old", reusable.AmountCents+1, "alipay")
-	wrongMethod, err := store.InsertOrder(ctx, st.Pool, user.ID, reusable.PlanID, reusable.AmountCents,
-		reusable.GrantCents, reusable.BonusCents, "lanjing")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrongMethod = prepareLanjingOrder(t, st, wrongMethod, "provider-wechat-old", reusable.AmountCents, "wechat")
-	closed := make(map[string]int)
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			t.Fatal(err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/closeOrder":
-			closed[r.Form.Get("orderId")]++
-			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": nil})
-		case "/getOrder":
-			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": gin.H{
-				"payId": reusable.ID.String(), "orderId": "provider-reusable", "payType": 2,
-				"price": 9.90, "reallyPrice": 9.90, "payUrl": "https://qr.example/reusable",
-				"isAuto": 1, "state": 0, "timeOut": 5, "date": time.Now().UnixMilli(),
-			}})
-		case "/checkOrder":
-			_ = json.NewEncoder(w).Encode(gin.H{"code": -1, "msg": "not paid", "data": nil})
-		case "/createOrder":
-			t.Error("provider create should not be called when an exact pending order is reusable")
-			http.Error(w, "unexpected create", http.StatusInternalServerError)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer provider.Close()
-	client, err := lanjingpay.New(provider.URL, "dedupe-secret", provider.URL+"/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.Load()
-	token := auth.NewSessionToken()
-	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
-	recorder := authRequest(t, srv.Router(), http.MethodPost, "/api/v1/orders", gin.H{
-		"planId": reusable.PlanID.String(), "paymentMethod": "alipay",
-	}, &http.Cookie{Name: cfg.SessionCookieName, Value: token})
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("deduplicated create = %d %s", recorder.Code, recorder.Body.String())
-	}
-	var response struct {
-		Data struct {
-			ID     string `json:"id"`
-			Reused bool   `json:"reused"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
-	if response.Data.ID != reusable.ID.String() || !response.Data.Reused {
-		t.Fatalf("deduplicated response = %+v", response.Data)
-	}
-	if closed[*adjusted.ProviderOrderID] != 1 || closed[*wrongMethod.ProviderOrderID] != 1 || len(closed) != 2 {
-		t.Fatalf("closed provider orders = %+v", closed)
-	}
-	var pendingCount int
-	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM orders WHERE user_id=$1 AND plan_id=$2 AND status='pending'`,
-		user.ID, reusable.PlanID).Scan(&pendingCount); err != nil || pendingCount != 1 {
-		t.Fatalf("pending order count = %d err=%v", pendingCount, err)
-	}
-}
-
-func TestCreateLanjingOrderRejectsAdjustedAmount(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	user, seedOrder := makeOrder(t, st)
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, seedOrder.ID, "failed"); err != nil {
-		t.Fatal(err)
-	}
-	closeCalls := 0
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			t.Fatal(err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/createOrder":
-			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": gin.H{
-				"payId": r.Form.Get("payId"), "orderId": "provider-adjusted", "payType": 2,
-				"price": 9.90, "reallyPrice": 9.91, "payUrl": "https://qr.example/adjusted",
-				"isAuto": 1, "state": 0, "timeOut": 5, "date": time.Now().UnixMilli(),
-			}})
-		case "/closeOrder":
-			closeCalls++
-			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": nil})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer provider.Close()
-	client, err := lanjingpay.New(provider.URL, "amount-secret", provider.URL+"/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.Load()
-	token := auth.NewSessionToken()
-	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
-	recorder := authRequest(t, srv.Router(), http.MethodPost, "/api/v1/orders", gin.H{
-		"planId": seedOrder.PlanID.String(), "paymentMethod": "alipay",
-	}, &http.Cookie{Name: cfg.SessionCookieName, Value: token})
-	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "payment_amount_conflict") {
-		t.Fatalf("adjusted amount response = %d %s", recorder.Code, recorder.Body.String())
-	}
-	if closeCalls != 1 {
-		t.Fatalf("provider close calls = %d, want 1", closeCalls)
-	}
-	var pendingCount, failedCount int
-	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='pending'), count(*) FILTER (WHERE status='failed')
-		FROM orders WHERE user_id=$1 AND plan_id=$2`, user.ID, seedOrder.PlanID).Scan(&pendingCount, &failedCount); err != nil {
-		t.Fatal(err)
-	}
-	if pendingCount != 0 || failedCount != 2 {
-		t.Fatalf("orders pending=%d failed=%d, want 0/2", pendingCount, failedCount)
 	}
 }
 
@@ -479,120 +237,12 @@ func TestCloseLanjingOrderTreatsMissingProviderOrderAsExpired(t *testing.T) {
 	}
 }
 
-func TestCloseLanjingOrderCompletesPaidRaceFromCheckOrder(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	user, order := makeOrder(t, st)
-	order = prepareLanjingOrder(t, st, order, "provider-paid-race", order.AmountCents, "alipay")
-	const secret = "close-paid-secret"
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/closeOrder":
-			_ = json.NewEncoder(w).Encode(gin.H{"code": -1, "msg": "订单已支付，无法关闭", "data": nil})
-		case "/checkOrder":
-			values := url.Values{
-				"payId": {order.ID.String()}, "param": {order.ID.String()}, "type": {"2"},
-				"price": {"9.90"}, "reallyPrice": {"9.90"},
-			}
-			values.Set("sign", lanjingpay.MD5(order.ID.String(), order.ID.String(), "2", "9.90", "9.90", secret))
-			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": "https://app.example/notify?" + values.Encode()})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer provider.Close()
-	client, err := lanjingpay.New(provider.URL, secret, provider.URL+"/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.Load()
-	token := auth.NewSessionToken()
-	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
-	recorder := authRequest(t, srv.Router(), http.MethodPost, "/api/v1/orders/"+order.ID.String()+"/close", nil,
-		&http.Cookie{Name: cfg.SessionCookieName, Value: token})
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("close paid race = %d %s", recorder.Code, recorder.Body.String())
-	}
-	var response struct {
-		Data struct {
-			Status string `json:"status"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Data.Status != "completed" {
-		t.Fatalf("close paid response = %+v err=%v", response.Data, err)
-	}
-	wallet, err := store.GetWallet(ctx, st.Pool, user.ID)
-	if err != nil || wallet.BalanceCents != order.GrantCents+order.BonusCents {
-		t.Fatalf("wallet after paid race = %+v err=%v", wallet, err)
-	}
-}
-
-func TestGetOrderCompletesFromSignedCheckOrderConfirmation(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	user, order := makeOrder(t, st)
-	order = prepareLanjingOrder(t, st, order, "provider-paid", order.AmountCents, "alipay")
-	const secret = "paid-check-secret"
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/getOrder":
-			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": gin.H{
-				"payId": order.ID.String(), "orderId": "provider-paid", "payType": 2,
-				"price": 9.90, "reallyPrice": 9.90, "payUrl": "https://qr.example/pay",
-				"isAuto": 1, "state": 0, "timeOut": 5, "date": time.Now().UnixMilli(),
-			}})
-		case "/checkOrder":
-			values := url.Values{
-				"payId": {order.ID.String()}, "param": {order.ID.String()}, "type": {"2"},
-				"price": {"9.90"}, "reallyPrice": {"9.90"},
-			}
-			values.Set("sign", lanjingpay.MD5(order.ID.String(), order.ID.String(), "2", "9.90", "9.90", secret))
-			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": "https://app.example/notify?" + values.Encode()})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer provider.Close()
-	client, err := lanjingpay.New(provider.URL, secret, provider.URL+"/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.Load()
-	token := auth.NewSessionToken()
-	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
-	recorder := authRequest(t, srv.Router(), http.MethodGet, "/api/v1/orders/"+order.ID.String(), nil,
-		&http.Cookie{Name: cfg.SessionCookieName, Value: token})
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("get paid order = %d %s", recorder.Code, recorder.Body.String())
-	}
-	var response struct {
-		Data struct {
-			Status string `json:"status"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Data.Status != "completed" {
-		t.Fatalf("paid order response = %+v err=%v", response.Data, err)
-	}
-	wallet, err := store.GetWallet(ctx, st.Pool, user.ID)
-	if err != nil || wallet.BalanceCents != order.GrantCents+order.BonusCents {
-		t.Fatalf("wallet = %+v err=%v", wallet, err)
-	}
-}
-
 func TestPaidCallbackRepairsCancelledOrder(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	user, order := makeOrder(t, st)
 	order = prepareLanjingOrder(t, st, order, "provider-race", order.AmountCents, "alipay")
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, order.ID, "cancelled"); err != nil {
+	if _, err := store.CloseOrder(ctx, st.Pool, order.ID, "cancelled"); err != nil {
 		t.Fatal(err)
 	}
 	provider := httptest.NewServer(http.NotFoundHandler())
@@ -796,8 +446,14 @@ func TestLanjingPaymentCallbackRejectsTamperedPrice(t *testing.T) {
 	srv.Router().ServeHTTP(recorder, httptest.NewRequest(
 		http.MethodGet, "/api/v1/payments/lanjing/notify?"+values.Encode(), nil,
 	))
-	if recorder.Code != http.StatusBadRequest || recorder.Body.String() != "invalid_order" {
+	// A verified callback that contradicts the order is acknowledged (retrying
+	// cannot fix it) and recorded for review, but never credited.
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "success" {
 		t.Fatalf("callback = %d %q", recorder.Code, recorder.Body.String())
+	}
+	var outcome string
+	if err := st.Pool.QueryRow(context.Background(), `SELECT outcome FROM payment_callback_events WHERE order_id=$1`, order.ID).Scan(&outcome); err != nil || outcome != "order_mismatch" {
+		t.Fatalf("callback outcome = %q %v", outcome, err)
 	}
 	wallet, err := store.GetWallet(context.Background(), st.Pool, user.ID)
 	if err != nil {
@@ -843,10 +499,9 @@ func TestLanjingPaymentCallbackRejectsSnapshotMismatch(t *testing.T) {
 		name        string
 		paymentType string
 		reallyPrice string
-		wantBody    string
 	}{
-		{name: "paid amount", paymentType: "2", reallyPrice: "9.92", wantBody: "invalid_really_price"},
-		{name: "payment method", paymentType: "1", reallyPrice: "9.91", wantBody: "invalid_type"},
+		{name: "paid amount", paymentType: "2", reallyPrice: "9.92"},
+		{name: "payment method", paymentType: "1", reallyPrice: "9.91"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -863,8 +518,12 @@ func TestLanjingPaymentCallbackRejectsSnapshotMismatch(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			srv.Router().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet,
 				lanjingCallbackPath(client, order.ID.String(), test.paymentType, "9.90", test.reallyPrice), nil))
-			if recorder.Code != http.StatusBadRequest || recorder.Body.String() != test.wantBody {
+			if recorder.Code != http.StatusOK || recorder.Body.String() != "success" {
 				t.Fatalf("callback = %d %q", recorder.Code, recorder.Body.String())
+			}
+			fresh, err := store.GetOrder(context.Background(), st.Pool, order.ID)
+			if err != nil || fresh.PaidAt != nil || fresh.Status != "pending" {
+				t.Fatalf("mismatched callback changed order: %+v %v", fresh, err)
 			}
 			wallet, err := store.GetWallet(context.Background(), st.Pool, user.ID)
 			if err != nil || wallet.BalanceCents != 0 {
@@ -874,51 +533,6 @@ func TestLanjingPaymentCallbackRejectsSnapshotMismatch(t *testing.T) {
 	}
 }
 
-func TestReconcileLanjingOrderUsesProviderPaymentSnapshot(t *testing.T) {
-	st := testdb.Setup(t)
-	_, order := makeOrder(t, st)
-	order = prepareLanjingOrder(t, st, order, "provider-reconcile", 991, "alipay")
-	const secret = "reconcile-secret"
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/getOrder":
-			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": gin.H{
-				"payId": order.ID.String(), "orderId": "provider-reconcile", "payType": 2,
-				"price": 9.90, "reallyPrice": 9.91, "payUrl": "https://qr.example/pay",
-				"isAuto": 1, "state": 0, "timeOut": 5, "date": time.Now().UnixMilli(),
-			}})
-		case "/checkOrder":
-			values := url.Values{
-				"payId": {order.ID.String()}, "param": {order.ID.String()}, "type": {"2"},
-				"price": {"9.90"}, "reallyPrice": {"9.91"},
-			}
-			values.Set("sign", lanjingpay.MD5(order.ID.String(), order.ID.String(), "2", "9.90", "9.91", secret))
-			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": "https://app.example/notify?" + values.Encode()})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer provider.Close()
-	client, err := lanjingpay.New(provider.URL, secret, provider.URL+"/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := &Server{St: st, LanjingPay: client}
-	result, err := srv.reconcilePaymentOrder(context.Background(), order)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Outcome != "repaired" || result.ExpectedAmountCents != 991 {
-		t.Fatalf("reconciliation = %+v", result)
-	}
-	fresh, err := store.GetOrder(context.Background(), st.Pool, order.ID)
-	if err != nil || fresh.Status != "completed" {
-		t.Fatalf("reconciled order = %+v err=%v", fresh, err)
-	}
-}
-
-// 订单完成分叉：kind=subscription 不入账本金，创建订阅并发放首日额度；重复补单不顺延。
 func TestCompleteSubscriptionOrderForks(t *testing.T) {
 	st := testdb.Setup(t)
 	srv := &Server{St: st}

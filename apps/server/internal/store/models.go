@@ -19,7 +19,7 @@ var (
 	AdminTaskTypes     = append(append([]string{}, TaskTypes...), "assistant")
 	AdminTaskFilters   = append(append([]string{}, AdminTaskTypes...), PromptTaskTypeCanvas)
 	TaskStatuses       = []string{"queued", "running", "succeeded", "failed", "canceled"}
-	OrderStatuses      = []string{"pending", "uncertain", "paid", "completed", "failed", "expired", "cancelled"}
+	OrderStatuses      = []string{"pending", "completed", "failed", "expired", "cancelled"}
 	SubmissionStatuses = []string{"pending", "approved", "rejected", "removed"}
 	LedgerKinds        = []string{"grant", "spend", "freeze", "release", "refund", "admin_adjust"}
 )
@@ -443,6 +443,8 @@ type Order struct {
 	SubscriptionStartsAt   *time.Time
 	ReconcileAttempts      int
 	ReconcileLeaseID       *uuid.UUID
+	LastReconciledAt       *time.Time
+	ProviderCheckError     *string
 }
 
 type Task struct {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,61 +19,45 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestUncertainCreationIsReusedAndVerifiedCallbackRecoversOnce(t *testing.T) {
+func TestAmbiguousCreateFailsOrderAndLateCallbackStillCredits(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	user, seed := makeOrder(t, st)
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, seed.ID, "failed"); err != nil {
+	if _, err := store.CloseOrder(ctx, st.Pool, seed.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
-	var creates atomic.Int32
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		creates.Add(1)
-		http.Error(w, "ambiguous gateway timeout", 504)
-	}))
-	defer provider.Close()
-	client, err := lanjingpay.New(provider.URL, "test-secret", "https://example.com/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fake := newFakeLanjing(t)
+	fake.CreateFailure = "transport"
+	client := fake.client()
 	cfg := config.Load()
-	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
-	router := srv.Router()
+	router := (&Server{Cfg: cfg, St: st, LanjingPay: client}).Router()
 	token := auth.NewSessionToken()
 	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	cookie := &http.Cookie{Name: cfg.SessionCookieName, Value: token}
 	body := gin.H{"planId": seed.PlanID.String(), "paymentMethod": "alipay"}
-	var firstID string
+	// No QR code was shown, so the order cannot be paid by the user: it fails
+	// at once instead of blocking the next checkout.
 	for n := 0; n < 2; n++ {
 		response := authRequest(t, router, http.MethodPost, "/api/v1/orders", body, cookie)
-		var data struct {
-			Data struct {
-				ID            string `json:"id"`
-				Status        string `json:"status"`
-				PaymentMethod string `json:"paymentMethod"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(response.Body.Bytes(), &data); err != nil {
-			t.Fatal(err)
-		}
-		if response.Code != 202 || data.Data.Status != "uncertain" || data.Data.PaymentMethod != "alipay" {
-			t.Fatalf("response: %d %s", response.Code, response.Body.String())
-		}
-		if n == 0 {
-			firstID = data.Data.ID
-		} else if data.Data.ID != firstID {
-			t.Fatal("ambiguous payment was recreated")
+		if response.Code != 502 || !strings.Contains(response.Body.String(), "payment_provider_timeout") {
+			t.Fatalf("ambiguous create: %d %s", response.Code, response.Body.String())
 		}
 	}
-	if creates.Load() != 1 {
-		t.Fatalf("provider create calls = %d", creates.Load())
+	if fake.count("/createOrder") != 2 {
+		t.Fatalf("provider create calls = %d", fake.count("/createOrder"))
 	}
-	response := authRequest(t, router, http.MethodPost, "/api/v1/orders/"+firstID+"/close", nil, cookie)
-	if response.Code != 409 {
-		t.Fatalf("uncertain close = %d", response.Code)
+	var firstID string
+	if err := st.Pool.QueryRow(ctx, `SELECT id FROM orders WHERE user_id=$1 AND id<>$2 ORDER BY created_at LIMIT 1`, user.ID, seed.ID).Scan(&firstID); err != nil {
+		t.Fatal(err)
 	}
+	unsettled, err := store.ListUnsettledOrdersForUser(ctx, st.Pool, user.ID)
+	if err != nil || len(unsettled) != 0 {
+		t.Fatalf("failed creates still block checkout: %+v %v", unsettled, err)
+	}
+	// Should the provider have created the order anyway, its signed callback
+	// is still credited exactly once.
 	for n := 0; n < 2; n++ {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, lanjingCallbackPath(client, firstID, "2", "9.90", "9.90"), nil))
@@ -100,10 +85,6 @@ func TestManualPaymentAssociationValidatesIdentityAndClearsIssue(t *testing.T) {
 	var merchant atomic.Value
 	merchant.Store(uuid.NewString())
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/checkOrder" {
-			_ = json.NewEncoder(w).Encode(gin.H{"code": -1, "msg": "not paid"})
-			return
-		}
 		_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "data": gin.H{"payId": merchant.Load().(string), "orderId": "provider-recover", "payType": 2, "price": "9.90", "reallyPrice": "9.90", "payUrl": "https://qr.example/pay", "state": 1, "isAuto": 1}})
 	}))
 	defer provider.Close()
@@ -112,7 +93,7 @@ func TestManualPaymentAssociationValidatesIdentityAndClearsIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := &Server{Cfg: config.Load(), St: st, LanjingPay: client}
-	result, err := srv.reconcilePaymentOrder(ctx, order)
+	result, err := srv.reconcilePaymentOrder(ctx, order, false)
 	if err != nil || result.Outcome != "provider_id_missing" {
 		t.Fatalf("missing channel: %+v %v", result, err)
 	}
@@ -240,55 +221,11 @@ func TestReconciliationClaimsCoverOldOrdersAndRespectLeaseOwnership(t *testing.T
 	}
 }
 
-func TestManualNotCreatedRetainsLateVerifiedPaymentRecovery(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	user, order := makeOrder(t, st)
-	if _, err := st.Pool.Exec(ctx, `UPDATE orders SET provider='lanjing' WHERE id=$1`, order.ID); err != nil {
-		t.Fatal(err)
-	}
-	order, err := store.PrepareOrderPayment(ctx, st.Pool, order.ID, "alipay")
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, err := lanjingpay.New("http://127.0.0.1:1", "test-secret", "https://example.com/notify", time.Second, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := &Server{Cfg: config.Load(), St: st, LanjingPay: client}
-	router := gin.New()
-	router.POST("/recover", func(c *gin.Context) { c.Set(ctxAdminUserKey, user); srv.adminReconcileOrRecover(c) })
-	response := authRequest(t, router, http.MethodPost, "/recover", gin.H{"orderId": order.ID.String(), "resolution": "not_created", "note": "已核对渠道后台，未建单且未收款"})
-	if response.Code != 200 {
-		t.Fatalf("manual result: %d %s", response.Code, response.Body.String())
-	}
-	order, _ = store.GetOrder(ctx, st.Pool, order.ID)
-	if order.Status != "failed" {
-		t.Fatalf("status=%s", order.Status)
-	}
-	claimed, err := store.ClaimOrdersForReconciliation(ctx, st.Pool, time.Now().Add(time.Hour), 10)
-	if err != nil || len(claimed) != 0 {
-		t.Fatalf("resolved order requeued: %v %v", claimed, err)
-	}
-	if _, err := srv.completeOrder(ctx, order); err == nil {
-		t.Fatal("unverified completion accepted failed order")
-	}
-	callback := httptest.NewRecorder()
-	srv.Router().ServeHTTP(callback, httptest.NewRequest(http.MethodGet, lanjingCallbackPath(client, order.ID.String(), "2", "9.90", "9.90"), nil))
-	if callback.Code != 200 {
-		t.Fatalf("late callback=%s", callback.Body.String())
-	}
-	wallet, _ := store.GetWallet(ctx, st.Pool, user.ID)
-	if wallet.BalanceCents != 1200 {
-		t.Fatalf("late payment not recovered: %d", wallet.BalanceCents)
-	}
-}
-
 func TestVerifiedCallbackCanArriveBeforeCreateResponse(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	user, seed := makeOrder(t, st)
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, seed.ID, "failed"); err != nil {
+	if _, err := store.CloseOrder(ctx, st.Pool, seed.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
 	var srv *Server
@@ -297,6 +234,10 @@ func TestVerifiedCallbackCanArriveBeforeCreateResponse(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/closeOrder" {
 			closes.Add(1)
+			return
+		}
+		if r.URL.Path != "/createOrder" {
+			http.NotFound(w, r)
 			return
 		}
 		if err := r.ParseForm(); err != nil {
@@ -309,7 +250,7 @@ func TestVerifiedCallbackCanArriveBeforeCreateResponse(t *testing.T) {
 		if callback.Code != 200 {
 			t.Errorf("early callback: %s", callback.Body.String())
 		}
-		_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "data": gin.H{"payId": id, "orderId": "early-provider", "payType": 2, "price": 9.9, "reallyPrice": 9.9, "payUrl": "https://qr.example/pay", "state": 0, "isAuto": 1}})
+		_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "data": gin.H{"payId": id, "orderId": "early-provider", "payType": 2, "price": 9.9, "reallyPrice": 9.9, "payUrl": "https://qr.example/pay", "state": 0, "isAuto": 0}})
 	}))
 	defer provider.Close()
 	var err error
@@ -362,7 +303,8 @@ func TestReconciliationPersistsRetryBackoff(t *testing.T) {
 	if err != nil || checked != 0 {
 		t.Fatal("failed order immediately retried")
 	}
-	if reconciliationDelay(&store.Order{ReconcileAttempts: 99}, &store.PaymentReconciliation{Outcome: "provider_error"}, true) != 6*time.Hour {
+	providerID := "retry-provider"
+	if reconciliationDelay(&store.Order{Status: "pending", ProviderOrderID: &providerID, ReconcileAttempts: 99}, true, time.Now()) != 5*time.Minute {
 		t.Fatal("backoff is not capped")
 	}
 }

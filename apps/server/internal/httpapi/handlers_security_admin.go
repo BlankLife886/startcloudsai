@@ -1,9 +1,7 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/hex"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -197,113 +195,6 @@ func (s *Server) adminRemoveUploadHashBlock(c *gin.Context, _ *store.User) {
 }
 
 func pointer[T any](value T) *T { return &value }
-
-func (s *Server) reconcilePaymentOrder(ctx context.Context, order *store.Order) (result *store.PaymentReconciliation, resultErr error) {
-	result = &store.PaymentReconciliation{OrderID: order.ID, Provider: order.Provider, LocalStatus: order.Status,
-		ExpectedAmountCents: expectedProviderPayAmount(order), Outcome: "provider_error"}
-	defer func() {
-		if order.ReconcileLeaseID != nil {
-			fresh, err := store.GetOrder(ctx, s.St.Pool, order.ID)
-			if err != nil {
-				resultErr = err
-				return
-			}
-			if fresh == nil || fresh.ReconcileLeaseID == nil || *fresh.ReconcileLeaseID != *order.ReconcileLeaseID {
-				return
-			}
-			result.LocalStatus = fresh.Status
-		}
-		if result.Outcome == "matched" || result.Outcome == "repaired" {
-			_ = store.ResolveOrderReconciliationRisks(ctx, s.St.Pool, order.ID)
-		} else if result.Detail != nil && (order.ReconcileAttempts == 0 || (order.ReconcileAttempts+1)%3 == 0) {
-			s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, Category: "payment_reconciliation",
-				Severity: "high", Score: 60, Action: "observed", Reason: *result.Detail,
-				Metadata: map[string]any{"orderId": order.ID.String(), "outcome": result.Outcome, "attempt": order.ReconcileAttempts + 1}})
-		}
-		if err := store.InsertPaymentReconciliation(ctx, s.St.Pool, *result); resultErr == nil && err != nil {
-			resultErr = err
-		}
-	}()
-	if order.ProviderOrderID == nil {
-		result.Outcome = "provider_id_missing"
-		result.Detail = pointer("缺少渠道单号：等待验签回调，或补录渠道单号后核对；不要重复下单")
-		return result, nil
-	}
-	client, _, err := s.resolveLanjingPay(ctx)
-	if err != nil || client == nil {
-		if err == nil {
-			err = fmt.Errorf("支付渠道未配置")
-		}
-		result.Detail = pointer(err.Error())
-		return result, err
-	}
-	remote, err := client.GetOrder(ctx, *order.ProviderOrderID)
-	if err != nil {
-		result.Detail = pointer(err.Error())
-		return result, nil
-	}
-	result.ProviderState = pointer(remote.State)
-	providerAmount, priceErr := remote.PriceCents()
-	paidAmount, paidErr := remote.ReallyPriceCents()
-	if priceErr == nil {
-		result.ProviderAmountCents = pointer(providerAmount)
-	}
-	if paidErr == nil {
-		result.ProviderPaidAmountCents = pointer(paidAmount)
-	}
-	identityValid := remote.MerchantOrderID == order.ID.String() && remote.ProviderOrderID == *order.ProviderOrderID
-	paymentMethod := lanjingPaymentMethod(remote.Type)
-	paymentMethodValid := paymentMethod != "" && (order.PaymentMethod == nil || paymentMethod == *order.PaymentMethod)
-	if !identityValid || !paymentMethodValid || priceErr != nil || providerAmount != order.AmountCents {
-		result.Outcome = "identity_or_amount_mismatch"
-		result.Detail = pointer("上游订单身份、支付渠道或标价与本站不一致")
-	} else {
-		paymentConfirmed := remote.State == 1 || remote.State == 2
-		confirmation, checkErr := client.CheckOrder(ctx, *order.ProviderOrderID)
-		if checkErr == nil {
-			if err := validatePaymentConfirmation(order, confirmation); err != nil {
-				result.Outcome = "identity_or_amount_mismatch"
-				result.Detail = pointer("上游支付确认参数与本站订单不一致")
-			} else {
-				paymentConfirmed = true
-			}
-		} else if !isLanjingUnpaid(checkErr) {
-			result.Outcome = "provider_error"
-			result.Detail = pointer(checkErr.Error())
-		}
-		if result.Detail == nil && paymentConfirmed {
-			if paidErr != nil || paidAmount != expectedProviderPayAmount(order) {
-				result.Outcome = "paid_amount_mismatch"
-				result.Detail = pointer("上游实付金额与本站支付快照不一致")
-			} else if order.Status == "completed" {
-				result.Outcome = "matched"
-			} else if order.Status == "pending" || order.Status == "uncertain" || order.Status == "paid" || order.Status == "expired" || order.Status == "failed" || order.Status == "cancelled" {
-				if _, err := s.completeVerifiedOrder(ctx, order); err != nil {
-					result.Outcome = "repair_failed"
-					result.Detail = pointer(err.Error())
-				} else {
-					result.Outcome = "repaired"
-					result.Detail = pointer("上游已支付，本站已自动补齐到账")
-				}
-			} else {
-				result.Outcome = "local_terminal_mismatch"
-				result.Detail = pointer("上游已支付，但本站订单处于不可自动修复的终态")
-			}
-		} else if result.Detail == nil && order.Status == "completed" {
-			result.Outcome = "local_ahead"
-			result.Detail = pointer("本站已完成，但上游尚未确认支付")
-		} else if result.Detail == nil {
-			result.Outcome = "matched"
-			if remote.State == -1 && (order.Status == "pending" || order.Status == "uncertain") {
-				if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
-					result.Outcome = "repair_failed"
-					result.Detail = pointer(err.Error())
-				}
-			}
-		}
-	}
-	return result, nil
-}
 
 func (s *Server) adminRunPaymentReconciliation(c *gin.Context, _ *store.User) {
 	s.adminReconcileOrRecover(c)

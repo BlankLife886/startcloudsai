@@ -8,7 +8,7 @@ import (
 // SearchPaymentReconciliations reports the latest check per order, then filters
 // by check date. Counts use exactly the same scope as the requested page.
 func SearchPaymentReconciliations(ctx context.Context, q Q, issues bool, limit, page int, f AdminListFilter) ([]*PaymentReconciliation, int64, error) {
-	from := ` FROM (SELECT DISTINCT ON (order_id) * FROM payment_reconciliations ORDER BY order_id,id DESC) latest WHERE ($1=false OR outcome NOT IN ('matched','repaired','manual_not_created'))`
+	from := ` FROM (SELECT DISTINCT ON (order_id) * FROM payment_reconciliations ORDER BY order_id,id DESC) latest WHERE ($1=false OR outcome NOT IN ('matched','repaired','closed','manual_not_created'))`
 	args := []any{issues}
 	from, args = appendAdminDates(from, args, "checked_at", []AdminListFilter{f})
 	if f.Search != "" {

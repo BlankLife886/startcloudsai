@@ -125,7 +125,7 @@ func TestRestartUpgradeLocksAndCancellationRestoresEntitlement(t *testing.T) {
 		t.Fatal(err)
 	}
 	rollingBalance(t, st, u.ID, 0)
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, order.ID, "cancelled"); err != nil {
+	if _, err := store.CloseOrder(ctx, st.Pool, order.ID, "cancelled"); err != nil {
 		t.Fatal(err)
 	}
 	rollingBalance(t, st, u.ID, 100)

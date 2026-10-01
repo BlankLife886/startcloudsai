@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from "element-plus";
 import { Delete, Download, Refresh, Search, View, Wallet } from "@element-plus/icons-vue";
 import OrderAccountingDetail from '@/components/OrderAccountingDetail.vue';
-import { billingMoney, deliveryLabels, orderKindLabels, type BillingOrder, type AccountingSummary } from '@/billingTypes';
+import { billingMoney, deliveryLabels, orderKindLabels, orderStatusMeta, type BillingOrder, type AccountingSummary } from '@/billingTypes';
 import { downloadAdminCsv } from '@/downloadCsv';
 import AdminDialog from "@/components/AdminDialog.vue";
 import AdminListShell from "@/components/AdminListShell.vue";
@@ -47,23 +47,11 @@ async function deleteExpiredOrder(order:AdminOrder) {
 const statusOptions = [
   { value: "", label: "全部" },
   { value: "pending", label: "待支付" },
-  { value: "uncertain", label: "待核实" },
-  { value: "paid", label: "待到账" },
   { value: "completed", label: "已完成" },
   { value: "cancelled", label: "已取消" },
   { value: "expired", label: "已过期" },
   { value: "failed", label: "失败" },
 ];
-
-const statusMeta: Record<string, { label: string; type: "success" | "warning" | "danger" | "info" | "primary" }> = {
-  pending: { label: "待支付", type: "warning" },
-  uncertain: { label: "待核实", type: "warning" },
-  paid: { label: "待到账", type: "primary" },
-  completed: { label: "已完成", type: "success" },
-  cancelled: { label: "已取消", type: "info" },
-  expired: { label: "已过期", type: "info" },
-  failed: { label: "失败", type: "danger" },
-};
 
 const pageSize = ref(20);
 
@@ -152,8 +140,9 @@ function paymentMethodLabel(method: string | null) {
   return "未记录";
 }
 
-function orderStatus(status: string) {
-  return statusMeta[status] || { label: status || "未知", type: "info" as const };
+async function copyText(value: string) {
+  try { await navigator.clipboard.writeText(value); ElMessage.success("已复制"); }
+  catch { ElMessage.error("复制失败，请手动选择复制"); }
 }
 
 function openDetail(order: AdminOrder) {
@@ -244,13 +233,16 @@ onMounted(reset);
             {{ option.label }}
             <em v-if="filters.status === option.value" class="tnum">{{ matchedTotal }}</em>
           </button>
+          <button type="button" role="tab" class="orders-tab" :class="{ 'is-active': filters.delivery === 'pending' }" :aria-selected="filters.delivery === 'pending'" @click="filters.status = ''; filters.delivery = filters.delivery === 'pending' ? '' : 'pending'; reset()">
+            已收款·到账中
+          </button>
         </div>
         <div class="orders-toolbar__search">
           <el-input
             v-model="filters.search"
             :prefix-icon="Search"
             clearable
-            placeholder="订单号、渠道单号、用户或套餐"
+            placeholder="订单号、云端订单号、用户或套餐"
             @keyup.enter="reset"
             @clear="reset"
           />
@@ -290,6 +282,15 @@ onMounted(reset);
           <template #empty>
             <el-empty description="暂无订单" :image-size="64" />
           </template>
+          <el-table-column label="订单号 / 云端订单号" width="190">
+            <template #default="{ row }">
+              <div class="order-ids">
+                <button type="button" :title="`复制平台订单号 ${row.id}`" @click="copyText(row.id)">{{ row.id.slice(0, 8) }}…</button>
+                <button v-if="row.providerOrderId" type="button" :title="`复制云端订单号 ${row.providerOrderId}`" @click="copyText(row.providerOrderId)">{{ row.providerOrderId }}</button>
+                <small v-else>无云端单号</small>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="套餐" min-width="170" show-overflow-tooltip>
             <template #default="{ row }"><strong class="order-cell-strong">{{ row.planName || "历史套餐" }}</strong></template>
           </el-table-column>
@@ -326,10 +327,10 @@ onMounted(reset);
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="100" align="center">
+          <el-table-column label="状态" width="124" align="center">
             <template #default="{ row }">
-              <el-tag :type="orderStatus(row.status).type" effect="light" size="small">
-                {{ orderStatus(row.status).label }}
+              <el-tag :type="orderStatusMeta(row as AdminOrder).type" effect="light" size="small">
+                {{ orderStatusMeta(row as AdminOrder).label }}
               </el-tag>
             </template>
           </el-table-column>
@@ -369,8 +370,8 @@ onMounted(reset);
       @confirm="detailVisible = false"
     >
       <template v-if="detail" #meta>
-        <el-tag :type="orderStatus(detail.status).type" effect="light" size="small">
-          {{ orderStatus(detail.status).label }}
+        <el-tag :type="orderStatusMeta(detail).type" effect="light" size="small">
+          {{ orderStatusMeta(detail).label }}
         </el-tag>
       </template>
       <OrderAccountingDetail v-if="detail" :key="detail.id" :order-id="detail.id" @loaded="detail = $event" />
@@ -380,6 +381,10 @@ onMounted(reset);
 
 <style scoped>
 .orders-filters { display:flex;flex-wrap:wrap;gap:8px; }
+.order-ids { display:grid;gap:2px;min-width:0; }
+.order-ids button { overflow:hidden;padding:0;border:0;background:none;color:var(--ink-2);font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:copy; }
+.order-ids button:hover { color:var(--accent); }
+.order-ids small { color:var(--ink-3);font-size:11px; }
 .orders-filters :deep(.el-select), .orders-filters :deep(.el-input), .orders-filters :deep(.el-date-editor) { width:150px; }
 .order-main small { color:var(--ink-3);font-size:11px; }
 .orders-page {

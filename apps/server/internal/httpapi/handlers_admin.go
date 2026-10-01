@@ -567,16 +567,10 @@ func validPlanCode(code string) bool {
 }
 
 func normalizePlan(plan *store.Plan) error {
-	if plan.RechargePolicy != nil {
-		if strings.ToLower(strings.TrimSpace(plan.Kind)) != "topup" {
-			return apperr.E("validation_error", "自定义充值仅适用于额度包", 422)
-		}
-		if err := plan.RechargePolicy.Validate(); err != nil {
-			return apperr.E("validation_error", err.Error(), 422)
-		}
-		plan.PriceCents = 100
-		plan.GrantCents = plan.RechargePolicy.PointsPerYuan
-		plan.BonusCents = 0
+	// Custom-amount top-up is retired. Existing plans stay readable for history
+	// but can no longer be listed for sale.
+	if plan.RechargePolicy != nil && plan.Active {
+		return apperr.E("custom_recharge_retired", "自定义金额充值已下线，不能上架", 422)
 	}
 	plan.Code = strings.ToLower(strings.TrimSpace(plan.Code))
 	plan.Name = strings.TrimSpace(plan.Name)
@@ -698,8 +692,11 @@ func (s *Server) adminCreatePlan(c *gin.Context, admin *store.User) {
 	if body.Recommended != nil {
 		recommended = *body.Recommended
 	}
+	if body.RechargePolicy != nil {
+		fail(c, apperr.E("custom_recharge_retired", "自定义金额充值已下线，不能新建", 422))
+		return
+	}
 	planInput := &store.Plan{
-		RechargePolicy:    body.RechargePolicy,
 		PriceLockEligible: body.PriceLockEligible,
 		Code:              body.Code,
 		Name:              body.Name,
@@ -750,10 +747,6 @@ func (s *Server) adminCreatePlan(c *gin.Context, admin *store.User) {
 	if err != nil {
 		if store.IsUniqueViolation(err, "uq_plans_one_recommended") {
 			fail(c, apperr.E("validation_error", "推荐套餐发生并发冲突，请重试", 409))
-			return
-		}
-		if store.IsUniqueViolation(err, "uq_plans_one_custom_recharge") {
-			fail(c, apperr.E("validation_error", "只能上架一个自定义充值方案，请先下架原方案", 409))
 			return
 		}
 		if store.IsUniqueViolation(err, "") {
@@ -912,8 +905,9 @@ func (s *Server) adminPatchPlan(c *gin.Context, admin *store.User) {
 	if body.PriceLockEligible.Valid {
 		plan.PriceLockEligible = body.PriceLockEligible.Value
 	}
-	if body.RechargePolicy.Set {
-		plan.RechargePolicy = body.RechargePolicy.Value
+	if body.RechargePolicy.Set && body.RechargePolicy.Value != nil {
+		fail(c, apperr.E("custom_recharge_retired", "自定义金额充值已下线，不能设置", 422))
+		return
 	}
 	if body.Active.Valid {
 		plan.Active = body.Active.Value
@@ -942,10 +936,6 @@ func (s *Server) adminPatchPlan(c *gin.Context, admin *store.User) {
 	if err != nil {
 		if store.IsUniqueViolation(err, "uq_plans_one_recommended") {
 			fail(c, apperr.E("validation_error", "推荐套餐发生并发冲突，请重试", 409))
-			return
-		}
-		if store.IsUniqueViolation(err, "uq_plans_one_custom_recharge") {
-			fail(c, apperr.E("validation_error", "只能上架一个自定义充值方案，请先下架原方案", 409))
 			return
 		}
 		if store.IsUniqueViolation(err, "") {

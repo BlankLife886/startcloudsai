@@ -29,8 +29,6 @@ func TestCancellationRemainsDistinctAndVerifiedReconciliationRecovers(t *testing
 			closes.Add(1)
 			state.Store(-1)
 			_ = json.NewEncoder(w).Encode(gin.H{"code": 1})
-		case "/checkOrder":
-			_ = json.NewEncoder(w).Encode(gin.H{"code": -1, "msg": "not paid"})
 		case "/getOrder":
 			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "data": gin.H{
 				"payId": order.ID.String(), "orderId": "cancel-test", "payType": 2,
@@ -93,7 +91,7 @@ func TestCancellationRemainsDistinctAndVerifiedReconciliationRecovers(t *testing
 	if _, err := srv.completeOrder(ctx, fresh); err == nil {
 		t.Fatal("unverified completion accepted for cancelled order")
 	}
-	result, err := srv.reconcilePaymentOrder(ctx, fresh)
+	result, err := srv.reconcilePaymentOrder(ctx, fresh, false)
 	if err != nil || result.Outcome != "matched" {
 		t.Fatalf("closed reconciliation: %+v %v", result, err)
 	}
@@ -105,7 +103,7 @@ func TestCancellationRemainsDistinctAndVerifiedReconciliationRecovers(t *testing
 	if err != nil || wallet.BalanceCents != 0 {
 		t.Fatalf("cancel granted credit: %+v %v", wallet, err)
 	}
-	if delay := reconciliationDelay(fresh, result, false); delay != 24*time.Hour {
+	if delay := reconciliationDelay(fresh, false, time.Now()); delay != 10*time.Minute {
 		t.Fatalf("cancelled audit delay: %s", delay)
 	}
 	state.Store(1)
@@ -114,7 +112,7 @@ func TestCancellationRemainsDistinctAndVerifiedReconciliationRecovers(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := srv.reconcilePaymentOrder(ctx, fresh); err != nil {
+		if _, err := srv.reconcilePaymentOrder(ctx, fresh, false); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -710,9 +710,9 @@ func (l *lab) action(w http.ResponseWriter, r *http.Request) {
 		err = l.st.Pool.QueryRow(ctx, `SELECT count(*) FROM orders WHERE user_id=$1`, l.users["bulk"].ID).Scan(&exists)
 		if err == nil && exists == 0 {
 			_, err = l.st.Pool.Exec(ctx, `INSERT INTO orders(user_id,plan_id,amount_cents,grant_cents,bonus_cents,provider,status,created_at)
-   SELECT $1,$2,990,1000,200,'lanjing','uncertain',now()-interval '60 days' FROM generate_series(1,550)`, l.users["bulk"].ID, l.plans["basic"].ID)
+   SELECT $1,$2,990,1000,200,'lanjing','pending',now()-interval '60 days' FROM generate_series(1,550)`, l.users["bulk"].ID, l.plans["basic"].ID)
 		}
-		result = "550 笔历史待核实订单已准备，可连续运行对账验证覆盖"
+		result = "550 笔历史待支付订单已准备，可连续运行对账验证覆盖"
 	default:
 		http.Error(w, "unknown action", 400)
 		return
