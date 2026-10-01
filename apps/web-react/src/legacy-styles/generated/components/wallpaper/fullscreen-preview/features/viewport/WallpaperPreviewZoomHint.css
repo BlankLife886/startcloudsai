@@ -1,0 +1,41 @@
+/* Generated from apps/web/src/components/wallpaper/fullscreen-preview/features/viewport/WallpaperPreviewZoomHint.vue. */
+
+.preview-zoom-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 14px;
+  padding: 8px 12px;
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  z-index: 20;
+}
+.preview-zoom-hint.controls-visible {
+  opacity: 1;
+}
+.zoom-buttons {
+  display: flex;
+  gap: 6px;
+}
+.zoom-buttons button {
+  border: none;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+.zoom-buttons button:hover {
+  background: rgba(36, 36, 36, 0.85);
+}

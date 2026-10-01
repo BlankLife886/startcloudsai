@@ -1,0 +1,9 @@
+.t2i-page.stage-switch-preview { display:block; height:auto; min-height:100vh; padding:24px; background:var(--t2i-bg); color:var(--t2i-ink); font-family:system-ui,sans-serif; }
+.stage-switch-preview header { display:flex; align-items:center; flex-wrap:wrap; gap:12px; max-width:1000px; margin:0 auto 16px; }
+.stage-switch-preview h1 { font-size:20px; margin-right:auto; }
+.stage-switch-preview button { padding:8px 12px; border:1px solid var(--t2i-line); background:var(--t2i-panel); color:var(--t2i-ink); border-radius:8px; cursor:pointer; }
+.stage-switch-preview button[aria-pressed="true"] { border-color:#9284d0; }
+.preview-switch-panel { width:100%; max-width:1000px; height:600px; max-height:78vh; margin:0 auto; background:var(--t2i-panel); }
+.preview-switch-canvas { width:100%; background:var(--t2i-panel); }
+.stage-switch-preview .t2i-filmstrip { flex-wrap:nowrap; }
+.stage-switch-preview output,.stage-switch-preview p { display:block; max-width:1000px; margin:12px auto; font-size:13px; }

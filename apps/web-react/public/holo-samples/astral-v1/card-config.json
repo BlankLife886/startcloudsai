@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "title": "星间旅人",
+  "name": "ASTRAL TRAVELER",
+  "subtitle": "循光而行 · 万象入梦",
+  "collection": "STARCLOUDS / PORTRAIT COLLECTION",
+  "edition": "001 / 001",
+  "number": "001",
+  "sourceMode": "relief",
+  "canvas": { "width": 1024, "height": 1536 },
+  "assets": {
+    "subject": "subject.png",
+    "background": "background.png",
+    "effects": "effects.png",
+    "text": "text.png"
+  },
+  "parameters": { "foil": "gold", "foilStrength": 0.65, "depth": 1, "pattern": "flow", "exploded": false, "autoOrbit": false, "orbitStyle": "orbit", "shineStyle": "sweep" },
+  "provenance": {
+    "subject": "Unmodified project artwork: public/sucai/profile-hero-character.png",
+    "subjectSha256": "8e19c56125569862210f8f44d0a52de2723aad9831fd41bbd9d341e10dda6718",
+    "backgroundAndEffects": "Original deterministic Canvas graphic design in astral-design-layers.js",
+    "text": "Original native-font Canvas typography in sample-relief-renderer.js",
+    "newAiArtwork": false
+  }
+}

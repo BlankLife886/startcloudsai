@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/BlankLife886/startcloudsai/server/internal/upstreamguard"
 	"io"
 	"net/http"
 	"net/url"
@@ -23,6 +24,22 @@ type UpstreamError struct {
 	Code    int
 	Message string
 }
+
+// SubmissionUncertainError means CreateTask may have accepted work without a
+// usable acknowledgement. CRUN has no client idempotency key, so never replay it.
+type SubmissionUncertainError struct{ Err error }
+
+func (e *SubmissionUncertainError) Error() string {
+	return "CRUN submission outcome unknown: " + e.Err.Error()
+}
+func (e *SubmissionUncertainError) Unwrap() error { return e.Err }
+
+// PreflightError occurs before CreateTask was sent and can safely be retried
+// when its underlying estimate/connection error is transient.
+type PreflightError struct{ Err error }
+
+func (e *PreflightError) Error() string { return e.Err.Error() }
+func (e *PreflightError) Unwrap() error { return e.Err }
 
 func (e *UpstreamError) Error() string {
 	if e == nil {
@@ -46,6 +63,10 @@ type OpenAIImageRequest struct {
 	Prompt                string
 	N                     int
 	Size                  string
+	ExactSize             bool
+	ExactWidth            int
+	ExactHeight           int
+	ExactSizeFields       []string
 	Quality               string
 	ImageURLs             []string
 	AspectRatio           string
@@ -53,6 +74,7 @@ type OpenAIImageRequest struct {
 	TransparentBackground bool
 	OutputFormat          string
 	ModerationLevel       string
+	AllowedInputFields    []string
 }
 
 func New(baseURL, apiKey, model string, timeoutSecs int) (*Client, error) {
@@ -87,6 +109,29 @@ func New(baseURL, apiKey, model string, timeoutSecs int) (*Client, error) {
 func (c *Client) Configured() bool { return c != nil && c.apiKey != "" }
 func (c *Client) Model() string    { return c.model }
 
+type MediaEstimate struct {
+	EstimatedCredits float64 `json:"estimated_credits"`
+	Balance          float64 `json:"balance"`
+	Affordable       bool    `json:"affordable"`
+}
+
+type MediaTaskRequest struct {
+	Model       string         `json:"model"`
+	Input       map[string]any `json:"input"`
+	CallbackURL string         `json:"callback_url,omitempty"`
+}
+
+type MediaTaskCreated struct {
+	TaskID string `json:"task_id"`
+}
+
+type TemplateQuery struct {
+	Platform   string
+	Page       int
+	PageSize   int
+	TemplateID string
+}
+
 type apiEnvelope struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
@@ -112,6 +157,11 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 	}
 	req.Header.Set("x-api-key", c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	if method == http.MethodPost && path == "/api/v1/client/job/CreateTask" {
+		if err := upstreamguard.Check(ctx); err != nil {
+			return err
+		}
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -151,6 +201,100 @@ func (c *Client) Balance(ctx context.Context) (float64, error) {
 	return data.Balance, err
 }
 
+func (c *Client) ListModels(ctx context.Context, modality, operation string) (any, error) {
+	values := url.Values{}
+	if modality = strings.TrimSpace(modality); modality != "" {
+		values.Set("modality", modality)
+	}
+	if operation = strings.TrimSpace(operation); operation != "" {
+		values.Set("operation", operation)
+	}
+	path := "/api/v1/client/job/Models"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var data any
+	err := c.doJSON(ctx, http.MethodGet, path, nil, &data)
+	return data, err
+}
+
+func (c *Client) DescribeModel(ctx context.Context, model string) (any, error) {
+	model = strings.Trim(strings.TrimSpace(model), "/")
+	if model == "" {
+		return nil, errors.New("CRUN model is empty")
+	}
+	parts := strings.Split(model, "/")
+	for index := range parts {
+		parts[index] = url.PathEscape(parts[index])
+	}
+	var data any
+	err := c.doJSON(ctx, http.MethodGet, "/api/v1/client/job/Models/"+strings.Join(parts, "/"), nil, &data)
+	return data, err
+}
+
+func (c *Client) EstimateMediaTask(ctx context.Context, request MediaTaskRequest) (*MediaEstimate, error) {
+	request.Model = strings.TrimSpace(request.Model)
+	if request.Model == "" || request.Input == nil {
+		return nil, errors.New("CRUN media task model and input are required")
+	}
+	var data MediaEstimate
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/client/job/EstimateTask", request, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
+// CreateMediaTask intentionally performs exactly one HTTP request. Callers
+// must persist the returned task ID before any retry or status polling.
+func (c *Client) CreateMediaTask(ctx context.Context, request MediaTaskRequest) (*MediaTaskCreated, error) {
+	request.Model = strings.TrimSpace(request.Model)
+	if request.Model == "" || request.Input == nil {
+		return nil, &PreflightError{Err: errors.New("CRUN media task model and input are required")}
+	}
+	var data MediaTaskCreated
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/client/job/CreateTask", request, &data); err != nil {
+		if upstreamguard.WasNotSent(err) {
+			return nil, err
+		}
+		return nil, &SubmissionUncertainError{Err: err}
+	}
+	if strings.TrimSpace(data.TaskID) == "" {
+		return nil, &SubmissionUncertainError{Err: errors.New("CRUN returned an empty task id")}
+	}
+	return &data, nil
+}
+
+func (c *Client) ListTemplates(ctx context.Context, query TemplateQuery) (any, error) {
+	platform := strings.ToLower(strings.TrimSpace(query.Platform))
+	path, idKey := "", ""
+	switch platform {
+	case "kling":
+		path, idKey = "/api/v1/client/job/kling-templates", "template_id"
+	case "vidu":
+		path, idKey = "/api/v1/client/job/vidu-templates", "template"
+	case "bytedance":
+		path, idKey = "/api/v1/client/job/bytedance-templates", "template_id"
+	default:
+		return nil, errors.New("unsupported CRUN template platform")
+	}
+	if query.Page <= 0 {
+		query.Page = 1
+	}
+	if query.PageSize <= 0 || query.PageSize > 50 {
+		query.PageSize = 20
+	}
+	values := url.Values{
+		"page":      []string{fmt.Sprint(query.Page)},
+		"page_size": []string{fmt.Sprint(query.PageSize)},
+	}
+	if id := strings.TrimSpace(query.TemplateID); id != "" {
+		values.Set(idKey, id)
+	}
+	var data any
+	err := c.doJSON(ctx, http.MethodGet, path+"?"+values.Encode(), nil, &data)
+	return data, err
+}
+
 func (c *Client) CreateTask(ctx context.Context, prompt, aspectRatio, resolution string, imageURLs []string) (string, error) {
 	return c.CreateTaskWithRequest(ctx, OpenAIImageRequest{
 		Prompt: prompt, AspectRatio: aspectRatio, Resolution: resolution, ImageURLs: imageURLs,
@@ -158,28 +302,117 @@ func (c *Client) CreateTask(ctx context.Context, prompt, aspectRatio, resolution
 }
 
 func (c *Client) CreateTaskWithRequest(ctx context.Context, request OpenAIImageRequest) (string, error) {
+	if request.ExactSize {
+		if request.ExactWidth < 1 || request.ExactHeight < 1 || request.Size != fmt.Sprintf("%dx%d", request.ExactWidth, request.ExactHeight) {
+			return "", &PreflightError{Err: errors.New("CRUN exact image dimensions are invalid")}
+		}
+		fields := request.ExactSizeFields
+		validFields := len(fields) == 1 && fields[0] == "size" || len(fields) == 2 && fields[0] == "width" && fields[1] == "height"
+		if !validFields || len(request.AllowedInputFields) == 0 {
+			return "", &PreflightError{Err: errors.New("CRUN model has no declared exact-size input")}
+		}
+		for _, field := range fields {
+			if !inputFieldAllowed(request.AllowedInputFields, field) {
+				return "", &PreflightError{Err: errors.New("CRUN model does not accept the exact-size input")}
+			}
+		}
+	}
+	input := buildImageInput(request)
+	if err := c.ensureAffordable(ctx, input); err != nil {
+		return "", err
+	}
+	return c.createTaskWithInput(ctx, input)
+}
+
+func buildImageInput(request OpenAIImageRequest) map[string]any {
 	input := map[string]any{"prompt": request.Prompt}
-	if strings.TrimSpace(request.AspectRatio) != "" {
+	if !request.ExactSize && inputFieldAllowed(request.AllowedInputFields, "aspect_ratio") && strings.TrimSpace(request.AspectRatio) != "" {
 		input["aspect_ratio"] = request.AspectRatio
 	}
-	if len(request.ImageURLs) > 0 {
+	if inputFieldAllowed(request.AllowedInputFields, "img_urls") && len(request.ImageURLs) > 0 {
 		input["img_urls"] = request.ImageURLs
 	}
-	// CRUN's base GPT Image 2 schema rejects the Premium-only resolution field.
-	if strings.TrimSpace(request.Resolution) != "" && c.model != DefaultModel {
+	if !request.ExactSize && inputFieldAllowed(request.AllowedInputFields, "resolution") && strings.TrimSpace(request.Resolution) != "" {
 		input["resolution"] = request.Resolution
 	}
-	if quality := strings.ToLower(strings.TrimSpace(request.Quality)); quality != "" {
+	if request.ExactSize {
+		for _, field := range request.ExactSizeFields {
+			switch field {
+			case "size":
+				input["size"] = request.Size
+			case "width":
+				input["width"] = request.ExactWidth
+			case "height":
+				input["height"] = request.ExactHeight
+			}
+		}
+	}
+	if quality := strings.ToLower(strings.TrimSpace(request.Quality)); inputFieldAllowed(request.AllowedInputFields, "quality") && quality != "" {
 		input["quality"] = quality
 	}
-	if request.TransparentBackground {
+	if inputFieldAllowed(request.AllowedInputFields, "background") && request.TransparentBackground {
 		input["background"] = "transparent"
 	}
-	if format := strings.ToLower(strings.TrimSpace(request.OutputFormat)); format != "" {
+	if format := strings.ToLower(strings.TrimSpace(request.OutputFormat)); inputFieldAllowed(request.AllowedInputFields, "output_format") && format != "" {
 		input["output_format"] = format
 	}
-	if moderation := strings.ToLower(strings.TrimSpace(request.ModerationLevel)); moderation != "" {
+	if moderation := strings.ToLower(strings.TrimSpace(request.ModerationLevel)); inputFieldAllowed(request.AllowedInputFields, "moderation") && moderation != "" {
 		input["moderation"] = moderation
+	}
+	return input
+}
+
+func inputFieldAllowed(allowed []string, field string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, candidate := range allowed {
+		if strings.EqualFold(strings.TrimSpace(candidate), field) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) ensureAffordable(ctx context.Context, input map[string]any) error {
+	estimate, err := c.EstimateMediaTask(ctx, MediaTaskRequest{Model: c.model, Input: input})
+	if err != nil {
+		return &PreflightError{Err: fmt.Errorf("CRUN task estimate failed: %w", err)}
+	}
+	if !estimate.Affordable {
+		return &PreflightError{Err: errors.New("CRUN account balance is insufficient for this task")}
+	}
+	return nil
+}
+
+func (c *Client) createTaskWithInput(ctx context.Context, input map[string]any) (string, error) {
+	var data struct {
+		TaskID string `json:"task_id"`
+	}
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/client/job/CreateTask", map[string]any{
+		"model": c.model,
+		"input": input,
+	}, &data)
+	if err != nil {
+		if upstreamguard.WasNotSent(err) {
+			return "", err
+		}
+		return "", &SubmissionUncertainError{Err: err}
+	}
+	if strings.TrimSpace(data.TaskID) == "" {
+		return "", &SubmissionUncertainError{Err: errors.New("CRUN returned an empty task id")}
+	}
+	return data.TaskID, nil
+}
+
+func (c *Client) CreateBackgroundRemovalTask(ctx context.Context, imageURL string) (string, error) {
+	imageURL = strings.TrimSpace(imageURL)
+	if imageURL == "" {
+		return "", &PreflightError{Err: errors.New("CRUN background removal image URL is empty")}
+	}
+	input := map[string]any{"img_urls": []string{imageURL}}
+	if err := c.ensureAffordable(ctx, input); err != nil {
+		return "", err
 	}
 	var data struct {
 		TaskID string `json:"task_id"`
@@ -189,10 +422,13 @@ func (c *Client) CreateTaskWithRequest(ctx context.Context, request OpenAIImageR
 		"input": input,
 	}, &data)
 	if err != nil {
-		return "", err
+		if upstreamguard.WasNotSent(err) {
+			return "", err
+		}
+		return "", &SubmissionUncertainError{Err: err}
 	}
 	if strings.TrimSpace(data.TaskID) == "" {
-		return "", errors.New("CRUN returned an empty task id")
+		return "", &SubmissionUncertainError{Err: errors.New("CRUN returned an empty background removal task id")}
 	}
 	return data.TaskID, nil
 }
@@ -217,12 +453,12 @@ func (c *Client) CreateImageTasks(
 	for len(taskIDs) < count {
 		taskID, err := c.CreateTaskWithRequest(ctx, request)
 		if err != nil {
-			return nil, err
+			return taskIDs, err
 		}
 		taskIDs = append(taskIDs, taskID)
 		if onCreated != nil {
 			if err := onCreated(append([]string(nil), taskIDs...)); err != nil {
-				return nil, err
+				return taskIDs, &SubmissionUncertainError{Err: fmt.Errorf("persist accepted CRUN jobs: %w", err)}
 			}
 		}
 	}
@@ -283,7 +519,64 @@ func (c *Client) WaitTasks(ctx context.Context, taskIDs []string, onImage func(i
 	}
 }
 
+// WaitMediaTask waits for one generic CRUN job and returns every media URL.
+// Video and audio models may return multiple artifacts from a single job.
+func (c *Client) WaitMediaTask(ctx context.Context, taskID string) ([]string, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil, errors.New("CRUN task id is empty")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	for {
+		info, err := c.GetTask(waitCtx, taskID)
+		if err == nil {
+			switch strings.ToLower(strings.TrimSpace(info.Status)) {
+			case "pending", "running", "":
+			case "success":
+				if info.Result == nil || info.Result.Code != 200 || len(info.Result.MediaURLs) == 0 {
+					return nil, &UpstreamError{Code: 501, Message: "CRUN task completed without media"}
+				}
+				urls := make([]string, 0, len(info.Result.MediaURLs))
+				for _, mediaURL := range info.Result.MediaURLs {
+					if mediaURL = strings.TrimSpace(mediaURL); mediaURL != "" {
+						urls = append(urls, mediaURL)
+					}
+				}
+				if len(urls) == 0 {
+					return nil, &UpstreamError{Code: 501, Message: "CRUN returned empty media URLs"}
+				}
+				return urls, nil
+			case "failed":
+				message, code := "CRUN media generation failed", 501
+				if info.Result != nil {
+					code = info.Result.Code
+					if strings.TrimSpace(info.Result.Message) != "" {
+						message = info.Result.Message
+					}
+				}
+				return nil, &UpstreamError{Code: code, Message: message}
+			default:
+				return nil, &UpstreamError{Code: 501, Message: "unknown CRUN task status: " + info.Status}
+			}
+		} else if !IsRetryableError(err) {
+			return nil, err
+		}
+		timer := time.NewTimer(c.pollInterval)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return nil, waitCtx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func IsRetryableError(err error) bool {
+	var uncertain *SubmissionUncertainError
+	if errors.As(err, &uncertain) {
+		return false
+	}
 	var upstream *UpstreamError
 	return errors.As(err, &upstream) && (upstream.Status == 429 || upstream.Status >= 500 || upstream.Code == 455)
 }

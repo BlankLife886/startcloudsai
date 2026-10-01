@@ -1,0 +1,78 @@
+/* Generated from apps/web/src/components/common/WallevenImagePreview.vue. */
+
+.wallpaper-fullscreen-preview {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.95);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  outline: none;
+}
+.wallpaper-fullscreen-preview:focus-visible { outline: 2px solid rgba(76, 175, 80, 0.8); outline-offset: -2px;
+}
+.preview-container { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.preview-image-container { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; box-sizing: border-box;
+}
+.preview-image-container.zoomed-container { overflow: hidden;
+}
+.preview-minimap { position:absolute; right:20px; bottom:20px; z-index:70; overflow:hidden; border-radius:10px; border:1px solid rgba(255,255,255,.18); background:rgba(0,0,0,.62); box-shadow:0 10px 24px rgba(0,0,0,.28); cursor:grab; user-select:none;
+}
+.preview-minimap:active { cursor:grabbing;
+}
+.preview-minimap-image { width:100%; height:100%; display:block; object-fit:cover; opacity:.88; pointer-events:none;
+}
+.preview-minimap-viewport { position:absolute; border:2px solid rgba(255,255,255,.92); border-radius:10px; background:rgba(255,255,255,.08); pointer-events:none;
+}
+.aspect-backdrop-layer { position: absolute; inset: 0; background-position: center; background-size: cover; filter: blur(28px) brightness(0.62) saturate(0.95); transform: scale(1.12); opacity: 0.92; z-index: 0;
+}
+.preview-main-pane { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; z-index: 1;
+}
+.preview-image { width: 100vw; height: 100vh; max-width: 100vw; max-height: 100vh; object-fit: contain; will-change: transform; box-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
+}
+.preview-image-stage { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; transition: filter .9s cubic-bezier(.16,1,.3,1), opacity .82s ease-out, transform .9s cubic-bezier(.16,1,.3,1);
+}
+.preview-image-stage.is-loading { opacity: .82; transform: scale(1.012); filter: blur(34px) saturate(1.04) brightness(1.02);
+}
+.preview-image.is-revealing { position: relative; z-index: 1; opacity: .82; transform: scale(1.012); filter: blur(34px) saturate(1.04) brightness(1.02); transition: filter .9s cubic-bezier(.16,1,.3,1), opacity .82s ease-out, transform .9s cubic-bezier(.16,1,.3,1);
+}
+.preview-pane-loading { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden;
+}
+.preview-pane-loading-shimmer { position: absolute; inset: -35% -55%; background: linear-gradient(105deg, transparent 34%, rgba(255,255,255,.03) 42%, rgba(255,255,255,.09) 50%, rgba(255,255,255,.03) 58%, transparent 66%); animation: preview-pane-shimmer 3.6s ease-in-out infinite;
+}
+.preview-pane-loading-status { position: absolute; left: 50%; bottom: 34px; z-index: 4; display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,.1); background: rgba(8,10,14,.46); color: rgba(255,255,255,.72); font-size: .76rem; font-weight: 500; transform: translateX(-50%); backdrop-filter: blur(10px); pointer-events: none;
+}
+.preview-pane-loading-dot { width: 6px; height: 6px; border-radius: 999px; background: rgba(186,230,253,.92); box-shadow: 0 0 10px rgba(186,230,253,.45); animation: preview-pane-loading-dot 1.35s ease-in-out infinite;
+}
+.preview-error { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 80; text-align: center;
+}
+.retry-load-btn { margin-left: 10px; border: 0; border-radius: 6px; background: rgba(255,255,255,.2); color: #fff; padding: 4px 10px; cursor: pointer;
+}
+.preview-error .alert { background-color: rgba(220,53,69,.8); color: #fff; border: 0; backdrop-filter: blur(5px); box-shadow: 0 0 20px rgba(0,0,0,.5);
+}
+.crop-selection-box { position: fixed; border: 2px solid #4caf50; background: rgba(76,175,80,.15); box-shadow: inset 0 0 0 1px rgba(255,255,255,.8); z-index: 60; pointer-events: none;
+}
+@keyframes preview-pane-shimmer {
+0%,100% { transform: translate3d(-16%,0,0); opacity:.28;
+}
+50% { transform: translate3d(16%,0,0); opacity:.72;
+}
+}
+@keyframes preview-pane-loading-dot {
+0%,100% { opacity:.45; transform:scale(.88);
+}
+50% { opacity:1; transform:scale(1);
+}
+}
+@media (prefers-reduced-motion: reduce) {
+.preview-image-stage,.preview-pane-loading-shimmer,.preview-pane-loading-dot { animation:none !important; transition:none !important;
+}
+.preview-image-stage.is-loading { filter:none !important; opacity:1 !important; transform:none !important;
+}
+}

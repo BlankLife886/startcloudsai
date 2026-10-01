@@ -55,10 +55,40 @@ var (
 // Redeem 兑换：条件更新 + 同事务钱包入账（幂等键 ('grant','redeem_code',code_id)）。
 // 失败返回上方业务错误之一，调用方据此计入防爆破失败次数。
 func Redeem(ctx context.Context, st *store.Store, userID uuid.UUID, code string) (*store.RedemptionCode, *store.LedgerEntry, error) {
+	return RedeemWithReason(ctx, st, userID, code, nil)
+}
+
+// RedeemWithReason allows a product-specific flow to keep an internal code out of user-facing ledger copy.
+func RedeemWithReason(ctx context.Context, st *store.Store, userID uuid.UUID, code string, ledgerReason *string) (*store.RedemptionCode, *store.LedgerEntry, error) {
+	return redeemWithReason(ctx, st, userID, code, "", uuid.Nil, ledgerReason, false)
+}
+
+// RedeemTrialWithReason marks the internal trial code redeemed but credits the
+// dedicated trial bucket instead of the user's normal balance.
+func RedeemTrialWithReason(ctx context.Context, st *store.Store, userID uuid.UUID, code, featureKey string, campaignID uuid.UUID, ledgerReason *string) (*store.RedemptionCode, *store.LedgerEntry, error) {
+	return redeemWithReason(ctx, st, userID, code, featureKey, campaignID, ledgerReason, true)
+}
+
+func redeemWithReason(ctx context.Context, st *store.Store, userID uuid.UUID, code, featureKey string, campaignID uuid.UUID, ledgerReason *string, trial bool) (*store.RedemptionCode, *store.LedgerEntry, error) {
 	var redeemed *store.RedemptionCode
 	var entry *store.LedgerEntry
 	run := func() error {
 		return st.Tx(ctx, func(tx pgx.Tx) error {
+			if trial {
+				if campaignID == uuid.Nil {
+					return fmt.Errorf("trial campaign id is required")
+				}
+				if err := store.LockTrialCampaignLifecycleShared(ctx, tx); err != nil {
+					return err
+				}
+				campaign, err := store.GetTrialCampaign(ctx, tx, campaignID)
+				if err != nil {
+					return err
+				}
+				if !store.TrialCampaignIsOpen(campaign, time.Now().UTC()) {
+					return apperr.E("trial_campaign_closed", "活动已关闭，不能领取体验积分", 409)
+				}
+			}
 			now := time.Now().UTC()
 			r, err := store.RedeemCodeUpdate(ctx, tx, code, userID, now)
 			if err != nil {
@@ -84,8 +114,16 @@ func Redeem(ctx context.Context, st *store.Store, userID uuid.UUID, code string)
 				}
 			}
 			reason := fmt.Sprintf("兑换码入账（%s）", r.Code)
-			entry, err = wallet.Grant(ctx, tx, userID, r.GrantCents,
-				"grant", "redeem_code", r.ID.String(), &reason)
+			if ledgerReason != nil && strings.TrimSpace(*ledgerReason) != "" {
+				reason = strings.TrimSpace(*ledgerReason)
+			}
+			if trial {
+				entry, err = wallet.GrantTrial(ctx, tx, userID, r.GrantCents, featureKey,
+					"trial_access", r.ID.String(), &reason)
+			} else {
+				entry, err = wallet.Grant(ctx, tx, userID, r.GrantCents,
+					"grant", "redeem_code", r.ID.String(), &reason)
+			}
 			if err != nil {
 				return err
 			}

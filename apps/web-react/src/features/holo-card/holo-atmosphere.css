@@ -1,0 +1,129 @@
+.holo-atmosphere {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  isolation: isolate;
+  pointer-events: none;
+  user-select: none;
+  contain: paint;
+  background: linear-gradient(155deg, #0a0d17 0%, #070a12 48%, #05070d 100%);
+}
+
+.holo-atmosphere__field {
+  position: absolute;
+  inset: -24px;
+  will-change: transform;
+}
+
+.holo-atmosphere__palette {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  opacity: 0;
+}
+
+.holo-atmosphere__palette[data-initial='true'] {
+  visibility: visible;
+  opacity: 1;
+}
+
+.holo-atmosphere__palette--spectrum {
+  background:
+    radial-gradient(ellipse 46% 62% at 28% 42%, rgb(92 53 163 / 17%), transparent 74%),
+    radial-gradient(ellipse 40% 55% at 72% 36%, rgb(45 131 159 / 13%), transparent 74%),
+    radial-gradient(ellipse 40% 20% at 50% 91%, rgb(105 92 158 / 7%), transparent 80%);
+}
+
+.holo-atmosphere__palette--gold {
+  background:
+    radial-gradient(ellipse 46% 62% at 28% 42%, rgb(135 94 45 / 16%), transparent 74%),
+    radial-gradient(ellipse 40% 55% at 72% 36%, rgb(114 76 57 / 12%), transparent 74%),
+    radial-gradient(ellipse 40% 20% at 50% 91%, rgb(174 136 74 / 8%), transparent 80%);
+}
+
+.holo-atmosphere__palette--silver {
+  background:
+    radial-gradient(ellipse 46% 62% at 28% 42%, rgb(101 123 155 / 14%), transparent 74%),
+    radial-gradient(ellipse 40% 55% at 72% 36%, rgb(89 113 145 / 13%), transparent 74%),
+    radial-gradient(ellipse 40% 20% at 50% 91%, rgb(149 168 185 / 6%), transparent 80%);
+}
+
+.holo-atmosphere__palette--pearl {
+  background:
+    radial-gradient(ellipse 46% 62% at 28% 42%, rgb(153 103 161 / 16%), transparent 74%),
+    radial-gradient(ellipse 40% 55% at 72% 36%, rgb(87 145 161 / 12%), transparent 74%),
+    radial-gradient(ellipse 40% 20% at 50% 91%, rgb(164 135 120 / 8%), transparent 80%);
+}
+
+.holo-atmosphere__palette--original {
+  background:
+    radial-gradient(ellipse 46% 62% at 28% 42%, rgb(85 99 125 / 10%), transparent 74%),
+    radial-gradient(ellipse 40% 55% at 72% 36%, rgb(71 92 110 / 9%), transparent 74%),
+    radial-gradient(ellipse 40% 20% at 50% 91%, rgb(108 117 128 / 5%), transparent 80%);
+}
+
+.holo-atmosphere__palette--rose {
+  background:radial-gradient(ellipse 46% 62% at 28% 42%,#a45e781f,transparent 74%),radial-gradient(ellipse 40% 55% at 72% 36%,#b5836619,transparent 74%),radial-gradient(ellipse 40% 20% at 50% 91%,#bf969313,transparent 80%);
+}
+.holo-atmosphere__palette--ice {
+  background:radial-gradient(ellipse 46% 62% at 28% 42%,#637ac929,transparent 74%),radial-gradient(ellipse 40% 55% at 72% 36%,#58b9d91f,transparent 74%),radial-gradient(ellipse 40% 20% at 50% 91%,#a8d1e510,transparent 80%);
+}
+.holo-atmosphere__palette--obsidian {
+  background:radial-gradient(ellipse 46% 62% at 28% 42%,#7d56971f,transparent 74%),radial-gradient(ellipse 40% 55% at 72% 36%,#987b4d15,transparent 74%),radial-gradient(ellipse 40% 20% at 50% 91%,#68728c0d,transparent 80%);
+}
+.holo-atmosphere__palette--opal {
+  background:radial-gradient(ellipse 46% 62% at 28% 42%,#65ab981d,transparent 74%),radial-gradient(ellipse 40% 55% at 72% 36%,#b271aa24,transparent 74%),radial-gradient(ellipse 40% 20% at 50% 91%,#c4a07b12,transparent 80%);
+}
+
+.holo-atmosphere__dust-field {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.holo-atmosphere__dust {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+  background: #dce5f2;
+  animation: holo-atmosphere-drift var(--dust-duration) ease-in-out var(--dust-delay) infinite alternate;
+  animation-play-state: paused;
+}
+
+.holo-atmosphere[data-running='true'] .holo-atmosphere__dust {
+  animation-play-state: running;
+}
+
+.holo-atmosphere__vignette {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgb(3 5 11 / 10%), transparent 23%, transparent 78%, rgb(3 5 11 / 20%)),
+    radial-gradient(ellipse at 50% 46%, transparent 36%, rgb(3 5 11 / 30%) 100%);
+}
+
+@keyframes holo-atmosphere-drift {
+  from { transform: translate3d(0, 7px, 0); }
+  to { transform: translate3d(var(--dust-drift), -9px, 0); }
+}
+
+@media (max-width: 720px) {
+  .holo-atmosphere__dust:nth-child(n + 13) {
+    display: none;
+  }
+
+  .holo-atmosphere__field {
+    will-change: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .holo-atmosphere__field {
+    will-change: auto;
+  }
+
+  .holo-atmosphere__dust {
+    animation: none;
+  }
+}

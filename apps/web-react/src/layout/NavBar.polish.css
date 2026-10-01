@@ -1,0 +1,1316 @@
+/*
+ * 顶栏打磨：统一字体、首页叠加时的可读性，以及窄屏菜单分组。
+ * 放在导航样式最后加载，只做覆盖，不改动生成样式里的结构。
+ */
+
+/* 页面 body 继承的是等宽字体（Rajdhani / Share Tech Mono 未加载），
+   菜单里的 “AI”“UI”“3D” 等英文会显示成打字机字体。 */
+.site-header {
+  --nav-sans: "PingFang SC", "HarmonyOS Sans SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--nav-sans);
+}
+.site-header :is(button, input, select, textarea) {
+  font-family: inherit;
+}
+
+/* 一级菜单：字重略轻、间距更匀，选中态保留底部短线 */
+.site-header .main-nav .nav-link,
+.site-header .main-nav .nav-dropdown-label {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition:
+    color 160ms var(--nav-ease),
+    background 160ms var(--nav-ease);
+}
+/* 下拉触发器外层也带着 nav-link 的内边距，和里面的按钮叠成双倍留白 */
+@media (min-width: 1181px) {
+  .site-header .main-nav .nav-link.nav-dropdown-trigger {
+    padding: 0;
+    background: none !important;
+  }
+}
+.site-header .nav-dropdown.open > .nav-dropdown-trigger .nav-dropdown-label {
+  color: var(--nav-heading) !important;
+  background: var(--nav-hover);
+}
+
+/* 首页大图上的顶栏：加一层自上而下的渐变，保证文字在亮色图片上也看得清 */
+.site-header.is-home-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: calc(100% + 36px);
+  background: linear-gradient(180deg, rgb(12 10 24 / 58%) 0%, rgb(12 10 24 / 26%) 58%, rgb(12 10 24 / 0%) 100%);
+  pointer-events: none;
+}
+.site-header.is-home-overlay .main-nav .nav-link,
+.site-header.is-home-overlay .main-nav .nav-dropdown-label,
+.site-header.is-home-overlay .brand-copy strong {
+  text-shadow: 0 1px 2px rgb(0 0 0 / 28%);
+}
+.site-header.is-home-overlay .main-nav .nav-link:not(.active),
+.site-header.is-home-overlay .main-nav .nav-dropdown:not(.active) .nav-dropdown-label {
+  color: rgb(255 255 255 / 88%) !important;
+}
+.site-header.is-home-overlay .main-nav .nav-link.active,
+.site-header.is-home-overlay .main-nav .nav-dropdown.active > .nav-dropdown-trigger .nav-dropdown-label {
+  color: #ffffff !important;
+  background: rgb(255 255 255 / 16%);
+}
+.site-header.is-home-overlay .main-nav .nav-link.active::after {
+  background: #ffffff;
+}
+
+/* 1181–1400：以前这个宽度整排菜单直接收起，现在保留桌面菜单，只收紧间距 */
+@media (min-width: 1181px) and (max-width: 1400px) {
+  .site-header .header-row {
+    gap: 10px;
+  }
+  .site-header .main-nav {
+    gap: 0;
+    padding-inline: 0;
+  }
+  .site-header .main-nav .nav-link,
+  .site-header .main-nav .nav-dropdown-label {
+    padding: 0 7px;
+    font-size: 0.8rem;
+  }
+  .site-header .brand-copy strong {
+    font-size: 0.9rem;
+  }
+  .site-header .tool-actions .nav-theme-switch {
+    display: none;
+  }
+  .site-header .account-cluster__plan {
+    display: none;
+  }
+}
+@media (min-width: 1181px) and (max-width: 1280px) {
+  .site-header .brand-copy {
+    display: none;
+  }
+}
+
+/* 桌面大抽屉：工具没有专属封面，用图标代替原来不相干的配图 */
+.nav-mega-preview-img-box.is-icon-art {
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 30% 20%, var(--nav-accent-mid), transparent 60%),
+    var(--nav-accent-soft);
+}
+.nav-mega-preview-img-box.is-icon-art i {
+  color: var(--nav-accent);
+  font-size: 4.4rem;
+  line-height: 1;
+  animation: nav-preview-fade 180ms ease-out both;
+}
+
+/* 移动端面板里的外观与语言（顶栏这两个按钮在窄屏会隐藏） */
+.nav-mobile-prefs {
+  display: none;
+}
+
+@media (max-width: 1180px) {
+  /* 窄屏菜单按分组展示：首页等一级入口在上，AI 电商 / 图片设计 / 工具各自成组带标题 */
+  .site-header .main-nav > .nav-dropdown {
+    grid-column: 1 / -1;
+    display: grid !important;
+    grid-template-columns: repeat(var(--nav-mobile-cols, 4), minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .site-header .main-nav > .nav-dropdown > .nav-dropdown-trigger {
+    grid-column: 1 / -1;
+    display: flex !important;
+    justify-content: flex-start;
+    padding: 0;
+    background: none;
+    min-height: 26px;
+    pointer-events: none;
+  }
+  .site-header .main-nav > .nav-dropdown .nav-dropdown-label {
+    width: auto;
+    min-height: 26px;
+    padding: 0 2px;
+    color: var(--nav-muted) !important;
+    background: none !important;
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .site-header .main-nav > .nav-dropdown .nav-dropdown-label > i.bi:first-child {
+    display: none;
+  }
+  .site-header .main-nav > .nav-dropdown .nav-dropdown-label .nav-caret,
+  .site-header .main-nav > .nav-dropdown .nav-dropdown-label::after {
+    display: none !important;
+  }
+  .site-header .main-nav > .nav-dropdown .nav-dropdown-chevron-btn {
+    display: none !important;
+  }
+  .site-header .main-nav :is(.commerce-menu-card, .nav-bento-card, .nav-dropdown-item) {
+    display: flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 9px;
+    color: var(--nav-text) !important;
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+  .site-header .main-nav .commerce-menu-card__icon {
+    display: inline-grid !important;
+    place-items: center;
+    flex: 0 0 auto;
+    width: auto;
+    height: auto;
+    color: var(--nav-accent);
+    background: none;
+    border: 0;
+  }
+  .site-header .main-nav :is(.commerce-menu-card__copy, .nav-bento-card__copy) {
+    display: flex !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+  }
+  .site-header .main-nav :is(.commerce-menu-card__copy, .nav-bento-card__copy) strong {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .site-header .main-nav .nav-bento-card__copy strong i,
+  .site-header .main-nav .nav-dropdown-item > i {
+    display: inline-block;
+    width: auto;
+    height: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    color: var(--nav-accent);
+    background: none;
+    font-size: 0.95rem;
+  }
+  .site-header .main-nav :is(.commerce-menu-card, .nav-bento-card, .nav-dropdown-item).active {
+    color: var(--nav-accent) !important;
+  }
+
+  .nav-mobile-prefs {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    padding: 10px 4px 2px;
+    border-top: 1px solid var(--nav-line);
+    color: var(--nav-muted);
+    font-size: 0.78rem;
+  }
+  .nav-mobile-prefs > span {
+    margin-right: auto;
+  }
+  .site-header .nav-mobile-prefs :is(.nav-theme-switch, .nav-locale-switch) {
+    display: inline-block !important;
+  }
+  /* 一级入口排在前面，分组依次在后，外观与语言放最底 */
+  .site-header .main-nav > .nav-dropdown {
+    order: 1;
+  }
+  .site-header .main-nav > .nav-mobile-prefs {
+    order: 2;
+  }
+  .nav-mobile-prefs .locale-switcher__menu {
+    top: auto;
+    bottom: calc(100% + 8px);
+  }
+}
+@media (max-width: 900px) {
+  .site-header .main-nav > .nav-dropdown {
+    --nav-mobile-cols: 3;
+  }
+}
+@media (max-width: 700px) {
+  .site-header .main-nav > .nav-dropdown {
+    --nav-mobile-cols: 2;
+  }
+}
+
+/*
+ * 桌面大抽屉展开动画：
+ * - 抽屉从顶栏下沿向下“拉开”（clip-path），不再是整块白板突然淡入；
+ * - 内容稍晚一点、按列依次浮现；收起时内容保留到动画结束；
+ * - 遮罩去掉整页模糊，只做颜色淡入，避免大屏上掉帧。
+ */
+.site-header {
+  --nav-drawer-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+.site-header .nav-mega-drawer {
+  opacity: 1;
+  transform: none;
+  clip-path: inset(0 0 100% 0);
+  transition:
+    clip-path 260ms cubic-bezier(0.4, 0, 0.6, 1),
+    box-shadow 260ms ease,
+    visibility 0s linear 260ms;
+  box-shadow: none;
+  will-change: clip-path;
+}
+.site-header .nav-mega-drawer.is-open {
+  clip-path: inset(0 0 -48px 0);
+  box-shadow: var(--nav-shadow, 0 20px 48px rgba(58, 51, 112, 0.1));
+  transition:
+    clip-path 420ms var(--nav-drawer-ease),
+    box-shadow 420ms ease,
+    visibility 0s;
+}
+.site-header .nav-backdrop {
+  background: rgb(14 12 28 / 32%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: opacity 320ms ease;
+}
+.site-header .nav-backdrop:not(.is-active) {
+  transition-duration: 220ms;
+}
+
+/* 面板内容：打开或切换分组时按列依次浮现；收起时内容不动，由抽屉向上折叠盖住 */
+.site-header .nav-mega-panel {
+  animation: none;
+}
+.site-header .nav-mega-drawer.is-open .nav-mega-col,
+.site-header .nav-mega-drawer.is-open .nav-mega-preview-stage {
+  animation: nav-mega-rise 420ms var(--nav-drawer-ease) both;
+  animation-delay: 60ms;
+}
+.site-header .nav-mega-drawer.is-open .nav-mega-col:nth-child(2) {
+  animation-delay: 100ms;
+}
+.site-header .nav-mega-drawer.is-open .nav-mega-col:nth-child(3) {
+  animation-delay: 140ms;
+}
+.site-header .nav-mega-drawer.is-open .nav-mega-preview-stage {
+  animation-delay: 160ms;
+}
+@keyframes nav-mega-rise {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 下拉箭头与触发项的状态切换同步放缓 */
+.site-header .nav-caret {
+  transition:
+    transform 320ms var(--nav-drawer-ease),
+    opacity 200ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-header .nav-mega-drawer,
+  .site-header .nav-mega-drawer.is-open {
+    clip-path: none;
+    transition: none;
+  }
+  .site-header .nav-mega-drawer .nav-mega-col,
+  .site-header .nav-mega-drawer .nav-mega-preview-stage {
+    animation: none !important;
+  }
+}
+
+/* 悬停即切换预览，只保留一种高亮，避免悬停项和预览项同时亮 */
+.site-header .nav-mega-item-row:hover:not(.is-active) {
+  background: transparent;
+  transform: none;
+}
+
+/*
+ * 大抽屉细节打磨（保持原有版式，只调细节）
+ */
+/* 分组标题：分隔线更淡，标题与描述层次更清楚 */
+.site-header .nav-mega-col-header {
+  height: auto;
+  margin-bottom: 12px;
+  padding: 0 10px 12px;
+  border-bottom-color: color-mix(in srgb, var(--nav-line) 70%, transparent);
+}
+.site-header .nav-mega-col-title {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+.site-header .nav-mega-col-desc {
+  margin-top: 4px;
+  opacity: 0.8;
+}
+
+/* 入口行：选中时不再整体右移（原来会和其它行错位），高亮更柔和 */
+.site-header .nav-mega-item-list {
+  gap: 2px;
+}
+.site-header .nav-mega-item-row {
+  height: 56px;
+  gap: 12px;
+  padding: 0 10px;
+  border-radius: 12px;
+  transition:
+    background 200ms ease,
+    box-shadow 200ms ease;
+}
+.site-header .nav-mega-item-row.is-active,
+.site-header .nav-mega-item-row:hover {
+  transform: none;
+}
+.site-header .nav-mega-item-row.is-active {
+  background: color-mix(in srgb, var(--nav-accent-soft) 55%, var(--nav-bg-solid));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nav-accent) 10%, transparent);
+}
+.site-header .nav-mega-item-row:focus-visible {
+  outline: 2px solid var(--nav-accent);
+  outline-offset: 1px;
+}
+
+/* 缩略图：统一圆角，用细描边 + 浅底托住白底图，选中时轻微放大 */
+.site-header .nav-mega-item-thumb {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--nav-track);
+  box-shadow:
+    0 0 0 1px var(--nav-line),
+    0 2px 6px rgb(30 24 70 / 6%);
+  transition: transform 320ms var(--nav-drawer-ease), box-shadow 200ms ease;
+}
+.site-header .nav-mega-item-row:hover .nav-mega-item-thumb {
+  transform: none;
+}
+.site-header .nav-mega-item-row.is-active .nav-mega-item-thumb {
+  transform: scale(1.06);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--nav-accent) 22%, transparent),
+    0 4px 10px rgb(30 24 70 / 10%);
+}
+.site-header .nav-mega-item-icon-box {
+  border: 0;
+  border-radius: 10px;
+  transition: background 200ms ease, color 200ms ease;
+}
+.site-header .nav-mega-item-row:hover .nav-mega-item-icon-box {
+  transform: none;
+}
+.site-header .nav-mega-item-row.is-active .nav-mega-item-icon-box {
+  color: #ffffff;
+  background: var(--nav-accent);
+}
+
+/* 文字：标题在选中时用深色而非紫色，只让缩略图/图标承担强调 */
+.site-header .nav-mega-item-title {
+  font-weight: 600;
+}
+.site-header .nav-mega-item-row:hover .nav-mega-item-title,
+.site-header .nav-mega-item-row.is-active .nav-mega-item-title {
+  color: var(--nav-heading);
+}
+.site-header .nav-mega-item-tagline {
+  margin-top: 2px;
+  opacity: 0.82;
+}
+
+/* 预览区：分类标签改用正文字体，英文角标更精致，图片去边框加柔和阴影 */
+.site-header .nav-mega-preview-stage {
+  border-left-color: color-mix(in srgb, var(--nav-line) 70%, transparent);
+}
+.site-header .nav-mega-preview-top {
+  gap: 14px;
+}
+.site-header .nav-mega-preview-tag {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.site-header .nav-mega-preview-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--nav-line);
+  background: transparent;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
+}
+.site-header .nav-mega-preview-img-box {
+  border: 0;
+  border-radius: 14px;
+  box-shadow:
+    0 0 0 1px var(--nav-line),
+    0 10px 24px rgb(30 24 70 / 8%);
+}
+.site-header .nav-mega-preview-img-box img {
+  animation: nav-preview-in 360ms var(--nav-drawer-ease) both;
+}
+.site-header .nav-mega-preview-heading {
+  font-size: 17px;
+}
+.site-header .nav-mega-preview-desc {
+  margin-top: 6px;
+  color: var(--nav-muted);
+  line-height: 1.6;
+  height: auto;
+}
+.site-header .nav-mega-preview-action {
+  border-radius: 12px;
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--nav-accent) 24%, transparent);
+}
+.site-header .nav-mega-preview-action i {
+  transition: transform 240ms var(--nav-drawer-ease);
+}
+@keyframes nav-preview-in {
+  from {
+    opacity: 0;
+    transform: scale(1.03);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-header .nav-mega-item-thumb,
+  .site-header .nav-mega-preview-img-box img {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/*
+ * 沉浸式版本（布局不变）：
+ * - 左侧去掉分组描述和分隔线，只留小号分组名；
+ * - 右侧预览改为整栏大图，标题、说明和按钮叠在图片底部。
+ */
+.site-header .nav-mega-drawer {
+  overflow: hidden;
+}
+.site-header .nav-mega-panel {
+  isolation: isolate;
+}
+
+/* 左侧：只保留分组名，入口更突出 */
+.site-header .nav-mega-col-header {
+  margin-bottom: 6px;
+  padding: 0 10px;
+  border-bottom: 0;
+}
+.site-header .nav-mega-col-title {
+  color: var(--nav-muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+.site-header .nav-mega-col-desc {
+  display: none;
+}
+.site-header .nav-mega-item-row {
+  height: 60px;
+}
+.site-header .nav-mega-item-thumb,
+.site-header .nav-mega-item-icon-box {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+}
+.site-header .nav-mega-item-row.is-active {
+  background: color-mix(in srgb, var(--nav-heading) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nav-heading) 7%, transparent);
+}
+.site-header .nav-mega-item-tagline {
+  opacity: 0.72;
+}
+
+/* 右侧：整栏大图 + 底部叠字 */
+.site-header .nav-mega-preview-stage {
+  position: relative;
+  display: block;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 20px;
+  background: #16131f;
+  box-shadow:
+    0 0 0 1px var(--nav-line),
+    0 20px 44px rgb(20 14 50 / 18%);
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box {
+  position: absolute;
+  inset: 0;
+  height: auto;
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: none;
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box img {
+  animation: nav-preview-kenburns 1200ms var(--nav-drawer-ease) both;
+}
+@keyframes nav-preview-kenburns {
+  from {
+    opacity: 0;
+    transform: scale(1.08);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box.is-icon-art {
+  display: grid;
+  place-items: center;
+  padding-bottom: 130px;
+  background:
+    radial-gradient(circle at 70% 10%, rgb(255 255 255 / 22%), transparent 55%),
+    linear-gradient(160deg, #8b7bff, #5a45e2);
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box.is-icon-art i {
+  color: rgb(255 255 255 / 92%);
+  font-size: 4.6rem;
+}
+.site-header .nav-mega-preview-overlay {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 64px 20px 20px;
+  color: #ffffff;
+  background: linear-gradient(0deg, rgb(10 8 22 / 88%) 0%, rgb(10 8 22 / 62%) 55%, rgb(10 8 22 / 0%) 100%);
+  animation: nav-preview-copy-in 420ms var(--nav-drawer-ease) 80ms both;
+}
+.site-header .nav-mega-preview-stage.is-icon-only .nav-mega-preview-overlay {
+  background: linear-gradient(0deg, rgb(40 26 120 / 70%) 0%, rgb(40 26 120 / 0%) 100%);
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-tag {
+  align-self: flex-start;
+  margin-bottom: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: rgb(255 255 255 / 88%);
+  background: rgb(255 255 255 / 14%);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-heading {
+  color: #ffffff;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-desc {
+  display: -webkit-box;
+  height: auto;
+  margin: 0;
+  overflow: hidden;
+  color: rgb(255 255 255 / 72%);
+  font-size: 12.5px;
+  line-height: 1.6;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action {
+  width: 100%;
+  height: 38px;
+  margin-top: 12px;
+  border-radius: 12px;
+  color: #17151f;
+  background: rgb(255 255 255 / 94%);
+  box-shadow: none;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover {
+  opacity: 1;
+  background: #ffffff;
+  transform: none;
+  box-shadow: 0 8px 20px rgb(0 0 0 / 22%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-header .nav-mega-preview-overlay,
+  .site-header .nav-mega-preview-stage .nav-mega-preview-img-box img {
+    animation: none !important;
+  }
+}
+
+/* 预览卡：图片占上部并渐隐到纯色底，文字放在纯色区，不再压在图片细节上 */
+.site-header .nav-mega-preview-stage {
+  background: #14111c;
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box {
+  inset: 0 0 auto;
+  height: 64%;
+  -webkit-mask-image: linear-gradient(180deg, #000 58%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 58%, transparent 100%);
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box.is-icon-art {
+  height: 100%;
+  padding-bottom: 150px;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.site-header .nav-mega-preview-overlay {
+  padding: 0 20px 20px;
+  background: none;
+}
+.site-header .nav-mega-preview-stage.is-icon-only .nav-mega-preview-overlay {
+  background: none;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-tag {
+  margin-bottom: 6px;
+  color: rgb(255 255 255 / 70%);
+  background: rgb(255 255 255 / 8%);
+  border: 1px solid rgb(255 255 255 / 10%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-heading {
+  font-size: 18px;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-desc {
+  color: rgb(255 255 255 / 60%);
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action {
+  height: 36px;
+  margin-top: 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.site-header .nav-mega-preview-stage:not(.is-icon-only) .nav-mega-preview-img-box {
+  height: 57%;
+  -webkit-mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
+}
+
+/* 预览卡：1:1 方图在上，文字在下，二者完全分开 */
+.site-header .nav-mega-drawer {
+  height: auto;
+}
+.site-header .nav-mega-drawer__shell {
+  height: auto;
+}
+.site-header .nav-mega-panel {
+  height: auto;
+  align-items: start;
+}
+.site-header .nav-mega-preview-stage {
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  padding: 10px 10px 16px;
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box,
+.site-header .nav-mega-preview-stage:not(.is-icon-only) .nav-mega-preview-img-box,
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box.is-icon-art {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.site-header .nav-mega-preview-overlay {
+  position: static;
+  gap: 5px;
+  padding: 14px 6px 0;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-tag {
+  display: none;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-heading {
+  font-size: 17px;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action {
+  margin-top: 12px;
+}
+
+/* 预览区去掉卡片外框：方图和文字直接放在抽屉背景上，颜色跟随亮/暗主题 */
+.site-header .nav-mega-preview-stage {
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box,
+.site-header .nav-mega-preview-stage:not(.is-icon-only) .nav-mega-preview-img-box,
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box.is-icon-art {
+  border-radius: 16px;
+}
+.site-header .nav-mega-preview-overlay {
+  padding: 16px 2px 0;
+  color: var(--nav-heading);
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-heading {
+  color: var(--nav-heading);
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-desc {
+  color: var(--nav-muted);
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action {
+  color: var(--nav-on-accent, #ffffff);
+  background: var(--nav-accent);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--nav-accent) 26%, transparent);
+}
+.site-header.is-dark .nav-mega-preview-overlay .nav-mega-preview-action {
+  color: #ffffff;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover {
+  background: color-mix(in srgb, var(--nav-accent) 90%, #ffffff);
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--nav-accent) 34%, transparent);
+}
+
+/*
+ * 预览区：大图边缘渐隐融入背景，右侧加同组工具的竖排缩略图；
+ * 抽屉内容放宽到 1600，把原来右侧的空白用起来。
+ */
+.site-header .nav-mega-drawer__shell {
+  max-width: 1600px;
+}
+.site-header .nav-mega-panel {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 48px;
+}
+.site-header .nav-mega-grid-left,
+.site-header .nav-mega-preview-stage {
+  grid-column: auto;
+}
+.site-header .nav-mega-preview-stage {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 22px;
+}
+.site-header .nav-mega-preview-main {
+  width: 320px;
+  flex: 0 0 auto;
+}
+
+/* 图片四边渐隐 */
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box,
+.site-header .nav-mega-preview-stage:not(.is-icon-only) .nav-mega-preview-img-box {
+  overflow: visible;
+  border-radius: 0;
+  background: none;
+}
+.site-header .nav-mega-preview-photo {
+  position: relative;
+  z-index: 1;
+  -webkit-mask-image:
+    linear-gradient(90deg, transparent 0%, #000 14%, #000 86%, transparent 100%),
+    linear-gradient(180deg, transparent 0%, #000 14%, #000 86%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(90deg, transparent 0%, #000 14%, #000 86%, transparent 100%),
+    linear-gradient(180deg, transparent 0%, #000 14%, #000 86%, transparent 100%);
+  mask-composite: intersect;
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box.is-icon-art {
+  border-radius: 20px;
+}
+.site-header .nav-mega-preview-overlay {
+  padding-top: 8px;
+}
+
+/* 同组工具竖排缩略图 */
+.site-header .nav-mega-preview-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+}
+.site-header .nav-mega-preview-rail-label {
+  margin-bottom: 4px;
+  color: var(--nav-muted);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  writing-mode: vertical-rl;
+}
+.site-header .nav-mega-preview-rail-item {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  overflow: hidden;
+  border-radius: 14px;
+  color: var(--nav-accent);
+  background: var(--nav-accent-soft);
+  opacity: 0.5;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  transition:
+    opacity 200ms ease,
+    outline-color 200ms ease,
+    transform 260ms var(--nav-drawer-ease);
+}
+.site-header .nav-mega-preview-rail-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.site-header .nav-mega-preview-rail-item i {
+  font-size: 20px;
+}
+.site-header .nav-mega-preview-rail-item:hover {
+  opacity: 0.85;
+}
+.site-header .nav-mega-preview-rail-item.is-active {
+  opacity: 1;
+  outline-color: var(--nav-accent);
+  transform: scale(1.04);
+}
+.site-header .nav-mega-preview-rail-count {
+  margin-top: 6px;
+  color: var(--nav-heading);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.site-header .nav-mega-preview-rail-count em {
+  display: block;
+  color: var(--nav-muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+@media (max-width: 1360px) {
+  .site-header .nav-mega-preview-main {
+    width: 260px;
+  }
+  .site-header .nav-mega-preview-rail-item {
+    width: 44px;
+    height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .site-header .nav-mega-preview-rail-item {
+    transition: none;
+  }
+}
+
+/* 打磨：渐隐范围收窄、切换不闪、图标预览与图片风格统一、缩略图更清楚 */
+.site-header .nav-mega-preview-photo {
+  -webkit-mask-image:
+    linear-gradient(90deg, transparent 0%, #000 8%, #000 92%, transparent 100%),
+    linear-gradient(180deg, transparent 0%, #000 8%, #000 92%, transparent 100%);
+  mask-image:
+    linear-gradient(90deg, transparent 0%, #000 8%, #000 92%, transparent 100%),
+    linear-gradient(180deg, transparent 0%, #000 8%, #000 92%, transparent 100%);
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box img {
+  animation: nav-preview-swap 480ms var(--nav-drawer-ease) both;
+}
+@keyframes nav-preview-swap {
+  from {
+    opacity: 0.45;
+    transform: scale(1.03);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.site-header .nav-mega-preview-overlay {
+  animation: nav-preview-copy-in 360ms var(--nav-drawer-ease) both;
+}
+
+/* 工具面板的图标预览：浅色渐变 + 同样的四边渐隐 */
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box.is-icon-art {
+  border-radius: 0;
+  background: radial-gradient(circle at 50% 45%, var(--nav-accent-mid), var(--nav-accent-soft) 55%, transparent 78%);
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box.is-icon-art i {
+  color: var(--nav-accent);
+  font-size: 5rem;
+  opacity: 0.9;
+  animation: nav-preview-swap 480ms var(--nav-drawer-ease) both;
+}
+
+/* 缩略图列：与大图顶部对齐，未选中的不再发灰 */
+.site-header .nav-mega-preview-rail {
+  gap: 12px;
+  padding-top: 0;
+}
+.site-header .nav-mega-preview-rail-item {
+  opacity: 0.72;
+  box-shadow: 0 0 0 1px var(--nav-line);
+}
+.site-header .nav-mega-preview-rail-item:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+.site-header .nav-mega-preview-rail-item.is-active {
+  opacity: 1;
+  box-shadow: none;
+  outline-offset: 3px;
+  transform: none;
+}
+.site-header .nav-mega-preview-rail-count {
+  margin-top: 4px;
+}
+.site-header .nav-mega-preview-desc {
+  text-wrap: pretty;
+}
+
+/*
+ * 画廊式打磨：统一字号层级，预览区改为“小标签 + 大标题 + 文字链接”，
+ * 选中态更轻，左右之间用两端渐隐的细线分隔。
+ */
+/* 左侧 */
+.site-header .nav-mega-col-title {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  opacity: 0.8;
+}
+.site-header .nav-mega-col-header {
+  margin-bottom: 8px;
+}
+.site-header .nav-mega-item-row {
+  height: 62px;
+}
+.site-header .nav-mega-item-row.is-active {
+  background: color-mix(in srgb, var(--nav-heading) 4.5%, transparent);
+  box-shadow: none;
+}
+.site-header .nav-mega-item-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.site-header .nav-mega-item-tagline {
+  margin-top: 3px;
+  font-size: 12px;
+  opacity: 0.66;
+}
+.site-header .nav-mega-item-thumb,
+.site-header .nav-mega-item-icon-box {
+  border-radius: 13px;
+}
+
+/* 左右分隔线 */
+.site-header .nav-mega-preview-stage {
+  position: relative;
+  padding-left: 44px;
+}
+.site-header .nav-mega-preview-stage::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  bottom: -6px;
+  left: 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, var(--nav-line) 18%, var(--nav-line) 82%, transparent);
+}
+.site-header .nav-mega-panel {
+  gap: 4px;
+}
+
+/* 预览文字 */
+.site-header .nav-mega-preview-overlay {
+  gap: 0;
+  padding: 10px 2px 0;
+}
+.site-header .nav-mega-preview-eyebrow {
+  margin-bottom: 8px;
+  color: var(--nav-accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-heading {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-desc {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.75;
+  opacity: 0.9;
+}
+
+/* 行动按钮改为文字链接 + 圆形箭头 */
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action,
+.site-header.is-dark .nav-mega-preview-overlay .nav-mega-preview-action {
+  align-self: flex-start;
+  width: auto;
+  height: auto;
+  margin-top: 18px;
+  padding: 0;
+  gap: 12px;
+  border-radius: 0;
+  color: var(--nav-heading);
+  background: none;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover {
+  background: none;
+  box-shadow: none;
+}
+.site-header .nav-mega-preview-action-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: #ffffff;
+  background: var(--nav-accent);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--nav-accent) 35%, transparent);
+  transition: transform 280ms var(--nav-drawer-ease), box-shadow 200ms ease;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action i {
+  font-size: 14px;
+  transform: none;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover .nav-mega-preview-action-icon {
+  transform: translateX(4px);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--nav-accent) 45%, transparent);
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover i {
+  transform: none;
+}
+
+/* 缩略图列：选中项用左侧短竖条标记 */
+.site-header .nav-mega-preview-rail {
+  gap: 14px;
+}
+.site-header .nav-mega-preview-rail-item {
+  position: relative;
+  width: 46px;
+  height: 46px;
+  overflow: visible;
+  border-radius: 12px;
+  outline: 0;
+  box-shadow: none;
+  opacity: 0.55;
+}
+.site-header .nav-mega-preview-rail-item img {
+  border-radius: 12px;
+}
+.site-header .nav-mega-preview-rail-item::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  border-radius: 3px;
+  background: var(--nav-accent);
+  transform: translateY(-50%);
+  transition: height 280ms var(--nav-drawer-ease);
+}
+.site-header .nav-mega-preview-rail-item.is-active {
+  opacity: 1;
+  outline: 0;
+  transform: none;
+}
+.site-header .nav-mega-preview-rail-item.is-active::before {
+  height: 22px;
+}
+.site-header .nav-mega-preview-rail-item:hover {
+  opacity: 0.9;
+  transform: none;
+}
+
+@media (max-width: 1360px) {
+  .site-header .nav-mega-preview-stage {
+    padding-left: 28px;
+  }
+  .site-header .nav-mega-preview-overlay .nav-mega-preview-heading {
+    font-size: 19px;
+  }
+}
+
+/* 大图改回清晰圆角：四边渐隐在深色背景上会让浅色图片发雾 */
+.site-header .nav-mega-preview-photo {
+  border-radius: 18px;
+  -webkit-mask-image: none;
+  mask-image: none;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--nav-heading) 8%, transparent),
+    0 18px 40px rgb(10 8 30 / 18%);
+}
+.site-header.is-dark .nav-mega-preview-photo {
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 8%),
+    0 20px 44px rgb(0 0 0 / 45%);
+}
+.site-header .nav-mega-preview-stage .nav-mega-preview-img-box.is-icon-art {
+  border-radius: 18px;
+  background: radial-gradient(circle at 50% 42%, var(--nav-accent-mid), var(--nav-accent-soft) 70%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--nav-accent) 14%, transparent);
+}
+.site-header .nav-mega-preview-overlay {
+  padding-top: 18px;
+}
+
+/* 预览区只保留分组名、标题和入口，不显示说明文字 */
+.site-header .nav-mega-preview-overlay .nav-mega-preview-desc {
+  display: none;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action,
+.site-header.is-dark .nav-mega-preview-overlay .nav-mega-preview-action {
+  margin-top: 16px;
+}
+
+/* 标题与入口同一行：标题靠左，“进入工作台 →”靠右 */
+.site-header .nav-mega-preview-overlay {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 16px;
+}
+.site-header .nav-mega-preview-eyebrow {
+  grid-column: 1 / -1;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-heading {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action,
+.site-header.is-dark .nav-mega-preview-overlay .nav-mega-preview-action {
+  align-self: center;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+/* 标题行：标题更收敛，入口做成一体的胶囊按钮（文字 + 箭头在同一个按钮里） */
+.site-header .nav-mega-preview-overlay {
+  padding-top: 16px;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-heading {
+  font-size: 19px;
+  font-weight: 650;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action,
+.site-header.is-dark .nav-mega-preview-overlay .nav-mega-preview-action {
+  gap: 8px;
+  height: 34px;
+  padding: 0 4px 0 14px;
+  border-radius: 999px;
+  color: var(--nav-accent);
+  background: var(--nav-accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nav-accent) 18%, transparent);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  transition:
+    color 200ms ease,
+    background 200ms ease,
+    box-shadow 200ms ease;
+}
+.site-header .nav-mega-preview-action-icon {
+  width: 26px;
+  height: 26px;
+  box-shadow: none;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action i {
+  font-size: 12px;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover,
+.site-header.is-dark .nav-mega-preview-overlay .nav-mega-preview-action:hover {
+  color: #ffffff;
+  background: var(--nav-accent);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--nav-accent) 32%, transparent);
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover .nav-mega-preview-action-icon {
+  color: var(--nav-accent);
+  background: #ffffff;
+  box-shadow: none;
+  transform: translateX(2px);
+}
+
+/* 入口回归极简：不要底色和圆形，只留浅色文字 + 细箭头，悬停变主题色 */
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action,
+.site-header.is-dark .nav-mega-preview-overlay .nav-mega-preview-action,
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover,
+.site-header.is-dark .nav-mega-preview-overlay .nav-mega-preview-action:hover {
+  height: auto;
+  padding: 0;
+  gap: 6px;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action,
+.site-header.is-dark .nav-mega-preview-overlay .nav-mega-preview-action {
+  color: var(--nav-muted);
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover,
+.site-header.is-dark .nav-mega-preview-overlay .nav-mega-preview-action:hover {
+  color: var(--nav-heading);
+}
+.site-header .nav-mega-preview-action-icon,
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover .nav-mega-preview-action-icon {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  color: inherit;
+  background: none;
+  box-shadow: none;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action:hover .nav-mega-preview-action-icon {
+  transform: translateX(3px);
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-action i {
+  font-size: 13px;
+}
+.site-header .nav-mega-preview-overlay .nav-mega-preview-heading {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/*
+ * 三个抽屉统一高度：面板叠放在同一个网格格子里，抽屉高度取最高的那个；
+ * 未激活的面板只隐藏不移除，所以切换分组时抽屉不会忽高忽低。
+ */
+.site-header .nav-mega-drawer__shell {
+  display: grid;
+}
+.site-header .nav-mega-panel,
+.site-header .nav-mega-panel.is-hidden {
+  display: grid !important;
+  grid-area: 1 / 1;
+}
+.site-header .nav-mega-panel.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}

@@ -1,0 +1,71 @@
+.canvas-bundled-markdown {
+    height: 100%;
+    width: 100%;
+    overflow: auto;
+    box-sizing: border-box;
+    padding: 16px;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.canvas-bundled-markdown h1,
+.canvas-bundled-markdown h2,
+.canvas-bundled-markdown h3 {
+    margin: 0.6em 0 0.3em;
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+.canvas-bundled-markdown h1 {
+    font-size: 1.5em;
+}
+
+.canvas-bundled-markdown h2 {
+    font-size: 1.3em;
+}
+
+.canvas-bundled-markdown p {
+    margin: 0.5em 0;
+}
+
+.canvas-bundled-markdown a {
+    color: #4f46e5;
+    text-decoration: underline;
+}
+
+.canvas-bundled-markdown code {
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    background: rgba(120, 120, 120, 0.16);
+    font-family: monospace;
+    font-size: 0.9em;
+}
+
+.canvas-bundled-markdown pre {
+    overflow: auto;
+    padding: 12px;
+    border-radius: 8px;
+    background: rgba(120, 120, 120, 0.14);
+}
+
+.canvas-bundled-markdown pre code {
+    padding: 0;
+    background: transparent;
+}
+
+.canvas-bundled-markdown ul,
+.canvas-bundled-markdown ol {
+    margin: 0.5em 0;
+    padding-left: 1.4em;
+}
+
+.canvas-bundled-markdown blockquote {
+    margin: 0.5em 0;
+    padding-left: 0.8em;
+    border-left: 3px solid rgba(120, 120, 120, 0.4);
+    opacity: 0.85;
+}
+
+.canvas-bundled-markdown img {
+    max-width: 100%;
+}

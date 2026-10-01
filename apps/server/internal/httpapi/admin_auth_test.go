@@ -78,7 +78,7 @@ func TestUserAndAdminAuthenticationAreIsolated(t *testing.T) {
 	adminLogin := authRequest(t, engine, "POST", "/api/v1/admin/auth/session", gin.H{
 		"email": "same@gmail.com", "password": "admin-password",
 	})
-	if adminLogin.Code != http.StatusCreated {
+	if adminLogin.Code != http.StatusOK {
 		t.Fatalf("admin login failed: %d %s", adminLogin.Code, adminLogin.Body.String())
 	}
 
@@ -123,10 +123,71 @@ func TestUserAndAdminAuthenticationAreIsolated(t *testing.T) {
 	}
 	if w := authRequest(t, engine, "POST", "/api/v1/admin/auth/session", gin.H{
 		"email": "same@gmail.com", "password": "changed-admin-password",
-	}); w.Code != http.StatusCreated {
+	}); w.Code != http.StatusOK {
 		t.Fatalf("new admin password rejected: %d %s", w.Code, w.Body.String())
 	}
 	if w := authRequest(t, engine, "GET", "/api/v1/auth/session", nil, userCookie); w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"email":"same@gmail.com"`)) {
 		t.Fatalf("user session changed with admin password: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminSessionRenewalRefreshesBrowserCookie(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	adminHash, err := auth.HashPassword("admin-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := store.UpsertAdminAccount(ctx, st.Pool, "admin@gmail.com", "admin", adminHash)
+	if err != nil {
+		t.Fatalf("insert admin: %v", err)
+	}
+	token := auth.NewSessionToken()
+	if err := store.InsertAdminSession(ctx, st.Pool, admin.ID, auth.HashToken(token),
+		time.Now().Add(time.Hour), nil, nil); err != nil {
+		t.Fatalf("insert admin session: %v", err)
+	}
+
+	cfg := config.Load()
+	server := &Server{
+		Cfg:               cfg,
+		St:                st,
+		LoginLimiter:      auth.NewLoginLimiter(),
+		AdminLoginLimiter: auth.NewLoginLimiter(),
+		RedeemLimiter:     auth.NewRedeemLimiter(),
+	}
+	requestCookie := &http.Cookie{
+		Name:  adminSessionCookieName,
+		Value: token,
+		Path:  "/api/v1/admin",
+	}
+	response := authRequest(t, server.Router(), "GET", "/api/v1/admin/auth/session", nil, requestCookie)
+	if response.Code != http.StatusOK {
+		t.Fatalf("admin session renewal failed: %d %s", response.Code, response.Body.String())
+	}
+
+	var renewedCookie *http.Cookie
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == adminSessionCookieName {
+			renewedCookie = cookie
+			break
+		}
+	}
+	if renewedCookie == nil {
+		t.Fatal("renewal updated the database but did not refresh the browser cookie")
+	}
+	if renewedCookie.Value != token || renewedCookie.Path != "/api/v1/admin" {
+		t.Fatalf("renewed cookie = %#v", renewedCookie)
+	}
+	if renewedCookie.MaxAge != int(adminSessionTTL/time.Second) {
+		t.Fatalf("renewed cookie MaxAge = %d, want %d", renewedCookie.MaxAge, int(adminSessionTTL/time.Second))
+	}
+
+	renewedSession, err := store.GetAdminSessionByTokenHash(ctx, st.Pool, auth.HashToken(token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewedSession == nil || time.Until(renewedSession.ExpiresAt) < 11*time.Hour {
+		t.Fatalf("database session was not renewed: %#v", renewedSession)
 	}
 }

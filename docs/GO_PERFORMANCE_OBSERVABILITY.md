@@ -1,6 +1,6 @@
 # Go 性能与实时可观测性
 
-本文说明 API/Worker 的实时指标、资源预算、pprof、Race Detector、Benchmark 与 PGO 工作流。所有业务接口仍使用 `/api/v1`，性能设施不改变任务、钱包或图片数据。
+本文说明 API/Worker 的实时指标、资源预算、pprof、Race Detector、Benchmark 与 PGO 工作流。2026-09-22 按源码核对；以下是验证方法，不表示本轮执行结果。站内接口使用 `/api/v1`，开放任务与兼容协议另有 `/api/open/v1` 和 `/v1`；直通 Images 请求不计入站内任务池，不能仅靠任务队列指标推断全部上游流量。
 
 ## 后台实时指标
 
@@ -31,12 +31,16 @@ WORKER_DB_MAX_CONNS=5
 WORKER_DB_MIN_CONNS=1
 WORKER_IMAGE_MEMORY_MIB=1024
 WORKER_CONCURRENCY=32
+WORKER_CHAT_CONCURRENCY=8
+WORKER_POLL_CONCURRENCY=0
 DB_MAX_CONN_LIFETIME=30m
 DB_MAX_CONN_IDLE_TIME=5m
 DB_HEALTH_CHECK_PERIOD=1m
 ```
 
-`WORKER_CONCURRENCY` 是提交、聚合轮询和图片持久化的短操作工作池；`global_max_concurrent_tasks` 是上游在途任务上限，默认 2000，不再受 Worker 槽位数限制。OpenAI/C2A 每个服务商每次最多批量查询 100 个任务，CRUN 服务商执行集中式单轮查询。服务商自己的 `maxConcurrency` 决定分流容量。`GOMEMLIMIT` 低于容器硬上限，为 Go Runtime、线程栈、网络缓冲和非 Go 内存保留空间。
+`WORKER_CONCURRENCY` 控制图片侧执行池；`global_max_concurrent_tasks` 控制图片在途工作量，默认 2000，不等于 Worker 槽位数。OpenAI/C2A 按线路领取后以每批 20 个任务并发查询，`WORKER_POLL_CONCURRENCY=0` 时自动推导轮询并发。已完成结果转入受控图片拉取槽位和独立上下文，仍受图片内存预算限制；CRUN 使用其异步查询路径。对话池独立，当前默认 32；全局对话默认 128、Agent 全局默认 16/用户默认 3。`GOMEMLIMIT` 低于容器硬上限，为非堆内存留出空间。
+
+对话池 32 指 Go 未设置变量时的缺省，上述 Compose 模板及 `.env.example` 实际提供 8。判断普通对话余量需同时核对有效 Worker 槽位、Agent 闸门和实例数，不能把配置层的不同默认值混作运行时测量。
 
 ## 私有 pprof
 

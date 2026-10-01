@@ -1,0 +1,14 @@
+.t2i-generation-reveal,
+.t2i-generation-result,
+.t2i-generation-cover { position: absolute; inset: 0; border-radius: inherit; }
+.t2i-generation-reveal { isolation: isolate; overflow: hidden; }
+.t2i-generation-cover { z-index: 2; }
+.t2i-generation-result { transform-origin: center; }
+.t2i-generation-reveal.is-covered .t2i-generation-result { pointer-events: none; }
+.t2i-generation-reveal.is-covered .t2i-stage-elapsed,
+.t2i-generation-reveal.is-covered .t2i-stage-cell-delete,
+.t2i-generation-reveal.is-covered .t2i-stage-quick-actions { visibility: hidden; }
+.t2i-generation-reveal .progressive-authenticated-image__layer.is-original { transition: none; }
+.t2i-generation-reveal:hover .t2i-stage-elapsed,
+.t2i-generation-reveal:focus-within .t2i-stage-elapsed { opacity: 1; transform: translateY(0); }
+.t2i-generation-result-error { position: absolute; inset: 0; z-index: 3; display: grid; place-items: center; color: var(--t2i-muted); font-size: 12px; }

@@ -1,0 +1,194 @@
+.mention-field {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.workbench-note,
+.workbench-revision__field--brief {
+  overflow: visible;
+}
+
+.t2i-prompt-box .mention-field {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 160px;
+}
+
+.t2i-prompt-box .mention-field textarea {
+  flex: 1 1 auto;
+}
+
+.mention-menu {
+  position: absolute;
+  left: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: 320px;
+  overflow: hidden;
+  color: #1c1826;
+  background: #fff;
+  border: 1px solid rgb(28 24 38 / 12%);
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgb(28 24 38 / 16%);
+}
+
+.mention-menu--above {
+  bottom: calc(100% + 8px);
+}
+
+.mention-menu--below {
+  top: calc(100% + 8px);
+}
+
+.mention-menu.is-floating {
+  position: fixed;
+  top: auto;
+  bottom: auto;
+  left: auto;
+  z-index: 4300;
+  width: min(360px, calc(100vw - 16px));
+}
+
+.mention-menu__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px 6px;
+  color: rgb(28 24 38 / 52%);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.mention-menu__head em {
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(28 24 38 / 78%);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-menu__list {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.mention-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.mention-menu__item:hover,
+.mention-menu__item.is-active,
+.mention-menu__item[aria-selected="true"] {
+  background: rgb(88 72 160 / 10%);
+}
+
+.mention-menu__copy {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 2px;
+}
+
+.mention-menu__title,
+.mention-menu__desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-menu__title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.mention-menu__desc {
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.62;
+}
+
+.mention-menu__badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  color: rgb(28 24 38 / 62%);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  background: rgb(28 24 38 / 6%);
+  border-radius: 999px;
+}
+
+.mention-menu__empty {
+  padding: 18px 12px;
+  color: rgb(28 24 38 / 58%);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.mention-menu__empty a {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.mention-menu__empty small {
+  display: block;
+  margin-top: 4px;
+  opacity: 0.7;
+}
+
+html.color-scheme-dark .mention-menu {
+  color: #f4f1fb;
+  background: #221e2d;
+  border-color: rgb(255 255 255 / 12%);
+  box-shadow: 0 18px 40px rgb(0 0 0 / 42%);
+}
+
+html.color-scheme-dark .mention-menu__head {
+  color: rgb(244 241 251 / 46%);
+}
+
+html.color-scheme-dark .mention-menu__head em {
+  color: rgb(244 241 251 / 78%);
+}
+
+html.color-scheme-dark .mention-menu__item:hover,
+html.color-scheme-dark .mention-menu__item.is-active,
+html.color-scheme-dark .mention-menu__item[aria-selected="true"] {
+  background: rgb(255 255 255 / 8%);
+}
+
+html.color-scheme-dark .mention-menu__badge {
+  color: rgb(244 241 251 / 70%);
+  background: rgb(255 255 255 / 8%);
+}
+
+html.color-scheme-dark .mention-menu__empty {
+  color: rgb(244 241 251 / 58%);
+}

@@ -1,0 +1,1160 @@
+{
+  "app": "infinite-canvas",
+  "version": 3,
+  "exportedAt": "2026-08-16T16:00:00.000Z",
+  "projects": [
+    {
+      "project": {
+        "id": "f8e621bd-6e45-4e32-9e8e-499943651b97",
+        "title": "模板｜完整电商生产工作流（38节点）",
+        "createdAt": "2026-08-16T16:00:00.000Z",
+        "updatedAt": "2026-08-16T16:00:00.000Z",
+        "nodes": [
+          {
+            "id": "guide",
+            "type": "text",
+            "title": "使用说明｜完整电商生产线",
+            "position": {
+              "x": -960,
+              "y": -820
+            },
+            "width": 500,
+            "height": 360,
+            "metadata": {
+              "content": "完整电商生产工作流（38 节点）\n\n1. 替换两张商品图片；至少替换主图，细节/包装图可选\n2. 修改品牌简报和商品事实，不要填写未经证实的功效\n3. 检查各配置节点的模型、尺寸和数量\n4. 点击右上角【运行工作流】并统一确认积分\n5. 全链路完成后查看最终质检报告\n\n下次换商品时只替换输入资产和文字资料，再次运行即可。所有输出都会原位更新。",
+              "status": "success",
+              "fontSize": 16
+            }
+          },
+          {
+            "id": "map",
+            "type": "text",
+            "title": "交付地图｜从母资产到上架包",
+            "position": {
+              "x": -340,
+              "y": -820
+            },
+            "width": 620,
+            "height": 360,
+            "metadata": {
+              "content": "阶段 A｜商品理解与母资产\n视觉分析 · 透明 PNG · 包装事实校对\n\n阶段 B｜平台基础图\n白底主图 · 细节特写 · 对比展示\n\n阶段 C｜营销视觉矩阵\n1:1 主图 · 4:5 信息流 · 9:16 故事 · 16:9 横幅 · 生活方式 · 节日促销 · 信息图\n\n阶段 D｜文案与交付\n上架文案 · SEO 标题/要点 · 最终质检报告",
+              "status": "success",
+              "fontSize": 16
+            }
+          },
+          {
+            "id": "input-main",
+            "type": "image",
+            "title": "输入 01｜替换商品主图（必填）",
+            "position": {
+              "x": -960,
+              "y": -300
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false
+            }
+          },
+          {
+            "id": "input-detail",
+            "type": "image",
+            "title": "输入 02｜替换细节/包装图（可选）",
+            "position": {
+              "x": -960,
+              "y": 220
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false
+            }
+          },
+          {
+            "id": "input-brand",
+            "type": "text",
+            "title": "输入 03｜品牌与视觉简报",
+            "position": {
+              "x": -960,
+              "y": 760
+            },
+            "width": 440,
+            "height": 340,
+            "metadata": {
+              "content": "请把本段替换为真实品牌资料：\n\n品牌名：YOUR BRAND\n品牌调性：克制、可信、现代\n主色：根据包装自动提取\n目标人群：请填写\n核心场景：电商平台、详情页、社交媒体\n禁用元素：夸张功效、未经授权的 Logo、竞品包装、人物肖像\n文案语气：简洁、专业、避免绝对化表达",
+              "status": "success",
+              "fontSize": 15
+            }
+          },
+          {
+            "id": "input-facts",
+            "type": "text",
+            "title": "输入 04｜商品事实与合规信息",
+            "position": {
+              "x": -960,
+              "y": 1160
+            },
+            "width": 440,
+            "height": 360,
+            "metadata": {
+              "content": "请把本段替换为包装或官方资料中可验证的信息：\n\n商品名称：\n品类：\n规格/容量：\n材质/成分：\n真实卖点：\n使用方法：\n适用范围：\n平台限制：不得虚构认证、销量、折扣、疗效或成分。没有证据的内容一律不要写。",
+              "status": "success",
+              "fontSize": 15
+            }
+          },
+          {
+            "id": "cfg-analysis",
+            "type": "config",
+            "title": "A1｜商品视觉与风险分析",
+            "position": {
+              "x": -340,
+              "y": -300
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "text",
+              "model": "gpt-5.4",
+              "reasoningEffort": "medium",
+              "count": 1,
+              "composerContent": "Analyze the ecommerce product shown in @[node:input-main] and, when available, @[node:input-detail]. Cross-check it against @[node:input-brand] and @[node:input-facts]. Return a concise Chinese production brief with: product identity, shape and proportions, materials, color palette, logo/label details, must-preserve visual features, likely retouching risks, recommended crop ratios, lighting direction, and a list of claims or details that must not be invented.",
+              "workflowOutputNodeIds": [
+                "out-analysis"
+              ]
+            }
+          },
+          {
+            "id": "out-analysis",
+            "type": "text",
+            "title": "输出 A1｜商品视觉分析报告",
+            "position": {
+              "x": 180,
+              "y": -300
+            },
+            "width": 460,
+            "height": 360,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "fontSize": 14,
+              "workflowProducerNodeId": "cfg-analysis"
+            }
+          },
+          {
+            "id": "cfg-transparent",
+            "type": "config",
+            "title": "A2｜透明 PNG 商品母资产",
+            "position": {
+              "x": -340,
+              "y": 220
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "transparent",
+              "count": 1,
+              "composerContent": "Use @[node:input-main] as the only product identity reference and use @[node:input-detail] only to recover true packaging details. Extract the exact complete product into a clean transparent-background PNG master asset. Preserve geometry, proportions, logo, label text, colors, materials, reflections, glass or metal highlights, and realistic edges. Center the full product with safe margins. No cropping, no props, no added text, no watermark, no redesign.",
+              "workflowOutputNodeIds": [
+                "out-transparent"
+              ]
+            }
+          },
+          {
+            "id": "out-transparent",
+            "type": "image",
+            "title": "输出 A2｜透明 PNG 母资产",
+            "position": {
+              "x": 180,
+              "y": 220
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-transparent"
+            }
+          },
+          {
+            "id": "cfg-packaging",
+            "type": "config",
+            "title": "A3｜包装与事实校对图",
+            "position": {
+              "x": -340,
+              "y": 760
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a clean ecommerce packaging documentation image using @[node:input-main] and @[node:input-detail]. Preserve all visible packaging, label, cap, accessories, and printed information exactly; follow the verified facts in @[node:input-facts]. Arrange the available product and packaging components on a neutral light-gray studio background with even catalog lighting. Do not invent missing package sides, certifications, ingredients, accessories, badges, or text.",
+              "workflowOutputNodeIds": [
+                "out-packaging"
+              ]
+            }
+          },
+          {
+            "id": "out-packaging",
+            "type": "image",
+            "title": "输出 A3｜包装校对图",
+            "position": {
+              "x": 180,
+              "y": 760
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-packaging"
+            }
+          },
+          {
+            "id": "cfg-listing-copy",
+            "type": "config",
+            "title": "D1｜上架卖点与详情页文案",
+            "position": {
+              "x": 720,
+              "y": -300
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "text",
+              "model": "gpt-5.4",
+              "reasoningEffort": "medium",
+              "count": 1,
+              "composerContent": "Write compliant Chinese ecommerce listing copy using the visual findings in @[node:out-analysis], the brand direction in @[node:input-brand], and only the verified facts in @[node:input-facts]. Produce: one short positioning sentence, five factual selling points, a concise detail-page structure, three callout phrases of no more than 12 Chinese characters, and a list of prohibited or unsupported claims. Do not invent efficacy, certification, sales volume, discounts, ingredients, or specifications.",
+              "workflowOutputNodeIds": [
+                "out-listing-copy"
+              ]
+            }
+          },
+          {
+            "id": "out-listing-copy",
+            "type": "text",
+            "title": "输出 D1｜上架卖点与详情页文案",
+            "position": {
+              "x": 1240,
+              "y": -300
+            },
+            "width": 480,
+            "height": 380,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "fontSize": 14,
+              "workflowProducerNodeId": "cfg-listing-copy"
+            }
+          },
+          {
+            "id": "cfg-white",
+            "type": "config",
+            "title": "B1｜平台白底主图",
+            "position": {
+              "x": 720,
+              "y": 220
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a marketplace-ready square white-background packshot from @[node:out-transparent], following the preservation requirements in @[node:out-analysis]. Use a pure #FFFFFF background with only a subtle realistic contact shadow. Keep the complete product centered and occupying about 78-84% of the frame with balanced safe margins. Clean catalog lighting, crisp edges, no props, no people, no extra text, no watermark.",
+              "workflowOutputNodeIds": [
+                "out-white"
+              ]
+            }
+          },
+          {
+            "id": "out-white",
+            "type": "image",
+            "title": "输出 B1｜平台白底主图",
+            "position": {
+              "x": 1240,
+              "y": 220
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-white"
+            }
+          },
+          {
+            "id": "cfg-detail",
+            "type": "config",
+            "title": "B2｜材质与工艺细节特写",
+            "position": {
+              "x": 720,
+              "y": 760
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a premium ecommerce macro detail image from @[node:out-transparent] and use @[node:input-detail] only for truthful close-up details. Follow @[node:out-analysis]. Show the most important real material, texture, closure, interface, surface finish, or label craftsmanship in a clean studio macro composition. Preserve exact colors and construction. No invented mechanisms, ingredients, effects, labels, or text overlays.",
+              "workflowOutputNodeIds": [
+                "out-detail"
+              ]
+            }
+          },
+          {
+            "id": "out-detail",
+            "type": "image",
+            "title": "输出 B2｜材质工艺特写",
+            "position": {
+              "x": 1240,
+              "y": 760
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-detail"
+            }
+          },
+          {
+            "id": "cfg-square",
+            "type": "config",
+            "title": "C1｜1:1 电商/社媒主视觉",
+            "position": {
+              "x": 1780,
+              "y": -820
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a premium 1:1 ecommerce and social-media hero using @[node:out-transparent] as the exact product reference. Follow @[node:input-brand] and the factual positioning in @[node:out-listing-copy]. Use restrained brand-compatible colors, a simple studio pedestal, controlled directional light, realistic shadows, and clean copy space. Product remains dominant and fully recognizable. No people, no unsupported claims, no extra brand marks, no watermark.",
+              "workflowOutputNodeIds": [
+                "out-square"
+              ]
+            }
+          },
+          {
+            "id": "out-square",
+            "type": "image",
+            "title": "输出 C1｜1:1 主视觉",
+            "position": {
+              "x": 2260,
+              "y": -820
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-square"
+            }
+          },
+          {
+            "id": "cfg-portrait",
+            "type": "config",
+            "title": "C2｜4:5 信息流视觉",
+            "position": {
+              "x": 1780,
+              "y": -300
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1280",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a vertical 4:5 ecommerce feed visual using @[node:out-transparent] as the exact product reference. Follow @[node:input-brand] and @[node:out-listing-copy]. Compose the product in the lower or central visual area with ample clean headline space above, brand-compatible studio materials, soft directional light, and realistic contact shadows. Preserve all packaging and label details. No added text, no people, no watermark.",
+              "workflowOutputNodeIds": [
+                "out-portrait"
+              ]
+            }
+          },
+          {
+            "id": "out-portrait",
+            "type": "image",
+            "title": "输出 C2｜4:5 信息流视觉",
+            "position": {
+              "x": 2260,
+              "y": -300
+            },
+            "width": 340,
+            "height": 425,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-portrait"
+            }
+          },
+          {
+            "id": "cfg-story",
+            "type": "config",
+            "title": "C3｜9:16 故事/短视频封面",
+            "position": {
+              "x": 1780,
+              "y": 220
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1792",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a vertical 9:16 story or short-video cover from @[node:out-transparent]. Use @[node:input-brand] and @[node:out-listing-copy] for art direction only. Keep the exact product in the lower-middle safe zone, leaving generous clean space at the top and bottom for later interface and copy placement. Premium studio lighting, clear depth, realistic shadows. No embedded text, no people, no watermark.",
+              "workflowOutputNodeIds": [
+                "out-story"
+              ]
+            }
+          },
+          {
+            "id": "out-story",
+            "type": "image",
+            "title": "输出 C3｜9:16 故事封面",
+            "position": {
+              "x": 2260,
+              "y": 220
+            },
+            "width": 280,
+            "height": 490,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-story"
+            }
+          },
+          {
+            "id": "cfg-banner",
+            "type": "config",
+            "title": "C4｜16:9 店铺横幅",
+            "position": {
+              "x": 1780,
+              "y": 760
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1792x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a wide 16:9 ecommerce store banner using @[node:out-transparent] as the exact product reference. Follow @[node:input-brand] and @[node:out-listing-copy]. Place the product on one side with balanced negative space on the other for later headline placement. Use minimal brand-compatible surfaces, controlled lighting, realistic shadows, and clear visual hierarchy. No embedded text, no people, no watermark.",
+              "workflowOutputNodeIds": [
+                "out-banner"
+              ]
+            }
+          },
+          {
+            "id": "out-banner",
+            "type": "image",
+            "title": "输出 C4｜16:9 店铺横幅",
+            "position": {
+              "x": 2260,
+              "y": 760
+            },
+            "width": 480,
+            "height": 275,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-banner"
+            }
+          },
+          {
+            "id": "cfg-lifestyle",
+            "type": "config",
+            "title": "C5｜真实生活方式场景",
+            "position": {
+              "x": 1780,
+              "y": 1280
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a believable lifestyle ecommerce scene using @[node:out-transparent] as the exact product reference. Use @[node:input-brand], @[node:input-facts], and @[node:out-analysis] to choose a truthful environment that fits the real product category and use context. Keep the product clearly visible and unchanged, with natural daylight, realistic scale, and restrained props. Do not depict unsupported usage, ingredients, effects, people, claims, or extra brands.",
+              "workflowOutputNodeIds": [
+                "out-lifestyle"
+              ]
+            }
+          },
+          {
+            "id": "out-lifestyle",
+            "type": "image",
+            "title": "输出 C5｜生活方式场景",
+            "position": {
+              "x": 2260,
+              "y": 1280
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-lifestyle"
+            }
+          },
+          {
+            "id": "cfg-seasonal",
+            "type": "config",
+            "title": "C6｜节日促销氛围图",
+            "position": {
+              "x": 2840,
+              "y": -820
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a tasteful seasonal ecommerce promotional visual using @[node:out-transparent] as the exact product reference. Follow @[node:input-brand] and @[node:out-listing-copy]. Use subtle celebratory materials, gift-ready composition, controlled highlights, and clear empty space for later campaign copy. Keep the product dominant and unchanged. No discount numbers, no fabricated badges, no embedded text, no people, no watermark.",
+              "workflowOutputNodeIds": [
+                "out-seasonal"
+              ]
+            }
+          },
+          {
+            "id": "out-seasonal",
+            "type": "image",
+            "title": "输出 C6｜节日促销氛围图",
+            "position": {
+              "x": 3320,
+              "y": -820
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-seasonal"
+            }
+          },
+          {
+            "id": "cfg-infographic",
+            "type": "config",
+            "title": "C7｜商品卖点信息图底图",
+            "position": {
+              "x": 2840,
+              "y": -300
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a clean ecommerce feature-infographic base using @[node:out-transparent] as the exact product reference and the verified content in @[node:out-listing-copy] and @[node:input-facts]. Arrange the product with three clear empty callout zones and subtle visual leader lines or geometric anchors, but do not render any words, numbers, certification icons, or claims. Neutral brand-compatible background, crisp hierarchy, no people, no watermark.",
+              "workflowOutputNodeIds": [
+                "out-infographic"
+              ]
+            }
+          },
+          {
+            "id": "out-infographic",
+            "type": "image",
+            "title": "输出 C7｜卖点信息图底图",
+            "position": {
+              "x": 3320,
+              "y": -300
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-infographic"
+            }
+          },
+          {
+            "id": "cfg-comparison",
+            "type": "config",
+            "title": "B3｜规格/视角对比展示",
+            "position": {
+              "x": 2840,
+              "y": 220
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 1,
+              "composerContent": "Create a clean comparison-style ecommerce layout using @[node:out-white], @[node:out-packaging], and the truthful constraints in @[node:out-analysis]. Show the same product identity in a balanced multi-panel or lineup composition that helps compare real included views, package components, or scale cues. Do not fabricate variants, sizes, accessories, measurements, labels, or text. Pure light background, consistent lighting, no watermark.",
+              "workflowOutputNodeIds": [
+                "out-comparison"
+              ]
+            }
+          },
+          {
+            "id": "out-comparison",
+            "type": "image",
+            "title": "输出 B3｜规格/视角对比图",
+            "position": {
+              "x": 3320,
+              "y": 220
+            },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "cfg-comparison"
+            }
+          },
+          {
+            "id": "cfg-seo",
+            "type": "config",
+            "title": "D2｜SEO 标题与平台要点",
+            "position": {
+              "x": 2840,
+              "y": 760
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "text",
+              "model": "gpt-5.4",
+              "reasoningEffort": "medium",
+              "count": 1,
+              "composerContent": "Using @[node:out-listing-copy], @[node:out-analysis], and @[node:input-facts], write a Chinese ecommerce SEO package without inventing facts. Provide: three platform-safe titles of different lengths, five search-friendly bullet points, ten factual keyword phrases, one concise image alt text, and a compliance warning list. Avoid medical, absolute, ranking, certification, discount, sales-volume, and performance claims unless explicitly present in the verified facts.",
+              "workflowOutputNodeIds": [
+                "out-seo"
+              ]
+            }
+          },
+          {
+            "id": "out-seo",
+            "type": "text",
+            "title": "输出 D2｜SEO 标题与平台要点",
+            "position": {
+              "x": 3320,
+              "y": 760
+            },
+            "width": 480,
+            "height": 390,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "fontSize": 14,
+              "workflowProducerNodeId": "cfg-seo"
+            }
+          },
+          {
+            "id": "cfg-qa",
+            "type": "config",
+            "title": "D3｜最终交付质检报告",
+            "position": {
+              "x": 3900,
+              "y": 220
+            },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "text",
+              "model": "gpt-5.4",
+              "reasoningEffort": "medium",
+              "count": 1,
+              "composerContent": "Audit the completed ecommerce delivery set. Use the source facts in @[node:input-facts], the preservation rules in @[node:out-analysis], the listing copy in @[node:out-listing-copy], the SEO copy in @[node:out-seo], and visually inspect @[node:out-white], @[node:out-detail], @[node:out-square], @[node:out-portrait], @[node:out-story], @[node:out-banner], @[node:out-lifestyle], @[node:out-seasonal], @[node:out-infographic], and @[node:out-comparison]. Return a Chinese QA table covering product consistency, label/logo fidelity, background and edge quality, platform ratio readiness, unsupported claims, copy-image consistency, and required manual fixes. Mark each item as pass, review, or fail. Do not assume unseen details are correct.",
+              "workflowOutputNodeIds": [
+                "out-qa"
+              ]
+            }
+          },
+          {
+            "id": "out-qa",
+            "type": "text",
+            "title": "最终输出｜交付质检报告",
+            "position": {
+              "x": 4420,
+              "y": 220
+            },
+            "width": 520,
+            "height": 520,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "fontSize": 14,
+              "workflowProducerNodeId": "cfg-qa"
+            }
+          }
+        ],
+        "connections": [
+          {
+            "id": "edge-input-main-cfg-analysis",
+            "fromNodeId": "input-main",
+            "toNodeId": "cfg-analysis"
+          },
+          {
+            "id": "edge-input-detail-cfg-analysis",
+            "fromNodeId": "input-detail",
+            "toNodeId": "cfg-analysis"
+          },
+          {
+            "id": "edge-input-brand-cfg-analysis",
+            "fromNodeId": "input-brand",
+            "toNodeId": "cfg-analysis"
+          },
+          {
+            "id": "edge-input-facts-cfg-analysis",
+            "fromNodeId": "input-facts",
+            "toNodeId": "cfg-analysis"
+          },
+          {
+            "id": "edge-cfg-analysis-out-analysis",
+            "fromNodeId": "cfg-analysis",
+            "toNodeId": "out-analysis"
+          },
+          {
+            "id": "edge-input-main-cfg-transparent",
+            "fromNodeId": "input-main",
+            "toNodeId": "cfg-transparent"
+          },
+          {
+            "id": "edge-input-detail-cfg-transparent",
+            "fromNodeId": "input-detail",
+            "toNodeId": "cfg-transparent"
+          },
+          {
+            "id": "edge-cfg-transparent-out-transparent",
+            "fromNodeId": "cfg-transparent",
+            "toNodeId": "out-transparent"
+          },
+          {
+            "id": "edge-input-main-cfg-packaging",
+            "fromNodeId": "input-main",
+            "toNodeId": "cfg-packaging"
+          },
+          {
+            "id": "edge-input-detail-cfg-packaging",
+            "fromNodeId": "input-detail",
+            "toNodeId": "cfg-packaging"
+          },
+          {
+            "id": "edge-input-facts-cfg-packaging",
+            "fromNodeId": "input-facts",
+            "toNodeId": "cfg-packaging"
+          },
+          {
+            "id": "edge-cfg-packaging-out-packaging",
+            "fromNodeId": "cfg-packaging",
+            "toNodeId": "out-packaging"
+          },
+          {
+            "id": "edge-out-analysis-cfg-listing-copy",
+            "fromNodeId": "out-analysis",
+            "toNodeId": "cfg-listing-copy"
+          },
+          {
+            "id": "edge-input-brand-cfg-listing-copy",
+            "fromNodeId": "input-brand",
+            "toNodeId": "cfg-listing-copy"
+          },
+          {
+            "id": "edge-input-facts-cfg-listing-copy",
+            "fromNodeId": "input-facts",
+            "toNodeId": "cfg-listing-copy"
+          },
+          {
+            "id": "edge-cfg-listing-copy-out-listing-copy",
+            "fromNodeId": "cfg-listing-copy",
+            "toNodeId": "out-listing-copy"
+          },
+          {
+            "id": "edge-out-transparent-cfg-white",
+            "fromNodeId": "out-transparent",
+            "toNodeId": "cfg-white"
+          },
+          {
+            "id": "edge-out-analysis-cfg-white",
+            "fromNodeId": "out-analysis",
+            "toNodeId": "cfg-white"
+          },
+          {
+            "id": "edge-cfg-white-out-white",
+            "fromNodeId": "cfg-white",
+            "toNodeId": "out-white"
+          },
+          {
+            "id": "edge-out-transparent-cfg-detail",
+            "fromNodeId": "out-transparent",
+            "toNodeId": "cfg-detail"
+          },
+          {
+            "id": "edge-input-detail-cfg-detail",
+            "fromNodeId": "input-detail",
+            "toNodeId": "cfg-detail"
+          },
+          {
+            "id": "edge-out-analysis-cfg-detail",
+            "fromNodeId": "out-analysis",
+            "toNodeId": "cfg-detail"
+          },
+          {
+            "id": "edge-cfg-detail-out-detail",
+            "fromNodeId": "cfg-detail",
+            "toNodeId": "out-detail"
+          },
+          {
+            "id": "edge-out-transparent-cfg-square",
+            "fromNodeId": "out-transparent",
+            "toNodeId": "cfg-square"
+          },
+          {
+            "id": "edge-input-brand-cfg-square",
+            "fromNodeId": "input-brand",
+            "toNodeId": "cfg-square"
+          },
+          {
+            "id": "edge-out-listing-copy-cfg-square",
+            "fromNodeId": "out-listing-copy",
+            "toNodeId": "cfg-square"
+          },
+          {
+            "id": "edge-cfg-square-out-square",
+            "fromNodeId": "cfg-square",
+            "toNodeId": "out-square"
+          },
+          {
+            "id": "edge-out-transparent-cfg-portrait",
+            "fromNodeId": "out-transparent",
+            "toNodeId": "cfg-portrait"
+          },
+          {
+            "id": "edge-input-brand-cfg-portrait",
+            "fromNodeId": "input-brand",
+            "toNodeId": "cfg-portrait"
+          },
+          {
+            "id": "edge-out-listing-copy-cfg-portrait",
+            "fromNodeId": "out-listing-copy",
+            "toNodeId": "cfg-portrait"
+          },
+          {
+            "id": "edge-cfg-portrait-out-portrait",
+            "fromNodeId": "cfg-portrait",
+            "toNodeId": "out-portrait"
+          },
+          {
+            "id": "edge-out-transparent-cfg-story",
+            "fromNodeId": "out-transparent",
+            "toNodeId": "cfg-story"
+          },
+          {
+            "id": "edge-input-brand-cfg-story",
+            "fromNodeId": "input-brand",
+            "toNodeId": "cfg-story"
+          },
+          {
+            "id": "edge-out-listing-copy-cfg-story",
+            "fromNodeId": "out-listing-copy",
+            "toNodeId": "cfg-story"
+          },
+          {
+            "id": "edge-cfg-story-out-story",
+            "fromNodeId": "cfg-story",
+            "toNodeId": "out-story"
+          },
+          {
+            "id": "edge-out-transparent-cfg-banner",
+            "fromNodeId": "out-transparent",
+            "toNodeId": "cfg-banner"
+          },
+          {
+            "id": "edge-input-brand-cfg-banner",
+            "fromNodeId": "input-brand",
+            "toNodeId": "cfg-banner"
+          },
+          {
+            "id": "edge-out-listing-copy-cfg-banner",
+            "fromNodeId": "out-listing-copy",
+            "toNodeId": "cfg-banner"
+          },
+          {
+            "id": "edge-cfg-banner-out-banner",
+            "fromNodeId": "cfg-banner",
+            "toNodeId": "out-banner"
+          },
+          {
+            "id": "edge-out-transparent-cfg-lifestyle",
+            "fromNodeId": "out-transparent",
+            "toNodeId": "cfg-lifestyle"
+          },
+          {
+            "id": "edge-input-brand-cfg-lifestyle",
+            "fromNodeId": "input-brand",
+            "toNodeId": "cfg-lifestyle"
+          },
+          {
+            "id": "edge-input-facts-cfg-lifestyle",
+            "fromNodeId": "input-facts",
+            "toNodeId": "cfg-lifestyle"
+          },
+          {
+            "id": "edge-out-analysis-cfg-lifestyle",
+            "fromNodeId": "out-analysis",
+            "toNodeId": "cfg-lifestyle"
+          },
+          {
+            "id": "edge-cfg-lifestyle-out-lifestyle",
+            "fromNodeId": "cfg-lifestyle",
+            "toNodeId": "out-lifestyle"
+          },
+          {
+            "id": "edge-out-transparent-cfg-seasonal",
+            "fromNodeId": "out-transparent",
+            "toNodeId": "cfg-seasonal"
+          },
+          {
+            "id": "edge-input-brand-cfg-seasonal",
+            "fromNodeId": "input-brand",
+            "toNodeId": "cfg-seasonal"
+          },
+          {
+            "id": "edge-out-listing-copy-cfg-seasonal",
+            "fromNodeId": "out-listing-copy",
+            "toNodeId": "cfg-seasonal"
+          },
+          {
+            "id": "edge-cfg-seasonal-out-seasonal",
+            "fromNodeId": "cfg-seasonal",
+            "toNodeId": "out-seasonal"
+          },
+          {
+            "id": "edge-out-transparent-cfg-infographic",
+            "fromNodeId": "out-transparent",
+            "toNodeId": "cfg-infographic"
+          },
+          {
+            "id": "edge-out-listing-copy-cfg-infographic",
+            "fromNodeId": "out-listing-copy",
+            "toNodeId": "cfg-infographic"
+          },
+          {
+            "id": "edge-input-facts-cfg-infographic",
+            "fromNodeId": "input-facts",
+            "toNodeId": "cfg-infographic"
+          },
+          {
+            "id": "edge-cfg-infographic-out-infographic",
+            "fromNodeId": "cfg-infographic",
+            "toNodeId": "out-infographic"
+          },
+          {
+            "id": "edge-out-white-cfg-comparison",
+            "fromNodeId": "out-white",
+            "toNodeId": "cfg-comparison"
+          },
+          {
+            "id": "edge-out-packaging-cfg-comparison",
+            "fromNodeId": "out-packaging",
+            "toNodeId": "cfg-comparison"
+          },
+          {
+            "id": "edge-out-analysis-cfg-comparison",
+            "fromNodeId": "out-analysis",
+            "toNodeId": "cfg-comparison"
+          },
+          {
+            "id": "edge-cfg-comparison-out-comparison",
+            "fromNodeId": "cfg-comparison",
+            "toNodeId": "out-comparison"
+          },
+          {
+            "id": "edge-out-listing-copy-cfg-seo",
+            "fromNodeId": "out-listing-copy",
+            "toNodeId": "cfg-seo"
+          },
+          {
+            "id": "edge-out-analysis-cfg-seo",
+            "fromNodeId": "out-analysis",
+            "toNodeId": "cfg-seo"
+          },
+          {
+            "id": "edge-input-facts-cfg-seo",
+            "fromNodeId": "input-facts",
+            "toNodeId": "cfg-seo"
+          },
+          {
+            "id": "edge-cfg-seo-out-seo",
+            "fromNodeId": "cfg-seo",
+            "toNodeId": "out-seo"
+          },
+          {
+            "id": "edge-input-facts-cfg-qa",
+            "fromNodeId": "input-facts",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-analysis-cfg-qa",
+            "fromNodeId": "out-analysis",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-listing-copy-cfg-qa",
+            "fromNodeId": "out-listing-copy",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-seo-cfg-qa",
+            "fromNodeId": "out-seo",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-white-cfg-qa",
+            "fromNodeId": "out-white",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-detail-cfg-qa",
+            "fromNodeId": "out-detail",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-square-cfg-qa",
+            "fromNodeId": "out-square",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-portrait-cfg-qa",
+            "fromNodeId": "out-portrait",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-story-cfg-qa",
+            "fromNodeId": "out-story",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-banner-cfg-qa",
+            "fromNodeId": "out-banner",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-lifestyle-cfg-qa",
+            "fromNodeId": "out-lifestyle",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-seasonal-cfg-qa",
+            "fromNodeId": "out-seasonal",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-infographic-cfg-qa",
+            "fromNodeId": "out-infographic",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-out-comparison-cfg-qa",
+            "fromNodeId": "out-comparison",
+            "toNodeId": "cfg-qa"
+          },
+          {
+            "id": "edge-cfg-qa-out-qa",
+            "fromNodeId": "cfg-qa",
+            "toNodeId": "out-qa"
+          }
+        ],
+        "chatSessions": [],
+        "activeChatId": null,
+        "backgroundMode": "lines",
+        "showImageInfo": true,
+        "viewport": {
+          "x": 240,
+          "y": 320,
+          "k": 0.18
+        }
+      },
+      "files": []
+    }
+  ]
+}

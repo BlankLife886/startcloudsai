@@ -1,0 +1,286 @@
+import { useEffect, useState, type ReactNode } from "react";
+import { App, Tooltip } from "antd";
+import { Ellipsis, FolderPlus, Image as ImageIcon, ListOrdered, MessageSquare, Music2, Pencil, Trash2, Upload, Video } from "lucide-react";
+import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
+import { RegenerateIcon } from "@react/components/common/RegenerateIcon.jsx";
+import { useTranslation } from "react-i18next";
+
+import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
+import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
+import { useCopyText } from "@/hooks/use-copy-text";
+import { useThemeStore } from "@/stores/use-theme-store";
+import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
+import type { CanvasNodeToolbarItem } from "@/types/canvas-plugin";
+import { ImageToolSettingsModal, type ImageToolbarSettingsTool } from "./canvas-image-toolbar-settings-modal";
+import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
+import { CanvasFloatingLayer } from "./canvas-floating-layer";
+
+type CanvasNodeHoverToolbarProps = {
+    node: CanvasNodeData | null;
+    viewport: ViewportTransform;
+    onKeep: (nodeId: string) => void;
+    onLeave: () => void;
+    onRename: (node: CanvasNodeData) => void;
+    onEditText: (node: CanvasNodeData) => void;
+    onToggleDialog: (node: CanvasNodeData) => void;
+    onGenerateImage: (node: CanvasNodeData) => void;
+    onUpload: (node: CanvasNodeData) => void;
+    onDownload: (node: CanvasNodeData) => void;
+    onSaveAsset: (node: CanvasNodeData) => void;
+    onMaskEdit: (node: CanvasNodeData) => void;
+    onCrop: (node: CanvasNodeData) => void;
+    onSplit: (node: CanvasNodeData) => void;
+    onUpscale: (node: CanvasNodeData) => void;
+    onRemoveBackground: (node: CanvasNodeData) => void;
+    onAngle: (node: CanvasNodeData) => void;
+    onViewImage: (node: CanvasNodeData) => void;
+    onReversePrompt: (node: CanvasNodeData) => void;
+    onRetry: (node: CanvasNodeData) => void;
+    onOpenPromptList?: (node: CanvasNodeData) => void;
+    onToggleFreeResize: (node: CanvasNodeData) => void;
+    onDelete: (node: CanvasNodeData) => void;
+    extraTools?: CanvasNodeToolbarItem[];
+    backgroundRemovalAvailable?: boolean;
+};
+
+type ToolbarTool = {
+    id: string;
+    title: string;
+    label: string;
+    icon: ReactNode;
+    onClick: () => void;
+    active?: boolean;
+    danger?: boolean;
+};
+
+export function CanvasNodeHoverToolbar({
+    node,
+    viewport,
+    onKeep,
+    onLeave,
+    onRename,
+    onEditText,
+    onToggleDialog,
+    onGenerateImage,
+    onUpload,
+    onDownload,
+    onSaveAsset,
+    onMaskEdit,
+    onCrop,
+    onSplit,
+    onUpscale,
+    onRemoveBackground,
+    onAngle,
+    onViewImage,
+    onReversePrompt,
+    onRetry,
+    onOpenPromptList,
+    onToggleFreeResize,
+    onDelete,
+    extraTools = [],
+    backgroundRemovalAvailable = false,
+}: CanvasNodeHoverToolbarProps) {
+    const [quickImageToolIds, setQuickImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
+    const [showImageToolLabels, setShowImageToolLabels] = useState(true);
+    const [draftImageToolIds, setDraftImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
+    const [draftShowImageToolLabels, setDraftShowImageToolLabels] = useState(true);
+    const [imageToolSettingsOpen, setImageToolSettingsOpen] = useState(false);
+    const { message } = App.useApp();
+    const { t } = useTranslation();
+    const copyText = useCopyText();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+
+    useEffect(() => {
+        try {
+            const stored = window.localStorage.getItem(IMAGE_QUICK_TOOLS_STORAGE_KEY);
+            if (!stored) return;
+            const parsed = JSON.parse(stored) as unknown;
+            const config = readImageQuickToolsConfig(parsed);
+            setQuickImageToolIds(config.ids);
+            setShowImageToolLabels(config.showLabels);
+        } catch {
+            window.localStorage.removeItem(IMAGE_QUICK_TOOLS_STORAGE_KEY);
+        }
+    }, []);
+
+    useEffect(() => {
+        setImageToolSettingsOpen(false);
+    }, [node?.id]);
+
+    if (!node) return null;
+
+    const activeNode = node;
+    const isText = node.type === CanvasNodeType.Text;
+    const isImage = node.type === CanvasNodeType.Image;
+    const isVideo = node.type === CanvasNodeType.Video;
+    const isAudio = node.type === CanvasNodeType.Audio;
+    const hasImage = isImage && Boolean(node.metadata?.content);
+    const hasVideo = isVideo && Boolean(node.metadata?.content);
+    const hasAudio = isAudio && Boolean(node.metadata?.content);
+    const definition = getNodeDefinition(node.type);
+    const canOpenDialog = isText || hasImage || isVideo || isCanvasExecutableNode(node) || Boolean(definition?.Panel || definition?.useBuiltinPanel);
+    const canRetry = node.metadata?.status === "error";
+    const isBatchConfig = Boolean(node.metadata?.storyboardConfig);
+    const copyImagePrompt = (target: CanvasNodeData) => {
+        const prompt = target.metadata?.prompt?.trim();
+        if (!prompt) {
+            message.warning(t("canvas.nodeToolbar.noPrompt"));
+            return;
+        }
+        copyText(prompt, t("common.promptCopied"));
+    };
+    const imageTools = buildImageToolbarTools(node, { onUpload, onToggleFreeResize, onMaskEdit, onCrop, onSplit, onUpscale, onRemoveBackground, onAngle, onViewImage, onCopyPrompt: copyImagePrompt, onReversePrompt }).filter(
+        (tool) => backgroundRemovalAvailable || tool.id !== "removeBackground",
+    );
+
+    function openImageToolSettings() {
+        onKeep(activeNode.id);
+        setDraftImageToolIds(quickImageToolIds);
+        setDraftShowImageToolLabels(showImageToolLabels);
+        setImageToolSettingsOpen(true);
+    }
+
+    const commonToolbarTools: ToolbarTool[] = [
+        ...(!isText ? [{ id: "rename", title: t("canvas.nodeToolbar.renameTitle"), label: t("canvas.nodeToolbar.rename"), icon: <Pencil className="size-4" />, onClick: () => onRename(node) }] : []),
+        { id: "delete", title: t("canvas.nodeToolbar.removeTitle"), label: t("common.delete"), icon: <Trash2 className="size-4" />, onClick: () => onDelete(node), danger: true },
+    ];
+    const nodeToolbarTools: ToolbarTool[] = [
+        ...(canRetry ? [{ id: "retry", title: t("canvas.nodeToolbar.retryTitle"), label: t("canvas.node.retry"), icon: <RegenerateIcon className="size-4" />, onClick: () => onRetry(node) }] : []),
+        ...(isBatchConfig && onOpenPromptList
+            ? [{
+                id: "managePrompts",
+                title: t(
+                    node.metadata?.batchMode === "refs"
+                        ? "canvas.storyboard.promptListOpenTitleRefs"
+                        : node.metadata?.batchMode === "variants"
+                          ? "canvas.storyboard.promptListOpenTitleVariants"
+                          : "canvas.storyboard.promptListOpenTitle",
+                ),
+                label: t("canvas.storyboard.promptListOpen"),
+                icon: <ListOrdered className="size-4" />,
+                onClick: () => onOpenPromptList(node),
+            }]
+            : []),
+        ...(hasImage || hasVideo || isText ? [{ id: "saveAsset", title: t("common.addToAssets"), label: t("canvas.nodeToolbar.saveAsset"), icon: <FolderPlus className="size-4" />, onClick: () => onSaveAsset(node) }] : []),
+        ...(hasImage || hasVideo || hasAudio ? [{ id: "download", title: t(hasAudio ? "canvas.nodeToolbar.downloadAudio" : hasVideo ? "canvas.nodeToolbar.downloadVideo" : "canvas.nodeToolbar.downloadImage"), label: t("common.download"), icon: <DownloadIcon className="size-4" />, onClick: () => onDownload(node) }] : []),
+        ...(canOpenDialog && !isText ? [{ id: "edit", title: t("common.edit"), label: t("common.edit"), icon: <MessageSquare className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
+        ...(isText ? [{ id: "editText", title: t("canvas.nodeToolbar.editTextTitle"), label: t("canvas.nodeToolbar.editText"), icon: <Pencil className="size-4" />, onClick: () => onEditText(node) }] : []),
+        ...(isText ? [{ id: "generateImage", title: t("canvas.node.generateImage"), label: t("canvas.node.generate"), icon: <ImageIcon className="size-4" />, onClick: () => onGenerateImage(node) }] : []),
+        ...(isImage && !hasImage ? [{ id: "uploadImage", title: t("canvas.nodeToolbar.uploadImage"), label: t("canvas.nodeToolbar.uploadImage"), icon: <Upload className="size-4" />, onClick: () => onUpload(node) }] : []),
+        ...(isVideo ? [{ id: "uploadVideo", title: t(hasVideo ? "canvas.nodeToolbar.replaceVideo" : "canvas.nodeToolbar.uploadVideo"), label: t(hasVideo ? "canvas.nodeToolbar.replaceVideo" : "canvas.nodeToolbar.uploadVideo"), icon: <Video className="size-4" />, onClick: () => onUpload(node) }] : []),
+        ...(isAudio ? [{ id: "uploadAudio", title: t(hasAudio ? "canvas.nodeToolbar.replaceAudio" : "canvas.nodeToolbar.uploadAudio"), label: t(hasAudio ? "canvas.nodeToolbar.replaceAudio" : "canvas.nodeToolbar.uploadAudio"), icon: <Music2 className="size-4" />, onClick: () => onUpload(node) }] : []),
+        ...(hasImage ? imageTools.map((tool) => ({ id: tool.id, title: tool.title, label: tool.label, icon: tool.icon, active: tool.active, onClick: tool.onClick })) : []),
+    ];
+    const availableImageTools = nodeToolbarTools.filter((tool) => tool.id !== "retry" && tool.id !== "storyboard");
+    const imageToolById = new Map(availableImageTools.map((tool) => [tool.id, tool]));
+    const toolbarTools = dedupeToolbarTools(
+        hasImage
+            ? [...quickImageToolIds.map((id) => imageToolById.get(id)).filter((tool): tool is ToolbarTool => Boolean(tool)), ...extraTools, ...commonToolbarTools]
+            : [...nodeToolbarTools, ...extraTools, ...commonToolbarTools],
+    );
+    const selectableImageToolbarTools = availableImageTools as ImageToolbarSettingsTool[];
+
+    const closeImageToolSettings = () => {
+        setImageToolSettingsOpen(false);
+        onLeave();
+    };
+
+    const setDraftImageToolVisible = (id: ImageQuickToolId, visible: boolean) => {
+        setDraftImageToolIds((current) => (visible ? (current.includes(id) ? current : [...current, id]) : current.filter((item) => item !== id)));
+    };
+
+    const saveImageToolSettings = () => {
+        const config = { ids: draftImageToolIds, showLabels: draftShowImageToolLabels, version: 7 };
+        setQuickImageToolIds(config.ids);
+        setShowImageToolLabels(config.showLabels);
+        window.localStorage.setItem(IMAGE_QUICK_TOOLS_STORAGE_KEY, JSON.stringify(config));
+        closeImageToolSettings();
+    };
+
+    const visibleTools = hasImage
+        ? [...toolbarTools, { id: "more", title: t("canvas.imageTools.configure"), label: t("canvas.imageTools.more"), icon: <Ellipsis className="size-4" />, active: imageToolSettingsOpen, onClick: openImageToolSettings }]
+        : toolbarTools;
+    // One calm row: the first few actions keep their labels, the rest collapse to icons, and delete sits apart at the end.
+    const mainTools = visibleTools.filter((tool) => tool.id !== "delete" && tool.id !== "more");
+    const trailingTools = visibleTools.filter((tool) => tool.id === "delete" || tool.id === "more");
+    const labelledCount = mainTools.length > 5 ? 3 : mainTools.length;
+
+    return (
+        <>
+            <CanvasFloatingLayer
+                key={node.id}
+                getAnchorElement={() => document.querySelector<HTMLElement>(`.canvas-stage [data-node-id="${CSS.escape(node.id)}"]`)}
+                avoidSelector={`[data-canvas-node-editor="${CSS.escape(node.id)}"]`}
+                placement="top"
+                gap={34}
+                data-canvas-node-toolbar
+                className="canvas-float-menu flex rounded-[14px] border p-1 backdrop-blur-xl"
+                style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.item, boxShadow: theme.toolbar.shadow, zIndex: 110 }}
+                onMouseEnter={() => onKeep(node.id)}
+                onMouseLeave={() => {
+                    if (!imageToolSettingsOpen) onLeave();
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+            >
+                <div className="flex items-center gap-0.5">
+                    {mainTools.map((tool, index) => (
+                        <ToolbarAction key={tool.id} {...tool} showLabel={showImageToolLabels && index < labelledCount} theme={theme} />
+                    ))}
+                    {trailingTools.length ? <span className="mx-1 h-4 w-px shrink-0" style={{ background: theme.toolbar.border }} aria-hidden /> : null}
+                    {trailingTools.map((tool) => (
+                        <ToolbarAction key={tool.id} {...tool} showLabel={false} theme={theme} />
+                    ))}
+                </div>
+            </CanvasFloatingLayer>
+            {hasImage ? (
+                <ImageToolSettingsModal
+                    open={imageToolSettingsOpen}
+                    tools={selectableImageToolbarTools}
+                    selectedIds={draftImageToolIds}
+                    showLabels={draftShowImageToolLabels}
+                    onToggle={setDraftImageToolVisible}
+                    onReorder={setDraftImageToolIds}
+                    onShowLabelsChange={setDraftShowImageToolLabels}
+                    onCancel={closeImageToolSettings}
+                    onSave={saveImageToolSettings}
+                />
+            ) : null}
+        </>
+    );
+}
+
+function dedupeToolbarTools(tools: ToolbarTool[]) {
+    const seen = new Set<string>();
+    return tools.filter((tool) => {
+        if (seen.has(tool.id)) return false;
+        seen.add(tool.id);
+        return true;
+    });
+}
+
+function ToolbarAction({ title, label, icon, onClick, showLabel, theme, active = false, danger = false }: ToolbarTool & { showLabel: boolean; theme: CanvasTheme }) {
+    const hasText = showLabel && Boolean(label);
+    const color = danger ? "#e5484d" : active ? theme.toolbar.activeText : theme.toolbar.item;
+    return (
+        <Tooltip title={title} placement="top" mouseEnterDelay={0.2}>
+            <button
+                type="button"
+                className={`flex h-8 shrink-0 items-center whitespace-nowrap rounded-[9px] text-[12px] font-medium transition-colors ${hasText ? "gap-1.5 px-2.5" : "w-8 justify-center"}`}
+                style={{ color, background: active ? theme.toolbar.activeBg : "transparent" }}
+                onMouseEnter={(event) => {
+                    if (!active) event.currentTarget.style.background = danger ? "rgba(229,72,77,.1)" : theme.toolbar.itemHover;
+                }}
+                onMouseLeave={(event) => {
+                    event.currentTarget.style.background = active ? theme.toolbar.activeBg : "transparent";
+                }}
+                onClick={onClick}
+                aria-label={title}
+            >
+                {icon}
+                {hasText ? <span>{label}</span> : null}
+            </button>
+        </Tooltip>
+    );
+}

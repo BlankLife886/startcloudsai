@@ -4,22 +4,32 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "test:diagnostic-export": "node --test --experimental-strip-types scripts/test-diagnostic-export.mjs",
+    "test:pagination": "node --test --experimental-strip-types scripts/test-pagination.mjs",
+    "test:model-reasoning": "node --test scripts/test-model-reasoning.mjs",
+    "test:task-auto-refresh": "node --test --experimental-strip-types scripts/test-task-auto-refresh.mjs",
+    "test:model-config-save": "node --test scripts/test-model-config-save.mjs",
+    "dev": "vite --host 127.0.0.1 --port 3200 --strictPort",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "test:task-presentation": "node --test --experimental-strip-types scripts/test-task-presentation.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
     "echarts": "^6.1.0",
     "element-plus": "^2.9.3",
+    "fflate": "^0.8.3",
+    "gsap": "^3.15.0",
     "pinia": "^3.0.1",
+    "three": "^0.185.1",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0",
     "vuedraggable": "^4.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.7",
+    "@types/three": "^0.185.3",
     "@vitejs/plugin-vue": "^5.2.1",
     "sass-embedded": "^1.100.0",
     "typescript": "~5.7.3",

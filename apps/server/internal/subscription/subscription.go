@@ -6,10 +6,12 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -30,43 +32,69 @@ func strPtr(s string) *string { return &s }
 // 同 user+plan 已有 active 订阅 → ends_at 顺延 durationDays；否则新建。
 // 首日额度同事务立即发放（幂等，续购当日已发放则跳过）。
 func ApplyOrder(ctx context.Context, tx pgx.Tx, order *store.Order, plan *store.Plan, now time.Time) (*store.Subscription, error) {
-	if plan.DurationDays <= 0 || plan.DailyGrantCents <= 0 {
-		return nil, fmt.Errorf("plan %s 不是有效的订阅套餐（durationDays=%d, dailyGrantCents=%d）",
-			plan.ID, plan.DurationDays, plan.DailyGrantCents)
+	ctx = store.WithBillingTime(ctx, now)
+	if order.SubscriptionPolicy.Version == 2 {
+		return applyRollingOrder(ctx, tx, order, plan, now)
 	}
-	duration := time.Duration(plan.DurationDays) * 24 * time.Hour
-
+	if plan.DurationDays <= 0 || plan.DailyGrantCents <= 0 {
+		return nil, fmt.Errorf("invalid subscription terms for plan %s", plan.ID)
+	}
+	// Serializes first purchases as well as renewals; an absent row cannot be row-locked.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "subscription:"+order.UserID.String()+":"+plan.ID.String()); err != nil {
+		return nil, err
+	}
+	previous, err := store.GetSubscriptionPeriodForOrder(ctx, tx, order.ID)
+	if err != nil {
+		return nil, err
+	}
+	if previous != nil {
+		return store.GetSubscription(ctx, tx, previous.SubscriptionID)
+	}
 	existing, err := store.GetActiveSubscriptionForPlanLocked(ctx, tx, order.UserID, plan.ID)
 	if err != nil {
 		return nil, err
 	}
+	start := now.UTC()
 	var sub *store.Subscription
 	if existing != nil && existing.EndsAt.After(now) {
-		// 续购同套餐：ends_at 顺延
-		if err := store.ExtendSubscription(ctx, tx, existing.ID, existing.EndsAt.Add(duration)); err != nil {
+		if err := store.InsertLegacySubscriptionPeriod(ctx, tx, existing.ID); err != nil {
+			return nil, err
+		}
+		start = existing.EndsAt
+		if err := store.ExtendSubscription(ctx, tx, existing.ID, start.AddDate(0, 0, plan.DurationDays)); err != nil {
 			return nil, err
 		}
 		sub, err = store.GetSubscription(ctx, tx, existing.ID)
-		if err != nil {
-			return nil, err
-		}
 	} else {
-		orderID := order.ID
-		sub, err = store.InsertSubscription(ctx, tx, &store.Subscription{
-			UserID:          order.UserID,
-			PlanID:          plan.ID,
-			OrderID:         &orderID,
-			StartsAt:        now,
-			EndsAt:          now.Add(duration),
-			DailyGrantCents: plan.DailyGrantCents,
-		})
-		if err != nil {
+		sub, err = store.InsertSubscription(ctx, tx, &store.Subscription{UserID: order.UserID, PlanID: plan.ID, OrderID: &order.ID,
+			StartsAt: start, EndsAt: start.AddDate(0, 0, plan.DurationDays), DailyGrantCents: plan.DailyGrantCents})
+	}
+	if err != nil {
+		return nil, err
+	}
+	grantStart, _ := time.Parse("2006-01-02", BeijingDate(start))
+	_, err = store.InsertSubscriptionPeriod(ctx, tx, &store.SubscriptionPeriod{SubscriptionID: sub.ID, OrderID: &order.ID,
+		StartsAt: start, EndsAt: start.AddDate(0, 0, plan.DurationDays), GrantStartsOn: grantStart,
+		GrantEndsOn: grantStart.AddDate(0, 0, plan.DurationDays), DailyGrantCents: plan.DailyGrantCents})
+	if err != nil {
+		return nil, err
+	}
+	active, err := store.GetSubscriptionPeriodAt(ctx, tx, sub.ID, now)
+	if err != nil {
+		return nil, err
+	}
+	today, _ := time.Parse("2006-01-02", BeijingDate(now))
+	if active != nil && !today.Before(active.GrantStartsOn) && today.Before(active.GrantEndsOn) {
+		current := *sub
+		current.DailyGrantCents = active.DailyGrantCents
+		if err := GrantDaily(ctx, tx, &current, today.Format("2006-01-02")); err != nil {
 			return nil, err
 		}
-	}
-	// 首日开通立即发放当日额度（幂等键含日期，续购重复发放无害）
-	if err := GrantDaily(ctx, tx, sub, BeijingDate(now)); err != nil {
-		return nil, err
+		if active.NextGrantOn.Equal(today) {
+			if err := store.AdvanceSubscriptionPeriod(ctx, tx, active.ID, today.AddDate(0, 0, 1)); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return sub, nil
 }
@@ -87,39 +115,86 @@ func GrantedOn(sub *store.Subscription, date string) bool {
 	return sub.LastGrantedDate != nil && sub.LastGrantedDate.Format("2006-01-02") >= date
 }
 
-// Tick worker 定时入口（@every 10m）：先回收过期订阅，再给当日未发放的
-// active 订阅逐条发放（每条独立事务，失败不影响其他订阅）。
+// Tick catches up bounded batches, including expired periods, before retiring subscriptions.
 func Tick(ctx context.Context, st *store.Store, now time.Time) error {
-	nowUTC := now.UTC()
-	expired, err := store.ExpireSubscriptions(ctx, st.Pool, nowUTC)
+	ctx = store.WithBillingTime(ctx, now)
+	rollingErr := tickRolling(ctx, st, now)
+	rows, expiryErr := st.Pool.Query(ctx, `SELECT DISTINCT user_id FROM subscription_credit_lots WHERE available_points>0 AND expires_at<=$1 AND NOT refund_hold AND NOT upgrade_hold LIMIT 200`, now)
+	if expiryErr == nil {
+		var users []uuid.UUID
+		for rows.Next() {
+			var id uuid.UUID
+			if expiryErr = rows.Scan(&id); expiryErr != nil {
+				break
+			}
+			users = append(users, id)
+		}
+		if expiryErr == nil {
+			expiryErr = rows.Err()
+		}
+		rows.Close()
+		for _, id := range users {
+			expiryErr = errors.Join(expiryErr, store.ExpireSubscriptionCredits(ctx, st.Pool, id, now))
+		}
+	}
+	rollingErr = errors.Join(rollingErr, expiryErr)
+	today, _ := time.Parse("2006-01-02", BeijingDate(now))
+	due, err := store.ListSubscriptionPeriodsDue(ctx, st.Pool, now, BeijingDate(now), 200)
 	if err != nil {
-		return err
+		return errors.Join(rollingErr, err)
 	}
-	if expired > 0 {
-		log.Printf("expired %d subscriptions", expired)
+	var failures []error
+	if rollingErr != nil {
+		failures = append(failures, rollingErr)
 	}
-
-	today := BeijingDate(now)
-	due, err := store.ListSubscriptionsDueGrant(ctx, st.Pool, nowUTC, today)
-	if err != nil {
-		return err
-	}
-	for _, sub := range due {
+	for _, candidate := range due {
 		grant := func() error {
 			return st.Tx(ctx, func(tx pgx.Tx) error {
-				return GrantDaily(ctx, tx, sub, today)
+				// Keep lock order consistent with ApplyOrder: subscription, period, wallet.
+				sub, err := store.GetSubscriptionForUpdate(ctx, tx, candidate.SubscriptionID)
+				if err != nil {
+					return err
+				}
+				if sub == nil {
+					return nil
+				}
+				period, err := store.GetSubscriptionPeriodForUpdate(ctx, tx, candidate.ID)
+				if err != nil {
+					return err
+				}
+				if period == nil || period.StartsAt.After(now) {
+					return nil
+				}
+				date := period.NextGrantOn
+				current := *sub
+				current.DailyGrantCents = period.DailyGrantCents
+				for n := 0; n < 60 && !date.After(today) && date.Before(period.GrantEndsOn); n++ {
+					if err := GrantDaily(ctx, tx, &current, date.Format("2006-01-02")); err != nil {
+						return err
+					}
+					date = date.AddDate(0, 0, 1)
+				}
+				if err := store.AdvanceSubscriptionPeriod(ctx, tx, period.ID, date); err != nil {
+					return err
+				}
+				if !now.Before(period.StartsAt) && now.Before(period.EndsAt) {
+					_, err = tx.Exec(ctx, `UPDATE subscriptions SET daily_grant_cents=$2 WHERE id=$1`, sub.ID, period.DailyGrantCents)
+				}
+				return err
 			})
 		}
-		err := grant()
-		if err != nil && store.IsUniqueViolation(err, "uq_wallet_ledger_idem") {
-			// 并发竞态：重试命中 Grant 前置幂等检查
-			err = grant()
+		if err := grant(); err != nil {
+			if store.IsUniqueViolation(err, "uq_wallet_ledger_idem") {
+				err = grant()
+			}
+			if err != nil {
+				log.Printf("subscription period %s grant failed: %v", candidate.ID, err)
+				failures = append(failures, err)
+			}
 		}
-		if err != nil {
-			log.Printf("subscription %s daily grant failed: %v", sub.ID, err)
-			continue
-		}
-		log.Printf("subscription %s granted %d cents for %s", sub.ID, sub.DailyGrantCents, today)
 	}
-	return nil
+	if _, err := store.ExpireSubscriptions(ctx, st.Pool, now); err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
 }

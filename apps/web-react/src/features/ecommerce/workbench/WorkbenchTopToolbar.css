@@ -1,0 +1,218 @@
+.workbench-toolbar {
+  position: relative;
+  z-index: 18;
+}
+
+.workbench-toolbar__popover--wide {
+  width: min(520px, calc(100vw - 20px));
+}
+
+.workbench-toolbar__group {
+  display: grid;
+  gap: 6px;
+}
+
+.workbench-toolbar__group-label {
+  color: var(--commerce-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.workbench-toolbar__icon {
+  grid-row: 1 / span 2;
+  margin-right: 6px;
+  color: var(--commerce-muted);
+  font-size: 12px;
+}
+
+.workbench-toolbar .accessory-toolbar__options > button:has(.workbench-toolbar__icon) {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.workbench-toolbar .accessory-toolbar__options > button.is-active .workbench-toolbar__icon {
+  color: var(--commerce-accent-ink);
+}
+
+.workbench-toolbar__group-label small {
+  margin-left: 6px;
+  font-weight: 600;
+  opacity: 0.8;
+}
+
+/* 画面预设：可选可输入的字段 */
+.workbench-toolbar__presets {
+  display: grid;
+  gap: 10px;
+}
+
+.workbench-toolbar__presets.is-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.workbench-toolbar__preset {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.workbench-toolbar__preset-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  color: var(--commerce-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.workbench-toolbar__preset-clear {
+  padding: 0;
+  color: var(--commerce-accent-ink);
+  background: transparent;
+  border: 0;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workbench-toolbar__preset input {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 9px;
+  color: var(--commerce-ink);
+  background: var(--commerce-settings-control);
+  border: 1px solid var(--commerce-settings-line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 11px;
+}
+
+.workbench-toolbar__preset input:focus-visible {
+  outline: 2px solid var(--commerce-accent-line);
+  outline-offset: 0;
+  border-color: transparent;
+}
+
+.workbench-toolbar__preset input::-webkit-calendar-picker-indicator {
+  display: none !important;
+}
+
+.workbench-toolbar__preset-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.workbench-toolbar__preset-chips button {
+  min-height: 22px;
+  padding: 0 8px;
+  color: var(--commerce-muted);
+  background: color-mix(in srgb, var(--commerce-settings-control) 70%, transparent);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.workbench-toolbar__preset-chips button:hover:not(:disabled) {
+  color: var(--commerce-ink);
+  border-color: var(--commerce-settings-line);
+}
+
+.workbench-toolbar__preset-chips button.is-active {
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+  border-color: var(--commerce-accent-line);
+}
+
+.workbench-toolbar__preset-chips button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 商品信息：AI 帮写 + 文字稳定性 */
+.workbench-toolbar__product-tools {
+  display: grid;
+  gap: 8px;
+}
+
+.workbench-toolbar__brief {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  color: var(--commerce-accent-ink);
+  background: var(--commerce-accent-soft);
+  border: 1px solid var(--commerce-accent-line);
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workbench-toolbar__brief:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.workbench-toolbar__switch {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 9px;
+  color: var(--commerce-ink);
+  text-align: left;
+  background: var(--commerce-settings-control);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.workbench-toolbar__switch > span {
+  display: grid;
+  gap: 1px;
+}
+
+.workbench-toolbar__switch strong {
+  font-size: 11px;
+}
+
+.workbench-toolbar__switch small {
+  color: var(--commerce-muted);
+  font-size: 9px;
+}
+
+.workbench-toolbar__switch > i {
+  position: relative;
+  display: block;
+  width: 30px;
+  height: 18px;
+  background: color-mix(in srgb, var(--commerce-muted) 40%, transparent);
+  border-radius: 999px;
+  transition: background 180ms ease;
+}
+
+.workbench-toolbar__switch > i b {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 999px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 22%);
+  transition: transform 180ms ease;
+}
+
+.workbench-toolbar__switch.is-on > i {
+  background: var(--commerce-accent);
+}
+
+.workbench-toolbar__switch.is-on > i b {
+  transform: translateX(12px);
+}

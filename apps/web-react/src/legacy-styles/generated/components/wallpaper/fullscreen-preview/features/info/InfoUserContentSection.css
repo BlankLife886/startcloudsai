@@ -1,0 +1,56 @@
+/* Generated from apps/web/src/components/wallpaper/fullscreen-preview/features/info/InfoUserContentSection.vue. */
+
+.user-content-block {
+  display: block;
+}
+.user-content-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.user-content-card input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.2);
+  color: #fff;
+  padding: 8px 10px;
+  font-size: 0.78rem;
+}
+.user-content-card input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+.user-content-card input:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.28);
+}
+.user-tags-clickable {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.save-user-content-btn {
+  align-self: flex-start;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 0.76rem;
+  cursor: default;
+}
+.save-user-content-btn.is-dirty {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+}
+.save-user-content-btn.is-dirty:hover {
+  background: rgba(255, 255, 255, 0.14);
+}

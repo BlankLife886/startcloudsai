@@ -1,0 +1,18 @@
+/*
+ * 首屏大图底部渐隐：图片底部渐隐成透明，露出与下方区块同一层页面背景（跟随亮/暗主题），
+ * 和下方模型条无缝衔接。其余轮播样式保持原样。
+ */
+.home-catalog .home-hero {
+  /* 与下方模型条顶部的紫色光晕镜像对称，接缝处颜色一致 */
+  background: radial-gradient(ellipse at 50% 100%, rgb(124 92 255 / 7%), transparent 72%) bottom / 100% 88px no-repeat;
+}
+.home-catalog .home-hero__visual {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 140px), rgb(0 0 0 / 55%) calc(100% - 60px), transparent 100%);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 140px), rgb(0 0 0 / 55%) calc(100% - 60px), transparent 100%);
+}
+@media (max-width: 800px) {
+  .home-catalog .home-hero__visual {
+    -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 80px), transparent 100%);
+    mask-image: linear-gradient(180deg, #000 calc(100% - 80px), transparent 100%);
+  }
+}
