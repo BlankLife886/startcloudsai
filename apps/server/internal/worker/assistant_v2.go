@@ -158,6 +158,7 @@ func (w *Worker) assistantV2Decide(ctx context.Context, decider decision.Decider
 func (w *Worker) assistantV2Registry() (*assistanttools.Registry, error) {
 	return assistanttools.NewRegistry(
 		assistanttools.NewMyDataManifest(w.St, time.Now),
+		assistanttools.NewTaskStatusManifest(w.St.Pool),
 	)
 }
 
@@ -167,7 +168,8 @@ func (w *Worker) assistantV2Registry() (*assistanttools.Registry, error) {
 func assistantV2ToolsFor(registry *assistanttools.Registry, intent string) []string {
 	names := []string{}
 	for _, name := range registry.Names() {
-		if registry.Domain(name) == "my_data" {
+		switch registry.Domain(name) {
+		case "my_data", "task-status":
 			names = append(names, name)
 		}
 	}
@@ -186,6 +188,7 @@ func assistantV2SystemPrompt(run *store.AssistantRun, now time.Time, d assistant
 
 通用规则：
 - 用中文回答，先给结论，再给依据，最后给可以直接执行的下一步。
+- 用户问某个任务为什么失败、还在不在跑、有没有退款时，调用 task_status 查看真实状态，不要猜测；不向用户展示内部任务 ID、线路或端点。
 - 涉及用户本人的数据（用量、消耗、积分去向、创作次数、成功率、明细）时，必须调用 my_stats_query 或 my_records_list 获取，回答中的每个数字都只能来自工具结果；工具没返回的数字不得编造或估算。
 - 问题不够具体时先给合理的默认答案（例如默认看最近 30 天），再提供一两个细分方向，不要反问。
 - 统计结果要做解读：与上一周期对比时说明变化幅度，并指出变化最大的部分和可能的原因。
@@ -332,7 +335,10 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	observations := map[string]string{}
 	text, reasoning := "", ""
 	messages := payload
-	permissions := map[assistanttools.Permission]bool{assistanttools.PermissionMyDataRead: true}
+	permissions := map[assistanttools.Permission]bool{
+		assistanttools.PermissionMyDataRead: true,
+		assistanttools.PermissionTasksRead:  true,
+	}
 
 	for step := 0; ; step++ {
 		if len(tools) == 0 || step >= assistantV2MaxSteps {
