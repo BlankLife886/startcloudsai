@@ -790,9 +790,10 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			fail(c, apperr.E("validation_error", "新版助手暂不处理图片模式", 422))
 			return
 		}
-		if len(body.ReferenceImages) > 0 || len(body.Attachments) > 0 || len(body.ImagePlanItems) > 0 ||
-			body.MaskImage != nil || len(body.CanvasSnapshot) > 0 {
-			fail(c, apperr.E("validation_error", "新版助手暂不支持附件和图片参数", 422))
+		// Reference images, documents and quotes are read by v2 itself; region
+		// edits, multi-image plans and canvas snapshots belong to other flows.
+		if len(body.ImagePlanItems) > 0 || body.MaskImage != nil || len(body.CanvasSnapshot) > 0 {
+			fail(c, apperr.E("validation_error", "新版助手不处理局部编辑、多图方案或画布快照", 422))
 			return
 		}
 		if workspace := strings.TrimSpace(body.Workspace); workspace != "" && workspace != modelconfig.WorkspaceAssistant {
@@ -860,7 +861,12 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		}
 		workspace = requestedWorkspace
 	}
-	executionMode := assistantToolExecutionMode(workspace, requestedMode, body.Prompt)
+	// v2 decides what a turn needs when it runs, so its runs keep the mode the
+	// user picked; the keyword upgrade only applies to the original engine.
+	executionMode := requestedMode
+	if !engineV2 {
+		executionMode = assistantToolExecutionMode(workspace, requestedMode, body.Prompt)
+	}
 	body.Mode = executionMode
 	canvasAgent := workspace == modelconfig.WorkspaceCanvas && body.Mode == "agent"
 	body.ReasoningEffort, err = normalizeAssistantReasoningEffort(body.ReasoningEffort, false)
@@ -1036,7 +1042,10 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			body.ReasoningEffort = chatSelection.Model.ReasoningPricing.DefaultEffort
 		}
 	}
-	if body.Mode == "agent" && !canvasAgent {
+	// v2 Q&A runs may hand an image request to the original Agent, so they are
+	// prepared with the same image capabilities as Agent runs.
+	agentCapabilities := (body.Mode == "agent" || engineV2) && !canvasAgent
+	if agentCapabilities {
 		imageSelection, _ = modelconfig.SelectPublicForWorkspace(
 			modelCfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage, "",
 		)
@@ -1312,7 +1321,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			}
 		}
 	}
-	if body.Mode == "agent" && !canvasAgent {
+	if agentCapabilities {
 		selections := modelconfig.PublicModelsForWorkspace(modelCfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage)
 		globalLimits, limitsErr := store.GetGlobalExecutionLimits(c.Request.Context(), s.St.Pool)
 		if limitsErr != nil {

@@ -61,6 +61,9 @@ const developerAPIView = memoizeRouteLoader(
 const agentQualityView = memoizeRouteLoader(
   () => import("@/views/AgentQualityView.vue"),
 );
+const assistantDecisionView = memoizeRouteLoader(
+  () => import("@/views/AssistantDecisionView.vue"),
+);
 const modelConfigView = memoizeRouteLoader(
   () => import("@/views/ModelConfigView.vue"),
 );
@@ -111,6 +114,7 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/tasks", tasksView],
   ["/developer-api", developerAPIView],
   ["/agent-quality", agentQualityView],
+  ["/assistant-decision", assistantDecisionView],
   ["/model-config", modelConfigView],
   ["/canvas-templates", canvasTemplatesView],
   ["/prompt-library", promptLibraryView],
@@ -226,6 +230,11 @@ const router = createRouter({
           path: "agent-quality",
           component: agentQualityView,
           meta: { title: "Agent 质量" },
+        },
+        {
+          path: "assistant-decision",
+          component: assistantDecisionView,
+          meta: { title: "AI 助手判断" },
         },
         {
           path: "model-config",

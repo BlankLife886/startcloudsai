@@ -2378,14 +2378,11 @@ export function useAssistantWorkspaceController() {
       });
       if (imageSettings.sizeError) throw new Error(imageSettings.sizeError);
       const includeImageParameters = responseMode === "image" || responseMode === "agent";
-      // Q&A and Agent turns go to the v2 engine, which hands image creation,
-      // web search and workspace tools back to the original engine itself.
-      // Inputs v2 does not read yet keep the original path.
+      // Q&A and Agent turns go to the v2 engine, which reads reference images,
+      // documents and quotes itself and hands image creation, web search and
+      // workspace tools back to the original engine. Region edits, approved
+      // image plans and proposal executions are image flows and stay as they are.
       const useEngineV2 = responseMode !== "image"
-        && !(userMessage.referenceImages || []).length
-        && !(userMessage.attachments || []).length
-        && !userMessage.quoted
-        && !userMessage.skill
         && !maskEdit
         && !proposalSourceMessageId
         && !(assistantMessage.imagePlanItems || userMessage.imagePlanItems || []).length;

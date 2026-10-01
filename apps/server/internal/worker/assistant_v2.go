@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantdecision"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/decision"
@@ -25,170 +27,125 @@ import (
 const AssistantEngineV2 = "v2"
 
 const (
-	assistantV2MaxSteps         = 6
-	assistantV2DecisionTimeout  = 3 * time.Second
-	assistantV2SystemVersion    = "assistant-v2-1"
-	assistantV2MaxViewRows      = 120
-	assistantV2ClarifyThreshold = 0.75
+	assistantV2MaxSteps        = 6
+	assistantV2DecisionTimeout = 3 * time.Second
+	assistantV2SystemVersion   = "assistant-v2-1"
+	assistantV2MaxViewRows     = 120
+)
+
+// Params carried from v2 into the original engine when a turn is handed over.
+const (
+	assistantV2IntentParam    = "_v2Intent"
+	assistantV2ConfidentParam = "_v2IntentConfident"
 )
 
 func assistantRunUsesV2(run *store.AssistantRun) bool {
 	return run != nil && assistantParamString(run.Params, "_engine", "") == AssistantEngineV2
 }
 
-// Intents the decision layer chooses between. Each maps to capability
-// domains whose tools are exposed for the turn.
+// The judgment itself lives in assistantdecision so the admin evaluation runs
+// exactly the code that routes turns; these names keep the worker readable.
 const (
-	assistantV2IntentAnswer  = "answer"
-	assistantV2IntentMyData  = "my_data"
-	assistantV2IntentCreate    = "create"
-	assistantV2IntentWeb       = "web"
-	assistantV2IntentWorkspace = "workspace"
-	assistantV2IntentAccount   = "account"
+	assistantV2IntentAnswer    = assistantdecision.IntentAnswer
+	assistantV2IntentMyData    = assistantdecision.IntentMyData
+	assistantV2IntentCreate    = assistantdecision.IntentCreate
+	assistantV2IntentWeb       = assistantdecision.IntentWeb
+	assistantV2IntentWorkspace = assistantdecision.IntentWorkspace
+	assistantV2IntentAccount   = assistantdecision.IntentAccount
 )
 
-// assistantV2DelegatesIntent reports intents whose capabilities still live in
-// the original engine (image proposals, web search, workspace tools). Those
-// turns are handed to it within the same run, so nothing the original Agent
-// could do is lost while v2 grows.
-func assistantV2DelegatesIntent(intent string) bool {
-	switch intent {
-	case assistantV2IntentCreate, assistantV2IntentWeb, assistantV2IntentWorkspace:
-		return true
-	}
-	return false
-}
+type (
+	assistantV2DecisionSetup = assistantdecision.Setup
+	assistantV2Decision      = assistantdecision.Result
+)
 
-func assistantV2DecisionQuestions() []decision.Question {
-	return []decision.Question{
-		{
-			ID: "intent", Kind: decision.KindChoice,
-			Instructions: "判断用户最后一条消息主要需要哪类能力。",
-			Options: []decision.Option{
-				{ID: assistantV2IntentAnswer, Description: "直接回答：闲聊、知识问答、写作、平台功能怎么用"},
-				{ID: assistantV2IntentMyData, Description: "查询用户本人的数据：用量、消耗、积分去向、创作次数、成功率、明细记录"},
-				{ID: assistantV2IntentCreate, Description: "要求生成、修改或重绘图片和设计"},
-				{ID: assistantV2IntentWeb, Description: "需要联网查找最新的外部信息（新闻、价格、公开资料）"},
-				{ID: assistantV2IntentWorkspace, Description: "要求执行站内工具：抠图、放大、压缩、导出交付包、发送到工作台、网页截图、找参考图、导入商品链接"},
-				{ID: assistantV2IntentAccount, Description: "账户与支付：充值、购买或退订套餐、订单、退款、修改密码、API Key"},
-			},
-		},
-		{
-			ID: "clarify", Kind: decision.KindYesNo,
-			Instructions: "用户的要求是否缺少关键信息，必须先追问一个问题才能继续？能先给出合理默认答案的情况回答否。",
-		},
-	}
-}
+func assistantV2DelegatesIntent(intent string) bool { return assistantdecision.DelegatesIntent(intent) }
 
-var assistantV2MyDataPattern = regexp.MustCompile(`(花了|花哪|花在|花费|钱|消耗|消费|扣了|扣费|积分|余额|用量|用了多少|多少张|多少次|成功率|失败率|统计|账单|明细|趋势|环比|本月|上月|这周|上周|今年)`)
+func assistantV2DecisionQuestions() []decision.Question { return assistantdecision.Questions() }
 
-// assistantV2Rules answer only when the text makes the answer obvious, with
-// deliberately low confidence; everything else is left to the defaults.
-func assistantV2Rules(prompt string) decision.Rules {
-	return decision.Rules{
-		"intent": func(string) (decision.Answer, bool) {
-			switch {
-			case assistantPromptRequestsWebSearch(prompt):
-				return decision.Answer{Choice: assistantV2IntentWeb, Confidence: 0.5}, true
-			case assistantForcedWorkspaceTool(prompt) != "":
-				return decision.Answer{Choice: assistantV2IntentWorkspace, Confidence: 0.5}, true
-			case assistanttools.ImageActionRequested(prompt):
-				return decision.Answer{Choice: assistantV2IntentCreate, Confidence: 0.5}, true
-			case assistantV2MyDataPattern.MatchString(prompt):
-				return decision.Answer{Choice: assistantV2IntentMyData, Confidence: 0.4}, true
-			}
-			return decision.Answer{Choice: assistantV2IntentAnswer, Confidence: 0.2}, true
-		},
-		"clarify": decision.Fixed(decision.Answer{Yes: 0, Confidence: 0.2}),
-	}
-}
+func assistantV2Rules(prompt string) decision.Rules { return assistantdecision.Rules(prompt) }
 
-// assistantV2Decider builds the decision chain: the decision model (override
-// or the assistant page's default chat model) first, rules as fallback.
-func (w *Worker) assistantV2Decider(ctx context.Context, prompt string) decision.Decider {
-	chain := decision.Chain{Fallback: assistantV2Rules(prompt), Timeout: assistantV2DecisionTimeout}
+// assistantV2DecisionSetupFor resolves the decision model (override, else the
+// assistant page's default chat model) and its thresholds. Any failure leaves
+// the rules in charge; a turn is never blocked on the decision model.
+func (w *Worker) assistantV2DecisionSetupFor(ctx context.Context, prompt string) assistantV2DecisionSetup {
 	if w.St == nil {
-		return chain
+		return assistantdecision.RulesOnly(prompt, decision.DefaultThresholds)
 	}
-	selection, err := decision.ResolveModel(ctx, w.St.Pool, w.Cfg.AppSecret)
-	if err != nil {
-		if !errors.Is(err, decision.ErrNoModel) {
-			log.Printf("assistant v2 decision model unavailable: %v", err)
-		}
-		return chain
-	}
-	client, err := w.configuredAssistantChatClient(selection)
-	if err != nil {
-		log.Printf("assistant v2 decision client unavailable: %v", err)
-		return chain
-	}
-	chain.Primary = decision.LLM{Completer: decision.ClientCompleter{Client: client}, Model: selection.Model.Name}
-	return chain
+	return assistantdecision.Resolve(ctx, w.St.Pool, w.Cfg.AppSecret, prompt, "")
 }
 
-func assistantV2DecisionState(history []*store.AssistantMessage, run *store.AssistantRun) string {
-	return buildAssistantIntentTranscript(history, run.UserMessageID, run.AssistantMessageID, run.Prompt)
+func (w *Worker) assistantV2Decide(ctx context.Context, setup assistantV2DecisionSetup, state string) assistantV2Decision {
+	return assistantdecision.Decide(ctx, setup, state)
 }
 
-type assistantV2Decision struct {
-	Intent     string
-	Confidence float64
-	Clarify    bool
-	Response   decision.Response
-	Err        error
+func assistantV2DecisionState(history []*store.AssistantMessage, run *store.AssistantRun, references, documents int) string {
+	state := buildAssistantIntentTranscript(history, run.UserMessageID, run.AssistantMessageID, run.Prompt)
+	if references > 0 || documents > 0 {
+		// Attachments change the answer ("把背景换成白色" with an image is an
+		// edit; without one it is a question), so the judge must know.
+		state += fmt.Sprintf("\n（本轮附带 %d 张参考图、%d 个文档）", references, documents)
+	}
+	return state
 }
 
-func (d assistantV2Decision) metadata() map[string]any {
-	out := map[string]any{
-		"intent":     d.Intent,
-		"confidence": d.Confidence,
-		"clarify":    d.Clarify,
-		"provider":   d.Response.Provider,
-		"model":      d.Response.Model,
-		"calibrated": d.Response.Calibrated,
-		"latencyMs":  d.Response.LatencyMs,
+// recordAssistantV2Decision writes the shadow-comparison row. It is best
+// effort: losing a log row must never fail the user's turn.
+func (w *Worker) recordAssistantV2Decision(ctx context.Context, run *store.AssistantRun, decided assistantV2Decision, delegated bool) {
+	if w.St == nil {
+		return
 	}
-	if len(d.Response.FallbackIDs) > 0 {
-		out["fallbackIds"] = d.Response.FallbackIDs
+	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := store.InsertAssistantDecisionLog(logCtx, w.St.Pool, store.AssistantDecisionLog{
+		RunID: run.ID, UserID: run.UserID, Provider: decided.Response.Provider, Model: decided.Response.Model,
+		Intent: decided.Intent, Confidence: decided.Confidence, RulesIntent: decided.RulesIntent,
+		Clarify: decided.Clarify, LowConfidence: decided.LowConfidence, UsedFallback: decided.UsedFallback(),
+		Delegated: delegated, LatencyMs: decided.Response.LatencyMs,
+	}); err != nil {
+		log.Printf("assistant v2 decision log failed for run %s: %v", run.ID, err)
 	}
-	if d.Err != nil {
-		out["error"] = sanitizeUpstreamMessage(d.Err.Error())
-	}
-	return out
 }
 
-func (w *Worker) assistantV2Decide(ctx context.Context, decider decision.Decider, state string) assistantV2Decision {
-	result := assistantV2Decision{Intent: assistantV2IntentAnswer}
-	response, err := decider.Decide(ctx, decision.Request{State: state, Questions: assistantV2DecisionQuestions()})
-	result.Response, result.Err = response, err
-	if answer, ok := response.Answers["intent"]; ok && answer.Choice != "" {
-		result.Intent, result.Confidence = answer.Choice, answer.Confidence
+// assistantV2HandOver prepares a run for the original engine: image
+// proposals, web search and workspace tools live on its Agent path, so the
+// turn runs as Agent with v2's judgment attached (in memory only; the stored
+// run keeps the mode the user picked and was priced for).
+func assistantV2HandOver(run *store.AssistantRun, decided assistantV2Decision) *store.AssistantRun {
+	handed := *run
+	handed.Mode = "agent"
+	params := make(map[string]any, len(run.Params)+2)
+	for key, value := range run.Params {
+		params[key] = value
 	}
-	if answer, ok := response.Answers["clarify"]; ok {
-		// Self-reported LLM confidence is not calibrated, so clarification
-		// needs a clearly high "yes" before the assistant stops to ask.
-		result.Clarify = answer.Yes >= assistantV2ClarifyThreshold
-	}
-	return result
+	params[assistantV2IntentParam] = decided.Intent
+	params[assistantV2ConfidentParam] = fmt.Sprint(decided.Confident())
+	handed.Params = params
+	return &handed
 }
 
 // assistantV2Registry holds the capabilities v2 can call. Each domain is one
 // manifest; adding a platform capability means adding a manifest here.
-func (w *Worker) assistantV2Registry() (*assistanttools.Registry, error) {
-	return assistanttools.NewRegistry(
+// Attached documents add the read-only file tools for that turn.
+func (w *Worker) assistantV2Registry(withFiles bool) (*assistanttools.Registry, error) {
+	manifests := []assistanttools.Manifest{
 		assistanttools.NewMyDataManifest(w.St, time.Now),
 		assistanttools.NewTaskStatusManifest(w.St.Pool),
-	)
+	}
+	if withFiles {
+		manifests = append(manifests, assistanttools.NewFileManifest(w.St.Pool))
+	}
+	return assistanttools.NewRegistry(manifests...)
 }
 
-// assistantV2ToolsFor returns the tools exposed for an intent. Read-only
-// personal data is cheap and safe, so it stays available to every turn that
-// might reference it; other domains join as they ship.
+// assistantV2ToolsFor returns the tools exposed for a turn. Read-only
+// personal data and task status are cheap and safe, so they stay available;
+// file tools join when documents are attached.
 func assistantV2ToolsFor(registry *assistanttools.Registry, intent string) []string {
 	names := []string{}
 	for _, name := range registry.Names() {
 		switch registry.Domain(name) {
-		case "my_data", "task-status":
+		case "my_data", "task-status", "files":
 			names = append(names, name)
 		}
 	}
@@ -271,12 +228,12 @@ func (w *Worker) executeAssistantV2(ctx context.Context, run *store.AssistantRun
 	client = client.WithMaxOutputTokens(
 		assistantParamInt(run.Params, "_chatMaxOutputTokens", assistantDefaultOutputTokens),
 	).WithReasoningEffort(assistantParamString(run.Params, "reasoningEffort", ""))
-	return w.runAssistantV2(ctx, run, client, w.assistantV2Decider(ctx, run.Prompt))
+	return w.runAssistantV2(ctx, run, client, w.assistantV2DecisionSetupFor(ctx, run.Prompt))
 }
 
 // runAssistantV2 is the orchestration itself, with the chat client and the
 // decider injected so tests can drive it against a fake upstream.
-func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, client *sub2api.Client, decider decision.Decider) error {
+func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, client *sub2api.Client, setup assistantV2DecisionSetup) error {
 	started := assistantRunClock(run)
 	ctx = withAssistantDebugLog(ctx, &assistantDebugLog{started: started})
 	const kind = "agent"
@@ -286,22 +243,44 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 		history = nil
 	}
 	history = assistantMessagesAfterContextBoundary(history)
+	references, err := w.loadAssistantReferences(ctx, run.Params)
+	if err != nil {
+		return err
+	}
+	inheritAssistantDocumentContext(run, history)
+	fileIDs := assistantRunFileIDs(run)
 
 	w.publishAssistantDebug(ctx, run, "decision", "正在判断这一轮需要什么能力")
-	decided := w.assistantV2Decide(ctx, decider, assistantV2DecisionState(history, run))
+	decided := w.assistantV2Decide(ctx, setup, assistantV2DecisionState(history, run, len(references), len(fileIDs)))
 	w.publishAssistantDebug(ctx, run, "decision_done", fmt.Sprintf("%s（置信度 %.2f，来源 %s）",
 		decided.Intent, decided.Confidence, decided.Response.Provider))
-	if assistantV2DelegatesIntent(decided.Intent) && !decided.Clarify {
+	delegating := assistantV2DelegatesIntent(decided.Intent) && !decided.Clarify
+	w.recordAssistantV2Decision(ctx, run, decided, delegating)
+	if delegating {
 		w.publishAssistantDebug(ctx, run, "delegate", "交给原有引擎处理："+decided.Intent)
-		return w.executeAssistantRunLegacy(ctx, run)
+		return w.executeAssistantRunLegacy(ctx, assistantV2HandOver(run, decided))
 	}
 
-	payload, _, err := w.prepareAssistantContext(ctx, run, kind, assistantV2SystemPrompt(run, time.Now(), decided), history, nil, false, "thinking")
+	systemPrompt := assistantV2SystemPrompt(run, time.Now(), decided)
+	if len(fileIDs) > 0 {
+		_, skill, skillErr := w.assistantDocumentSkill(run)
+		if skillErr != nil {
+			return skillErr
+		}
+		systemPrompt += "\n\n本轮附带了文档。先用 files_list / files_search / files_read 读取再回答，引用时注明文件名和位置；没读到的内容不要编造。\n" + skill.Instructions
+	}
+	nextStage := "thinking"
+	if len(fileIDs) > 0 {
+		nextStage = "analyzing-document"
+	} else if len(references) > 0 {
+		nextStage = "analyzing-image"
+	}
+	payload, _, err := w.prepareAssistantContext(ctx, run, kind, systemPrompt, history, references, false, nextStage)
 	if err != nil {
 		return err
 	}
 
-	registry, err := w.assistantV2Registry()
+	registry, err := w.assistantV2Registry(len(fileIDs) > 0)
 	if err != nil {
 		return err
 	}
@@ -359,8 +338,10 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	text, reasoning := "", ""
 	messages := payload
 	permissions := map[assistanttools.Permission]bool{
-		assistanttools.PermissionMyDataRead: true,
-		assistanttools.PermissionTasksRead:  true,
+		assistanttools.PermissionMyDataRead:    true,
+		assistanttools.PermissionTasksRead:     true,
+		assistanttools.PermissionFilesMetadata: len(fileIDs) > 0,
+		assistanttools.PermissionFilesRead:     len(fileIDs) > 0,
 	}
 
 	for step := 0; ; step++ {
@@ -399,7 +380,7 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 				Tool: &assistantstream.ToolCallEvent{RequestID: requestID, Name: call.Name, Arguments: call.Arguments, Execution: "server", Status: "running"},
 			})
 			stepStarted := time.Now()
-			observation, meta, toolErr := w.assistantV2InvokeTool(ctx, registry, run, &call, permissions, observations)
+			observation, meta, toolErr := w.assistantV2InvokeTool(ctx, registry, run, &call, permissions, observations, fileIDs)
 			if record := assistantAgentToolStepRecord(&call, toolErr, time.Since(stepStarted)); record != nil {
 				toolSteps = append(toolSteps, record)
 			}
@@ -444,7 +425,7 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	metadata["engine"] = AssistantEngineV2
 	metadata["systemPromptVersion"] = assistantV2SystemVersion
 	// Underscore keys stay server-side: the decision is for evaluation, not display.
-	metadata["_decision"] = decided.metadata()
+	metadata["_decision"] = decided.Metadata(sanitizeUpstreamMessage)
 	if len(dataViews) > 0 {
 		metadata["dataViews"] = dataViews
 	}
@@ -475,6 +456,7 @@ func (w *Worker) assistantV2InvokeTool(
 	call *sub2api.ToolCall,
 	permissions map[assistanttools.Permission]bool,
 	observations map[string]string,
+	fileIDs []uuid.UUID,
 ) (string, map[string]any, error) {
 	level, ok := registry.Level(call.Name)
 	if !ok {
@@ -494,6 +476,7 @@ func (w *Worker) assistantV2InvokeTool(
 		AssistantMessageID: run.AssistantMessageID,
 		Arguments:          assistantToolArguments(call.Arguments),
 		Permissions:        permissions,
+		FileIDs:            fileIDs,
 		Timezone:           assistantParamString(run.Params, "timezone", ""),
 	})
 	if err != nil {

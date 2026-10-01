@@ -1,6 +1,6 @@
 # AI 助手 v2 交接文档
 
-> 更新时间：2026-10-02
+> 更新时间：2026-10-02（P0 完成）
 > 分支：`codex/ai-assistant-v2`（本地，**未推送**）
 > 工作树：`/Users/ycc/Documents/TestCode/startcloudsai-ai-assistant-v2`
 > 基线：`1608691`（`codex/publish-current-project` 当时的最新提交）
@@ -13,7 +13,7 @@
 
 AI 助手**沿用原有界面**（`AssistantWorkspaceLayout` 等，不做新 UI），底层换成了 **v2 引擎**：问答和 Agent 模式的消息由 v2 先判断“这一轮要做什么”，查用户自己的数据、排查任务、普通问答由 v2 直接处理；生图方案、联网搜索、站内工具（抠图、导出等）在**同一轮内交回原引擎**处理。图片模式不变。
 
-整体路线是 P0–P5 六个阶段，目前 **P0 大部分 + P1 核心完成**，P2–P5 未开始。
+整体路线是 P0–P5 六个阶段，目前 **P0 已全部完成、P1 核心完成**，P2–P5 未开始。
 
 ---
 
@@ -37,7 +37,7 @@ AI 助手**沿用原有界面**（`AssistantWorkspaceLayout` 等，不做新 UI�
 
 - **不要从 `main` 开分支**：`main` 比基线分支落后 191 个提交，现有助手、支付等代码都不在 `main` 上。
 - 主工作目录 `startcloudsai`（分支 `codex/publish-current-project`）有 30 多个**未提交**改动（含电商），本分支没有动它们。合并前需要和那批电商改动对齐。
-- 本分支**没有新增数据库迁移**。
+- 本分支新增了 **1 个数据库迁移**：`00177_assistant_decision_logs.sql`（判断记录表）。合并前确认其他分支没有占用 00177 这个编号。
 - **真实生成要先问用户**：本地服务连接的是真实上游模型，任何可能提交生成的操作（包括在本地页面里发消息）都会真实扣费。
 - **本地服务不要随意重启**：接口和 worker 由启动器以 `go run` 方式运行，环境变量来自启动器而不是 `.env`。只在用户要求时重启。
 - 本地正在运行的接口（`localhost:8000`）跑的是**主工作目录的旧代码**，不认识 `engine=v2`。要真实试用 v2，需要用本工作树的代码另起接口和 worker（还没做，需用户同意）。
@@ -71,22 +71,30 @@ WEB_BASE_URL=http://127.0.0.1:3125 npx playwright test tests/e2e/assistant-engin
 
 ```
 原界面（问答 / 图片 / Agent，未改样式）
-   │  问答、Agent 且无附件 / 参考图 / 引用 → createAssistantRun 带 engine:"v2" + timezone
-   │  其它情况 → 原流程（不带 engine）
+   │  问答、Agent → createAssistantRun 带 engine:"v2" + timezone（附件、参考图、引用都走 v2）
+   │  图片模式、局部编辑、已确认的出图方案 → 原流程（不带 engine）
    ▼
 POST /api/v1/assistant/runs（handlers_assistant_workspace.go）
-   │  engine=v2 → params._engine="v2"、params.timezone
+   │  engine=v2：保持用户选的模式（不再按关键词升级），但按 Agent 预备图片能力（模型目录）
    ▼
 worker.executeAssistantRun（assistant.go）
-   ├─ 非 v2 → executeAssistantRunLegacy（原引擎，未改）
-   └─ v2 → executeAssistantV2 → runAssistantV2（assistant_v2.go）
-        1. 决策层判断 intent：answer / my_data / create / web / workspace / account，以及是否需要追问
-        2. create / web / workspace → 同一 run 内交回 executeAssistantRunLegacy
-        3. 其余 → 工具循环（最多 6 步，只执行 read 级工具）
-             工具：my_stats_query、my_records_list、task_status
-        4. 写消息元数据（dataViews、toolSteps、_decision）→ CompleteAgentAttempt 结算 → 推送 Done
+   ├─ 非 v2 → executeAssistantRunLegacy（原引擎）
+   └─ v2 → runAssistantV2（assistant_v2.go）
+        1. assistantdecision.Resolve：判断模型 = 后台单独指定的模型，否则 AI 助手页默认对话模型；
+           读取该模型的阈值；模型不可用时只用规则
+        2. assistantdecision.Decide：模型判断 intent / 是否追问；同时算出规则的判断（影子对比）；
+           置信度低于阈值时改用规则的判断；写一行 assistant_decision_logs
+        3. create / web / workspace → assistantV2HandOver：以 Agent 身份交给原引擎，
+           并带上 _v2Intent，原引擎直接用这个判断，不再自己跑关键词和模型判断
+        4. 其余 → 工具循环（最多 6 步，只执行 read 级工具）：
+           my_stats_query、my_records_list、task_status，附带文档时加 files_list/search/read；
+           参考图随本轮消息一起发给模型；引用由上下文构建自动带上
+        5. 写消息元数据（dataViews、toolSteps、_decision）→ CompleteAgentAttempt 结算 → 推送 Done
    ▼
 原界面渲染：正文 + AssistantDataViews（统计卡片 / 图表 / 表格 / 明细）
+
+后台 /admin/assistant-decision（AssistantDecisionView.vue）
+   设置判断模型和每个模型的阈值 · 看近 7/30 日判断记录 · 跑内置评测集（规则免费 / 模型真实调用）
 ```
 
 ### 关键文件
@@ -95,7 +103,11 @@ worker.executeAssistantRun（assistant.go）
 |---|---|
 | `apps/server/internal/store/metric_facts.go` | **统计口径的唯一来源**：创作事实和账本事实两段 SQL |
 | `apps/server/internal/usermetrics/` | 指标目录、时间范围、白名单查询 `Query`、明细 `ListRecords` |
-| `apps/server/internal/decision/` | 可插拔决策层：`Decider` 接口、LLM（JSON 输出）、规则、`Chain`、模型解析 `ResolveModel` |
+| `apps/server/internal/decision/` | 可插拔决策层：`Decider` 接口、LLM（JSON 输出）、规则、`Chain`；设置（判断模型覆盖 + 每个模型的阈值）；`SelectModel` / `ResolveModel` / `NewChatClient` |
+| `apps/server/internal/assistantdecision/` | AI 助手的判断本身：意图、问题、规则、`Resolve`、`Decide`（阈值 + 影子对比）；内置评测集 `BuiltinCases` 与 `Evaluate`。worker 和后台评测共用这一份代码 |
+| `apps/server/internal/store/assistant_decision_logs.go` | 判断记录写入与统计 |
+| `apps/server/internal/httpapi/handlers_admin_assistant_decision.go` | 后台接口：`GET/PUT /admin/assistant/decision`、`GET /admin/assistant/decision/stats`、`POST /admin/assistant/decision/evals` |
+| `apps/admin/src/views/AssistantDecisionView.vue` | 后台页面“AI 助手判断” |
 | `apps/server/internal/assistanttools/registry.go` | 工具注册表，新增 `Level`（read / spend / change） |
 | `apps/server/internal/assistanttools/my_data.go` | “我的数据”能力清单（两个工具） |
 | `apps/server/internal/worker/assistant_v2.go` | v2 编排：决策、交回原引擎、工具循环、结算 |
@@ -107,22 +119,22 @@ worker.executeAssistantRun（assistant.go）
 
 ## 5. 进度清单
 
-### P0 底座
+### P0 底座 ✅ 全部完成
 
 | 状态 | 项 | 说明 / 位置 |
 |---|---|---|
 | ✅ | 复用现有任务引擎 | 排队、租约、线路切换、计费、SSE、取消全部沿用，v2 只替换编排 |
 | ✅ | v2 编排（判断 → 工具循环 → 结算） | `worker/assistant_v2.go`，测试 `assistant_v2_test.go` |
-| ✅ | 交回原引擎 | 生图方案、联网、站内工具在同一 run 内交给 `executeAssistantRunLegacy` |
-| ✅ | 可插拔决策层 + 规则兜底 | `internal/decision/`；默认取助手页默认对话模型 |
+| ✅ | 交回原引擎 | 生图方案、联网、站内工具在同一 run 内以 Agent 身份交给原引擎，并带上 v2 的判断 |
+| ✅ | 可插拔决策层 + 规则兜底 | `internal/decision/`、`internal/assistantdecision/` |
+| ✅ | 后台“判断模型”设置界面与接口 | 后台菜单“业务 → AI 助手判断”。可单独指定判断模型（只能选 AI 助手页面已分配的对话模型），指定的模型失效时页面会提示并自动回退 |
+| ✅ | 按模型分别设置阈值 | 意图置信度下限（默认 0.6，低于则改用规则）、追问阈值（默认 0.75）；按模型 ID 存，另有 `default` 兜底 |
+| ✅ | 影子对比 | 每轮同时算规则的判断，写入 `assistant_decision_logs`（模型、意图、置信度、规则意图、是否低置信度、是否兜底、是否交回原引擎、耗时）；后台按 7/30 日汇总，含“与规则一致率” |
+| ✅ | 评测集与评测 | `assistantdecision.BuiltinCases`：43 个标注问题，覆盖 6 个意图，包含历史误判（物联网、上网本、写代码问任务等）。后台可跑“只评测规则”（免费）和“评测模型”（真实调用，需确认）；报告给出准确率、各意图对错、错例、规则对照准确率，以及**建议的意图置信度下限**（可一键填入设置）。当前规则基线准确率 62.8%（27/43） |
 | ✅ | 工具权限分级 | `Level`：read / spend / change；v2 目前只执行 read |
-| ✅ | API 接收 `engine=v2`、`timezone` | 只接受问答 / Agent；带附件、参考图、蒙版、画布快照会被拒（422） |
-| ✅ | 原界面接入 v2 | 问答、Agent 无附件时走 v2；删除了前端“问答模式误拦” |
-| ✅ | 原界面状态修复 | 空活动任务清除“运行中”；长任务不再 15 分钟放弃；发送失败恢复草稿和附件；切回或聚焦时刷新对话 |
-| ⬜ | 后台“决策模型覆盖”设置界面 | 服务端已读取设置键 `assistant_decision_model`（`{"modelId": "..."}`），但管理后台（`apps/admin`）**没有界面**，也没有对应的 admin API |
-| ⬜ | 影子对比与评测集 | 每轮的判断结果已写入消息元数据 `_decision`（来源、置信度、耗时、哪些问题用了兜底）。还缺：评测集（真实提问 + 期望意图）、离线评测脚本、按模型分别设置的置信度阈值 |
-| 🟡 | 附件 / 参考图 / 引用进 v2 | 目前这些仍走原引擎；要让 v2 读文档和看图，需在 v2 里接入文件工具和视觉上下文 |
-| ⬜ | 统一意图判断（服务端唯一） | 前端已不再拦截；但服务端仍有多处关键词规则（`assistanttools/intent.go`、`worker` 里的 `fastAssistantIntent`、画布兜底）。v2 的判断稳定后，应让这些规则只作兜底 |
+| ✅ | 服务端统一判断 | v2 的 run 不再在创建时按关键词升级模式；交回原引擎时带上 `_v2Intent`，原引擎跳过自己的关键词判断和模型判断，关键词的强制工具只在对应意图下生效。关键词规则只作为决策模型不可用或低置信度时的兜底 |
+| ✅ | 附件 / 参考图 / 引用进 v2 | 参考图随本轮消息发给模型；文档开放只读文件工具并附带文档分析规则；引用由上下文构建带上；判断模型会被告知本轮附带了什么 |
+| ✅ | 原界面接入 v2 与状态修复 | 见下方“原界面”相关提交 |
 
 ### P1 懂我的数据
 
@@ -200,8 +212,9 @@ worker.executeAssistantRun（assistant.go）
 ### 6.4 v2 当前的限制
 
 - 只执行 read 级工具；遇到 spend 或 change 工具会返回“需要用户确认后才能执行”。
-- LLM 自报的置信度没有校准；当前“需要追问”的阈值是 0.75（`assistantV2ClarifyThreshold`）。以后接入 JEV 这类有校准概率的模型时，要按模型分别设置阈值。
-- 规则兜底（`assistantV2Rules`）只在决策模型不可用或超时（3 秒）时使用，置信度刻意设得低。
+- LLM 自报的置信度没有校准，所以阈值按模型分别设置（后台可改，默认意图 0.6、追问 0.75）。**建议先在后台跑一次“评测模型”，用报告里的建议值设置阈值。**以后接入 JEV 这类有校准概率的模型时，同样按模型单独设阈值。
+- 规则兜底（`assistantdecision.Rules`）在决策模型不可用、超时（3 秒）或置信度低于阈值时使用。
+- 内置评测集是代码里的固定列表（`BuiltinCases`），要扩充就改代码并提交；还没有在后台增删评测问题的功能。
 - 对话上下文沿用原有的 `prepareAssistantContext`（包含压缩）。
 - 交给原引擎处理的那一轮，决策模型那次调用**没有**计入利润表的上游调用次数（v2 自己处理的轮次已计入）。
 
@@ -209,11 +222,10 @@ worker.executeAssistantRun（assistant.go）
 
 ## 7. 建议的接手顺序
 
-1. 用本工作树的代码起一套本地接口和 worker（先问用户），用测试账号做一次真实试用，确认 v2 判断和统计回答的质量。
+1. 用本工作树的代码起一套本地接口和 worker（先问用户），用测试账号做一次真实试用；在后台“AI 助手判断”跑一次“评测模型”，按建议值设置阈值。
 2. 修复 6.1 中和助手行为相关的第 3、5、8 条测试问题。
-3. 补完 P1：订单 / 订阅查询、API 用量指标、统计评测集。
-4. P0 收尾：后台“决策模型覆盖”设置界面、判断评测集与影子对比。
-5. 进入 P2 电商套图：先设计付费确认 / 预算审批流程和 spend 级工具，开始真实生成前先征得用户同意。
+3. 补完 P1：订单 / 订阅查询、扣费解释、API 用量指标、统计评测集。
+4. 进入 P2 电商套图：先设计付费确认 / 预算审批流程和 spend 级工具，开始真实生成前先征得用户同意。
 
 ---
 
@@ -226,3 +238,5 @@ worker.executeAssistantRun（assistant.go）
 | `34015fa` | v2 接入 `task_status` |
 | `accf762` | 问答 / Agent 走 v2，缺的能力交回原引擎；修正联网和任务状态的误判 |
 | `c4dabf5` | 原界面接入 v2 引擎；统计卡片；状态修复 |
+| `01e39a4` | 交接文档 |
+| （P0 收尾提交） | 判断模型设置与阈值、影子对比与判断记录、内置评测集与后台页面、服务端统一判断、附件 / 参考图 / 引用进 v2 |

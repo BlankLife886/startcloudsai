@@ -46,7 +46,7 @@ func TestAssistantRunAcceptsV2EngineAndTimezone(t *testing.T) {
 	for name, body := range map[string]map[string]any{
 		"unknown engine": {"engine": "v9", "mode": "agent"},
 		"image mode":     {"engine": "v2", "mode": "image"},
-		"attachments":    {"engine": "v2", "mode": "agent", "referenceImages": []any{map[string]any{"dataUrl": "data:image/png;base64,AA=="}}},
+		"region edit":    {"engine": "v2", "mode": "agent", "maskImage": map[string]any{"dataUrl": "data:image/png;base64,AA=="}},
 	} {
 		body["conversationId"] = conversation["id"]
 		body["prompt"] = "hello"
@@ -54,6 +54,15 @@ func TestAssistantRunAcceptsV2EngineAndTimezone(t *testing.T) {
 		if rejected.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("%s: status %d body %s", name, rejected.Code, rejected.Body.String())
 		}
+	}
+
+	// Reference images are read by v2 itself now.
+	reference := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"], "prompt": "这张图里写了什么", "mode": "agent", "engine": "v2", "queue": true,
+		"referenceImages": []any{map[string]any{"name": "a.png", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="}},
+	}, token)
+	if reference.Code != http.StatusCreated {
+		t.Fatalf("v2 run with a reference image: %d %s", reference.Code, reference.Body.String())
 	}
 
 	// Q&A mode is served by v2 as well.

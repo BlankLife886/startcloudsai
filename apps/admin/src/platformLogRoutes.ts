@@ -91,7 +91,7 @@ const exact: Record<string, string> = {
 
 const modules: Array<[string, string]> = [
   // 更长的前缀放前面，优先匹配
-  ['/api/v1/admin/agent-quality', '后台 · Agent 质量'], ['/api/v1/admin/announcements', '后台 · 公告'],
+  ['/api/v1/admin/agent-quality', '后台 · Agent 质量'], ['/api/v1/admin/assistant/decision', '后台 · AI 助手判断'], ['/api/v1/admin/announcements', '后台 · 公告'],
   ['/api/v1/admin/audit-logs', '后台 · 操作审计'], ['/api/v1/admin/badge-counts', '后台 · 菜单角标'],
   ['/api/v1/admin/canvas-workflow-templates', '后台 · 画布模板'], ['/api/v1/admin/changelog', '后台 · 更新记录'],
   ['/api/v1/admin/ecommerce', '后台 · 电商素材'], ['/api/v1/admin/feedback', '后台 · 用户反馈'],

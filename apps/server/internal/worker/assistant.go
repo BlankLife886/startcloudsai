@@ -777,17 +777,7 @@ func assistantProviderEndpoint(raw string) string {
 }
 
 func crunOpenAICompatibleBaseURL(raw string) string {
-	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return strings.TrimSuffix(raw, "/api/v1") + "/api/v1"
-	}
-	path := strings.TrimRight(parsed.Path, "/")
-	path = strings.TrimSuffix(path, "/api/v1")
-	parsed.Path = strings.TrimRight(path, "/") + "/api/v1"
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return strings.TrimRight(parsed.String(), "/")
+	return modelconfig.CRUNOpenAICompatibleBaseURL(raw)
 }
 
 func (w *Worker) configuredAssistantModelSelection(ctx context.Context, run *store.AssistantRun, kind string) (*modelconfig.Selection, bool, error) {
@@ -1012,6 +1002,16 @@ func (w *Worker) classifyAssistantIntentAsync(
 	history []*store.AssistantMessage,
 	hasReference, lastAssistantWasImage, toolForced bool,
 ) func() assistantIntentDecision {
+	// A turn handed over by v2 was already judged; the keyword path and a
+	// second model call would only disagree with it.
+	if v2Intent := assistantParamString(run.Params, assistantV2IntentParam, ""); v2Intent != "" {
+		decision := assistantIntentDecision{intent: "chat", usedModel: true,
+			confident: assistantParamString(run.Params, assistantV2ConfidentParam, "") == "true"}
+		if v2Intent == assistantV2IntentCreate {
+			decision.intent = "image"
+		}
+		return func() assistantIntentDecision { return decision }
+	}
 	if intent, certain := fastAssistantIntent(run.Prompt, hasReference, lastAssistantWasImage); certain {
 		decision := assistantIntentDecision{intent: intent, confident: true, fromFastPath: true}
 		return func() assistantIntentDecision { return decision }
@@ -1866,6 +1866,15 @@ func (w *Worker) executeAssistantAgent(
 	forceWebSearchTool := assistantPromptRequestsWebSearch(run.Prompt)
 	forceTaskStatusTool := assistantPromptRequestsTaskStatus(run.Prompt)
 	forcedWorkspaceTool := assistantForcedWorkspaceTool(run.Prompt)
+	if v2Intent := assistantParamString(run.Params, assistantV2IntentParam, ""); v2Intent != "" {
+		// v2's judgment replaces the keyword forcing. The keyword match still
+		// names which workspace tool, but only for a workspace turn.
+		forceWebSearchTool = v2Intent == assistantV2IntentWeb
+		forceTaskStatusTool = false
+		if v2Intent != assistantV2IntentWorkspace {
+			forcedWorkspaceTool = ""
+		}
+	}
 	toolForced := forceWebSearchTool || forceTaskStatusTool || forcedWorkspaceTool != ""
 	// 尽早发起，让模型判定意图的那次调用被下面的注册表查询和参考图读取盖住。
 	// 放开并行工具调用。上游一次返回多个时，只有整批都只读才会并发执行，

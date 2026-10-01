@@ -102,6 +102,11 @@ func sseText(text string) string {
 	return fmt.Sprintf(`data: {"choices":[{"delta":{"content":%q}}]}`+"\n\n", text)
 }
 
+func rulesOnlySetup(prompt string) assistantV2DecisionSetup {
+	rules := assistantV2Rules(prompt)
+	return assistantV2DecisionSetup{Decider: decision.Chain{Fallback: rules}, Rules: rules, Thresholds: decision.DefaultThresholds}
+}
+
 func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 	ctx := context.Background()
 	fixture := newV2Fixture(t, "这个月钱都花哪了？")
@@ -153,9 +158,8 @@ func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	decider := decision.Chain{Fallback: assistantV2Rules(fixture.run.Prompt)}
 	worker := &Worker{St: fixture.st}
-	if err := worker.runAssistantV2(ctx, fixture.run, client, decider); err != nil {
+	if err := worker.runAssistantV2(ctx, fixture.run, client, rulesOnlySetup(fixture.run.Prompt)); err != nil {
 		t.Fatalf("run v2: %v", err)
 	}
 	if len(upstream.requests) != 2 {
@@ -227,7 +231,7 @@ func TestAssistantV2ScopesStatsToTheRunOwner(t *testing.T) {
 	defer server.Close()
 	client, _ := sub2api.New(server.URL, "test-key", "gpt-test", "", 30)
 	worker := &Worker{St: fixture.st}
-	if err := worker.runAssistantV2(ctx, fixture.run, client, decision.Chain{Fallback: assistantV2Rules(fixture.run.Prompt)}); err != nil {
+	if err := worker.runAssistantV2(ctx, fixture.run, client, rulesOnlySetup(fixture.run.Prompt)); err != nil {
 		t.Fatalf("run v2: %v", err)
 	}
 }
@@ -254,7 +258,8 @@ func TestAssistantV2ClarifiesWithoutToolsWhenDecisionSaysSo(t *testing.T) {
 		"clarify": decision.Fixed(decision.Answer{Yes: 0.95, Confidence: 0.9}),
 	}
 	worker := &Worker{St: fixture.st}
-	if err := worker.runAssistantV2(ctx, fixture.run, client, decider); err != nil {
+	setup := assistantV2DecisionSetup{Decider: decider, Thresholds: decision.DefaultThresholds}
+	if err := worker.runAssistantV2(ctx, fixture.run, client, setup); err != nil {
 		t.Fatalf("run v2: %v", err)
 	}
 	if len(upstream.requests) != 1 {
@@ -283,5 +288,134 @@ func TestAssistantV2RulesRouteUnsupportedTurnsToTheOriginalEngine(t *testing.T) 
 		if assistantV2DelegatesIntent(want) != delegates {
 			t.Fatalf("%s: delegation mismatch", prompt)
 		}
+	}
+}
+
+type fixedDecider struct{ response decision.Response }
+
+func (f fixedDecider) Name() string { return f.response.Provider }
+func (f fixedDecider) Decide(context.Context, decision.Request) (decision.Response, error) {
+	return f.response, nil
+}
+
+func TestAssistantV2LowConfidenceDefersToRulesAndIsLogged(t *testing.T) {
+	ctx := context.Background()
+	fixture := newV2Fixture(t, "这个月积分花哪了")
+	model := fixedDecider{response: decision.Response{Provider: "llm", Model: "decider-model", Answers: map[string]decision.Answer{
+		"intent":  {Kind: decision.KindChoice, Choice: assistantV2IntentAnswer, Confidence: 0.3},
+		"clarify": {Kind: decision.KindYesNo, Yes: 0.1},
+	}}}
+	setup := assistantV2DecisionSetup{Decider: model, Rules: assistantV2Rules(fixture.run.Prompt),
+		Thresholds: decision.Thresholds{Intent: 0.6, Clarify: 0.75}}
+	worker := &Worker{St: fixture.st}
+	decided := worker.assistantV2Decide(ctx, setup, "用户：这个月积分花哪了")
+	if decided.Intent != assistantV2IntentMyData || !decided.LowConfidence || decided.RulesIntent != assistantV2IntentMyData {
+		t.Fatalf("decided = %+v", decided)
+	}
+	worker.recordAssistantV2Decision(ctx, fixture.run, decided, false)
+	stats, err := store.GetAssistantDecisionStats(ctx, fixture.st.Pool, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Total != 1 || stats.ModelAnswered != 1 || stats.LowConfidence != 1 || len(stats.ByModel) != 1 || stats.ByModel[0].Model != "decider-model" {
+		t.Fatalf("stats = %+v", stats)
+	}
+
+	// A confident model answer is kept even when the rules disagree.
+	model.response.Answers["intent"] = decision.Answer{Kind: decision.KindChoice, Choice: assistantV2IntentCreate, Confidence: 0.9}
+	setup.Decider = model
+	decided = worker.assistantV2Decide(ctx, setup, "用户：这个月积分花哪了")
+	if decided.Intent != assistantV2IntentCreate || decided.LowConfidence {
+		t.Fatalf("confident decision overridden: %+v", decided)
+	}
+}
+
+func TestAssistantV2HandOverCarriesTheJudgmentToTheOriginalEngine(t *testing.T) {
+	run := &store.AssistantRun{ID: uuid.New(), Mode: "chat", Prompt: "帮我做一张海报", Params: map[string]any{"_engine": AssistantEngineV2}}
+	handed := assistantV2HandOver(run, assistantV2Decision{Intent: assistantV2IntentCreate, Confidence: 0.9, Thresholds: decision.DefaultThresholds})
+	if handed.Mode != "agent" || run.Mode != "chat" {
+		t.Fatalf("hand-over must run as Agent without mutating the stored run: handed=%s original=%s", handed.Mode, run.Mode)
+	}
+	if handed.Params[assistantV2IntentParam] != assistantV2IntentCreate || handed.Params[assistantV2ConfidentParam] != "true" {
+		t.Fatalf("params = %#v", handed.Params)
+	}
+	if _, leaked := run.Params[assistantV2IntentParam]; leaked {
+		t.Fatal("hand-over params leaked into the original run")
+	}
+	w := &Worker{}
+	decide := w.classifyAssistantIntentAsync(context.Background(), nil, handed, nil, false, false, false)
+	if got := decide(); got.intent != "image" || !got.confident || got.fromFastPath {
+		t.Fatalf("original engine ignored v2's judgment: %+v", got)
+	}
+	web := assistantV2HandOver(run, assistantV2Decision{Intent: assistantV2IntentWeb, Confidence: 0.2, Thresholds: decision.DefaultThresholds})
+	if got := w.classifyAssistantIntentAsync(context.Background(), nil, web, nil, false, false, false)(); got.intent != "chat" || got.confident {
+		t.Fatalf("web hand-over = %+v", got)
+	}
+}
+
+func TestAssistantV2DecisionStateMentionsAttachments(t *testing.T) {
+	run := &store.AssistantRun{UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "把背景换成白色"}
+	if state := assistantV2DecisionState(nil, run, 1, 0); !strings.Contains(state, "1 张参考图") {
+		t.Fatalf("state = %q", state)
+	}
+	if state := assistantV2DecisionState(nil, run, 0, 0); strings.Contains(state, "参考图") {
+		t.Fatalf("state = %q", state)
+	}
+}
+
+func TestAssistantV2ReadsAttachedDocumentsWithFileTools(t *testing.T) {
+	ctx := context.Background()
+	fixture := newV2Fixture(t, "预算是多少？")
+	fileID := uuid.New()
+	key := "uploads/" + fixture.user.ID.String() + "/original/" + fileID.String() + ".txt"
+	if err := store.RegisterUserUploadObjects(ctx, fixture.st.Pool, fixture.user.ID, []string{key}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InsertAssistantFile(ctx, fixture.st.Pool, store.AssistantFile{
+		ID: fileID, UserID: fixture.user.ID, ObjectKey: key, Name: "项目说明.txt", ContentType: "text/plain",
+		SizeBytes: 64, SHA256: "hash", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.st.Pool.Exec(ctx, `UPDATE assistant_files SET status = 'ready', segment_count = 1, char_count = 16 WHERE id = $1`, fileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.st.Pool.Exec(ctx, `INSERT INTO assistant_file_segments (file_id, ordinal, locator, content)
+		VALUES ($1, 0, '{"page":1}', '项目预算是 120 万元。')`, fileID); err != nil {
+		t.Fatal(err)
+	}
+	fixture.run.Params["_assistantFileIds"] = []any{fileID.String()}
+	fixture.run.Params["skill"] = "document_analysis"
+
+	upstream := &fakeUpstream{script: func(index int, body map[string]any) string {
+		if index == 0 {
+			tools, _ := body["tools"].([]any)
+			names := []string{}
+			for _, raw := range tools {
+				function, _ := raw.(map[string]any)["function"].(map[string]any)
+				names = append(names, fmt.Sprint(function["name"]))
+			}
+			if !strings.Contains(strings.Join(names, ","), "files_search") {
+				t.Errorf("file tools not exposed: %v", names)
+			}
+			return sseToolCall("call_search", "files_search", `{"query":"预算","limit":5}`)
+		}
+		messages, _ := body["messages"].([]any)
+		last, _ := messages[len(messages)-1].(map[string]any)
+		if content, _ := last["content"].(string); !strings.Contains(content, "120 万元") {
+			t.Errorf("document evidence missing from observation: %v", last)
+		}
+		return sseText("根据项目说明.txt 第 1 页，预算为 120 万元。")
+	}}
+	server := upstream.server(t)
+	defer server.Close()
+	client, _ := sub2api.New(server.URL, "test-key", "gpt-test", "", 30)
+	worker := &Worker{St: fixture.st}
+	if err := worker.runAssistantV2(ctx, fixture.run, client, rulesOnlySetup(fixture.run.Prompt)); err != nil {
+		t.Fatalf("run v2: %v", err)
+	}
+	message, _ := store.GetAssistantMessage(ctx, fixture.st.Pool, fixture.assistantMessage)
+	if !strings.Contains(message.Content, "120 万元") {
+		t.Fatalf("content = %q", message.Content)
 	}
 }
