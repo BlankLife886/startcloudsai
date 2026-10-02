@@ -112,10 +112,19 @@ func (w *Worker) recordAssistantV2Decision(ctx context.Context, run *store.Assis
 	}
 }
 
-// assistantV2HandOver prepares a run for the original engine: image
-// proposals, web search and workspace tools live on its Agent path, so the
-// turn runs as Agent with v2's judgment attached (in memory only; the stored
-// run keeps the mode the user picked and was priced for).
+// recordAssistantV2HandOver marks the turn's decision row as delegated after
+// the v2 model handed it over, so the shadow comparison counts it.
+func (w *Worker) recordAssistantV2HandOver(ctx context.Context, run *store.AssistantRun, target string) {
+	if w.St == nil {
+		return
+	}
+	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if _, err := w.St.Pool.Exec(logCtx, `UPDATE assistant_decision_logs SET delegated = true, intent = $2 WHERE run_id = $1`, run.ID, target); err != nil {
+		log.Printf("assistant v2 hand-over log failed for run %s: %v", run.ID, err)
+	}
+}
+
 // assistantV2Habits reads the user's habits for the prompt. They are
 // personalisation like memory, so they go away with memory off or with
 // suggestions off; a failure only drops them from this turn.
@@ -130,6 +139,10 @@ func (w *Worker) assistantV2Habits(ctx context.Context, run *store.AssistantRun,
 	return facts
 }
 
+// assistantV2HandOver prepares a run for the original engine: image
+// proposals, web search and workspace tools live on its Agent path, so the
+// turn runs as Agent with v2's judgment attached (in memory only; the stored
+// run keeps the mode the user picked and was priced for).
 func assistantV2HandOver(run *store.AssistantRun, decided assistantV2Decision, memory string) *store.AssistantRun {
 	handed := *run
 	handed.Mode = "agent"
@@ -222,12 +235,12 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	recall := w.assistantV2Recall(ctx, run)
 	commerce := w.assistantV2CommerceTurn(ctx, run, recall.Memories)
 	habits := w.assistantV2Habits(ctx, run, recall)
+	handOverMemory := strings.TrimSpace(recall.Block + assistantproactive.HabitNote(habits))
 	delegating := assistantV2DelegatesIntent(decided.Intent) && !decided.Clarify && !commerce.enabled
 	w.recordAssistantV2Decision(ctx, run, decided, delegating)
 	if delegating {
 		w.publishAssistantDebug(ctx, run, "delegate", "交给原有引擎处理："+decided.Intent)
-		memory := strings.TrimSpace(recall.Block + assistantproactive.HabitNote(habits))
-		return w.executeAssistantRunLegacy(ctx, assistantV2HandOver(run, decided, memory))
+		return w.executeAssistantRunLegacy(ctx, assistantV2HandOver(run, decided, handOverMemory))
 	}
 	if commerce.product != nil && len(references) == 0 {
 		// A remembered product stands in for uploading its photos again; the
@@ -388,6 +401,17 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 			merged, observationErr := assistantAgentToolObservation(&call, observation, toolErr, ctx.Err())
 			if observationErr != nil {
 				return observationErr
+			}
+			if target, _ := meta[assistanttools.HandOverMeta].(string); toolErr == nil && target != "" && step == 0 {
+				// The model corrected the router: this turn needs the original
+				// engine after all (drawing, web, site tools). Hand it over the
+				// same way a delegated judgment does.
+				w.publishAssistantDebug(ctx, run, "delegate", "助手判断需要交给原有引擎："+target)
+				// The answering model chose this with the whole conversation in
+				// view, so the original engine must not second-guess it.
+				decided.Intent, decided.Confidence = target, 1
+				w.recordAssistantV2HandOver(ctx, run, target)
+				return w.executeAssistantRunLegacy(ctx, assistantV2HandOver(run, decided, handOverMemory))
 			}
 			if toolErr == nil {
 				if key := assistantAgentToolCallKey(&call); key != "" {

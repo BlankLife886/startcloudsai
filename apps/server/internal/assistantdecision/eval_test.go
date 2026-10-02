@@ -119,3 +119,22 @@ func TestLatencyCurveSuggestsTheShortestNearBestWait(t *testing.T) {
 		t.Fatalf("suggested = %v", report.SuggestedTimeout)
 	}
 }
+
+func TestRulesTreatChangesAfterAnImageAsCreate(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		context, prompt, want string
+	}{
+		{"助手：[生成了 1 张图片：小狗和老虎]", "我要粉色的小狗，然后4K高清", IntentCreate},
+		{"助手：[出了图片方案：小狗在中间]", "老虎改成白色的，背景换成雪地", IntentCreate},
+		{"助手：[生成了 1 张图片：粉色小狗]", "真好看，颜色很舒服", IntentAnswer},
+		{"助手：[生成了 1 张图片：海报]", "图上那行英文是什么意思", IntentAnswer},
+		{"助手：你好！有什么可以帮你？", "我要粉色的小狗", IntentAnswer},
+	} {
+		state := tc.context + "\n用户：" + tc.prompt
+		response, err := Rules(tc.prompt).Decide(ctx, decision.Request{State: state, Questions: Questions()})
+		if err != nil || response.Answers["intent"].Choice != tc.want {
+			t.Errorf("%q after %q = %q, want %q", tc.prompt, tc.context, response.Answers["intent"].Choice, tc.want)
+		}
+	}
+}

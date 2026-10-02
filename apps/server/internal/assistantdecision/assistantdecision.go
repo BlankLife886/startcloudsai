@@ -9,6 +9,8 @@ import (
 	"errors"
 	"log"
 	"regexp"
+	"strings"
+	"time"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/decision"
@@ -74,7 +76,7 @@ var ownImagesPattern = regexp.MustCompile(`((找|搜|翻|查|看看)[^，。？?
 // low confidence; they are the fallback and the shadow baseline.
 func Rules(prompt string) decision.Rules {
 	return decision.Rules{
-		"intent": func(string) (decision.Answer, bool) {
+		"intent": func(state string) (decision.Answer, bool) {
 			switch {
 			case memoryPattern.MatchString(prompt):
 				return decision.Answer{Choice: IntentMyData, Confidence: 0.5}, true
@@ -89,12 +91,42 @@ func Rules(prompt string) decision.Rules {
 				return decision.Answer{Choice: IntentCreate, Confidence: 0.5}, true
 			case myDataPattern.MatchString(prompt):
 				return decision.Answer{Choice: IntentMyData, Confidence: 0.4}, true
+			case followsImage(state) && imageEditPattern.MatchString(prompt) && !notAnEditPattern.MatchString(prompt):
+				// "我要粉色的小狗，然后4K高清" right after an image or an image
+				// plan changes that image; on its own it reads like chat.
+				return decision.Answer{Choice: IntentCreate, Confidence: 0.5}, true
 			}
 			return decision.Answer{Choice: IntentAnswer, Confidence: 0.2}, true
 		},
 		"clarify": decision.Fixed(decision.Answer{Yes: 0, Confidence: 0.2}),
 	}
 }
+
+// imageEditPattern matches asking for a change to an image just made or
+// planned: what to change (colour, size, background…) or how (改成, 再来).
+var imageEditPattern = regexp.MustCompile(`(?i)(要|改|换|变|加|去掉|删掉|去除|调|弄成|再来|再生成|再画|重新|重画|重做|高清|[248]k|分辨率|清晰|大一点|小一点|更|颜色|色的|背景|风格|尺寸|比例|横版|竖版|构图|位置|数量|多一|少一)`)
+
+// notAnEditPattern keeps questions and reactions about the image as chat
+// ("真好看", "图上的英文是什么意思", "这是用什么模型画的？").
+var notAnEditPattern = regexp.MustCompile(`([？?]|吗$|怎么|为什么|如何|是什么|什么意思|翻译|好看|漂亮|不错|谢谢|多少钱|用的什么|哪个模型)`)
+
+// followsImage reports whether the assistant's last message in the decision
+// state made images or an image plan (see the worker's intent transcript).
+func followsImage(state string) bool {
+	lines := strings.Split(strings.TrimSpace(state), "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		line := strings.TrimSpace(lines[index])
+		if !strings.HasPrefix(line, "助手：") {
+			continue
+		}
+		return strings.HasPrefix(line, "助手：[生成了") || strings.HasPrefix(line, "助手：[出了图片方案")
+	}
+	return false
+}
+
+// PatientTimeout is how long the decision model may take on turns no rule
+// recognises (the model's p90 was about 6.3 s in the first evaluation).
+const PatientTimeout = 8 * time.Second
 
 // Setup is everything one judgment needs: the chain (decision model first,
 // rules as fallback), the rules alone for shadow comparison, and the
@@ -148,6 +180,11 @@ func Resolve(ctx context.Context, q store.Q, masterKey, prompt, modelID string) 
 		Primary:  decision.LLM{Completer: decision.ClientCompleter{Client: client}, Model: selection.Model.ID},
 		Fallback: setup.Rules,
 		Timeout:  setup.Thresholds.Timeout(),
+		// When no rule matched, the rules can only guess "answer"; that guess
+		// is what made the assistant chat instead of drawing, so the model
+		// gets longer there. Turns a rule recognises keep the short wait.
+		Patience:       map[string]float64{"intent": 0.5},
+		PatientTimeout: max(PatientTimeout, setup.Thresholds.Timeout()),
 	}
 	return setup
 }

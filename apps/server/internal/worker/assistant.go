@@ -1152,6 +1152,11 @@ func renderAssistantIntentLine(message *store.AssistantMessage) string {
 			body := fmt.Sprintf("[生成了 %d 张图片：%s]", count, truncateAssistantRunes(summary, assistantIntentSummaryRunes))
 			return truncateAssistantRunes(roleTag+"："+body, assistantIntentLineRunes)
 		}
+		if message.Kind == "proposal" && message.Status == "complete" {
+			// A plan the user is still adjusting: the next turn is usually a change to it.
+			body := "[出了图片方案：" + truncateAssistantRunes(strings.TrimSpace(message.Content), assistantIntentSummaryRunes) + "]"
+			return truncateAssistantRunes(roleTag+"："+body, assistantIntentLineRunes)
+		}
 	}
 	content := strings.TrimSpace(message.Content)
 	if content == "" {
