@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/useraccount"
 	"github.com/BlankLife886/startcloudsai/server/internal/userassets"
@@ -14,6 +16,7 @@ import (
 const (
 	ToolAssetsSearch   = "assets_search"
 	ToolAssetsOrganize = "assets_organize"
+	ToolAssetsSave     = "assets_save"
 
 	PermissionAssetsRead Permission = "assets.read"
 
@@ -29,13 +32,13 @@ func assetsToolError(err error) (Result, error) {
 }
 
 // NewMyAssetsManifest finds the user's images and proposes library changes.
-// Both tools only read: assets_organize returns a proposal the user confirms
-// on the card, which then calls userassets.Execute and offers an undo.
+// All tools only read: assets_organize and assets_save return a proposal the
+// user confirms on the card, which then runs it and offers an undo.
 func NewMyAssetsManifest(st *store.Store) Manifest {
 	return Manifest{
 		ID:          DomainMyAssets,
 		Version:     "1",
-		Description: "查找用户自己的图片（资产库与生成记录）并提出资产库整理方案",
+		Description: "查找用户自己的图片（资产库与生成记录），提出存入资产库和整理资产库的方案",
 		Tools: []Definition{
 			{
 				Name: ToolAssetsSearch,
@@ -93,6 +96,50 @@ func NewMyAssetsManifest(st *store.Store) Manifest {
 						return Result{}, errors.New("整理参数格式不正确")
 					}
 					proposal, err := userassets.Propose(ctx, st.Pool, invocation.UserID, action)
+					if err != nil {
+						return assetsToolError(err)
+					}
+					content, err := json.Marshal(map[string]any{"proposal": proposal, "needsConfirmation": true})
+					if err != nil {
+						return Result{}, err
+					}
+					return Result{Content: string(content), Meta: map[string]any{"view": "asset_action", "data": proposal}}, nil
+				},
+			},
+			{
+				Name: ToolAssetsSave,
+				Description: "提出把生成的图片存进资产库的方案（复制一份到资产库，可指定分组和标签，分组不存在会新建）。图片三选一：" +
+					"imageIds（assets_search 返回的 task: 开头的 id）、commerceSetId（把一套电商套图的成图都存进去）、recentImages（本对话里最近生成的 N 张，用户说“上面这张 / 刚才这几张”时用）。" +
+					"只生成方案卡片，用户在卡片上确认后才执行，执行后可撤销；已经在资产库里的同一张图会跳过。",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"imageIds":      map[string]any{"type": "array", "minItems": 1, "maxItems": userassets.MaxSaveImages, "items": map[string]any{"type": "string"}},
+						"commerceSetId": map[string]any{"type": "string"},
+						"recentImages":  map[string]any{"type": "integer", "minimum": 1, "maximum": userassets.MaxSaveImages},
+						"title":         map[string]any{"type": "string", "maxLength": 40, "description": "素材名，像资产库里的名字一样简短（例如“精华瓶透明底图”），不要照抄用户的话；多张会自动编号。电商套图不用写，会用每张图的名字"},
+						"group":         map[string]any{"type": "string", "maxLength": 64},
+						"tags":          map[string]any{"type": "array", "maxItems": 10, "items": map[string]any{"type": "string", "maxLength": 32}},
+					},
+					"additionalProperties": false,
+				},
+				Permissions:    []Permission{PermissionAssetsRead},
+				Risk:           RiskRead,
+				Level:          LevelRead,
+				Timeout:        10 * time.Second,
+				MaxResultBytes: 24 << 10,
+				Execute: func(ctx context.Context, invocation Invocation) (Result, error) {
+					var request userassets.SaveRequest
+					if err := json.Unmarshal(invocation.Arguments, &request); err != nil {
+						return Result{}, errors.New("存图参数格式不正确")
+					}
+					var conversationID *uuid.UUID
+					var id uuid.UUID
+					if err := st.Pool.QueryRow(ctx, `SELECT conversation_id FROM assistant_runs WHERE id = $1 AND user_id = $2`,
+						invocation.RunID, invocation.UserID).Scan(&id); err == nil {
+						conversationID = &id
+					}
+					proposal, err := userassets.ProposeSave(ctx, st.Pool, invocation.UserID, conversationID, request)
 					if err != nil {
 						return assetsToolError(err)
 					}

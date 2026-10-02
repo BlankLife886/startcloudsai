@@ -46,7 +46,7 @@ func Questions() []decision.Question {
 			Instructions: "判断用户最后一条消息主要需要哪类能力。",
 			Options: []decision.Option{
 				{ID: IntentAnswer, Description: "直接回答：闲聊、知识问答、写作、平台功能怎么用"},
-				{ID: IntentMyData, Description: "查询用户本人的数据：用量、消耗、积分去向、创作次数、成功率、明细记录；查找或整理用户自己以前的图片、资产库；让助手记住、修改、忘掉或说出它记得的关于用户的信息（品牌、商品、风格偏好、满意方案）"},
+				{ID: IntentMyData, Description: "查询用户本人的数据：用量、消耗、积分去向、创作次数、成功率、明细记录；查找或整理用户自己以前的图片、资产库，把生成的图存进资产库；让助手记住、修改、忘掉或说出它记得的关于用户的信息（品牌、商品、风格偏好、满意方案）"},
 				{ID: IntentCreate, Description: "要求生成、修改或重绘图片和设计（包括抠图、去背景）"},
 				{ID: IntentWeb, Description: "需要联网查找最新的外部信息（新闻、价格、公开资料）"},
 				{ID: IntentWorkspace, Description: "要求执行站内工具：放大、压缩、导出交付包、发送到工作台、网页截图、在网上找参考图、导入商品链接"},
@@ -62,13 +62,13 @@ func Questions() []decision.Question {
 
 var myDataPattern = regexp.MustCompile(`(花了|花哪|花在|花费|钱|消耗|消费|扣了|扣费|积分|余额|用量|用了多少|多少张|多少次|成功率|失败率|统计|账单|明细|趋势|环比|本月|上月|这周|上周|今年)`)
 
-// ownImagesPattern matches finding or organising the user's own images
-// ("找一下我之前生成的海报", "把资产库里的图移到节日分组").
 // memoryPattern matches managing the assistant's memory of the user.
 // Checked before the image rules: "记住我喜欢暖色调的图" is not a request to draw.
 var memoryPattern = regexp.MustCompile(`(^|[，。,\s])(请|帮我)?(记住|记一下|记下来|忘掉|忘记|别再记)|你(还|都)?记得我|(你|助手)(都)?记(住)?了(我)?(哪些|什么)|(我的|关于我的)记忆`)
 
-var ownImagesPattern = regexp.MustCompile(`((找|搜|翻|查|看看)[^，。？?！!,]{0,6}(我|自己|之前|以前|上次|上回|历史)[^，。？?！!,]{0,16}(图|照片|海报|素材|作品))|((资产库|素材库)[^，。？?！!,]{0,16}(整理|移到|移动|放到|分组|标签|删|找|搜))`)
+// ownImagesPattern matches finding, saving or organising the user's own
+// images ("找一下我之前生成的海报", "把上面这张存进资产库", "把资产库里的图移到节日分组").
+var ownImagesPattern = regexp.MustCompile(`((找|搜|翻|查|看看)[^，。？?！!,]{0,6}(我|自己|之前|以前|上次|上回|历史)[^，。？?！!,]{0,16}(图|照片|海报|素材|作品))|((资产库|素材库)[^，。？?！!,]{0,16}(整理|移到|移动|放到|分组|标签|删|找|搜))|((存|保存|收藏|放|加)[^，。？?！!,]{0,6}(资产库|素材库|我的资产))`)
 
 // Rules answer only when the text makes the answer obvious, with deliberately
 // low confidence; they are the fallback and the shadow baseline.

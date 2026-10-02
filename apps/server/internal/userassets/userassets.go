@@ -1,5 +1,6 @@
 // Package userassets lets the assistant find a user's own images (the asset
-// library and generated history) and organise the library. Finding is read
+// library and generated history), save generated images into the library,
+// and organise the library. Finding is read
 // only. Organising is two-step: Propose validates and describes a change
 // without touching anything; Execute runs it after the user confirms on the
 // card and returns what Undo needs to put everything back.
@@ -244,6 +245,8 @@ type Action struct {
 	// Titles and Summary describe the change on the card.
 	Titles  []string `json:"titles,omitempty"`
 	Summary string   `json:"summary,omitempty"`
+	// Images are the generated images a save copies into the library.
+	Images []SaveImage `json:"images,omitempty"`
 }
 
 // Undo puts executed changes back.
@@ -253,6 +256,8 @@ type Undo struct {
 	Tags   []string   `json:"tags,omitempty"`
 	// CreatedGroup is removed on undo when it is empty again.
 	CreatedGroup string `json:"createdGroup,omitempty"`
+	// Skipped counts saved images that were already in the library.
+	Skipped int `json:"skipped,omitempty"`
 }
 
 // UndoItem is one asset's state before the change.
@@ -447,6 +452,8 @@ func RevertUndo(ctx context.Context, st *store.Store, userID uuid.UUID, undo Und
 	}
 	return st.Tx(ctx, func(tx pgx.Tx) error {
 		switch undo.Action {
+		case ActionSave:
+			return revertSave(ctx, tx, userID, undo)
 		case ActionMove:
 			byGroup := map[string][]uuid.UUID{}
 			for _, item := range undo.Items {

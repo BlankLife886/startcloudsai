@@ -131,7 +131,7 @@ func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 				function, _ := raw.(map[string]any)["function"].(map[string]any)
 				names = append(names, fmt.Sprint(function["name"]))
 			}
-			if strings.Join(names, ",") != "assets_organize,assets_search,explain_charge,memory_forget,memory_save,memory_search,memory_update,my_account_overview,my_orders_list,my_records_list,my_stats_query,task_status" {
+			if strings.Join(names, ",") != "assets_organize,assets_save,assets_search,explain_charge,memory_forget,memory_save,memory_search,memory_update,my_account_overview,my_orders_list,my_records_list,my_stats_query,task_status" {
 				t.Errorf("exposed tools = %v", names)
 			}
 			messages, _ := body["messages"].([]any)

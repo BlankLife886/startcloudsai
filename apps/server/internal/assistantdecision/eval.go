@@ -53,6 +53,8 @@ var BuiltinCases = []EvalCase{
 	{ID: "mydata-13", Prompt: "记住我的品牌色是雾霾蓝，以后做图都用这个色", Expected: IntentMyData, Note: "记忆由 v2 处理，不能交给原引擎"},
 	{ID: "mydata-14", Prompt: "你都记得我哪些事", Expected: IntentMyData},
 	{ID: "mydata-15", Prompt: "忘掉我之前说的那个店铺名", Expected: IntentMyData},
+	{ID: "mydata-16", Prompt: "把上面这张存进资产库", Context: "助手：[生成了 1 张图片：精华瓶白底图]", Expected: IntentMyData, Note: "存图由 v2 出方案，紧跟在出图之后也不能判成继续改图"},
+	{ID: "mydata-17", Prompt: "这套图都保存到资产库，放到护肤新品分组", Expected: IntentMyData},
 	{ID: "create-01", Prompt: "帮我生成一张猫咪海报", Expected: IntentCreate},
 	{ID: "create-02", Prompt: "画一只戴帽子的柴犬", Expected: IntentCreate},
 	{ID: "create-03", Prompt: "做一套保温杯的天猫主图", Expected: IntentCreate},

@@ -29,6 +29,7 @@ const TOOL_LABELS = {
   image_tool_plan: '准备图片处理',
   assets_search: '查找我的图片',
   assets_organize: '整理资产库',
+  assets_save: '存入资产库',
 }
 
 const TOOL_ICONS = {
@@ -59,6 +60,7 @@ const TOOL_ICONS = {
   image_tool_plan: 'bi-scissors',
   assets_search: 'bi-search',
   assets_organize: 'bi-folder-symlink',
+  assets_save: 'bi-bookmark-plus',
 }
 
 // 摘要优先读这些字段：覆盖现有工具 schema，未知工具回落到第一个短字符串。

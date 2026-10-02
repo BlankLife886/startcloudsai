@@ -33,7 +33,12 @@ func (s *Server) executeAssistantAssetAction(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	undo, err := userassets.Execute(c.Request.Context(), s.St, user.ID, body.Action)
+	var undo *userassets.Undo
+	if body.Action.Action == userassets.ActionSave {
+		undo, err = userassets.ExecuteSave(c.Request.Context(), s.St, s.Storage, user.ID, body.Action)
+	} else {
+		undo, err = userassets.Execute(c.Request.Context(), s.St, user.ID, body.Action)
+	}
 	if err != nil {
 		fail(c, assetActionError(err))
 		return
