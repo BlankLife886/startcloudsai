@@ -74,6 +74,35 @@ interface EvalReport {
   durationMs: number;
 }
 
+interface StatsCaseResult {
+  id: string;
+  category: string;
+  prompt: string;
+  note?: string;
+  expect: { tool: string };
+  grade: { toolOk: boolean; argsOk: boolean; passed: boolean; problems: string[]; ungrounded: string[] };
+  transcript: { calls: { name: string; arguments: string }[]; answer: string; latencyMs: number };
+  error?: string;
+}
+
+interface StatsReport {
+  modelId: string;
+  total: number;
+  passed: number;
+  passRate: number;
+  toolRate: number;
+  argsRate: number;
+  groundedRate: number;
+  errors: number;
+  avgLatencyMs: number;
+  byCategory: { category: string; total: number; passed: number }[];
+  failures: StatsCaseResult[];
+  durationMs: number;
+}
+
+const STATS_CATEGORIES = ["总量", "时间", "对比", "分组", "明细", "API", "账户", "扣费"];
+const STATS_CASE_TOTAL = 64;
+
 const INTENT_LABELS: Record<string, string> = {
   answer: "直接回答",
   my_data: "查我的数据",
@@ -91,6 +120,9 @@ const days = ref(7);
 const evaluating = ref(false);
 const report = ref<EvalReport | null>(null);
 const evalModelId = ref("");
+const statsEvaluating = ref(false);
+const statsReport = ref<StatsReport | null>(null);
+const statsCategories = ref<string[]>([]);
 const form = reactive({ modelId: "", intent: 0.6, clarify: 0.75 });
 const savedSignature = ref("");
 
@@ -184,6 +216,30 @@ async function runEval(mode: "rules" | "model") {
     report.value = data.report;
   } finally {
     evaluating.value = false;
+  }
+}
+
+async function runStatsEval() {
+  if (statsEvaluating.value || !evalModelId.value) return;
+  const scope = statsCategories.value.length ? `「${statsCategories.value.join("、")}」分类的问题` : `全部 ${STATS_CASE_TOTAL} 个问题`;
+  try {
+    await ElMessageBox.confirm(
+      `将用「${modelName(evalModelId.value)}」回答${scope}，每题会真实调用模型多次并产生上游费用；工具查询的是你自己账号的数据（只读）。最长约 5 分钟。`,
+      "运行统计问答评测",
+      { confirmButtonText: "开始评测", cancelButtonText: "取消", type: "warning" },
+    );
+  } catch {
+    return;
+  }
+  statsEvaluating.value = true;
+  try {
+    const data = await request<{ report: StatsReport }>("/api/v1/admin/assistant/stats-evals", {
+      method: "POST",
+      body: { modelId: evalModelId.value, categories: statsCategories.value },
+    });
+    statsReport.value = data.report;
+  } finally {
+    statsEvaluating.value = false;
   }
 }
 
@@ -344,10 +400,77 @@ onMounted(load);
         </div>
       </template>
     </PageCard>
+
+    <PageCard title="统计问答评测" :subtitle="`用 ${STATS_CASE_TOTAL} 个真实问法检验 AI 助手回答“我的数据”：选对工具、指标、分组和时间范围，回答里的每个数字都能在工具结果里找到出处。使用上方选择的模型。`">
+      <template #actions>
+        <el-select v-model="statsCategories" multiple collapse-tags placeholder="全部分类" class="ad-select" :disabled="statsEvaluating">
+          <el-option v-for="item in STATS_CATEGORIES" :key="item" :value="item" :label="item" />
+        </el-select>
+        <el-button type="primary" :icon="VideoPlay" :loading="statsEvaluating" :disabled="!evalModelId" @click="runStatsEval">评测统计问答</el-button>
+      </template>
+      <el-empty v-if="!statsReport" description="还没有运行评测" :image-size="64" />
+      <template v-else>
+        <section class="ad-kpis" aria-label="统计问答评测结果">
+          <article><small>通过率 · {{ modelName(statsReport.modelId) }}</small><strong class="tnum">{{ percent(statsReport.passRate) }}</strong><span class="tnum">{{ statsReport.passed }}/{{ statsReport.total }}</span></article>
+          <article><small>选对工具</small><strong class="tnum">{{ percent(statsReport.toolRate) }}</strong></article>
+          <article><small>参数正确</small><strong class="tnum">{{ percent(statsReport.argsRate) }}</strong></article>
+          <article :class="{ 'is-warn': statsReport.groundedRate < 1 }"><small>数字都有出处</small><strong class="tnum">{{ percent(statsReport.groundedRate) }}</strong></article>
+          <article :class="{ 'is-warn': statsReport.errors > 0 }"><small>回答失败</small><strong class="tnum">{{ statsReport.errors }}</strong></article>
+          <article><small>平均耗时</small><strong class="tnum">{{ (statsReport.avgLatencyMs / 1000).toFixed(1) }} s</strong></article>
+        </section>
+        <div class="ad-tables">
+          <el-table :data="statsReport.byCategory" size="small">
+            <el-table-column prop="category" label="分类" min-width="100" />
+            <el-table-column label="通过" width="120" align="right">
+              <template #default="{ row }">{{ row.passed }}/{{ row.total }}</template>
+            </el-table-column>
+          </el-table>
+          <el-table :data="statsReport.failures" size="small" empty-text="全部通过">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="ad-case ad-transcript">
+                  <small v-for="(call, index) in row.transcript.calls" :key="index"><code>{{ call.name }} {{ call.arguments }}</code></small>
+                  <span class="ad-answer">{{ row.transcript.answer || row.error || '（没有回答）' }}</span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="未通过的问题" min-width="200">
+              <template #default="{ row }">
+                <div class="ad-case">
+                  <span>{{ row.prompt }}</span>
+                  <small>{{ row.category }} · 应调用 {{ row.expect.tool }}</small>
+                  <small v-if="row.note">{{ row.note }}</small>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="问题" min-width="220">
+              <template #default="{ row }">
+                <div class="ad-case">
+                  <small v-for="problem in row.grade.problems" :key="problem" class="is-error">{{ problem }}</small>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </template>
+    </PageCard>
   </div>
 </template>
 
 <style scoped>
+.ad-transcript {
+  padding: 4px 12px;
+}
+
+.ad-transcript code {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.ad-answer {
+  white-space: pre-wrap;
+}
+
 .ad-page {
   display: grid;
   gap: 16px;

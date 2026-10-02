@@ -655,6 +655,8 @@ func (s *Server) Router() *gin.Engine {
 	admin.PUT("/assistant/decision", s.adminOnly(s.adminPutAssistantDecision))
 	admin.GET("/assistant/decision/stats", s.adminOnly(s.adminAssistantDecisionStats))
 	admin.POST("/assistant/decision/evals", s.adminOnly(s.adminRunAssistantDecisionEval))
+	admin.GET("/assistant/stats-evals/cases", s.adminOnly(s.adminAssistantStatsEvalCases))
+	admin.POST("/assistant/stats-evals", s.adminOnly(s.adminRunAssistantStatsEval))
 	admin.GET("/model-config", s.adminOnly(s.adminGetModelConfig))
 	admin.PUT("/model-config", s.adminOnly(s.adminPutModelConfig))
 	admin.POST("/model-config/icons", s.adminOnly(s.adminUploadModelIcon))

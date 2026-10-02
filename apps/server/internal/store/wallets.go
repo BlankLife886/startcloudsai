@@ -225,6 +225,18 @@ func UpdateCreditReservationRemaining(ctx context.Context, q Q, sourceType, sour
 	return err
 }
 
+// AvailablePoints is the balance the wallet page shows as 可用: ordinary,
+// trial and subscription credits that are not frozen.
+func (w *Wallet) AvailablePoints() int64 {
+	return w.BalanceCents + w.TrialBalanceCents + w.SubscriptionBalanceCents
+}
+
+// FrozenPoints is the wallet page's 冻结中: reserved for running work, plus
+// subscription credits held for a refund or an upgrade.
+func (w *Wallet) FrozenPoints() int64 {
+	return w.FrozenCents + w.TrialFrozenCents + w.SubscriptionHeldCents + w.SubscriptionUpgradeHeldCents
+}
+
 // ListLedger 用户账本分页（limit+1 行）。
 func ListLedger(ctx context.Context, q Q, userID uuid.UUID, limit int, cursor *Cursor) ([]*LedgerEntry, error) {
 	return ListLedgerFiltered(ctx, q, &userID, "", "", nil, limit, cursor)

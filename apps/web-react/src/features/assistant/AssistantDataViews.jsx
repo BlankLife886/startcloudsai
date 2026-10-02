@@ -251,24 +251,27 @@ function StatsView({ data }) {
   )
 }
 
+const RECORD_TITLES = { creations: '创作记录', income: '入账明细', spend: '消耗明细', api_calls: 'API 调用记录' }
+
 function RecordsView({ data }) {
   const records = Array.isArray(data?.records) ? data.records : []
   const type = data?.type
   if (!records.length) {
     return <section className="assistant-data"><p className="assistant-data-note">这段时间没有相关记录。</p></section>
   }
+  const byStatus = type === 'creations' || type === 'api_calls'
   return (
     <section className="assistant-data" aria-label="明细记录">
       <header className="assistant-data-head">
-        <span>{type === 'creations' ? '创作记录' : type === 'income' ? '入账明细' : '消耗明细'} · {data?.range?.label}</span>
+        <span>{RECORD_TITLES[type] || '消耗明细'} · {data?.range?.label}</span>
       </header>
       <div className="assistant-data-table-wrap">
         <table className="assistant-data-table">
           <thead>
             <tr>
               <th scope="col">时间</th>
-              <th scope="col">功能</th>
-              {type === 'creations' ? <th scope="col">状态</th> : <th scope="col">来源</th>}
+              <th scope="col">{type === 'api_calls' ? '模型' : '功能'}</th>
+              {byStatus ? <th scope="col">状态</th> : <th scope="col">来源</th>}
               <th scope="col" className="is-number">{type === 'creations' ? '图片' : '积分'}</th>
               <th scope="col">内容</th>
             </tr>
@@ -277,8 +280,8 @@ function RecordsView({ data }) {
             {records.map((record) => (
               <tr key={record.id}>
                 <td className="is-nowrap">{record.time}</td>
-                <td>{record.workspaceLabel}</td>
-                <td>{type === 'creations' ? record.statusLabel : record.sourceLabel}</td>
+                <td>{type === 'api_calls' ? (record.model || '未记录模型') : record.workspaceLabel}</td>
+                <td>{byStatus ? record.statusLabel : record.sourceLabel}</td>
                 <td className="is-number">{type === 'creations' ? (record.images || 0) : formatMetricValue(record.points)}</td>
                 <td className="assistant-data-record-text">
                   {record.link ? <Link to={record.link}>{record.prompt || record.note || '查看'}</Link> : (record.prompt || record.note || '—')}
@@ -293,6 +296,144 @@ function RecordsView({ data }) {
   )
 }
 
+function AccountView({ data }) {
+  const balance = data?.balance || {}
+  const subscriptions = Array.isArray(data?.subscriptions) ? data.subscriptions : []
+  const orders = data?.orders || {}
+  const waiting = (Number(orders.pending) || 0) + (Number(orders.confirming) || 0)
+  return (
+    <section className="assistant-data" aria-label="账户概况">
+      <header className="assistant-data-head"><span>积分与订阅</span></header>
+      <div className="assistant-data-tiles">
+        <div className="assistant-data-tile">
+          <span className="assistant-data-tile-label">可用积分</span>
+          <strong className="assistant-data-tile-value">{formatMetricValue(balance.availablePoints)}</strong>
+          {Number(balance.subscriptionPoints) > 0 && (
+            <span className="assistant-data-tile-delta">其中订阅积分 {formatMetricValue(balance.subscriptionPoints)}</span>
+          )}
+        </div>
+        <div className="assistant-data-tile">
+          <span className="assistant-data-tile-label">冻结中</span>
+          <strong className="assistant-data-tile-value">{formatMetricValue(balance.frozenPoints)}</strong>
+        </div>
+      </div>
+      {subscriptions.length > 0 ? (
+        <div className="assistant-data-table-wrap">
+          <table className="assistant-data-table">
+            <thead>
+              <tr>
+                <th scope="col">套餐</th>
+                <th scope="col">状态</th>
+                <th scope="col">到期时间</th>
+                <th scope="col" className="is-number">每日发放</th>
+                <th scope="col">下次发放</th>
+              </tr>
+            </thead>
+            <tbody>
+              {subscriptions.map((item, index) => (
+                <tr key={`${item.planName}-${index}`}>
+                  <td>{item.planName || '订阅套餐'}</td>
+                  <td>{item.statusLabel}{item.daysLeft ? `（剩 ${item.daysLeft} 天）` : ''}</td>
+                  <td className="is-nowrap">{item.endsAt}</td>
+                  <td className="is-number">{formatMetricValue(item.dailyPoints)}</td>
+                  <td className="is-nowrap">{item.nextGrantAt || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="assistant-data-note">最近 90 天没有订阅。<Link to="/pricing">查看套餐</Link></p>
+      )}
+      {waiting > 0 && <p className="assistant-data-note">有 {waiting} 笔订单待支付或确认中，<Link to="/orders">查看订单</Link>。</p>}
+    </section>
+  )
+}
+
+function OrdersView({ data }) {
+  const orders = Array.isArray(data?.orders) ? data.orders : []
+  if (!orders.length) {
+    return <section className="assistant-data"><p className="assistant-data-note">没有符合条件的订单。</p></section>
+  }
+  return (
+    <section className="assistant-data" aria-label="订单">
+      <header className="assistant-data-head"><span>订单</span><Link className="assistant-data-sub" to="/orders">全部订单</Link></header>
+      <div className="assistant-data-table-wrap">
+        <table className="assistant-data-table">
+          <thead>
+            <tr>
+              <th scope="col">下单时间</th>
+              <th scope="col">套餐</th>
+              <th scope="col" className="is-number">金额</th>
+              <th scope="col" className="is-number">积分</th>
+              <th scope="col">状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {orders.map((order) => (
+              <tr key={order.orderNo}>
+                <td className="is-nowrap">{order.createdAt}</td>
+                <td>{order.planName || order.planKind || '—'}</td>
+                <td className="is-number">¥{formatMetricValue(order.amountYuan)}</td>
+                <td className="is-number">{formatMetricValue((Number(order.points) || 0) + (Number(order.bonusPoints) || 0))}</td>
+                <td>{order.statusLabel}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {data?.hasMore && <p className="assistant-data-note">还有更早的订单，可以在订单页查看。</p>}
+    </section>
+  )
+}
+
+function ChargeView({ data }) {
+  if (!data?.found) {
+    return data?.message ? <section className="assistant-data"><p className="assistant-data-note">{data.message}</p></section> : null
+  }
+  const source = data.source || {}
+  const entries = Array.isArray(data.entries) ? data.entries : []
+  const totals = data.totals || {}
+  const title = [source.typeLabel, source.workspaceLabel !== source.typeLabel ? source.workspaceLabel : '', source.time].filter(Boolean).join(' · ')
+  return (
+    <section className="assistant-data" aria-label="扣费说明">
+      <header className="assistant-data-head">
+        <span>{title}</span>
+        {source.link && <Link className="assistant-data-sub" to={source.link}>查看原记录</Link>}
+      </header>
+      <div className="assistant-data-tiles">
+        <div className="assistant-data-tile">
+          <span className="assistant-data-tile-label">{Number(totals.pendingPoints) > 0 ? '预留中' : '实际花费'}</span>
+          <strong className="assistant-data-tile-value">{formatMetricValue(Number(totals.pendingPoints) > 0 ? totals.pendingPoints : totals.netPoints, '积分')}</strong>
+          {source.statusLabel && <span className="assistant-data-tile-delta">{source.statusLabel}{source.model ? ` · ${source.model}` : ''}</span>}
+        </div>
+      </div>
+      {entries.length > 0 && (
+        <div className="assistant-data-table-wrap">
+          <table className="assistant-data-table">
+            <thead>
+              <tr>
+                <th scope="col">时间</th>
+                <th scope="col">变动</th>
+                <th scope="col" className="is-number">积分</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry, index) => (
+                <tr key={`${entry.time}-${index}`}>
+                  <td className="is-nowrap">{entry.time}</td>
+                  <td>{entry.label}</td>
+                  <td className="is-number">{formatMetricValue(entry.points)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  )
+}
+
 export function AssistantDataViews({ views }) {
   if (!Array.isArray(views) || !views.length) return null
   return views.map((view, index) => <AssistantDataView key={`${view?.tool || 'view'}-${index}`} view={view} />)
@@ -301,5 +442,8 @@ export function AssistantDataViews({ views }) {
 export function AssistantDataView({ view }) {
   if (view?.view === 'stats') return <StatsView data={view.data} />
   if (view?.view === 'records') return <RecordsView data={view.data} />
+  if (view?.view === 'account') return <AccountView data={view.data} />
+  if (view?.view === 'orders') return <OrdersView data={view.data} />
+  if (view?.view === 'charge') return <ChargeView data={view.data} />
   return null
 }

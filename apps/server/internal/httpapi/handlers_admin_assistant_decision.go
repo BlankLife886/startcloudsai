@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -9,9 +10,12 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantdecision"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantv2"
 	"github.com/BlankLife886/startcloudsai/server/internal/decision"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/statseval"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/useraccount"
 )
 
 type adminDecisionCandidate struct {
@@ -162,4 +166,66 @@ func (s *Server) adminRunAssistantDecisionEval(c *gin.Context, _ *store.User) {
 	}
 	report := assistantdecision.Evaluate(ctx, assistantdecision.BuiltinCases, mode, setupFor, 4)
 	ok(c, gin.H{"report": report})
+}
+
+// statsEvalBudget keeps a full statistics evaluation inside the server's
+// write timeout; cases still running at the deadline are reported as errors.
+const statsEvalBudget = 280 * time.Second
+
+// adminRunAssistantStatsEval answers the built-in statistics questions with
+// the v2 prompt and tools against the admin's own data, then grades tool
+// choice, arguments and whether every number in the answer is grounded. Each
+// case makes real model calls, so the admin page asks for confirmation.
+func (s *Server) adminRunAssistantStatsEval(c *gin.Context, admin *store.User) {
+	var body struct {
+		ModelID    string   `json:"modelId"`
+		Categories []string `json:"categories"`
+	}
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	cases := statseval.BuiltinCases
+	if len(body.Categories) > 0 {
+		wanted := map[string]bool{}
+		for _, category := range body.Categories {
+			wanted[strings.TrimSpace(category)] = true
+		}
+		cases = []statseval.Case{}
+		for _, item := range statseval.BuiltinCases {
+			if wanted[item.Category] {
+				cases = append(cases, item)
+			}
+		}
+		if len(cases) == 0 {
+			fail(c, apperr.E("validation_error", "没有匹配的评测分类", 422))
+			return
+		}
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), statsEvalBudget)
+	defer cancel()
+	selection, err := decision.ResolveModelWith(ctx, s.St.Pool, s.Cfg.AppSecret, decision.Override{ModelID: strings.TrimSpace(body.ModelID)})
+	if err != nil {
+		fail(c, apperr.E("validation_error", "没有可用的 AI 助手对话模型（检查模型是否已分配给 AI 助手页面且服务商可用）", 422))
+		return
+	}
+	client, err := decision.NewChatClient(selection)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	registry, err := assistantv2.Registry(s.St, time.Now, false)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	const timezone = "Asia/Shanghai"
+	now := time.Now()
+	agent := statseval.NewAgent(client.WithoutRetry(), registry, admin.ID, timezone, func() time.Time { return now })
+	report := statseval.Evaluate(ctx, cases, agent, selection.Model.ID, now, useraccount.Location(timezone), 6)
+	ok(c, gin.H{"report": report})
+}
+
+func (s *Server) adminAssistantStatsEvalCases(c *gin.Context, _ *store.User) {
+	ok(c, gin.H{"cases": statseval.BuiltinCases, "categories": statseval.Categories})
 }

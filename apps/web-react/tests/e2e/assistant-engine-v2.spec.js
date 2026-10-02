@@ -107,6 +107,65 @@ test.describe('original assistant UI on the v2 engine', () => {
     expect(page.context().pages().length).toBe(pagesBefore)
   })
 
+  test('renders account, order and charge explanations as cards', async ({ page }) => {
+    const views = [
+      {
+        tool: 'my_account_overview', view: 'account',
+        data: {
+          balance: { availablePoints: 1520, frozenPoints: 40, subscriptionPoints: 300 },
+          subscriptions: [{ planName: '月度会员', status: 'active', statusLabel: '生效中', daysLeft: 11, endsAt: '2026-10-13 09:00', dailyPoints: 100, nextGrantAt: '2026-10-03 09:00' }],
+          orders: { pending: 1, confirming: 0 },
+        },
+      },
+      {
+        tool: 'my_orders_list', view: 'orders',
+        data: { orders: [{ orderNo: 'o-1', createdAt: '2026-10-01 10:00', planName: '1000 积分', amountYuan: 10, points: 1000, bonusPoints: 100, statusLabel: '已完成，积分或套餐已到账' }] },
+      },
+      {
+        tool: 'explain_charge', view: 'charge',
+        data: {
+          found: true,
+          source: { type: 'task', typeLabel: '创作任务', workspaceLabel: 'AI 电商', statusLabel: '成功', model: '高清模型', time: '2026-10-02 09:00', link: '/history' },
+          entries: [
+            { time: '2026-10-02 09:00', kind: 'freeze', label: '预留', points: 40 },
+            { time: '2026-10-02 09:01', kind: 'spend', label: '结算扣费', points: 30 },
+            { time: '2026-10-02 09:01', kind: 'release', label: '退回可用余额', points: 10 },
+          ],
+          totals: { reservedPoints: 40, chargedPoints: 30, returnedPoints: 10, netPoints: 30, pendingPoints: 0 },
+          summary: ['提交时预留了 40 积分。'],
+        },
+      },
+    ]
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      const body = route.request().postDataJSON()
+      return fulfillJson(route, {
+        run: { id: 'run-3', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: 'succeeded' },
+        userMessage: message(body.clientUserMessageId, 'user', body.prompt),
+        assistantMessage: message(body.clientAssistantMessageId, 'assistant', '你还有 1520 积分，会员 11 天后到期。', {
+          kind: 'agent', engine: 'v2', dataViews: views,
+          toolSteps: [{ requestId: 't1', name: 'explain_charge', status: 'completed', durationMs: 80 }],
+        }),
+      }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('我还有多少积分，刚才那笔怎么扣的')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    const reply = page.locator('.message--assistant')
+    const accountCard = reply.getByRole('region', { name: '账户概况' })
+    await expect(accountCard).toContainText('1,520')
+    await expect(accountCard).toContainText('月度会员')
+    await expect(accountCard).toContainText('剩 11 天')
+    await expect(accountCard.getByRole('link', { name: '查看订单' })).toBeVisible()
+    await expect(reply.getByRole('region', { name: '订单' })).toContainText('1,100')
+    const charge = reply.getByRole('region', { name: '扣费说明' })
+    await expect(charge).toContainText('30 积分')
+    await expect(charge.getByRole('table')).toContainText('退回可用余额')
+    await expect(charge.getByRole('link', { name: '查看原记录' })).toHaveAttribute('href', '/history')
+  })
+
   test('gives the input back when the run could not be created', async ({ page }) => {
     await mockAssistant(page)
     await page.route('**/api/v1/assistant/runs', async (route) => {

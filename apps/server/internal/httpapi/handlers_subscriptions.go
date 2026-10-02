@@ -86,59 +86,28 @@ func (s *Server) mySubscriptions(c *gin.Context) {
 				item["planName"] = p.Name
 			}
 		}
-		var next *time.Time
-		var granted, total, skipped int
-		err = s.St.Pool.QueryRow(ctx, `SELECT min(next_grant_at) FILTER(WHERE granted_count<total_grants),COALESCE(sum(granted_count-skipped_grants),0),COALESCE(sum(total_grants),0),COALESCE(sum(skipped_grants),0) FROM subscription_periods WHERE subscription_id=$1 AND cadence='rolling_24h' AND closed_at IS NULL`, sub.ID).Scan(&next, &granted, &total, &skipped)
+		progress, err := store.GetSubscriptionProgress(ctx, s.St.Pool, sub, at)
 		if err != nil {
 			fail(c, err)
 			return
 		}
-		if sub.Status != "active" || !sub.EndsAt.After(at) {
-			next = nil
+		item["nextGrantAt"], item["grantedCycles"], item["totalCycles"] = progress.NextGrantAt, progress.GrantedCycles, progress.TotalCycles
+		item["skippedCycles"] = progress.SkippedCycles
+		item["availablePoints"] = nil
+		if progress.AvailableKnown {
+			item["availablePoints"] = progress.AvailablePoints
 		}
-		item["nextGrantAt"], item["grantedCycles"], item["totalCycles"] = next, granted, total
-		item["skippedCycles"] = skipped
-		var available, frozen, spent, issued, revoked, upgradeHeld, upgradeRevoked, expired int64
-		var currentTermSpent, unattributedSpent int64
-		var hasPriorTerm bool
-		// Attribute use through each grant's order and period, not the time a task settled.
-		err = s.St.Pool.QueryRow(ctx, `SELECT COALESCE(sum(available_points) FILTER(WHERE NOT refund_hold AND NOT upgrade_hold),0),COALESCE(sum(frozen_points+CASE WHEN refund_hold OR upgrade_hold THEN available_points ELSE 0 END),0),COALESCE(sum(spent_points),0),COALESCE(sum(granted_points),0),COALESCE(sum(revoked_points-upgrade_revoked_points-expired_points),0),COALESCE(sum(available_points) FILTER(WHERE upgrade_hold),0),COALESCE(sum(upgrade_revoked_points),0),COALESCE(sum(expired_points),0),
- COALESCE(sum(spent_points) FILTER(WHERE EXISTS(SELECT 1 FROM subscription_periods p WHERE p.subscription_id=l.subscription_id AND p.order_id=l.order_id AND p.starts_at>=$2)),0),
- COALESCE(sum(spent_points) FILTER(WHERE NOT EXISTS(SELECT 1 FROM subscription_periods p WHERE p.subscription_id=l.subscription_id AND p.order_id=l.order_id)),0),
- EXISTS(SELECT 1 FROM subscription_periods p WHERE p.subscription_id=$1 AND p.starts_at<$2)
- FROM subscription_credit_lots l WHERE subscription_id=$1`, sub.ID, sub.StartsAt).Scan(&available, &frozen, &spent, &issued, &revoked, &upgradeHeld, &upgradeRevoked, &expired, &currentTermSpent, &unattributedSpent, &hasPriorTerm)
-		if err != nil {
-			fail(c, err)
-			return
-		}
-		if sub.BillingVersion == 1 {
-			err = s.St.Pool.QueryRow(ctx, `SELECT COALESCE(sum(delta_cents),0),count(*) FROM wallet_ledger WHERE user_id=$1 AND source_type='subscription_daily' AND source_id LIKE $2`, user.ID, sub.ID.String()+"/%").Scan(&issued, &granted)
-			if err != nil {
-				fail(c, err)
-				return
-			}
-			item["grantedCycles"] = granted
-			item["availablePoints"] = nil
-		} else {
-			item["availablePoints"] = available
-		}
-		item["frozenPoints"], item["spentPoints"], item["issuedPoints"] = frozen, spent, issued
-		item["hasPriorTerm"] = hasPriorTerm
+		item["frozenPoints"], item["spentPoints"], item["issuedPoints"] = progress.FrozenPoints, progress.SpentPoints, progress.IssuedPoints
+		item["hasPriorTerm"] = progress.HasPriorTerm
 		item["currentTermSpentPoints"], item["priorTermSpentPoints"] = nil, nil
-		if sub.BillingVersion == 2 && unattributedSpent == 0 {
-			item["currentTermSpentPoints"], item["priorTermSpentPoints"] = currentTermSpent, spent-currentTermSpent
+		if sub.BillingVersion == 2 && progress.UnattributedSpent == 0 {
+			item["currentTermSpentPoints"], item["priorTermSpentPoints"] = progress.CurrentTermSpent, progress.SpentPoints-progress.CurrentTermSpent
 		}
-		item["revokedPoints"] = revoked
-		item["expiredPoints"] = expired
-		item["upgradeHeldPoints"], item["upgradeReclaimedPoints"] = upgradeHeld, upgradeRevoked
-		var upgrading bool
-		if err := s.St.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM subscription_changes WHERE subscription_id=$1 AND kind='upgrade' AND status='pending' AND snapshot->>'upgradeMode'='restart')`, sub.ID).Scan(&upgrading); err != nil {
-			fail(c, err)
-			return
-		}
-		item["upgrading"] = upgrading
-		if upgrading {
-			item["nextGrantAt"] = nil
+		item["revokedPoints"] = progress.RevokedPoints
+		item["expiredPoints"] = progress.ExpiredPoints
+		item["upgradeHeldPoints"], item["upgradeReclaimedPoints"] = progress.UpgradeHeld, progress.UpgradeRevoked
+		item["upgrading"] = progress.Upgrading
+		if progress.Upgrading {
 			item["canChange"] = false
 		}
 		items = append(items, item)

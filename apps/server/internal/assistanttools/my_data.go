@@ -64,12 +64,13 @@ func timeRangeSchema() map[string]any {
 func filtersSchema() map[string]any {
 	return map[string]any{
 		"type":        "object",
-		"description": "可选筛选。workspace 取值如 t2i、ecommerce_design、assistant、infinite_canvas；model 用结果里出现过的模型名；status 只用于创作类；source 只用于积分类。",
+		"description": "可选筛选。workspace 取值如 t2i、ecommerce_design、assistant、infinite_canvas、developer_api；model 用结果里出现过的模型名；status 只用于创作类和 API 类（API 的失败是 failed 或 expired）；source 只用于积分类；apiKey 只用于 API 类，取结果里出现过的 Key 名称。",
 		"properties": map[string]any{
 			"workspace": map[string]any{"type": "string", "maxLength": 64},
 			"model":     map[string]any{"type": "string", "maxLength": 120},
-			"status":    map[string]any{"type": "string", "enum": []any{"queued", "running", "succeeded", "failed", "canceled"}},
+			"status":    map[string]any{"type": "string", "enum": []any{"queued", "running", "succeeded", "failed", "canceled", "pending", "expired"}},
 			"source":    map[string]any{"type": "string", "maxLength": 64},
+			"apiKey":    map[string]any{"type": "string", "maxLength": 120},
 		},
 		"additionalProperties": false,
 	}
@@ -100,7 +101,7 @@ func NewMyDataManifest(db usermetrics.TxRunner, now func() time.Time) Manifest {
 		Tools: []Definition{
 			{
 				Name: ToolMyStatsQuery,
-				Description: "统计用户本人的数据（创作次数、图片数、成功率、耗时、消耗、退回、入账等），可按日期/周/月/星期/时段/功能/模型/状态/积分来源分组，可与上一周期对比。" +
+				Description: "统计用户本人的数据（创作次数、图片数、成功率、耗时、消耗、退回、入账、开发者 API 调用次数/失败率/消耗等），可按日期/周/月/星期/时段/功能/模型/状态/积分来源/API Key 分组，可与上一周期对比。" +
 					"所有数字口径与个人中心、钱包页面一致。回答里的数字只能来自本工具的返回。" + metricCatalogText(),
 				InputSchema: map[string]any{
 					"type": "object",
@@ -141,11 +142,11 @@ func NewMyDataManifest(db usermetrics.TxRunner, now func() time.Time) Manifest {
 			},
 			{
 				Name:        ToolMyRecordsList,
-				Description: "列出用户本人的具体记录：creations（创作记录）、spend（消耗明细）、income（入账明细），可按最近或金额/图片数最大排序，最多 50 条。每条带可点击的站内链接。",
+				Description: "列出用户本人的具体记录：creations（创作记录）、spend（消耗明细）、income（入账明细）、api_calls（开发者 API 调用记录），可按最近或金额/图片数最大排序，最多 50 条。每条带可点击的站内链接。要解释某一笔扣费的来龙去脉，把记录的 id 交给 explain_charge。",
 				InputSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"type":      map[string]any{"type": "string", "enum": []any{"creations", "spend", "income"}},
+						"type":      map[string]any{"type": "string", "enum": []any{"creations", "spend", "income", "api_calls"}},
 						"sort":      map[string]any{"type": "string", "enum": []any{"recent", "largest"}},
 						"filters":   filtersSchema(),
 						"timeRange": timeRangeSchema(),

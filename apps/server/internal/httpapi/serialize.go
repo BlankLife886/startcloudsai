@@ -59,8 +59,8 @@ func walletDict(wallet *store.Wallet) gin.H {
 	if wallet == nil {
 		wallet = &store.Wallet{}
 	}
-	balancePoints := wallet.BalanceCents + wallet.TrialBalanceCents + wallet.SubscriptionBalanceCents
-	frozenPoints := wallet.FrozenCents + wallet.TrialFrozenCents + wallet.SubscriptionHeldCents + wallet.SubscriptionUpgradeHeldCents
+	balancePoints := wallet.AvailablePoints()
+	frozenPoints := wallet.FrozenPoints()
 	return gin.H{
 		"balancePoints": balancePoints, "frozenPoints": frozenPoints,
 		"balanceCents": balancePoints, "frozenCents": frozenPoints,

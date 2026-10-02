@@ -131,7 +131,7 @@ func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 				function, _ := raw.(map[string]any)["function"].(map[string]any)
 				names = append(names, fmt.Sprint(function["name"]))
 			}
-			if strings.Join(names, ",") != "my_records_list,my_stats_query,task_status" {
+			if strings.Join(names, ",") != "explain_charge,my_account_overview,my_orders_list,my_records_list,my_stats_query,task_status" {
 				t.Errorf("exposed tools = %v", names)
 			}
 			messages, _ := body["messages"].([]any)

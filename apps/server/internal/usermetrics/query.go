@@ -37,6 +37,7 @@ type Filters struct {
 	Model     string `json:"model,omitempty"`
 	Status    string `json:"status,omitempty"`
 	Source    string `json:"source,omitempty"`
+	APIKey    string `json:"apiKey,omitempty"`
 }
 
 // Request is one statistical question.
@@ -82,6 +83,7 @@ type TxRunner interface {
 type sums struct {
 	creations, images, succeeded, failed, timed, seconds int64
 	spend, deduct, refund, income                        int64
+	apiCalls, apiSucceeded, apiFailed, apiSpend          int64
 }
 
 func (s *sums) add(other sums) {
@@ -95,6 +97,10 @@ func (s *sums) add(other sums) {
 	s.deduct += other.deduct
 	s.refund += other.refund
 	s.income += other.income
+	s.apiCalls += other.apiCalls
+	s.apiSucceeded += other.apiSucceeded
+	s.apiFailed += other.apiFailed
+	s.apiSpend += other.apiSpend
 }
 
 func round(value float64, places int) float64 {
@@ -135,6 +141,19 @@ func (s sums) value(metric Metric) float64 {
 			return 0
 		}
 		return round(float64(s.spend)/float64(s.images), 2)
+	case MetricAPICalls:
+		return float64(s.apiCalls)
+	case MetricAPISucceeded:
+		return float64(s.apiSucceeded)
+	case MetricAPIFailed:
+		return float64(s.apiFailed)
+	case MetricAPIFailureRate:
+		if s.apiSucceeded+s.apiFailed == 0 {
+			return 0
+		}
+		return round(float64(s.apiFailed)*100/float64(s.apiSucceeded+s.apiFailed), 1)
+	case MetricAPISpendPoints:
+		return float64(s.apiSpend)
 	}
 	return 0
 }
@@ -208,13 +227,22 @@ func validate(req Request) (plan, error) {
 		return p, invalid("日期、周、月只能选一个")
 	}
 	if req.Filters.Status != "" && p.family&familyLedger != 0 {
-		return p, invalid("状态筛选只适用于创作类指标")
+		return p, invalid("状态筛选只适用于创作类和 API 指标")
 	}
-	if req.Filters.Source != "" && p.family&familyActivity != 0 {
+	if req.Filters.Source != "" && p.family&^familyLedger != 0 {
 		return p, invalid("积分来源筛选只适用于积分类指标")
+	}
+	if req.Filters.APIKey != "" && p.family&^familyAPI != 0 {
+		return p, invalid("API Key 筛选只适用于 API 指标")
 	}
 	p.location, p.timezone = resolveLocation(req.Timezone)
 	return p, nil
+}
+
+// Validate reports whether req is a legal question without running it.
+func (req Request) Validate() error {
+	_, err := validate(req)
+	return err
 }
 
 func dimensionSQL(dimension Dimension) string {
@@ -238,9 +266,19 @@ func dimensionSQL(dimension Dimension) string {
 		return "status"
 	case DimSource:
 		return "source"
+	case DimAPIKey:
+		return "api_key"
 	}
 	return "''"
 }
+
+// Zero columns for fact branches that do not carry a family's amounts. The
+// first branch of a UNION names the columns, so every branch aliases them.
+const (
+	noActivityColumns = `0::bigint AS creations, 0::bigint AS images, 0::bigint AS succeeded, 0::bigint AS failed,
+			0::bigint AS timed, 0::bigint AS seconds`
+	noAPIColumns = `0::bigint AS api_calls, 0::bigint AS api_succeeded, 0::bigint AS api_failed, 0::bigint AS api_spend`
+)
 
 // buildSQL compiles the plan into SQL. Every fragment comes from this package
 // or store/metric_facts.go; request values only ever travel as parameters.
@@ -248,23 +286,34 @@ func dimensionSQL(dimension Dimension) string {
 func buildSQL(p plan, filters Filters) (string, []any) {
 	var facts []string
 	if p.family&familyActivity != 0 {
-		facts = append(facts, `SELECT created_at, workspace, model, status, ''::text AS source,
+		facts = append(facts, `SELECT created_at, workspace, model, status, ''::text AS source, ''::text AS api_key,
 			1::bigint AS creations, images,
 			(status = 'succeeded')::int::bigint AS succeeded,
 			(status = 'failed')::int::bigint AS failed,
 			(seconds > 0)::int::bigint AS timed, seconds,
-			0::bigint AS spend, 0::bigint AS deduct, 0::bigint AS refund, 0::bigint AS income
+			0::bigint AS spend, 0::bigint AS deduct, 0::bigint AS refund, 0::bigint AS income,
+			`+noAPIColumns+`
 		FROM activity`)
 	}
 	if p.family&familyLedger != 0 {
 		// Aliases matter when this is the only branch: UNION takes column
 		// names from the first SELECT.
-		facts = append(facts, `SELECT created_at, workspace, model, ''::text AS status, source_type AS source,
-			0::bigint AS creations, 0::bigint AS images, 0::bigint AS succeeded, 0::bigint AS failed,
-			0::bigint AS timed, 0::bigint AS seconds,
-			spend_points AS spend, deduct_points AS deduct, refund_points AS refund, income_points AS income
+		facts = append(facts, `SELECT created_at, workspace, model, ''::text AS status, source_type AS source, ''::text AS api_key,
+			`+noActivityColumns+`,
+			spend_points AS spend, deduct_points AS deduct, refund_points AS refund, income_points AS income,
+			`+noAPIColumns+`
 		FROM ledger
 		WHERE spend_points <> 0 OR deduct_points <> 0 OR refund_points <> 0 OR income_points <> 0`)
+	}
+	if p.family&familyAPI != 0 {
+		facts = append(facts, `SELECT created_at, workspace, model, status, ''::text AS source, api_key,
+			`+noActivityColumns+`,
+			0::bigint AS spend, 0::bigint AS deduct, 0::bigint AS refund, 0::bigint AS income,
+			1::bigint AS api_calls,
+			(status = 'succeeded')::int::bigint AS api_succeeded,
+			(status IN ('failed', 'expired'))::int::bigint AS api_failed,
+			spend_points AS api_spend
+		FROM api`)
 	}
 	ctes := []string{}
 	if p.family&familyActivity != 0 {
@@ -273,9 +322,12 @@ func buildSQL(p plan, filters Filters) (string, []any) {
 	if p.family&familyLedger != 0 {
 		ctes = append(ctes, "ledger AS ("+store.UserLedgerFactsSQL+")")
 	}
+	if p.family&familyAPI != 0 {
+		ctes = append(ctes, "api AS ("+store.UserAPIFactsSQL+")")
+	}
 	ctes = append(ctes, "facts AS ("+strings.Join(facts, "\nUNION ALL\n")+")")
 
-	selects := make([]string, 0, len(p.dimensions)+10)
+	selects := make([]string, 0, len(p.dimensions)+14)
 	groups := make([]string, 0, len(p.dimensions))
 	for index, dimension := range p.dimensions {
 		selects = append(selects, dimensionSQL(dimension)+" AS d"+strconv.Itoa(index))
@@ -284,7 +336,8 @@ func buildSQL(p plan, filters Filters) (string, []any) {
 	selects = append(selects,
 		"SUM(creations)::bigint", "SUM(images)::bigint", "SUM(succeeded)::bigint", "SUM(failed)::bigint",
 		"SUM(timed)::bigint", "SUM(seconds)::bigint",
-		"SUM(spend)::bigint", "SUM(deduct)::bigint", "SUM(refund)::bigint", "SUM(income)::bigint")
+		"SUM(spend)::bigint", "SUM(deduct)::bigint", "SUM(refund)::bigint", "SUM(income)::bigint",
+		"SUM(api_calls)::bigint", "SUM(api_succeeded)::bigint", "SUM(api_failed)::bigint", "SUM(api_spend)::bigint")
 
 	where := []string{"created_at >= $2", "created_at < $3"}
 	args := []any{nil, nil, nil, nil}
@@ -300,6 +353,7 @@ func buildSQL(p plan, filters Filters) (string, []any) {
 	addFilter("model", filters.Model)
 	addFilter("status", filters.Status)
 	addFilter("source", filters.Source)
+	addFilter("api_key", filters.APIKey)
 
 	sql := "WITH " + strings.Join(ctes, ",\n") +
 		"\nSELECT " + strings.Join(selects, ", ") +
@@ -330,12 +384,13 @@ func runQuery(ctx context.Context, tx pgx.Tx, p plan, filters Filters, userID uu
 	for rows.Next() {
 		keys := make([]string, len(p.dimensions))
 		var s sums
-		targets := make([]any, 0, len(keys)+10)
+		targets := make([]any, 0, len(keys)+14)
 		for index := range keys {
 			targets = append(targets, &keys[index])
 		}
 		targets = append(targets, &s.creations, &s.images, &s.succeeded, &s.failed, &s.timed, &s.seconds,
-			&s.spend, &s.deduct, &s.refund, &s.income)
+			&s.spend, &s.deduct, &s.refund, &s.income,
+			&s.apiCalls, &s.apiSucceeded, &s.apiFailed, &s.apiSpend)
 		if err := rows.Scan(targets...); err != nil {
 			return nil, err
 		}

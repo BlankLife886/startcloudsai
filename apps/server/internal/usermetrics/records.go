@@ -19,6 +19,7 @@ const (
 	RecordCreations RecordType = "creations"
 	RecordSpend     RecordType = "spend"
 	RecordIncome    RecordType = "income"
+	RecordAPICalls  RecordType = "api_calls"
 )
 
 // RecordSort orders the list.
@@ -82,6 +83,8 @@ func recordLink(recordType, workspace, conversationID string) string {
 		return "/assistant"
 	case "task":
 		return "/history"
+	case "api_call":
+		return "/developer-api"
 	}
 	return ""
 }
@@ -125,8 +128,8 @@ func ListRecords(ctx context.Context, db TxRunner, userID uuid.UUID, req Records
 	var sql string
 	switch req.Type {
 	case RecordCreations:
-		if req.Filters.Source != "" {
-			return nil, invalid("积分来源筛选不适用于创作记录")
+		if req.Filters.Source != "" || req.Filters.APIKey != "" {
+			return nil, invalid("积分来源和 API Key 筛选不适用于创作记录")
 		}
 		addFilter("workspace", req.Filters.Workspace)
 		addFilter("model", req.Filters.Model)
@@ -140,8 +143,8 @@ func ListRecords(ctx context.Context, db TxRunner, userID uuid.UUID, req Records
 				record_type, conversation_id, prompt, '' AS reason
 			FROM activity WHERE ` + strings.Join(where, " AND ") + ` ORDER BY ` + order
 	case RecordSpend, RecordIncome:
-		if req.Filters.Status != "" {
-			return nil, invalid("状态筛选不适用于积分记录")
+		if req.Filters.Status != "" || req.Filters.APIKey != "" {
+			return nil, invalid("状态和 API Key 筛选不适用于积分记录")
 		}
 		amount := "spend_points"
 		if req.Type == RecordIncome {
@@ -160,6 +163,22 @@ func ListRecords(ctx context.Context, db TxRunner, userID uuid.UUID, req Records
 				CASE WHEN source_type IN ('task', 'assistant_run') THEN source_type ELSE '' END,
 				conversation_id, prompt, reason
 			FROM ledger WHERE ` + strings.Join(where, " AND ") + ` ORDER BY ` + order
+	case RecordAPICalls:
+		if req.Filters.Source != "" || req.Filters.Workspace != "" {
+			return nil, invalid("API 调用记录只能按模型、状态和 Key 筛选")
+		}
+		addFilter("model", req.Filters.Model)
+		addFilter("status", req.Filters.Status)
+		addFilter("api_key", req.Filters.APIKey)
+		order := "created_at DESC"
+		if sortOrder == SortLargest {
+			order = "spend_points DESC, created_at DESC"
+		}
+		sql = `WITH api AS (` + store.UserAPIFactsSQL + `)
+			SELECT id, created_at, workspace, model, status, '' AS source, 0::bigint, 0::bigint, spend_points,
+				'api_call', '', '', CASE WHEN kind = 'image' THEN '生成或编辑图片' ELSE '对话' END
+				|| CASE WHEN api_key <> '' THEN ' · Key：' || api_key ELSE '' END
+			FROM api WHERE ` + strings.Join(where, " AND ") + ` ORDER BY ` + order
 	default:
 		return nil, invalid("不支持的记录类型：%s", req.Type)
 	}
@@ -196,7 +215,7 @@ func ListRecords(ctx context.Context, db TxRunner, userID uuid.UUID, req Records
 				record.SourceLabel = labelFor(DimSource, record.Source)
 			}
 			record.Link = recordLink(recordType, record.Workspace, conversationID)
-			if req.Type != RecordCreations {
+			if req.Type == RecordSpend || req.Type == RecordIncome {
 				// Wallet entries are not individually addressable elsewhere;
 				// link to the related creation when there is one.
 				if record.Link == "" {

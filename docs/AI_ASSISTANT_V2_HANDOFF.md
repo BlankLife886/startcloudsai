@@ -1,6 +1,6 @@
 # AI 助手 v2 交接文档
 
-> 更新时间：2026-10-02（P0 完成）
+> 更新时间：2026-10-02（P0、P1 完成）
 > 分支：`codex/ai-assistant-v2`（本地，**未推送**）
 > 工作树：`/Users/ycc/Documents/TestCode/startcloudsai-ai-assistant-v2`
 > 基线：`1608691`（`codex/publish-current-project` 当时的最新提交）
@@ -13,7 +13,7 @@
 
 AI 助手**沿用原有界面**（`AssistantWorkspaceLayout` 等，不做新 UI），底层换成了 **v2 引擎**：问答和 Agent 模式的消息由 v2 先判断“这一轮要做什么”，查用户自己的数据、排查任务、普通问答由 v2 直接处理；生图方案、联网搜索、站内工具（抠图、导出等）在**同一轮内交回原引擎**处理。图片模式不变。
 
-整体路线是 P0–P5 六个阶段，目前 **P0 已全部完成、P1 核心完成**，P2–P5 未开始。
+整体路线是 P0–P5 六个阶段，目前 **P0、P1 已全部完成**，P2–P5 未开始。
 
 ---
 
@@ -87,14 +87,17 @@ worker.executeAssistantRun（assistant.go）
         3. create / web / workspace → assistantV2HandOver：以 Agent 身份交给原引擎，
            并带上 _v2Intent，原引擎直接用这个判断，不再自己跑关键词和模型判断
         4. 其余 → 工具循环（最多 6 步，只执行 read 级工具）：
-           my_stats_query、my_records_list、task_status，附带文档时加 files_list/search/read；
+           my_stats_query、my_records_list、my_account_overview、my_orders_list、explain_charge、
+           task_status，附带文档时加 files_list/search/read（系统提示词与工具集在 internal/assistantv2，
+           worker 和后台统计评测共用）；
            参考图随本轮消息一起发给模型；引用由上下文构建自动带上
         5. 写消息元数据（dataViews、toolSteps、_decision）→ CompleteAgentAttempt 结算 → 推送 Done
    ▼
-原界面渲染：正文 + AssistantDataViews（统计卡片 / 图表 / 表格 / 明细）
+原界面渲染：正文 + AssistantDataViews（统计卡片 / 图表 / 表格 / 明细 / 账户概况 / 订单 / 扣费说明）
 
 后台 /admin/assistant-decision（AssistantDecisionView.vue）
    设置判断模型和每个模型的阈值 · 看近 7/30 日判断记录 · 跑内置评测集（规则免费 / 模型真实调用）
+   · 跑统计问答评测（64 题，真实调用模型，工具查管理员自己的数据）
 ```
 
 ### 关键文件
@@ -109,7 +112,11 @@ worker.executeAssistantRun（assistant.go）
 | `apps/server/internal/httpapi/handlers_admin_assistant_decision.go` | 后台接口：`GET/PUT /admin/assistant/decision`、`GET /admin/assistant/decision/stats`、`POST /admin/assistant/decision/evals` |
 | `apps/admin/src/views/AssistantDecisionView.vue` | 后台页面“AI 助手判断” |
 | `apps/server/internal/assistanttools/registry.go` | 工具注册表，新增 `Level`（read / spend / change） |
-| `apps/server/internal/assistanttools/my_data.go` | “我的数据”能力清单（两个工具） |
+| `apps/server/internal/assistanttools/my_data.go` | “我的数据”能力清单（统计、明细，含 API 调用） |
+| `apps/server/internal/assistanttools/my_account.go` | “我的账户”能力清单：`my_account_overview`、`my_orders_list`、`explain_charge` |
+| `apps/server/internal/useraccount/` | 余额、订阅、订单、单笔扣费解释；只复用钱包 / 订阅 / 订单页的 store 函数（`Wallet.AvailablePoints`、`GetSubscriptionProgress`、`SearchUserOrders`、账本事实） |
+| `apps/server/internal/assistantv2/` | v2 的系统提示词、工具集和权限，worker 与统计评测共用 |
+| `apps/server/internal/statseval/` | 统计问答评测：64 个问法（`BuiltinCases`）、评分（工具 / 参数 / 时间范围 / 是否对比 / 数字出处）、`NewAgent` 与 `Evaluate` |
 | `apps/server/internal/worker/assistant_v2.go` | v2 编排：决策、交回原引擎、工具循环、结算 |
 | `apps/web-react/src/features/assistant/useAssistantWorkspaceController.js` | 原 controller：v2 路由与几处状态修复 |
 | `apps/web-react/src/features/assistant/AssistantDataViews.jsx` + `assistant-data-views.css` | 原界面里的统计卡片 |
@@ -147,10 +154,10 @@ worker.executeAssistantRun（assistant.go）
 | ✅ | 任务排查 `task_status` | 接入 v2 注册表 |
 | ✅ | 原界面统计卡片 | 数字卡片 + 环比、趋势折线、排名条形图、表格；亮色和暗色配色都经过校验 |
 | ✅ | 回答里的站内链接在站内跳转 | `assistantWorkspaceCore.jsx` 的 `renderAssistantMarkdownHtml` |
-| ⬜ | 订单 / 订阅查询工具 | 如“我的会员什么时候到期”“这笔订单状态”。只读，按“我的数据”的模式新增一个能力清单，接 `/me/subscription`、`/orders` 对应的 store 函数 |
-| ⬜ | 扣费解释的专门工具 | 目前靠 `my_records_list` + `task_status` 组合回答；可以做一个“解释这笔扣费”的工具，把账本、任务、退款串起来 |
-| ⬜ | API 用量指标 | 指标目录里还没有开发者 API 的调用次数和失败率（数据在 `/me/api-usage-summary`） |
-| ⬜ | 统计评测集 | 50–100 个真实问法，检查选的指标、数字、解读；规则是“回答里的数字必须来自工具结果” |
+| ✅ | 余额 / 订阅 / 订单查询 | `my_account_overview`：可用和冻结积分（与钱包页同一公式）、最近 90 天的订阅（到期、剩余天数、每日发放、下次发放、订阅积分）、订单数量；`my_orders_list`：按状态 / 订单号 / 套餐名查订单，状态措辞与订单页一致。订阅页的统计 SQL 已抽成 `store.GetSubscriptionProgress`，订阅页和助手共用 |
+| ✅ | 扣费解释 | `explain_charge`：接受任务 ID、助手运行 ID、账本记录 ID 或 API 调用 ID（不填 = 最近一笔），按时间列出预留、结算、退回、退款、失败补偿，算出实际花费并生成可直接引用的说明；金额全部取自共享账本事实（`metric_facts.go` 新增 `source_id`、`freeze_points` 两列） |
+| ✅ | API 用量指标 | 新增 `api_calls`、`api_succeeded`、`api_failed`、`api_failure_rate`、`api_spend_points`，维度 `api_key`，状态筛选加 `pending` / `expired`；明细类型 `api_calls`。口径来自 `developer_api_billing_requests`，与开发者控制台和 `/me/api-usage-summary` 一致（有对账测试） |
+| ✅ | 统计评测集 | 64 个问法，8 类（总量、时间、对比、分组、明细、API、账户、扣费）。检查工具、指标、分组、时间范围（按解析后的日期比较）、是否对比上一周期、是否说明变化，以及“回答里的每个数字都能在工具结果里找到，或由两个结果相减 / 相加 / 相除得到”。后台“AI 助手判断”页底部可运行，可按分类只跑一部分 |
 
 ### P2 电商套图（旗舰）⬜
 
@@ -200,6 +207,7 @@ worker.executeAssistantRun（assistant.go）
 - **个人中心的消耗口径与钱包统一**：早期一些金额记为 0 的账本记录，现在会按关联任务的实际扣费计入。
 - **问答模式不再在前端拦截**：服务端决定是否升级为 Agent。
 - **联网搜索的关键词判断**：不再把“物联网 / 互联网 / 车联网 / 上网本”当成联网请求。
+- **API 调用的消耗归到“API 调用”**：账本里开发者 API 的扣费以前在个人中心和统计里按功能分组时归为“其他”，现在归为“API 调用”。总数不变。
 - **任务状态的关键词判断**：必须是用户自己的任务（如“我的任务”“刚才那个任务”），写代码、问系统设计类的提问不再触发。
 
 ### 6.3 上一轮排查中发现、仍未处理的问题
@@ -214,7 +222,9 @@ worker.executeAssistantRun（assistant.go）
 - 只执行 read 级工具；遇到 spend 或 change 工具会返回“需要用户确认后才能执行”。
 - LLM 自报的置信度没有校准，所以阈值按模型分别设置（后台可改，默认意图 0.6、追问 0.75）。**建议先在后台跑一次“评测模型”，用报告里的建议值设置阈值。**以后接入 JEV 这类有校准概率的模型时，同样按模型单独设阈值。
 - 规则兜底（`assistantdecision.Rules`）在决策模型不可用、超时（3 秒）或置信度低于阈值时使用。
-- 内置评测集是代码里的固定列表（`BuiltinCases`），要扩充就改代码并提交；还没有在后台增删评测问题的功能。
+- 内置评测集是代码里的固定列表（`BuiltinCases`），要扩充就改代码并提交；还没有在后台增删评测问题的功能。统计评测集同理（`statseval.BuiltinCases`）。
+- 统计评测用的是管理员自己账号的真实数据，数据很少时“数字有出处”这一项更容易通过；需要更严格时可以用一个数据较多的测试账号登录后台再跑。“解读”只检查是否说明了变化，不评判解读质量。
+- `my_account_overview` 读取余额时和打开钱包页一样，会先结算已过期的订阅积分（`GetWallet` 的既有行为），除此之外不写任何数据。
 - 对话上下文沿用原有的 `prepareAssistantContext`（包含压缩）。
 - 交给原引擎处理的那一轮，决策模型那次调用**没有**计入利润表的上游调用次数（v2 自己处理的轮次已计入）。
 
@@ -224,7 +234,7 @@ worker.executeAssistantRun（assistant.go）
 
 1. 用本工作树的代码起一套本地接口和 worker（先问用户），用测试账号做一次真实试用；在后台“AI 助手判断”跑一次“评测模型”，按建议值设置阈值。
 2. 修复 6.1 中和助手行为相关的第 3、5、8 条测试问题。
-3. 补完 P1：订单 / 订阅查询、扣费解释、API 用量指标、统计评测集。
+3. 在后台跑一次“统计问答评测”，看哪类问题没通过，调整工具描述或系统提示词（`internal/assistantv2`）。
 4. 进入 P2 电商套图：先设计付费确认 / 预算审批流程和 spend 级工具，开始真实生成前先征得用户同意。
 
 ---

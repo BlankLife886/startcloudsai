@@ -20,6 +20,12 @@ const (
 	MetricRefundPoints Metric = "refund_points"
 	MetricIncomePoints Metric = "income_points"
 	MetricCostPerImage Metric = "cost_per_image"
+
+	MetricAPICalls       Metric = "api_calls"
+	MetricAPISucceeded   Metric = "api_succeeded"
+	MetricAPIFailed      Metric = "api_failed"
+	MetricAPIFailureRate Metric = "api_failure_rate"
+	MetricAPISpendPoints Metric = "api_spend_points"
 )
 
 func (m Metric) String() string { return string(m) }
@@ -37,6 +43,7 @@ const (
 	DimModel     Dimension = "model"
 	DimStatus    Dimension = "status"
 	DimSource    Dimension = "source"
+	DimAPIKey    Dimension = "api_key"
 )
 
 // factFamily says which fact table a metric or dimension can be computed from.
@@ -45,7 +52,9 @@ type factFamily int
 const (
 	familyActivity factFamily = 1 << iota
 	familyLedger
+	familyAPI
 	familyBoth = familyActivity | familyLedger
+	familyAll  = familyActivity | familyLedger | familyAPI
 )
 
 type metricSpec struct {
@@ -74,18 +83,25 @@ var metricCatalog = map[Metric]metricSpec{
 	MetricRefundPoints: {"退回积分", "积分", "冻结后退回可用余额的积分，与钱包“退回”一致", familyLedger},
 	MetricIncomePoints: {"入账积分", "积分", "充值、订阅发放、奖励、人工补发等入账，与钱包“入账”一致", familyLedger},
 	MetricCostPerImage: {"单张平均成本", "积分/张", "消耗积分 ÷ 生成图片数", familyBoth},
+
+	MetricAPICalls:       {"API 调用次数", "次", "开发者 API（/v1）请求次数，含还在等待上游返回的请求，与开发者控制台调用记录一致", familyAPI},
+	MetricAPISucceeded:   {"API 成功次数", "次", "成功并计费的 API 请求次数", familyAPI},
+	MetricAPIFailed:      {"API 失败次数", "次", "失败或超时未完成、已全额退回的 API 请求次数", familyAPI},
+	MetricAPIFailureRate: {"API 失败率", "%", "API 失败次数 ÷（成功 + 失败）；等待中的请求不计入", familyAPI},
+	MetricAPISpendPoints: {"API 消耗积分", "积分", "成功 API 请求的扣费合计，与钱包和订阅页的“API 调用”汇总一致；已包含在“消耗积分”里", familyAPI},
 }
 
 var dimensionCatalog = map[Dimension]dimensionSpec{
-	DimDay:       {"日期", "按用户本地日期", familyBoth, true},
-	DimWeek:      {"周", "按自然周（周一开始）", familyBoth, true},
-	DimMonth:     {"月份", "按自然月", familyBoth, true},
-	DimWeekday:   {"星期", "周一到周日的分布", familyBoth, false},
-	DimHour:      {"时段", "一天 24 小时的分布", familyBoth, false},
-	DimWorkspace: {"功能", "文生图、AI 电商、AI 助手等", familyBoth, false},
-	DimModel:     {"模型", "使用的模型", familyBoth, false},
-	DimStatus:    {"状态", "成功、失败、已取消等，只适用于创作类指标", familyActivity, false},
+	DimDay:       {"日期", "按用户本地日期", familyAll, true},
+	DimWeek:      {"周", "按自然周（周一开始）", familyAll, true},
+	DimMonth:     {"月份", "按自然月", familyAll, true},
+	DimWeekday:   {"星期", "周一到周日的分布", familyAll, false},
+	DimHour:      {"时段", "一天 24 小时的分布", familyAll, false},
+	DimWorkspace: {"功能", "文生图、AI 电商、AI 助手等", familyAll, false},
+	DimModel:     {"模型", "使用的模型", familyAll, false},
+	DimStatus:    {"状态", "成功、失败、已取消等，只适用于创作类和 API 指标", familyActivity | familyAPI, false},
 	DimSource:    {"积分来源", "积分变动的来源，只适用于积分类指标", familyLedger, false},
+	DimAPIKey:    {"API Key", "按 API Key 名称，只适用于 API 指标", familyAPI, false},
 }
 
 // WorkspaceLabels mirror TASK_TYPE_LABELS in the web client.
@@ -110,6 +126,9 @@ var SourceLabels = map[string]string{
 	"task":                     "创作任务",
 	"assistant_run":            "AI 助手",
 	"developer_api":            "API 调用",
+	"openai_image_request":     "API 调用",
+	"open_api_chat":            "API 调用",
+	"open_api_responses_chat":  "API 调用",
 	"order":                    "套餐入账",
 	"redeem_code":              "兑换码入账",
 	"daily_checkin":            "签到奖励",
@@ -133,6 +152,8 @@ var statusLabels = map[string]string{
 	"succeeded": "成功",
 	"failed":    "失败",
 	"canceled":  "已取消",
+	"pending":   "等待返回",
+	"expired":   "超时退回",
 }
 
 var weekdayLabels = [7]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
@@ -157,6 +178,7 @@ func Metrics() []MetricInfo {
 	order := []Metric{
 		MetricCreations, MetricImages, MetricSucceeded, MetricFailed, MetricSuccessRate, MetricAvgSeconds,
 		MetricSpendPoints, MetricDeductPoints, MetricRefundPoints, MetricIncomePoints, MetricCostPerImage,
+		MetricAPICalls, MetricAPISucceeded, MetricAPIFailed, MetricAPIFailureRate, MetricAPISpendPoints,
 	}
 	out := make([]MetricInfo, 0, len(order))
 	for _, id := range order {
@@ -168,7 +190,7 @@ func Metrics() []MetricInfo {
 
 // Dimensions lists the catalog in a stable order.
 func Dimensions() []DimensionInfo {
-	order := []Dimension{DimDay, DimWeek, DimMonth, DimWeekday, DimHour, DimWorkspace, DimModel, DimStatus, DimSource}
+	order := []Dimension{DimDay, DimWeek, DimMonth, DimWeekday, DimHour, DimWorkspace, DimModel, DimStatus, DimSource, DimAPIKey}
 	out := make([]DimensionInfo, 0, len(order))
 	for _, id := range order {
 		spec := dimensionCatalog[id]
@@ -194,6 +216,10 @@ func labelFor(dimension Dimension, key string) string {
 	case DimModel:
 		if key == "" {
 			return "未记录模型"
+		}
+	case DimAPIKey:
+		if key == "" {
+			return "未命名或已删除的 Key"
 		}
 	}
 	if key == "" {

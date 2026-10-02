@@ -15,6 +15,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantdecision"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantv2"
 	"github.com/BlankLife886/startcloudsai/server/internal/decision"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -29,7 +30,6 @@ const AssistantEngineV2 = "v2"
 const (
 	assistantV2MaxSteps        = 6
 	assistantV2DecisionTimeout = 3 * time.Second
-	assistantV2SystemVersion   = "assistant-v2-1"
 	assistantV2MaxViewRows     = 120
 )
 
@@ -124,65 +124,8 @@ func assistantV2HandOver(run *store.AssistantRun, decided assistantV2Decision) *
 	return &handed
 }
 
-// assistantV2Registry holds the capabilities v2 can call. Each domain is one
-// manifest; adding a platform capability means adding a manifest here.
-// Attached documents add the read-only file tools for that turn.
-func (w *Worker) assistantV2Registry(withFiles bool) (*assistanttools.Registry, error) {
-	manifests := []assistanttools.Manifest{
-		assistanttools.NewMyDataManifest(w.St, time.Now),
-		assistanttools.NewTaskStatusManifest(w.St.Pool),
-	}
-	if withFiles {
-		manifests = append(manifests, assistanttools.NewFileManifest(w.St.Pool))
-	}
-	return assistanttools.NewRegistry(manifests...)
-}
-
-// assistantV2ToolsFor returns the tools exposed for a turn. Read-only
-// personal data and task status are cheap and safe, so they stay available;
-// file tools join when documents are attached.
-func assistantV2ToolsFor(registry *assistanttools.Registry, intent string) []string {
-	names := []string{}
-	for _, name := range registry.Names() {
-		switch registry.Domain(name) {
-		case "my_data", "task-status", "files":
-			names = append(names, name)
-		}
-	}
-	return names
-}
-
 func assistantV2SystemPrompt(run *store.AssistantRun, now time.Time, d assistantV2Decision) string {
-	timezone := assistantParamString(run.Params, "timezone", "Asia/Shanghai")
-	location, err := time.LoadLocation(timezone)
-	if err != nil {
-		location = time.FixedZone("Asia/Shanghai", 8*3600)
-	}
-	local := now.In(location)
-	var builder strings.Builder
-	builder.WriteString(`你是星云 AI 平台的 AI 助手。你的目标是帮用户把事情办成，而不只是回答问题。
-
-通用规则：
-- 用中文回答，先给结论，再给依据，最后给可以直接执行的下一步。
-- 用户问某个任务为什么失败、还在不在跑、有没有退款时，调用 task_status 查看真实状态，不要猜测；不向用户展示内部任务 ID、线路或端点。
-- 涉及用户本人的数据（用量、消耗、积分去向、创作次数、成功率、明细）时，必须调用 my_stats_query 或 my_records_list 获取，回答中的每个数字都只能来自工具结果；工具没返回的数字不得编造或估算。
-- 问题不够具体时先给合理的默认答案（例如默认看最近 30 天），再提供一两个细分方向，不要反问。
-- 统计结果要做解读：与上一周期对比时说明变化幅度，并指出变化最大的部分和可能的原因。
-- 解读只能基于工具返回的分组数据，不要臆测用户的意图。
-- 账户与支付操作（充值、购买或退订套餐、退款、修改密码、管理 API Key）你不能代为执行：解释清楚后给出站内页面让用户自己操作——钱包 /wallet，订阅 /subscriptions，订单 /orders，套餐价格 /pricing，个人资料 /profile，API /developer-api。
-- 生成或修改图片：当前版本请给出具体建议（画面、比例、模型选择），并引导用户到对应工作台：AI 电商 /ecommerce-design，文生图 /text-to-image，无限画布 /canvas，游戏设计 /game-art，模型设计 /model-sheet，UI 设计 /design-workshop。
-- 站内链接用 Markdown 链接格式，例如 [打开钱包](/wallet)。`)
-	fmt.Fprintf(&builder, "\n\n当前时间：%s（%s，%s）。", local.Format("2006-01-02 15:04"), timezone, [...]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}[local.Weekday()])
-	if d.Clarify {
-		builder.WriteString("\n\n本轮判断：用户的要求缺少关键信息。只问一个最关键的问题，并给出 2-3 个可选答案供用户直接选择。")
-	}
-	switch d.Intent {
-	case assistantV2IntentAccount:
-		builder.WriteString("\n\n本轮判断：这是账户或支付相关的问题。可以查询并解释用户自己的数据，但不能代为执行任何账户或支付操作。")
-	case assistantV2IntentCreate:
-		builder.WriteString("\n\n本轮判断：用户想生成或处理图片。按上面“生成或修改图片”的规则回答。")
-	}
-	return builder.String()
+	return assistantv2.SystemPrompt(assistantParamString(run.Params, "timezone", "Asia/Shanghai"), now, d.Intent, d.Clarify)
 }
 
 // assistantV2DataView keeps a tool's structured result for the client to
@@ -280,13 +223,13 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 		return err
 	}
 
-	registry, err := w.assistantV2Registry(len(fileIDs) > 0)
+	registry, err := assistantv2.Registry(w.St, time.Now, len(fileIDs) > 0)
 	if err != nil {
 		return err
 	}
 	toolNames := []string{}
 	if !decided.Clarify {
-		toolNames = assistantV2ToolsFor(registry, decided.Intent)
+		toolNames = assistantv2.ToolsFor(registry)
 	}
 	tools, err := registry.Definitions(toolNames)
 	if err != nil {
@@ -338,10 +281,11 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	text, reasoning := "", ""
 	messages := payload
 	permissions := map[assistanttools.Permission]bool{
-		assistanttools.PermissionMyDataRead:    true,
-		assistanttools.PermissionTasksRead:     true,
 		assistanttools.PermissionFilesMetadata: len(fileIDs) > 0,
 		assistanttools.PermissionFilesRead:     len(fileIDs) > 0,
+	}
+	for _, permission := range assistantv2.ReadPermissions {
+		permissions[permission] = true
 	}
 
 	for step := 0; ; step++ {
@@ -423,7 +367,7 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	attachAssistantReasoning(metadata, reasoning)
 	attachAssistantToolSteps(metadata, toolSteps)
 	metadata["engine"] = AssistantEngineV2
-	metadata["systemPromptVersion"] = assistantV2SystemVersion
+	metadata["systemPromptVersion"] = assistantv2.SystemVersion
 	// Underscore keys stay server-side: the decision is for evaluation, not display.
 	metadata["_decision"] = decided.Metadata(sanitizeUpstreamMessage)
 	if len(dataViews) > 0 {

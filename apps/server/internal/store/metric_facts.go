@@ -14,6 +14,10 @@ const usageMaxTaskSeconds = 3600
 // excludedSpendSourceTypes 是订阅内部划转，不属于用户的真实消耗。
 const excludedSpendSourceTypes = `('subscription_refund_hold','subscription_upgrade_exchange','subscription_cycle_expiry')`
 
+// developerAPILedgerSourcesSQL 是开发者 /v1 请求写入账本时使用的来源，与
+// developerAPILedgerSources 保持一致。
+const developerAPILedgerSourcesSQL = `('` + DeveloperAPIImageLedgerSource + `','` + DeveloperAPIChatLedgerSource + `','open_api_responses_chat')`
+
 // UserActivityFactsSQL 每行是一次创作：站内图片任务或 AI 助手运行。
 //
 // 列：created_at, workspace, model, status, images, seconds,
@@ -68,7 +72,8 @@ var UserActivityFactsSQL = `
 //
 // 列：created_at, kind, source_type, workspace, model,
 // spend_points, deduct_points, refund_points, income_points,
-// id, source_record_id（关联的任务 / 助手运行）, conversation_id, prompt（前 120 字）, reason。
+// id, source_record_id（关联的任务 / 助手运行）, conversation_id, prompt（前 120 字）, reason,
+// source_id（账本原始来源 ID）, freeze_points（预留的积分，不计入任何汇总，只用于解释单笔扣费）。
 var UserLedgerFactsSQL = `
 	SELECT l.created_at,
 		l.kind,
@@ -76,7 +81,7 @@ var UserLedgerFactsSQL = `
 		CASE
 			WHEN l.source_type = 'task' THEN COALESCE(t.type, 'other')
 			WHEN l.source_type = 'assistant_run' THEN COALESCE(NULLIF(c.workspace, ''), 'assistant')
-			WHEN l.source_type = 'developer_api' THEN 'developer_api'
+			WHEN l.source_type IN ` + developerAPILedgerSourcesSQL + ` THEN 'developer_api'
 			ELSE 'other'
 		END AS workspace,
 		COALESCE(NULLIF(t.params->>'_modelDisplayName', ''), NULLIF(t.model, ''),
@@ -100,7 +105,9 @@ var UserLedgerFactsSQL = `
 		COALESCE(t.id::text, a.id::text, '') AS source_record_id,
 		COALESCE(a.conversation_id::text, '') AS conversation_id,
 		left(COALESCE(t.prompt, a.prompt, ''), 120) AS prompt,
-		left(COALESCE(l.reason, ''), 120) AS reason
+		left(COALESCE(l.reason, ''), 120) AS reason,
+		COALESCE(l.source_id, '') AS source_id,
+		(CASE WHEN l.kind = 'freeze' THEN -l.delta_cents ELSE 0 END)::bigint AS freeze_points
 	FROM wallet_ledger l
 	LEFT JOIN tasks t ON l.source_type = 'task'
 		AND t.user_id = l.user_id
@@ -110,3 +117,22 @@ var UserLedgerFactsSQL = `
 		AND a.id::text = split_part(COALESCE(l.source_id, ''), '/', 1)
 	LEFT JOIN assistant_conversations c ON c.id = a.conversation_id
 	WHERE l.user_id = $1`
+
+// UserAPIFactsSQL 每行是一次开发者 API（/v1）请求，口径与开发者控制台的调用记录和
+// /me/api-usage-summary 一致：成功的请求按 price_cents 计费；失败和超时未完成的请求
+// 已退回，不计费；pending 是还在等上游返回的请求。
+//
+// 列：created_at, workspace（固定 developer_api）, model（调用方使用的模型名）,
+// status, api_key（Key 名称）, spend_points, id, kind（chat / image）。
+var UserAPIFactsSQL = `
+	SELECT r.created_at,
+		'developer_api'::text AS workspace,
+		COALESCE(NULLIF(r.api_model_name, ''), '') AS model,
+		r.status,
+		COALESCE(NULLIF(k.label, ''), '') AS api_key,
+		(CASE WHEN r.status = 'succeeded' THEN r.price_cents ELSE 0 END)::bigint AS spend_points,
+		r.billing_id AS id,
+		CASE WHEN r.source_type = '` + DeveloperAPIImageLedgerSource + `' THEN 'image' ELSE 'chat' END AS kind
+	FROM developer_api_billing_requests r
+	LEFT JOIN user_api_keys k ON k.id = r.api_key_id
+	WHERE r.user_id = $1`
