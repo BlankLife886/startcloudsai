@@ -1044,6 +1044,20 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
             selected: (proposal.quality || qualities[0]?.id) === option.id,
           }))}
         /> : null}
+        {selectedModel?.transparentBackground ? <ProposalSelect
+          id="background"
+          label="背景"
+          ariaLabel="背景"
+          valueLabel={proposal.transparentBackground ? "透明 PNG" : "不透明"}
+          disabled={busy}
+          open={openMenu === "background"}
+          onToggle={() => toggleMenu("background")}
+          onPick={(value) => { setOpenMenu(""); onChange({ transparentBackground: value === "transparent" }); }}
+          options={[
+            { id: "opaque", label: "不透明", selected: !proposal.transparentBackground },
+            { id: "transparent", label: "透明 PNG", selected: proposal.transparentBackground === true },
+          ]}
+        /> : null}
           <ProposalSelect
             id="count"
             label="数量"

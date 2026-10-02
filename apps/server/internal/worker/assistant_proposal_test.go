@@ -610,3 +610,21 @@ func TestAssistantToolArgumentsAlwaysProducesValidJSON(t *testing.T) {
 		t.Fatalf("oversized arguments were not compacted: %d bytes", len(got))
 	}
 }
+
+// Cut-outs are gpt-image-2 edits with a transparent background, not a
+// separate background-removal model.
+func TestAssistantProposalAsksForTransparentCutOuts(t *testing.T) {
+	tool := assistantProposalFunctionTool(nil)
+	properties, _ := tool.Parameters["properties"].(map[string]any)
+	if _, ok := properties["transparentBackground"]; !ok {
+		t.Fatalf("proposal tool lacks transparentBackground: %v", properties)
+	}
+	run := &store.AssistantRun{Params: map[string]any{}}
+	if instructions := assistantAgentInstructions(run, nil, nil, true); !strings.Contains(instructions, "transparentBackground=true") {
+		t.Fatal("image rules do not ask for a transparent background on cut-outs")
+	}
+	var proposal assistantImageProposal
+	if err := json.Unmarshal([]byte(`{"action":"edit","prompt":"去掉背景","transparentBackground":true}`), &proposal); err != nil || !proposal.TransparentBackground {
+		t.Fatalf("proposal = %+v err = %v", proposal, err)
+	}
+}

@@ -2413,6 +2413,7 @@ export function useAssistantWorkspaceController() {
           ...(responseMode === "image" && item.sizeMode === "exact" ? exactImageSizeParams(requestImageModel, item.exactWidth, item.exactHeight) : {}),
         })),
         referenceMode: responseMode === "image" ? imageRunReferenceMode(userMessage, assistantMessage) : "",
+        ...(responseMode === "image" && assistantMessage.transparentBackground === true ? { transparentBackground: true } : {}),
         attachments: (userMessage.attachments || []).filter((item) => item.status === "ready").map((item) => ({ id: item.id })),
         quoted: userMessage.quoted || null,
         skill: userMessage.skill || "",
@@ -3212,7 +3213,7 @@ export function useAssistantWorkspaceController() {
     if (conversationHasWork || proposal.submitting) return "retry";
     if (!(await confirmAssistantCost("image", count, model, activeReasoningEffort, { skip: auto }))) return false;
     const userMessage = { id: uid(), role: "user", content: auto ? "已自动执行这个创作方案" : "执行这个创作方案", localOnly: true, createdAt: new Date().toISOString(), proposalSourceMessageId: proposalMessage.id, referenceMode, referenceImages: referenceImages.map((image) => ({ ...image })), imagePlanItems };
-    const assistantMessage = createLocalAssistantPlaceholder({ prompt, responseMode: "image", userMessageId: userMessage.id, defaults: { model, ratio: request.ratio, requestRatio: request.ratio, resolution: request.resolution, count, requestSize: request.requestSize, width: request.width, height: request.height, quality: request.quality, referenceMode } });
+    const assistantMessage = createLocalAssistantPlaceholder({ prompt, responseMode: "image", userMessageId: userMessage.id, defaults: { model, ratio: request.ratio, requestRatio: request.ratio, resolution: request.resolution, count, requestSize: request.requestSize, width: request.width, height: request.height, quality: request.quality, referenceMode, transparentBackground: proposal.transparentBackground === true } });
     if (imagePlanItems.length) assistantMessage.imagePlanItems = imagePlanItems;
     updateProposal(proposalMessage.id, { submitting: true, dismissed: false });
     patchConversation(liveConversation.id, (conversation) => ({ ...conversation, updatedAt: userMessage.createdAt, messages: [...conversation.messages, userMessage, assistantMessage] }));

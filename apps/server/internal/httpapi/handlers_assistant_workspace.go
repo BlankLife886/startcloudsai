@@ -90,6 +90,9 @@ type assistantRunIn struct {
 	Width                    int                         `json:"width"`
 	Height                   int                         `json:"height"`
 	Quality                  string                      `json:"quality"`
+	// TransparentBackground asks for a cut-out with an alpha channel; it is
+	// honoured only when the image model supports it, and forces PNG.
+	TransparentBackground bool `json:"transparentBackground"`
 	ReasoningEffort          string                      `json:"reasoningEffort"`
 	ServiceKey               string                      `json:"serviceKey"`
 	Workspace                string                      `json:"workspace"`
@@ -1272,6 +1275,14 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	if body.Quality != "" {
 		params["quality"] = body.Quality
+	}
+	if body.TransparentBackground && imageSelection != nil && imageSelection.Model.TransparentBackground {
+		params["transparentBackground"] = true
+		// Without a format selector the model keeps its built-in format (PNG
+		// for gpt-image-2); naming one there is rejected by validation.
+		if containsString(imageSelection.Model.OutputFormats, "png") {
+			params["outputFormat"] = "png"
+		}
 	}
 	if len(maskReferences) == 2 {
 		params["_maskKey"] = assistantMapText(maskReferences[0], "fileKey")

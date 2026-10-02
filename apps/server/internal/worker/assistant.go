@@ -1245,6 +1245,9 @@ type assistantImageProposal struct {
 	ReferenceMode      string                   `json:"referenceMode"`
 	InspectedImageIDs  []string                 `json:"inspectedImageIds,omitempty"`
 	Items              []assistantImagePlanItem `json:"items,omitempty"`
+	// TransparentBackground asks the image model for a real alpha channel
+	// (gpt-image-2 background=transparent, PNG output) — used for cut-outs.
+	TransparentBackground bool `json:"transparentBackground,omitempty"`
 	// AutoApprovable 说明这份方案够不够资格在开启自动授权后免确认直接提交。
 	// 只在服务端判定，因为意图置信度只有这里知道；预算另由界面按当前模型单价把关。
 	AutoApprovable bool `json:"autoApprovable"`
@@ -1679,6 +1682,7 @@ func assistantProposalFunctionTool(models []map[string]any) sub2api.FunctionTool
 		"count":              map[string]any{"type": "integer", "minimum": 1, "maximum": assistantProposalCatalogMaxImages(models)},
 		"model":              map[string]any{"type": "string", "description": "当前可用图片模型目录中的 id"},
 		"referencedImageIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"transparentBackground": map[string]any{"type": "boolean", "description": "抠图、去背景、要透明底或免抠素材时为 true：输出带透明通道的 PNG"},
 		"referenceMode": map[string]any{
 			"type": "string", "enum": []string{assistantReferenceModeShared, assistantReferenceModeIndividual},
 			"description": "shared=多张参考图共同参与每张输出；individual=图1只生成结果1、图2只生成结果2，逐张一一对应",
@@ -1806,7 +1810,7 @@ const assistantAgentBaseInstruction = `你是 StarCloudsAI 的通用执行 Agent
 // 模型时才有意义。规则不会因为用不上就不占注意力：多读一条无关约束，模型挑错工具、
 // 填错参数的概率就高一分，所以纯对话轮整段不下发。
 const assistantAgentImageInstruction = `	- 用户明确要生成新图或编辑已有图片时，可以先给一句简短说明，然后调用 propose_image_action；工具调用成功后不要再输出 JSON 或重复提示词。
-	- 抠图、去背景、要白底或透明底时，按编辑已有图片处理：promptMode=faithful，faithfulPrompt 写明“去掉背景，只保留主体，主体的外形、颜色、文字和细节保持原样不变，背景换成纯白色”（用户指定了别的底色就用用户的；要透明底时说明这里给的是纯白底，方便再去透明），referencedImageIds 指向要处理的图。
+	- 抠图、去背景、要透明底或免抠素材时，按编辑已有图片处理：action=edit，promptMode=faithful，transparentBackground=true，faithfulPrompt 写明“去掉背景，只保留主体，主体的外形、颜色、文字和细节保持原样不变，背景完全透明”，referencedImageIds 指向要处理的图。用户明确要白底或别的底色时不设 transparentBackground，背景写成用户要的颜色。
 	- 有参考图、编辑已有图片，或用户强调原样、一模一样、提示词不要改时，promptMode=faithful，faithfulPrompt 必须保留用户目标和原始约束，禁止擅自增加风格、主体或构图。只有需求是模糊创意方向时才使用 enhanced。
 	- 用户明确需要一套不同用途的图片（例如主图、场景图、细节图）时，items 为每张图填写独立 title、prompt 和 referencedImageIds，count 必须等于 items 数量。只是同一提示词生成多个随机变体时 items 返回空数组。
 - 如果当前上游不支持工具调用，无法调用 propose_image_action，则只输出一个与该工具参数完全同结构的 JSON 对象，不要 Markdown、代码块或额外文字。

@@ -242,6 +242,7 @@ export function createAssistantPlaceholder({
     width: previous?.width || defaults.width,
     height: previous?.height || defaults.height,
     quality: previous?.quality || defaults.quality,
+    ...(defaults.transparentBackground === true ? { transparentBackground: true } : {}),
     ...(exact ? { sizeMode: 'exact', exactWidth: exact.exactWidth, exactHeight: exact.exactHeight } : {}),
     progress: 0,
     routing: responseMode === 'agent' && !waiting,
