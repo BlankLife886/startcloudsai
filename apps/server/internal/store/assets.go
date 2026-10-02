@@ -3,9 +3,12 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -220,6 +223,13 @@ func PermanentlyDeleteUserAsset(ctx context.Context, q Q, userID, id uuid.UUID) 
 }
 
 func BatchUpdateUserAssets(ctx context.Context, q Q, userID uuid.UUID, ids []uuid.UUID, groupSet bool, groupID *uuid.UUID, addTags, removeTags []string) (int64, error) {
+	// A nil list becomes SQL NULL, and NULL || tags would erase every tag.
+	if addTags == nil {
+		addTags = []string{}
+	}
+	if removeTags == nil {
+		removeTags = []string{}
+	}
 	command, err := q.Exec(ctx, `UPDATE user_assets SET group_id = CASE WHEN $3 THEN $4 ELSE group_id END,
 		tags = ARRAY(SELECT DISTINCT value FROM unnest(tags || $5::text[]) value WHERE NOT (value = ANY($6::text[]))),
 		updated_at = now()
@@ -334,6 +344,31 @@ func UpdateUserAssetGroup(ctx context.Context, q Q, userID, id uuid.UUID, name s
 func DeleteUserAssetGroup(ctx context.Context, q Q, userID, id uuid.UUID) error {
 	_, err := q.Exec(ctx, `DELETE FROM user_asset_groups WHERE user_id = $1 AND id = $2`, userID, id)
 	return err
+}
+
+// ErrAssetTags explains why a tag list was refused.
+var ErrAssetTags = errors.New("invalid asset tags")
+
+// NormalizeAssetTags trims and de-duplicates tags: at most 30 per asset, each
+// at most 32 characters.
+func NormalizeAssetTags(values []string) ([]string, error) {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		if utf8.RuneCountInString(value) > 32 {
+			return nil, fmt.Errorf("%w: 标签不能超过 32 个字符", ErrAssetTags)
+		}
+		seen[value] = true
+		out = append(out, value)
+		if len(out) > 30 {
+			return nil, fmt.Errorf("%w: 每个素材最多 30 个标签", ErrAssetTags)
+		}
+	}
+	return out, nil
 }
 
 func NormalizeAssetGroupName(raw string) string {

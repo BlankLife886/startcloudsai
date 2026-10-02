@@ -127,17 +127,18 @@ export function AssistantCommerceSet({ initial }) {
   if (!set) return null
   const shots = Array.isArray(set.shots) ? set.shots : []
   const planned = set.status === 'planned'
-  const title = ['电商套图', set.productName, set.platform].filter(Boolean).join(' · ')
+  const isTool = set.kind === 'tool'
+  const title = isTool ? '背景移除' : ['电商套图', set.productName, set.platform].filter(Boolean).join(' · ')
   const progress = planned ? `${shots.length} 张 · 预计 ${points(set.quotedCents)}` : `已完成 ${set.done}/${set.total} · 已用 ${points(set.approvedCents)}`
 
   return (
-    <section className="assistant-data assistant-commerce" aria-label="电商套图">
+    <section className="assistant-data assistant-commerce" aria-label={isTool ? '图片处理' : '电商套图'}>
       <header className="assistant-data-head">
         <span>{title}</span>
         <span className="assistant-data-sub">{progress}</span>
       </header>
       {set.summary && <p className="assistant-commerce-summary">视觉主线：{set.summary}</p>}
-      <ul className="assistant-commerce-grid">
+      <ul className={`assistant-commerce-grid${isTool ? ' is-tool' : ''}`}>
         {shots.map((shot) => (
           <ShotTile key={shot.id} shot={shot} busy={busy}
             onRedo={(target) => act(() => redoAssistantCommerceShots(id, { shotIds: [target.id], expectedTotalCents: target.priceCents || 0 }))} />
@@ -155,11 +156,11 @@ export function AssistantCommerceSet({ initial }) {
       {set.ready && (
         <div className="assistant-commerce-actions">
           <a className="assistant-commerce-primary" href={assistantCommerceSetArchiveUrl(id)} download>下载全部</a>
-          <Link className="assistant-commerce-link" to={set.workbenchLink || '/ecommerce-design'}>在电商工作台继续调整</Link>
+          <Link className="assistant-commerce-link" to={set.workbenchLink || '/ecommerce-design'}>{isTool ? '在抠图工具里继续处理' : '在电商工作台继续调整'}</Link>
         </div>
       )}
       {generating && !set.ready && (
-        <p className="assistant-data-note">{anyRunning ? '正在逐张生成，完成后会自动检查。' : '正在检查成片…'}</p>
+        <p className="assistant-data-note">{anyRunning ? (isTool ? '正在处理，完成后可以下载。' : '正在逐张生成，完成后会自动检查。') : (isTool ? '正在整理结果…' : '正在检查成片…')}</p>
       )}
       {notice && <p className="assistant-data-note">{notice}</p>}
       {error && <p className="assistant-commerce-error" role="alert">{error}</p>}

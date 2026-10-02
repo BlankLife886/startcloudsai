@@ -18,6 +18,7 @@ const (
 	ToolCommerceSetGenerate = "commerce_set_generate"
 	ToolCommerceSetRedo     = "commerce_set_redo"
 	ToolCommerceSetStatus   = "commerce_set_status"
+	ToolImageToolPlan       = "image_tool_plan"
 
 	PermissionCommerceSets Permission = "commerce.sets"
 
@@ -138,8 +139,44 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 	return Manifest{
 		ID:          DomainCommerceSet,
 		Version:     "1",
-		Description: "策划并生成电商商品套图（主图 + 详情页）",
+		Description: "策划并生成电商商品套图（主图 + 详情页），以及对用户图片运行图片工具（背景移除）",
 		Tools: []Definition{
+			{
+				Name: ToolImageToolPlan,
+				Description: "对用户本轮上传的图片运行图片工具，目前支持 background_remove（移除背景，得到透明底 PNG）。每张图一个任务，只出方案和报价，不花积分；" +
+					"之后按 commerce_set_generate 的规则执行（同样返回 setId，生成、重做、查进度都用 commerce_set_* 工具）。",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"tool": map[string]any{"type": "string", "enum": []any{commerceset.ToolBackgroundRemove}},
+					},
+					"required":             []any{"tool"},
+					"additionalProperties": false,
+				},
+				Permissions:    []Permission{PermissionCommerceSets},
+				Risk:           RiskRead,
+				Level:          LevelRead,
+				Timeout:        30 * time.Second,
+				MaxResultBytes: 32 << 10,
+				Execute: func(ctx context.Context, invocation Invocation) (Result, error) {
+					var input struct {
+						Tool string `json:"tool"`
+					}
+					if err := json.Unmarshal(invocation.Arguments, &input); err != nil {
+						return Result{}, errors.New("参数格式不正确")
+					}
+					set, err := service.PlanTool(ctx, commerceset.ToolPlanInput{UserID: invocation.UserID,
+						ConversationID: turn.ConversationID, RunID: turn.RunID, Tool: input.Tool, InputKeys: turn.InputKeys})
+					if err != nil {
+						return commerceToolError(err)
+					}
+					current, err := service.BuildView(ctx, set)
+					if err != nil {
+						return Result{}, err
+					}
+					return commerceObservation(current, nil)
+				},
+			},
 			{
 				Name: ToolCommerceSetPlan,
 				Description: "根据用户上传的商品图策划一套电商图：选出图类型和张数、策划每张的标题文案与构图，并报价（预计积分）。只出方案，不花积分。" +
@@ -197,7 +234,7 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 			},
 			{
 				Name: ToolCommerceSetGenerate,
-				Description: "按方案生成整套图（花积分）。只有当方案的 autoApprovable 为 true（用户开启了自动授权且在预算内）时才调用；否则不要调用，请用户在方案卡片上确认。" +
+				Description: "按方案生成整套图或执行图片工具（花积分）。只有当方案的 autoApprovable 为 true（用户开启了自动授权且在预算内）时才调用；否则不要调用，请用户在方案卡片上确认。" +
 					"返回 needsConfirmation 时说明预算不够或未授权，转告用户在卡片上确认。",
 				InputSchema: map[string]any{
 					"type":                 "object",

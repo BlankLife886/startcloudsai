@@ -39,6 +39,15 @@
   object-fit: cover;
 }
 
+/* 抠图结果是透明底，完整显示在棋盘格上，不裁切。 */
+.assistant-commerce-grid.is-tool .assistant-commerce-shot-frame {
+  background: repeating-conic-gradient(var(--assistant-panel-hover) 0% 25%, var(--assistant-card) 0% 50%) 50% / 16px 16px;
+}
+
+.assistant-commerce-grid.is-tool .assistant-commerce-shot-frame img {
+  object-fit: contain;
+}
+
 .assistant-commerce-shot-placeholder {
   display: grid;
   place-items: center;

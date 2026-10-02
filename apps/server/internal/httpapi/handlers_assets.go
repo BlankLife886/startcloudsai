@@ -81,23 +81,11 @@ func userAssetDict(asset *store.UserAsset) gin.H {
 }
 
 func normalizeAssetTags(values []string) ([]string, error) {
-	seen := make(map[string]bool, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		if utf8.RuneCountInString(value) > 32 {
-			return nil, apperr.E("validation_error", "标签不能超过 32 个字符", 422)
-		}
-		seen[value] = true
-		out = append(out, value)
-		if len(out) > 30 {
-			return nil, apperr.E("validation_error", "每个素材最多 30 个标签", 422)
-		}
+	tags, err := store.NormalizeAssetTags(values)
+	if err != nil {
+		return nil, apperr.E("validation_error", strings.TrimPrefix(err.Error(), store.ErrAssetTags.Error()+": "), 422)
 	}
-	return out, nil
+	return tags, nil
 }
 
 func userAssetGroupDict(group *store.UserAssetGroup) gin.H {

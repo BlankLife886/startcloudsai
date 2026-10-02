@@ -235,6 +235,13 @@ var commerceMakePattern = regexp.MustCompile(`(做|生成|出|设计|制作|画|
 // in the conversation ("开始生成吧", "第三张重做").
 var commerceFollowUpPattern = regexp.MustCompile(`(生成|开始|确认|可以|好的|行|就这样|重做|重新|再来|换一|改一|进度|好了吗|第\s*[0-9一二三四五六七八九十]+\s*张)`)
 
+// imageToolPattern matches requests to cut an attached image out.
+var imageToolPattern = regexp.MustCompile(`(抠图|扣图|抠出|去背景|去掉背景|移除背景|删除背景|背景去掉|透明背景|透明底|免抠)`)
+
+// ImageToolRequested reports whether a turn asks for background removal,
+// which v2 runs itself on the attached images.
+func ImageToolRequested(prompt string) bool { return imageToolPattern.MatchString(prompt) }
+
 // CommerceSetRequested reports whether a create turn asks for e-commerce
 // product images, which v2 produces itself through the commerce tools
 // instead of handing the turn to the original engine.

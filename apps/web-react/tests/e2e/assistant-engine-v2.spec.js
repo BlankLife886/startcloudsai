@@ -230,6 +230,62 @@ test.describe('original assistant UI on the v2 engine', () => {
     await expect(card.getByRole('link', { name: '在电商工作台继续调整' })).toHaveAttribute('href', '/ecommerce-design')
   })
 
+  test('finds images, then confirms and undoes a library change from the card', async ({ page }) => {
+    const views = [
+      {
+        tool: 'assets_search', view: 'assets',
+        data: { query: '猫 海报', groups: [], items: [
+          { id: 'asset:a1', kind: 'asset', title: '中秋猫咪海报', imageUrl: '/api/v1/files/out/a1.png', group: '节日海报', time: '2026-09-30 10:00', link: '/assets' },
+          { id: 'task:t1', kind: 'generated', title: '一只橘猫坐在月亮上', prompt: '一只橘猫坐在月亮上的海报，暖色调', imageUrl: '/api/v1/files/out/t1.png', workspace: '文生图', time: '2026-09-29 10:00', link: '/history' },
+        ] },
+      },
+      {
+        tool: 'assets_organize', view: 'asset_action',
+        data: { action: 'move', assetIds: ['asset:a1'], group: '中秋', createGroup: true, titles: ['中秋猫咪海报'], summary: '把 1 个素材移到「中秋」（新建这个分组）' },
+      },
+    ]
+    let executed = null
+    let undone = null
+    await mockAssistant(page)
+    await page.route('**/api/v1/files/out/**', (route) => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>' }))
+    await page.route('**/api/v1/assistant/asset-actions/execute', async (route) => {
+      executed = route.request().postDataJSON()
+      return fulfillJson(route, { undo: { action: 'move', items: [{ assetId: 'a1', previousGroup: 'g-old' }], createdGroup: 'g-new' } })
+    })
+    await page.route('**/api/v1/assistant/asset-actions/undo', async (route) => {
+      undone = route.request().postDataJSON()
+      return fulfillJson(route, { undone: true })
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      const body = route.request().postDataJSON()
+      return fulfillJson(route, {
+        run: { id: 'run-5', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: 'succeeded' },
+        userMessage: message(body.clientUserMessageId, 'user', body.prompt),
+        assistantMessage: message(body.clientAssistantMessageId, 'assistant', '找到 2 张，已准备把海报移到「中秋」分组，确认后执行。', {
+          kind: 'agent', engine: 'v2', dataViews: views,
+        }),
+      }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('找一下我的猫咪海报，放到中秋分组')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    const reply = page.locator('.message--assistant')
+    const found = reply.getByRole('region', { name: '找到的图片' })
+    await expect(found).toContainText('“猫 海报” · 2 张')
+    await expect(found).toContainText('节日海报')
+    await expect(found.getByRole('button', { name: '复制提示词' })).toBeVisible()
+    const action = reply.getByRole('region', { name: '资产整理' })
+    await expect(action).toContainText('新建这个分组')
+    await action.getByRole('button', { name: '确认执行' }).click()
+    await expect(action).toContainText('已完成')
+    expect(executed.action).toMatchObject({ action: 'move', group: '中秋', assetIds: ['asset:a1'] })
+    await action.getByRole('button', { name: '撤销' }).click()
+    await expect(action).toContainText('已撤销')
+    expect(undone.undo).toMatchObject({ action: 'move', createdGroup: 'g-new' })
+  })
+
   test('gives the input back when the run could not be created', async ({ page }) => {
     await mockAssistant(page)
     await page.route('**/api/v1/assistant/runs', async (route) => {

@@ -25,6 +25,7 @@ const (
 	DomainTaskStatus = "task-status"
 	DomainFiles      = "files"
 	DomainCommerce   = assistanttools.DomainCommerceSet
+	DomainMyAssets   = assistanttools.DomainMyAssets
 )
 
 // TurnPermissions are granted on every v2 turn; file permissions are added by
@@ -34,6 +35,7 @@ var TurnPermissions = []assistanttools.Permission{
 	assistanttools.PermissionAccountRead,
 	assistanttools.PermissionTasksRead,
 	assistanttools.PermissionCommerceSets,
+	assistanttools.PermissionAssetsRead,
 }
 
 // Registry builds the capabilities v2 can call. Each domain is one manifest;
@@ -43,6 +45,7 @@ func Registry(st *store.Store, now func() time.Time, withFiles bool, extra ...as
 		assistanttools.NewMyDataManifest(st, now),
 		assistanttools.NewMyAccountManifest(st.Pool, now),
 		assistanttools.NewTaskStatusManifest(st.Pool),
+		assistanttools.NewMyAssetsManifest(st),
 	}
 	if withFiles {
 		manifests = append(manifests, assistanttools.NewFileManifest(st.Pool))
@@ -58,7 +61,7 @@ func ToolsFor(registry *assistanttools.Registry) []string {
 	names := []string{}
 	for _, name := range registry.Names() {
 		switch registry.Domain(name) {
-		case DomainMyData, DomainMyAccount, DomainTaskStatus, DomainFiles, DomainCommerce:
+		case DomainMyData, DomainMyAccount, DomainTaskStatus, DomainFiles, DomainCommerce, DomainMyAssets:
 			names = append(names, name)
 		}
 	}
@@ -75,6 +78,14 @@ const CommercePrompt = `
 - 生成开始后告诉用户可以在卡片上看每张图的进度，出完会自动检查，不合格的可以一键重做；不要承诺具体完成时间。
 - 用户要求修改已生成的某几张时，用 commerce_set_redo（规则同上）；询问进度时用 commerce_set_status。
 - 用户想要的不是电商商品图（例如普通插画、头像）时，说明这里只处理电商套图，并建议到文生图 /text-to-image。`
+
+// ImageToolPrompt is added when the turn can run image tools.
+const ImageToolPrompt = `
+
+本轮可以直接对用户上传的图片执行背景移除（会花用户的积分）：
+- 调用 image_tool_plan（tool=background_remove）出方案和报价，用一两句话说明处理几张、预计多少积分（取自 quotedCents）。
+- 只有方案的 autoApprovable 为 true 时才直接调用 commerce_set_generate；否则请用户在卡片上确认。
+- 处理完成后用户可以在卡片上下载透明底 PNG。`
 
 // SystemPrompt is the v2 system prompt for one turn.
 func SystemPrompt(timezone string, now time.Time, intent string, clarify bool) string {
@@ -98,6 +109,7 @@ func SystemPrompt(timezone string, now time.Time, intent string, clarify bool) s
 - 问题不够具体时先给合理的默认答案（例如默认看最近 30 天），再提供一两个细分方向，不要反问。
 - 统计结果要做解读：与上一周期对比时说明变化幅度，并指出变化最大的部分和可能的原因。
 - 解读只能基于工具返回的分组数据，不要臆测用户的意图。
+- 用户想找自己以前的图（“上次那张猫咪海报”“资产库里的 logo”）时调用 assets_search；要复用某张图的提示词时，从结果里的 prompt 取。整理资产库（移分组、加标签、删除）只能用 assets_organize 提出方案，由用户在卡片上确认，不要声称已经改好。
 - 账户与支付操作（充值、购买或退订套餐、退款、修改密码、管理 API Key）你不能代为执行：解释清楚后给出站内页面让用户自己操作——钱包 /wallet，订阅 /subscriptions，订单 /orders，套餐价格 /pricing，个人资料 /profile，API /developer-api。
 - 生成或修改图片：当前版本请给出具体建议（画面、比例、模型选择），并引导用户到对应工作台：AI 电商 /ecommerce-design，文生图 /text-to-image，无限画布 /canvas，游戏设计 /game-art，模型设计 /model-sheet，UI 设计 /design-workshop。
 - 站内链接用 Markdown 链接格式，例如 [打开钱包](/wallet)。`)

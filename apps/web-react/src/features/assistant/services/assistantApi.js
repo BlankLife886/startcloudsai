@@ -333,3 +333,12 @@ export function reviewAssistantCommerceSet(id) {
 export function assistantCommerceSetArchiveUrl(id) {
   return buildApiPath(`/assistant/commerce-sets/${encodeURIComponent(id)}/archive`)
 }
+
+// 资产整理：助手只出方案，用户在卡片上确认后执行，并可撤销。
+export function executeAssistantAssetAction(action) {
+  return apiPost('/assistant/asset-actions/execute', { action })
+}
+
+export function undoAssistantAssetAction(undo) {
+  return apiPost('/assistant/asset-actions/undo', { undo })
+}

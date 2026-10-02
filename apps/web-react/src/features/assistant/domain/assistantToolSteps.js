@@ -26,6 +26,9 @@ const TOOL_LABELS = {
   commerce_set_generate: '生成电商套图',
   commerce_set_redo: '重做套图中的图片',
   commerce_set_status: '查看套图进度',
+  image_tool_plan: '准备图片处理',
+  assets_search: '查找我的图片',
+  assets_organize: '整理资产库',
 }
 
 const TOOL_ICONS = {
@@ -53,6 +56,9 @@ const TOOL_ICONS = {
   commerce_set_generate: 'bi-magic',
   commerce_set_redo: 'bi-arrow-repeat',
   commerce_set_status: 'bi-hourglass-split',
+  image_tool_plan: 'bi-scissors',
+  assets_search: 'bi-search',
+  assets_organize: 'bi-folder-symlink',
 }
 
 // 摘要优先读这些字段：覆盖现有工具 schema，未知工具回落到第一个短字符串。

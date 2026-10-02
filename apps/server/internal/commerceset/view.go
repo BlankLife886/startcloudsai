@@ -35,6 +35,7 @@ type ShotView struct {
 // View is a set as the assistant card and the model see it.
 type View struct {
 	ID            string     `json:"id"`
+	Kind          string     `json:"kind"`
 	Status        string     `json:"status"`
 	ProductName   string     `json:"productName,omitempty"`
 	Platform      string     `json:"platform,omitempty"`
@@ -75,10 +76,13 @@ func (s Service) BuildView(ctx context.Context, set *store.CommerceSet) (*View, 
 		return nil, err
 	}
 	view := &View{
-		ID: set.ID.String(), Status: set.Status, ProductName: brief.ProductName, Platform: brief.Platform,
+		ID: set.ID.String(), Kind: set.Kind, Status: set.Status, ProductName: brief.ProductName, Platform: brief.Platform,
 		Language: brief.Language, Summary: set.Summary, ModelID: set.ModelID, QuotedCents: set.QuotedCents,
 		ApprovedCents: set.ApprovedCents, Total: len(set.Shots), Shots: []ShotView{},
 		WorkbenchLink: "/ecommerce-design",
+	}
+	if set.Kind == store.CommerceKindTool {
+		view.WorkbenchLink = "/tools/background-remove"
 	}
 	if user != nil {
 		view.AutoApprove, view.BudgetCents = user.AssistantAutoApprove, user.AssistantAutoApproveBudgetCents

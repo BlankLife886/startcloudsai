@@ -288,6 +288,8 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/assistant/commerce-sets/:id/redo", s.redoAssistantCommerceSet)
 	api.POST("/assistant/commerce-sets/:id/review", s.reviewAssistantCommerceSet)
 	api.GET("/assistant/commerce-sets/:id/archive", s.archiveAssistantCommerceSet)
+	api.POST("/assistant/asset-actions/execute", s.executeAssistantAssetAction)
+	api.POST("/assistant/asset-actions/undo", s.undoAssistantAssetAction)
 	api.POST("/assistant/runs", s.createAssistantRun)
 	api.GET("/assistant/runs/:id", s.assistantRun)
 	api.GET("/assistant/runs/:id/trace", s.assistantRunTrace)

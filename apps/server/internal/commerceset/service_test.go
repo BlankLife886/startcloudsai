@@ -237,3 +237,54 @@ func TestReviewMarksIssuesAndRedoesWithinBudget(t *testing.T) {
 		t.Fatalf("view = %+v", view.Shots)
 	}
 }
+
+func TestToolRunCutsOutEachImage(t *testing.T) {
+	f := setup(t)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{ID: "p", Name: "P", Adapter: "openai", BaseURL: "https://api.example.com", APIKey: "k", Enabled: true}}
+	cfg.Models = []modelconfig.Model{
+		{ID: "img", Name: "Img", ProviderID: "p", UpstreamModel: "gpt-image-2", Kind: "image", PriceCents: 10, Public: true, Default: true, Enabled: true},
+		{ID: "cutout", Name: "背景移除", ProviderID: "p", UpstreamModel: "image-background-remove", Kind: modelconfig.ModelKindImageTool,
+			Tool: modelconfig.ImageToolBackgroundRemove, PriceCents: 7, Public: true, Enabled: true},
+	}
+	if err := modelconfig.Save(f.ctx, f.st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.PlanTool(f.ctx, ToolPlanInput{UserID: f.user.ID, Tool: "upscale", InputKeys: []string{"a.png"}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unsupported tool err = %v", err)
+	}
+	set, err := f.service.PlanTool(f.ctx, ToolPlanInput{UserID: f.user.ID, Tool: ToolBackgroundRemove, InputKeys: []string{"uploads/a.png", "uploads/b.png"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Kind != store.CommerceKindTool || len(set.Shots) != 2 || set.QuotedCents != 14 || set.ModelID != "cutout" || set.Shots[1].InputKey != "uploads/b.png" {
+		t.Fatalf("set = %+v", set)
+	}
+	confirmed := int64(14)
+	result, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByUser, ExpectedTotalCents: &confirmed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.GetTask(f.ctx, f.st.Pool, result.TaskIDs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Type != ToolBackgroundRemove || task.CostCents != 7 || len(task.InputKeys) != 1 || task.InputKeys[0] != "uploads/b.png" || task.Params[SetParam] != set.ID.String() {
+		t.Fatalf("task = %s %d %v %v", task.Type, task.CostCents, task.InputKeys, task.Params)
+	}
+	// A cut-out is not checked by the vision model.
+	if _, err := f.st.Pool.Exec(f.ctx, `UPDATE tasks SET status = 'succeeded', output_keys = '["out/cut.png"]' WHERE id = ANY($1)`, result.TaskIDs); err != nil {
+		t.Fatal(err)
+	}
+	review, err := f.service.Review(f.ctx, f.user.ID, set.ID, func(context.Context, string, string, []string) (string, error) {
+		t.Error("tool results must not be sent to the checker")
+		return "", nil
+	})
+	if err != nil || review.Set.Status != store.CommerceSetDone {
+		t.Fatalf("review = %+v %v", review, err)
+	}
+	view, _ := f.service.BuildView(f.ctx, review.Set)
+	if !view.Ready || view.Kind != store.CommerceKindTool || view.WorkbenchLink != "/tools/background-remove" {
+		t.Fatalf("view = %+v", view)
+	}
+}
