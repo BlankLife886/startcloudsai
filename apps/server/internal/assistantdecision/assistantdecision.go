@@ -72,7 +72,7 @@ func Rules(prompt string) decision.Rules {
 				return decision.Answer{Choice: IntentWeb, Confidence: 0.5}, true
 			case assistanttools.WorkspaceToolForPrompt(prompt) != "":
 				return decision.Answer{Choice: IntentWorkspace, Confidence: 0.5}, true
-			case assistanttools.ImageActionRequested(prompt):
+			case assistanttools.ImageActionRequested(prompt), commerceMakePattern.MatchString(prompt):
 				return decision.Answer{Choice: IntentCreate, Confidence: 0.5}, true
 			case myDataPattern.MatchString(prompt):
 				return decision.Answer{Choice: IntentMyData, Confidence: 0.4}, true
@@ -221,3 +221,24 @@ func Decide(ctx context.Context, setup Setup, state string) Result {
 	}
 	return result
 }
+
+// commerceSetPattern matches requests for e-commerce product images: a set,
+// a main image, detail pages, or images for a named marketplace.
+var commerceSetPattern = regexp.MustCompile(`(?i)(套图|主图|详情页|详情图|首图|白底图|卖点图|场景图|电商图|商品图|上架|listing|淘宝|天猫|京东|拼多多|抖音小店|亚马逊|amazon|temu|shopee|lazada|tiktok\s*shop)`)
+
+// commerceMakePattern is the rules' narrower test: a making verb before an
+// e-commerce image noun ("做一套天猫主图"), so questions that merely name a
+// marketplace ("淘宝怎么开店") stay questions.
+var commerceMakePattern = regexp.MustCompile(`(做|生成|出|设计|制作|画|来|弄)[^，。？?！!,]{0,14}(套图|主图|详情页|详情图|白底图|卖点图|场景图|电商图|商品图)`)
+
+// commerceFollowUpPattern matches turns that act on a set already planned
+// in the conversation ("开始生成吧", "第三张重做").
+var commerceFollowUpPattern = regexp.MustCompile(`(生成|开始|确认|可以|好的|行|就这样|重做|重新|再来|换一|改一|进度|好了吗|第\s*[0-9一二三四五六七八九十]+\s*张)`)
+
+// CommerceSetRequested reports whether a create turn asks for e-commerce
+// product images, which v2 produces itself through the commerce tools
+// instead of handing the turn to the original engine.
+func CommerceSetRequested(prompt string) bool { return commerceSetPattern.MatchString(prompt) }
+
+// CommerceFollowUp reports whether a turn acts on an open set.
+func CommerceFollowUp(prompt string) bool { return commerceFollowUpPattern.MatchString(prompt) }

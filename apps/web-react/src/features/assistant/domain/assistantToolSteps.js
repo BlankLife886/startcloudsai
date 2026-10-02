@@ -22,6 +22,10 @@ const TOOL_LABELS = {
   my_account_overview: '查看积分与订阅',
   my_orders_list: '查看我的订单',
   explain_charge: '解释扣费',
+  commerce_set_plan: '策划电商套图',
+  commerce_set_generate: '生成电商套图',
+  commerce_set_redo: '重做套图中的图片',
+  commerce_set_status: '查看套图进度',
 }
 
 const TOOL_ICONS = {
@@ -45,6 +49,10 @@ const TOOL_ICONS = {
   my_account_overview: 'bi-wallet2',
   my_orders_list: 'bi-receipt',
   explain_charge: 'bi-calculator',
+  commerce_set_plan: 'bi-images',
+  commerce_set_generate: 'bi-magic',
+  commerce_set_redo: 'bi-arrow-repeat',
+  commerce_set_status: 'bi-hourglass-split',
 }
 
 // 摘要优先读这些字段：覆盖现有工具 schema，未知工具回落到第一个短字符串。

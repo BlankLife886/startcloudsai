@@ -38,8 +38,11 @@ const (
 // v2 orchestrator needs before running it:
 //
 //   - LevelRead: reads the user's own data; runs directly.
-//   - LevelSpend: consumes points; runs within an approved budget or after a
-//     per-step confirmation, depending on the user's payment setting.
+//   - LevelSpend: consumes points. The orchestrator runs it, but the tool
+//     must enforce approval itself: spend only within the user's
+//     auto-approval budget, checked inside the transaction that spends, and
+//     otherwise answer that the user has to confirm (the user then approves
+//     on a card, which calls the same code with their confirmation).
 //   - LevelChange: modifies or deletes user content; needs confirmation and
 //     should be undoable.
 //

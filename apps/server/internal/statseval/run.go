@@ -29,7 +29,7 @@ const (
 func NewAgent(client *sub2api.Client, registry *assistanttools.Registry, userID uuid.UUID, timezone string, now func() time.Time) Agent {
 	tools, toolErr := registry.Definitions(assistantv2.ToolsFor(registry))
 	permissions := map[assistanttools.Permission]bool{}
-	for _, permission := range assistantv2.ReadPermissions {
+	for _, permission := range assistantv2.TurnPermissions {
 		permissions[permission] = true
 	}
 	return func(ctx context.Context, prompt string) (Transcript, error) {

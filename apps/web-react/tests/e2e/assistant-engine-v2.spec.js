@@ -166,6 +166,70 @@ test.describe('original assistant UI on the v2 engine', () => {
     await expect(charge.getByRole('link', { name: '查看原记录' })).toHaveAttribute('href', '/history')
   })
 
+  test('confirms, tracks, checks and delivers an e-commerce set from the card', async ({ page }) => {
+    const shot = (id, label, extra = {}) => ({ id, label, role: 'main', aspectRatio: '1:1', attempts: 0, status: 'planned', reviewed: false, pass: false, canRedo: false, ...extra })
+    const base = { id: 'set-1', productName: '保温杯', platform: '天猫', summary: '清爽白蓝', modelId: 'img', quotedCents: 20, total: 2, workbenchLink: '/ecommerce-design' }
+    const planned = { ...base, status: 'planned', approvedCents: 0, done: 0, ready: false, needsReview: false, autoApprovable: false,
+      confirmationNote: '这套图预计 20 积分，需要你在方案卡片上确认后再生成。',
+      shots: [shot('white', '产品白底图'), shot('selling', '核心卖点图', { headline: '一杯暖一天', role: 'detail', aspectRatio: '3:4' })] }
+    const finished = { ...base, status: 'generating', approvedCents: 20, done: 2, ready: false, needsReview: true,
+      shots: [
+        shot('white', '产品白底图', { attempts: 1, status: 'succeeded', imageUrl: '/api/v1/files/out/white.png', canRedo: true, priceCents: 10 }),
+        shot('selling', '核心卖点图', { attempts: 1, status: 'succeeded', imageUrl: '/api/v1/files/out/selling.png', canRedo: true, priceCents: 10 }),
+      ] }
+    const checked = { ...finished, status: 'done', needsReview: false, ready: true,
+      shots: [
+        { ...finished.shots[0], reviewed: true, pass: true },
+        { ...finished.shots[1], reviewed: true, pass: false, issues: ['标题有错别字'] },
+      ] }
+    let generateBody = null
+    let current = planned
+    await mockAssistant(page)
+    await page.route('**/api/v1/files/out/**', (route) => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>' }))
+    await page.route('**/api/v1/assistant/commerce-sets/set-1**', async (route) => {
+      const url = new URL(route.request().url())
+      if (url.pathname.endsWith('/generate')) {
+        generateBody = route.request().postDataJSON()
+        current = finished
+        return fulfillJson(route, { ...finished, needsReview: false, done: 0, shots: finished.shots.map((item) => ({ ...item, status: 'running', imageUrl: '' })) })
+      }
+      if (url.pathname.endsWith('/review')) {
+        current = checked
+        return fulfillJson(route, { set: checked, reviewed: 2, failed: ['selling'], autoRedo: [] })
+      }
+      return fulfillJson(route, current)
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      const body = route.request().postDataJSON()
+      return fulfillJson(route, {
+        run: { id: 'run-4', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: 'succeeded' },
+        userMessage: message(body.clientUserMessageId, 'user', body.prompt),
+        assistantMessage: message(body.clientAssistantMessageId, 'assistant', '方案已准备好：2 张图，预计 20 积分，确认后开始出图。', {
+          kind: 'agent', engine: 'v2', dataViews: [{ tool: 'commerce_set_plan', view: 'commerce_set', data: planned }],
+        }),
+      }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('帮我做一套保温杯的天猫主图')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    const card = page.locator('.message--assistant').getByRole('region', { name: '电商套图' })
+    await expect(card).toContainText('2 张 · 预计 20 积分')
+    await expect(card).toContainText('「一杯暖一天」')
+    await expect(card).toContainText('需要你在方案卡片上确认')
+    await card.getByRole('button', { name: '确认生成（20 积分）' }).click()
+    expect(generateBody).toEqual({ expectedTotalCents: 20 })
+
+    // Polling picks up the finished images, the card runs the check once,
+    // then offers the download and a redo for the flagged image.
+    await expect(card.getByRole('link', { name: '下载全部' })).toBeVisible({ timeout: 15_000 })
+    await expect(card).toContainText('标题有错别字')
+    await expect(card).toContainText('待修正')
+    await expect(card.getByRole('button', { name: '重做（10 积分）' })).toHaveCount(2)
+    await expect(card.getByRole('link', { name: '在电商工作台继续调整' })).toHaveAttribute('href', '/ecommerce-design')
+  })
+
   test('gives the input back when the run could not be created', async ({ page }) => {
     await mockAssistant(page)
     await page.route('**/api/v1/assistant/runs', async (route) => {

@@ -312,3 +312,24 @@ function waitForAssistantDelay(delayMs, signal) {
     signal?.addEventListener('abort', onAbort, { once: true })
   })
 }
+
+// 电商套图：方案卡片读取进度、确认生成、重做、触发检查。
+export function getAssistantCommerceSet(id, { signal } = {}) {
+  return apiGet(`/assistant/commerce-sets/${encodeURIComponent(id)}`, { signal })
+}
+
+export function generateAssistantCommerceSet(id, expectedTotalCents) {
+  return apiPost(`/assistant/commerce-sets/${encodeURIComponent(id)}/generate`, { expectedTotalCents })
+}
+
+export function redoAssistantCommerceShots(id, { shotIds, note = '', expectedTotalCents }) {
+  return apiPost(`/assistant/commerce-sets/${encodeURIComponent(id)}/redo`, { shotIds, note, expectedTotalCents })
+}
+
+export function reviewAssistantCommerceSet(id) {
+  return apiPost(`/assistant/commerce-sets/${encodeURIComponent(id)}/review`, {})
+}
+
+export function assistantCommerceSetArchiveUrl(id) {
+  return buildApiPath(`/assistant/commerce-sets/${encodeURIComponent(id)}/archive`)
+}

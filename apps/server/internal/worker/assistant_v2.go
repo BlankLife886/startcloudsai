@@ -16,6 +16,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantv2"
+	"github.com/BlankLife886/startcloudsai/server/internal/commerceset"
 	"github.com/BlankLife886/startcloudsai/server/internal/decision"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -196,7 +197,8 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	decided := w.assistantV2Decide(ctx, setup, assistantV2DecisionState(history, run, len(references), len(fileIDs)))
 	w.publishAssistantDebug(ctx, run, "decision_done", fmt.Sprintf("%s（置信度 %.2f，来源 %s）",
 		decided.Intent, decided.Confidence, decided.Response.Provider))
-	delegating := assistantV2DelegatesIntent(decided.Intent) && !decided.Clarify
+	commerce := w.assistantV2CommerceTurn(ctx, run)
+	delegating := assistantV2DelegatesIntent(decided.Intent) && !decided.Clarify && !commerce.enabled
 	w.recordAssistantV2Decision(ctx, run, decided, delegating)
 	if delegating {
 		w.publishAssistantDebug(ctx, run, "delegate", "交给原有引擎处理："+decided.Intent)
@@ -204,6 +206,12 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	}
 
 	systemPrompt := assistantV2SystemPrompt(run, time.Now(), decided)
+	if commerce.enabled {
+		systemPrompt += assistantv2.CommercePrompt
+		if commerce.open != nil {
+			systemPrompt += fmt.Sprintf("\n本对话已有一套电商图：setId=%s，状态 %s。用户的话是在说这套图时，直接对它操作。", commerce.open.ID, commerce.open.Status)
+		}
+	}
 	if len(fileIDs) > 0 {
 		_, skill, skillErr := w.assistantDocumentSkill(run)
 		if skillErr != nil {
@@ -222,7 +230,11 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 		return err
 	}
 
-	registry, err := assistantv2.Registry(w.St, time.Now, len(fileIDs) > 0)
+	var extra []assistanttools.Manifest
+	if commerce.enabled {
+		extra = append(extra, w.assistantV2CommerceManifest(run, client, references, commerce))
+	}
+	registry, err := assistantv2.Registry(w.St, time.Now, len(fileIDs) > 0, extra...)
 	if err != nil {
 		return err
 	}
@@ -283,7 +295,7 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 		assistanttools.PermissionFilesMetadata: len(fileIDs) > 0,
 		assistanttools.PermissionFilesRead:     len(fileIDs) > 0,
 	}
-	for _, permission := range assistantv2.ReadPermissions {
+	for _, permission := range assistantv2.TurnPermissions {
 		permissions[permission] = true
 	}
 
@@ -405,7 +417,9 @@ func (w *Worker) assistantV2InvokeTool(
 	if !ok {
 		return "", nil, fmt.Errorf("工具 %s 不存在", call.Name)
 	}
-	if level != assistanttools.LevelRead {
+	// Spend tools enforce the user's budget themselves, inside the
+	// transaction that spends; change tools still need a confirmation flow.
+	if level == assistanttools.LevelChange {
 		return "", nil, fmt.Errorf("工具 %s 需要用户确认后才能执行", call.Name)
 	}
 	if key := assistantAgentToolCallKey(call); key != "" {
@@ -426,4 +440,79 @@ func (w *Worker) assistantV2InvokeTool(
 		return "", nil, err
 	}
 	return result.Content, result.Meta, nil
+}
+
+// assistantV2Commerce says whether a turn can make e-commerce image sets:
+// the user attached product images and asked for e-commerce images, or the
+// conversation has an open set and the turn acts on it.
+type assistantV2Commerce struct {
+	enabled   bool
+	inputKeys []string
+	open      *store.CommerceSet
+}
+
+func (w *Worker) assistantV2CommerceTurn(ctx context.Context, run *store.AssistantRun) assistantV2Commerce {
+	if w.St == nil {
+		return assistantV2Commerce{}
+	}
+	keys := assistantV2ReferenceKeys(run.Params)
+	open, err := store.LatestOpenCommerceSet(ctx, w.St.Pool, run.UserID, run.ConversationID, time.Now())
+	if err != nil {
+		log.Printf("assistant v2 open commerce set lookup failed for run %s: %v", run.ID, err)
+	}
+	turn := assistantV2Commerce{inputKeys: keys, open: open}
+	switch {
+	case len(keys) > 0 && assistantdecision.CommerceSetRequested(run.Prompt):
+		turn.enabled = true
+	case open != nil && (assistantdecision.CommerceFollowUp(run.Prompt) || assistantdecision.CommerceSetRequested(run.Prompt)):
+		turn.enabled = true
+		if len(keys) == 0 {
+			turn.inputKeys = open.InputKeys
+		}
+	}
+	return turn
+}
+
+// assistantV2ReferenceKeys lists the stored images attached to the turn;
+// inline data URLs have no key and cannot feed a generation task.
+func assistantV2ReferenceKeys(params map[string]any) []string {
+	items, _ := params["referenceImages"].([]any)
+	if typed, ok := params["referenceImages"].([]map[string]any); ok {
+		for _, item := range typed {
+			items = append(items, item)
+		}
+	}
+	keys := []string{}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		key := assistantMapString(item, "fileKey")
+		if value := assistantMapString(item, "dataUrl"); key == "" && strings.HasPrefix(value, "/api/v1/files/") {
+			key = strings.TrimPrefix(value, "/api/v1/files/")
+		}
+		if key = strings.TrimSpace(key); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func (w *Worker) assistantV2CommerceManifest(run *store.AssistantRun, client *sub2api.Client, references []string, turn assistantV2Commerce) assistanttools.Manifest {
+	service := commerceset.Service{St: w.St}
+	if w.Queue != nil {
+		service.Enqueue = w.Queue.EnqueueRunTask
+	}
+	var copyWriter commerceset.CopyWriter
+	if len(references) > 0 {
+		planner := client.WithoutReasoning()
+		copyWriter = func(ctx context.Context, prompt string) (string, error) {
+			return planner.ChatTextWithImages(ctx, []sub2api.Message{{Role: "user", Content: prompt}}, references, nil)
+		}
+	}
+	conversationID, runID := run.ConversationID, run.ID
+	return assistanttools.NewCommerceSetManifest(service, assistanttools.CommerceSetContext{
+		ConversationID: &conversationID, RunID: &runID, InputKeys: turn.inputKeys, Copy: copyWriter,
+	})
 }

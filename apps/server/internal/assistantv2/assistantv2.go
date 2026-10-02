@@ -24,19 +24,21 @@ const (
 	DomainMyAccount  = "my_account"
 	DomainTaskStatus = "task-status"
 	DomainFiles      = "files"
+	DomainCommerce   = assistanttools.DomainCommerceSet
 )
 
-// ReadPermissions are granted on every v2 turn; file permissions are added by
+// TurnPermissions are granted on every v2 turn; file permissions are added by
 // the caller when documents are attached.
-var ReadPermissions = []assistanttools.Permission{
+var TurnPermissions = []assistanttools.Permission{
 	assistanttools.PermissionMyDataRead,
 	assistanttools.PermissionAccountRead,
 	assistanttools.PermissionTasksRead,
+	assistanttools.PermissionCommerceSets,
 }
 
 // Registry builds the capabilities v2 can call. Each domain is one manifest;
 // adding a platform capability means adding a manifest here.
-func Registry(st *store.Store, now func() time.Time, withFiles bool) (*assistanttools.Registry, error) {
+func Registry(st *store.Store, now func() time.Time, withFiles bool, extra ...assistanttools.Manifest) (*assistanttools.Registry, error) {
 	manifests := []assistanttools.Manifest{
 		assistanttools.NewMyDataManifest(st, now),
 		assistanttools.NewMyAccountManifest(st.Pool, now),
@@ -45,6 +47,7 @@ func Registry(st *store.Store, now func() time.Time, withFiles bool) (*assistant
 	if withFiles {
 		manifests = append(manifests, assistanttools.NewFileManifest(st.Pool))
 	}
+	manifests = append(manifests, extra...)
 	return assistanttools.NewRegistry(manifests...)
 }
 
@@ -55,12 +58,23 @@ func ToolsFor(registry *assistanttools.Registry) []string {
 	names := []string{}
 	for _, name := range registry.Names() {
 		switch registry.Domain(name) {
-		case DomainMyData, DomainMyAccount, DomainTaskStatus, DomainFiles:
+		case DomainMyData, DomainMyAccount, DomainTaskStatus, DomainFiles, DomainCommerce:
 			names = append(names, name)
 		}
 	}
 	return names
 }
+
+// CommercePrompt is added when the turn can make e-commerce image sets.
+const CommercePrompt = `
+
+本轮可以直接为用户生成电商商品套图（主图 + 详情页），出图会花用户的积分：
+- 先调用 commerce_set_plan 出方案：根据用户的平台、语言、风格和想要的图选择出图类型与张数；用户没说清楚时用默认组合，不要反问。卖点、参数只用用户提供的，不要编造。
+- 方案返回后，用一两句话说明这套图包含什么、预计多少积分（数字取自工具结果的 quotedCents）。
+- 只有方案的 autoApprovable 为 true 时才直接调用 commerce_set_generate；否则告诉用户“确认后开始出图”，由用户在方案卡片上确认，不要自己调用。
+- 生成开始后告诉用户可以在卡片上看每张图的进度，出完会自动检查，不合格的可以一键重做；不要承诺具体完成时间。
+- 用户要求修改已生成的某几张时，用 commerce_set_redo（规则同上）；询问进度时用 commerce_set_status。
+- 用户想要的不是电商商品图（例如普通插画、头像）时，说明这里只处理电商套图，并建议到文生图 /text-to-image。`
 
 // SystemPrompt is the v2 system prompt for one turn.
 func SystemPrompt(timezone string, now time.Time, intent string, clarify bool) string {

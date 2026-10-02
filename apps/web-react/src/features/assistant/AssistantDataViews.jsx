@@ -1,6 +1,7 @@
 // 统计与明细结果卡片：v2 引擎的数据工具返回结构化结果，这里按原界面风格渲染。
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
+import { AssistantCommerceSet } from './AssistantCommerceSet.jsx'
 import './assistant-data-views.css'
 
 const TIME_DIMENSIONS = new Set(['day', 'week', 'month'])
@@ -445,5 +446,6 @@ export function AssistantDataView({ view }) {
   if (view?.view === 'account') return <AccountView data={view.data} />
   if (view?.view === 'orders') return <OrdersView data={view.data} />
   if (view?.view === 'charge') return <ChargeView data={view.data} />
+  if (view?.view === 'commerce_set') return <AssistantCommerceSet initial={view.data} />
   return null
 }
