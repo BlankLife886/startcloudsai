@@ -42,6 +42,21 @@ func TestWorkspaceToolForPromptRejectsExplanations(t *testing.T) {
 	}
 }
 
+// Background removal is an edit by the image model, not a separate tool.
+func TestBackgroundRemovalIsAnImageEdit(t *testing.T) {
+	for _, prompt := range []string{"抠图", "帮我把这张图抠图", "去掉背景换成白底", "做成透明底"} {
+		if got := WorkspaceToolForPrompt(prompt); got != "" {
+			t.Fatalf("%q forced tool %q", prompt, got)
+		}
+		if !ImageActionRequested(prompt) {
+			t.Fatalf("%q is not an image edit", prompt)
+		}
+	}
+	if ImageActionRequested("不要抠图") {
+		t.Fatal("negated request treated as an edit")
+	}
+}
+
 func TestAgentExecutionRequested(t *testing.T) {
 	for _, prompt := range []string{
 		"联网搜索最新消息", "查询我的任务进度", "画一张产品海报", "发送到无限画布继续做",

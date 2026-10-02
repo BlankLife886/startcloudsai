@@ -154,17 +154,10 @@ type taskInput struct {
 	price     int64
 }
 
-func (s Service) model(ctx context.Context, q store.Q, kind, modelID string) (*modelconfig.Model, error) {
+func (s Service) model(ctx context.Context, q store.Q, modelID string) (*modelconfig.Model, error) {
 	cfg, err := modelconfig.Load(ctx, q)
 	if err != nil {
 		return nil, err
-	}
-	if kind == store.CommerceKindTool {
-		selection, ok := modelconfig.SelectPublicImageTool(cfg, modelconfig.ImageToolBackgroundRemove, modelID)
-		if !ok || selection.Model.ID != modelID {
-			return nil, invalid("背景移除工具已不可用")
-		}
-		return &selection.Model, nil
 	}
 	selection, ok := modelconfig.SelectPublicForWorkspace(cfg, modelconfig.WorkspaceEcommerce, modelconfig.ModelKindImage, modelID)
 	if !ok || selection.Model.ID != modelID {
@@ -176,9 +169,6 @@ func (s Service) model(ctx context.Context, q store.Q, kind, modelID string) (*m
 // taskInputs builds and quotes the task for each selected shot (nil = all).
 // The parameters mirror what the workbench submits for 商品套图.
 func (s Service) taskInputs(ctx context.Context, tx pgx.Tx, set *store.CommerceSet, indexes []int, note string) ([]taskInput, error) {
-	if set.Kind == store.CommerceKindTool {
-		return s.toolInputs(ctx, tx, set, indexes)
-	}
 	var brief Brief
 	if err := json.Unmarshal(set.Brief, &brief); err != nil {
 		return nil, err
@@ -190,7 +180,7 @@ func (s Service) taskInputs(ctx context.Context, tx pgx.Tx, set *store.CommerceS
 	}
 	shots = RestoreDirections(shots)
 	prompts := Prompts(brief, set.Summary, shots, len(set.InputKeys))
-	model, err := s.model(ctx, tx, set.Kind, set.ModelID)
+	model, err := s.model(ctx, tx, set.ModelID)
 	if err != nil {
 		return nil, err
 	}
@@ -371,87 +361,4 @@ func (s Service) generateLocked(ctx context.Context, tx pgx.Tx, set *store.Comme
 	set.ApprovedCents += result.TotalCents
 	set.Status = store.CommerceSetGenerating
 	return result, store.SaveCommerceSet(ctx, tx, set)
-}
-
-// ToolBackgroundRemove is the only image tool the assistant runs so far.
-const ToolBackgroundRemove = "background_remove"
-
-// ToolPlanInput asks for one image tool over the attached images.
-type ToolPlanInput struct {
-	UserID         uuid.UUID
-	ConversationID *uuid.UUID
-	RunID          *uuid.UUID
-	Tool           string
-	InputKeys      []string
-}
-
-// PlanTool prepares a tool run (one task per image) and quotes it, using the
-// same approval, progress and delivery as a commerce set.
-func (s Service) PlanTool(ctx context.Context, in ToolPlanInput) (*store.CommerceSet, error) {
-	if in.Tool != ToolBackgroundRemove {
-		return nil, invalid("暂不支持这个图片工具：%s", in.Tool)
-	}
-	if len(in.InputKeys) == 0 {
-		return nil, invalid("需要先上传要处理的图片")
-	}
-	if len(in.InputKeys) > maxReferenceImages {
-		in.InputKeys = in.InputKeys[:maxReferenceImages]
-	}
-	cfg, err := modelconfig.Load(ctx, s.St.Pool)
-	if err != nil {
-		return nil, err
-	}
-	selection, ok := modelconfig.SelectPublicImageTool(cfg, modelconfig.ImageToolBackgroundRemove, "")
-	if !ok {
-		return nil, invalid("背景移除工具暂时不可用")
-	}
-	set := &store.CommerceSet{
-		UserID: in.UserID, Kind: store.CommerceKindTool, ConversationID: in.ConversationID, RunID: in.RunID,
-		Brief: json.RawMessage(`{"tool":"` + in.Tool + `"}`), InputKeys: in.InputKeys, ModelID: selection.Model.ID,
-	}
-	for index, key := range in.InputKeys {
-		set.Shots = append(set.Shots, store.CommerceSetShot{ID: fmt.Sprintf("image-%d", index+1), TypeID: in.Tool,
-			Role: "tool", Label: fmt.Sprintf("图片 %d · 移除背景", index+1), InputKey: key})
-	}
-	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		inputs, err := s.toolInputs(ctx, tx, set, nil)
-		if err != nil {
-			return err
-		}
-		for _, input := range inputs {
-			set.QuotedCents += input.price
-		}
-		set, err = store.InsertCommerceSet(ctx, tx, set)
-		return err
-	})
-	return set, err
-}
-
-// toolInputs builds the background-removal task for each selected image,
-// with the parameters the background removal page submits.
-func (s Service) toolInputs(ctx context.Context, tx pgx.Tx, set *store.CommerceSet, indexes []int) ([]taskInput, error) {
-	if _, err := s.model(ctx, tx, set.Kind, set.ModelID); err != nil {
-		return nil, err
-	}
-	if indexes == nil {
-		for index := range set.Shots {
-			indexes = append(indexes, index)
-		}
-	}
-	out := make([]taskInput, 0, len(indexes))
-	for _, index := range indexes {
-		shot := set.Shots[index]
-		create := taskflow.CreateInput{Type: ToolBackgroundRemove, Prompt: "移除图片背景", Count: 1,
-			Params:        map[string]any{"publicModelKey": set.ModelID, "_kind": "image-tool-background-remove"},
-			TrustedParams: map[string]any{SetParam: set.ID.String()},
-			InputKeys:     []string{shot.InputKey}}
-		quote, err := taskflow.QuoteTaskPrice(ctx, tx, create, set.UserID)
-		if err != nil {
-			return nil, err
-		}
-		unit := quote.UnitPriceCents
-		create.ExpectedUnitPriceCents = &unit
-		out = append(out, taskInput{shotIndex: index, create: create, price: quote.TotalPriceCents})
-	}
-	return out, nil
 }

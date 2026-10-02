@@ -17,13 +17,6 @@ const (
 	CommerceSetCanceled   = "canceled"
 )
 
-// Kinds of assistant sets: e-commerce image sets, and image tool runs
-// (background removal) that reuse the same approval, progress and delivery.
-const (
-	CommerceKindSet  = "commerce"
-	CommerceKindTool = "tool"
-)
-
 // How a generation attempt was approved.
 const (
 	CommerceApprovedByUser   = "user"
@@ -52,24 +45,21 @@ type CommerceSetAttempt struct {
 
 // CommerceSetShot is one planned image and its attempts.
 type CommerceSetShot struct {
-	ID          string `json:"id"`
-	TypeID      string `json:"typeId"`
-	Role        string `json:"role"`
-	Label       string `json:"label"`
-	AspectRatio string `json:"aspectRatio"`
-	Headline    string `json:"headline,omitempty"`
-	Subline     string `json:"subline,omitempty"`
-	Direction   string `json:"direction,omitempty"`
-	// InputKey is the one image a tool shot processes.
-	InputKey string               `json:"inputKey,omitempty"`
-	Attempts []CommerceSetAttempt `json:"attempts,omitempty"`
+	ID          string               `json:"id"`
+	TypeID      string               `json:"typeId"`
+	Role        string               `json:"role"`
+	Label       string               `json:"label"`
+	AspectRatio string               `json:"aspectRatio"`
+	Headline    string               `json:"headline,omitempty"`
+	Subline     string               `json:"subline,omitempty"`
+	Direction   string               `json:"direction,omitempty"`
+	Attempts    []CommerceSetAttempt `json:"attempts,omitempty"`
 }
 
 // CommerceSet is one e-commerce image set planned in the assistant.
 type CommerceSet struct {
 	ID             uuid.UUID
 	UserID         uuid.UUID
-	Kind           string
 	ConversationID *uuid.UUID
 	RunID          *uuid.UUID
 	Status         string
@@ -84,13 +74,13 @@ type CommerceSet struct {
 	UpdatedAt      time.Time
 }
 
-const commerceSetCols = `id, user_id, kind, conversation_id, run_id, status, brief, summary, shots, input_keys, model_id,
+const commerceSetCols = `id, user_id, conversation_id, run_id, status, brief, summary, shots, input_keys, model_id,
 	quoted_cents, approved_cents, created_at, updated_at`
 
 func scanCommerceSet(row pgx.Row) (*CommerceSet, error) {
 	var set CommerceSet
 	var shots []byte
-	if err := row.Scan(&set.ID, &set.UserID, &set.Kind, &set.ConversationID, &set.RunID, &set.Status, &set.Brief, &set.Summary,
+	if err := row.Scan(&set.ID, &set.UserID, &set.ConversationID, &set.RunID, &set.Status, &set.Brief, &set.Summary,
 		&shots, &set.InputKeys, &set.ModelID, &set.QuotedCents, &set.ApprovedCents, &set.CreatedAt, &set.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -110,14 +100,10 @@ func InsertCommerceSet(ctx context.Context, q Q, set *CommerceSet) (*CommerceSet
 	if len(brief) == 0 {
 		brief = json.RawMessage(`{}`)
 	}
-	kind := set.Kind
-	if kind == "" {
-		kind = CommerceKindSet
-	}
 	return scanCommerceSet(q.QueryRow(ctx, `INSERT INTO assistant_commerce_sets
-		(user_id, conversation_id, run_id, status, brief, summary, shots, input_keys, model_id, quoted_cents, kind)
-		VALUES ($1, $2, $3, 'planned', $4, $5, $6, $7, $8, $9, $10) RETURNING `+commerceSetCols,
-		set.UserID, set.ConversationID, set.RunID, brief, set.Summary, shots, set.InputKeys, set.ModelID, set.QuotedCents, kind))
+		(user_id, conversation_id, run_id, status, brief, summary, shots, input_keys, model_id, quoted_cents)
+		VALUES ($1, $2, $3, 'planned', $4, $5, $6, $7, $8, $9) RETURNING `+commerceSetCols,
+		set.UserID, set.ConversationID, set.RunID, brief, set.Summary, shots, set.InputKeys, set.ModelID, set.QuotedCents))
 }
 
 // GetUserCommerceSet reads one of the user's sets; nil when not theirs.

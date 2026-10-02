@@ -34,23 +34,22 @@ type ShotView struct {
 
 // View is a set as the assistant card and the model see it.
 type View struct {
-	ID            string     `json:"id"`
-	Kind          string     `json:"kind"`
-	Status        string     `json:"status"`
-	ProductName   string     `json:"productName,omitempty"`
-	Platform      string     `json:"platform,omitempty"`
-	Language      string     `json:"language,omitempty"`
-	Summary       string     `json:"summary,omitempty"`
-	ModelID       string     `json:"modelId"`
-	QuotedCents   int64      `json:"quotedCents"`
-	ApprovedCents int64      `json:"approvedCents"`
+	ID            string `json:"id"`
+	Status        string `json:"status"`
+	ProductName   string `json:"productName,omitempty"`
+	Platform      string `json:"platform,omitempty"`
+	Language      string `json:"language,omitempty"`
+	Summary       string `json:"summary,omitempty"`
+	ModelID       string `json:"modelId"`
+	QuotedCents   int64  `json:"quotedCents"`
+	ApprovedCents int64  `json:"approvedCents"`
 	// SpentCents counts finished images only; failed tasks are refunded.
 	// ReservedCents is held for images still being made.
 	SpentCents    int64 `json:"spentCents"`
 	ReservedCents int64 `json:"reservedCents"`
 	// Downloadable counts shots whose latest image is ready.
-	Downloadable int `json:"downloadable"`
-	Shots         []ShotView `json:"shots"`
+	Downloadable int        `json:"downloadable"`
+	Shots        []ShotView `json:"shots"`
 	// Done counts shots whose latest image finished; Ready means every shot
 	// is finished and checked, so the set can be delivered.
 	Done             int    `json:"done"`
@@ -95,13 +94,10 @@ func (s Service) BuildView(ctx context.Context, set *store.CommerceSet) (*View, 
 		return nil, err
 	}
 	view := &View{
-		ID: set.ID.String(), Kind: set.Kind, Status: set.Status, ProductName: brief.ProductName, Platform: brief.Platform,
+		ID: set.ID.String(), Status: set.Status, ProductName: brief.ProductName, Platform: brief.Platform,
 		Language: brief.Language, Summary: set.Summary, ModelID: set.ModelID, QuotedCents: set.QuotedCents,
 		ApprovedCents: set.ApprovedCents, SpentCents: spent, ReservedCents: reserved, Total: len(set.Shots), Shots: []ShotView{},
 		WorkbenchLink: "/ecommerce-design",
-	}
-	if set.Kind == store.CommerceKindTool {
-		view.WorkbenchLink = "/tools/background-remove"
 	}
 	if user != nil {
 		view.AutoApprove, view.BudgetCents = user.AssistantAutoApprove, user.AssistantAutoApproveBudgetCents

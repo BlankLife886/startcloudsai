@@ -206,13 +206,10 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	}
 
 	systemPrompt := assistantV2SystemPrompt(run, time.Now(), decided)
-	if commerce.imageTool {
-		systemPrompt += assistantv2.ImageToolPrompt
-	}
-	if commerce.enabled && !commerce.imageTool {
+	if commerce.enabled {
 		systemPrompt += assistantv2.CommercePrompt
 		if commerce.open != nil {
-			systemPrompt += fmt.Sprintf("\n本对话已有一项未完成的出图工作（电商套图或图片工具）：setId=%s，状态 %s。用户的话是在说它时，直接对它操作。", commerce.open.ID, commerce.open.Status)
+			systemPrompt += fmt.Sprintf("\n本对话已有一套电商图：setId=%s，状态 %s。用户的话是在说这套图时，直接对它操作。", commerce.open.ID, commerce.open.Status)
 		}
 	}
 	if len(fileIDs) > 0 {
@@ -449,9 +446,7 @@ func (w *Worker) assistantV2InvokeTool(
 // the user attached product images and asked for e-commerce images, or the
 // conversation has an open set and the turn acts on it.
 type assistantV2Commerce struct {
-	enabled bool
-	// imageTool means the turn asks to cut out attached images.
-	imageTool bool
+	enabled   bool
 	inputKeys []string
 	open      *store.CommerceSet
 }
@@ -467,8 +462,6 @@ func (w *Worker) assistantV2CommerceTurn(ctx context.Context, run *store.Assista
 	}
 	turn := assistantV2Commerce{inputKeys: keys, open: open}
 	switch {
-	case len(keys) > 0 && assistantdecision.ImageToolRequested(run.Prompt):
-		turn.enabled, turn.imageTool = true, true
 	case len(keys) > 0 && assistantdecision.CommerceSetRequested(run.Prompt):
 		turn.enabled = true
 	case open != nil && (assistantdecision.CommerceFollowUp(run.Prompt) || assistantdecision.CommerceSetRequested(run.Prompt)):

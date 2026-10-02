@@ -79,14 +79,6 @@ const CommercePrompt = `
 - 用户要求修改已生成的某几张时，用 commerce_set_redo（规则同上）；询问进度时用 commerce_set_status。
 - 用户想要的不是电商商品图（例如普通插画、头像）时，说明这里只处理电商套图，并建议到文生图 /text-to-image。`
 
-// ImageToolPrompt is added when the turn can run image tools.
-const ImageToolPrompt = `
-
-本轮可以直接对用户上传的图片执行背景移除（会花用户的积分）：
-- 调用 image_tool_plan（tool=background_remove）出方案和报价，用一两句话说明处理几张、预计多少积分（取自 quotedCents）。
-- 只有方案的 autoApprovable 为 true 时才直接调用 commerce_set_generate；否则请用户在卡片上确认。
-- 处理完成后用户可以在卡片上下载透明底 PNG。`
-
 // SystemPrompt is the v2 system prompt for one turn.
 func SystemPrompt(timezone string, now time.Time, intent string, clarify bool) string {
 	if strings.TrimSpace(timezone) == "" {

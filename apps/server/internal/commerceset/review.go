@@ -247,8 +247,7 @@ func (s Service) reviewOne(ctx context.Context, set *store.CommerceSet, brief Br
 		// A failed task needs a redo just like a failed check.
 		return store.CommerceSetReview{CheckedAt: review.CheckedAt, Issues: []string{"生成失败"}}
 	}
-	// Tool results (a cut-out) have no brief to check against.
-	if len(task.OutputKeys) == 0 || check == nil || set.Kind == store.CommerceKindTool {
+	if len(task.OutputKeys) == 0 || check == nil {
 		return review
 	}
 	reply, err := check(ctx, ReviewPrompt(shot, brief.Language), task.OutputKeys[0], set.InputKeys)

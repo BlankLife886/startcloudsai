@@ -11,6 +11,10 @@ var (
 	visualReferencePattern     = regexp.MustCompile(`(?i)(这张|那张|上一张|刚才的|之前的|第[一二三四五六七八九1-9]张|图\s*[1-9])\s*(图|图片|照片|画面)?`)
 	imageKnowledgePattern      = regexp.MustCompile(`(?i)^(什么是|为什么|为何|如何|怎么|怎样|你会|你能|你可以|你支持|请?解释|请?介绍|请?说明|how (do|to)|what is|can you|explain).{0,80}(生成|创建|绘制|制作|设计|编辑|修改|图片|图像|海报|插画|logo|generate|create|draw|design|edit|image|picture|poster)`)
 	personalImageCommand       = regexp.MustCompile(`(?i)(帮我|给我|替我|为我|please)\s*(直接)?\s*(生成|创建|绘制|画|制作|设计|重绘|修改|编辑|generate|create|draw|design|edit)`)
+	// Removing a background is an image edit on its own: the image model
+	// (gpt-image-2) redraws the subject on a clean background.
+	backgroundRemovalPattern   = regexp.MustCompile(`(?i)(抠图|扣图|抠出|去背景|去掉背景|移除背景|删除背景|背景去掉|透明背景|透明底|白底图|remove (the )?background)`)
+	negatedBackgroundRemoval   = regexp.MustCompile(`(?i)(不要|别|无需|不需要|不用|禁止|勿)\s*(再\s*)?(抠图|扣图|抠出|去背景|去掉背景|移除背景|删除背景)`)
 	countedImageRequestPattern = regexp.MustCompile(`(?i)(生成|创建|制作|设计|绘制|画|做|来)\s*(一|两|二|三|四|五|六|七|八|九|十|[1-9]|1[0-6])\s*(张|幅).{0,24}(图|图片|图像|照片|海报|插画|壁纸|封面|头像)`)
 )
 
@@ -49,7 +53,7 @@ func ImageActionRequested(prompt string) bool {
 	if createAction && visualNoun {
 		return true
 	}
-	if countedImageRequestPattern.MatchString(positive) {
+	if countedImageRequestPattern.MatchString(positive) || backgroundRemovalPattern.MatchString(negatedBackgroundRemoval.ReplaceAllString(positive, "")) {
 		return true
 	}
 	editAction := containsIntentTerm(positive,
@@ -85,7 +89,7 @@ func WorkspaceToolForPrompt(prompt string) string {
 		return ToolReferenceRebuild
 	case containsIntentTerm(text, "发送到无限画布", "发到无限画布", "发送到ai电商", "发送到 ai 电商", "send to workspace"):
 		return ToolSendToWorkspace
-	case containsIntentTerm(text, "抠图", "移除背景", "压缩图片", "高清放大", "图片裁剪", "切图"):
+	case containsIntentTerm(text, "压缩图片", "高清放大", "图片裁剪", "切图"):
 		return ToolMediaAction
 	default:
 		return ""

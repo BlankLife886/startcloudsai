@@ -47,9 +47,9 @@ func NewWorkspaceActionManifest() Manifest {
 		ID: "workspace-actions", Version: "1.0.0", Description: "Safe user-facing workspace and research actions",
 		Tools: []Definition{
 			{
-				Name: ToolMediaAction, Description: "为当前对话中的图片准备抠图、压缩、高清放大、裁剪或切图操作。这里只准备可确认的操作卡，不会自动扣费或开始处理。",
+				Name: ToolMediaAction, Description: "为当前对话中的图片准备压缩、高清放大、裁剪或切图操作（抠图/去背景不在这里，按图片编辑处理）。这里只准备可确认的操作卡，不会自动扣费或开始处理。",
 				InputSchema: objectSchema(map[string]any{
-					"operation":            imageEnum("background_remove", "compress", "upscale", "crop", "split"),
+					"operation":            imageEnum("compress", "upscale", "crop", "split"),
 					"referenced_image_ids": stringArraySchema(0, 8, "图片目录中的 id；没有明确指定时返回空数组，界面会使用最近图片"),
 					"instruction":          shortStringSchema(0, 1000, "用户的处理要求"),
 				}, "operation", "referenced_image_ids", "instruction"),
@@ -176,8 +176,8 @@ func mediaActionExecutor(_ context.Context, invocation Invocation) (Result, erro
 	if err := decodeArguments(invocation.Arguments, &input); err != nil {
 		return Result{}, err
 	}
-	labels := map[string]string{"background_remove": "移除图片背景", "compress": "压缩图片", "upscale": "高清放大", "crop": "裁剪图片", "split": "智能切图"}
-	routes := map[string]string{"background_remove": "/canvas?mode=new&agent=1", "compress": "/canvas?mode=new&agent=1", "upscale": "/canvas?mode=new&agent=1", "crop": "/canvas?mode=new&agent=1", "split": "/canvas?mode=new&agent=1"}
+	labels := map[string]string{"compress": "压缩图片", "upscale": "高清放大", "crop": "裁剪图片", "split": "智能切图"}
+	routes := map[string]string{"compress": "/canvas?mode=new&agent=1", "upscale": "/canvas?mode=new&agent=1", "crop": "/canvas?mode=new&agent=1", "split": "/canvas?mode=new&agent=1"}
 	label, ok := labels[input.Operation]
 	if !ok {
 		return Result{}, errors.New("unsupported media operation")

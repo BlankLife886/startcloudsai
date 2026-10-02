@@ -47,9 +47,9 @@ func Questions() []decision.Question {
 			Options: []decision.Option{
 				{ID: IntentAnswer, Description: "直接回答：闲聊、知识问答、写作、平台功能怎么用"},
 				{ID: IntentMyData, Description: "查询用户本人的数据：用量、消耗、积分去向、创作次数、成功率、明细记录；查找或整理用户自己以前的图片、资产库"},
-				{ID: IntentCreate, Description: "要求生成、修改或重绘图片和设计"},
+				{ID: IntentCreate, Description: "要求生成、修改或重绘图片和设计（包括抠图、去背景）"},
 				{ID: IntentWeb, Description: "需要联网查找最新的外部信息（新闻、价格、公开资料）"},
-				{ID: IntentWorkspace, Description: "要求执行站内工具：抠图、放大、压缩、导出交付包、发送到工作台、网页截图、在网上找参考图、导入商品链接"},
+				{ID: IntentWorkspace, Description: "要求执行站内工具：放大、压缩、导出交付包、发送到工作台、网页截图、在网上找参考图、导入商品链接"},
 				{ID: IntentAccount, Description: "账户与支付：充值、购买或退订套餐、订单、退款、修改密码、API Key"},
 			},
 		},
@@ -241,13 +241,6 @@ var commerceMakePattern = regexp.MustCompile(`(做|生成|出|设计|制作|画|
 // commerceFollowUpPattern matches turns that act on a set already planned
 // in the conversation ("开始生成吧", "第三张重做").
 var commerceFollowUpPattern = regexp.MustCompile(`(生成|开始|确认|可以|好的|行|就这样|重做|重新|再来|换一|改一|进度|好了吗|第\s*[0-9一二三四五六七八九十]+\s*张)`)
-
-// imageToolPattern matches requests to cut an attached image out.
-var imageToolPattern = regexp.MustCompile(`(抠图|扣图|抠出|去背景|去掉背景|移除背景|删除背景|背景去掉|透明背景|透明底|免抠)`)
-
-// ImageToolRequested reports whether a turn asks for background removal,
-// which v2 runs itself on the attached images.
-func ImageToolRequested(prompt string) bool { return imageToolPattern.MatchString(prompt) }
 
 // CommerceSetRequested reports whether a create turn asks for e-commerce
 // product images, which v2 produces itself through the commerce tools
