@@ -293,6 +293,8 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/assistant/memories", s.listAssistantMemories)
 	api.POST("/assistant/memories", s.createAssistantMemory)
 	api.PUT("/assistant/memories/settings", s.updateAssistantMemorySettings)
+	api.GET("/assistant/proactive/settings", s.getAssistantProactiveSettings)
+	api.PUT("/assistant/proactive/settings", s.updateAssistantProactiveSettings)
 	api.PATCH("/assistant/memories/:id", s.updateAssistantMemory)
 	api.DELETE("/assistant/memories/:id", s.deleteAssistantMemory)
 	api.POST("/assistant/runs", s.createAssistantRun)

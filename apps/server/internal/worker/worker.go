@@ -58,6 +58,9 @@ const (
 	typeCleanupTrashedAssets    = "cron:cleanup_trashed_assets"
 	typeEvaluateIncidents       = "cron:evaluate_operational_incidents"
 	typeDispatchAssistantOutbox = "cron:dispatch_assistant_run_outbox"
+	typeAssistantProactive      = "cron:assistant_proactive"
+	typeAssistantAlerts         = "cron:assistant_alerts"
+	typeAssistantReports        = "cron:assistant_reports"
 	typeDispatchAssistantFiles  = "cron:dispatch_assistant_files"
 	typeSettleReferralMonths    = "cron:settle_referral_months"
 	typeRefreshUserProfiles     = "cron:refresh_user_profiles"
@@ -220,6 +223,9 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupTrashedAssets, w.handleCleanupTrashedAssets)
 	mux.HandleFunc(typeEvaluateIncidents, w.handleEvaluateOperationalIncidents)
 	mux.HandleFunc(typeDispatchAssistantOutbox, w.handleDispatchAssistantOutbox)
+	mux.HandleFunc(typeAssistantProactive, w.handleAssistantProactive)
+	mux.HandleFunc(typeAssistantAlerts, w.handleAssistantAlerts)
+	mux.HandleFunc(typeAssistantReports, w.handleAssistantReports)
 	mux.HandleFunc(typeDispatchAssistantFiles, w.handleDispatchAssistantFiles)
 	mux.HandleFunc(typeSettleReferralMonths, w.handleSettleReferralMonths)
 	mux.HandleFunc(typeRefreshUserProfiles, w.handleRefreshUserProfiles)
@@ -317,6 +323,10 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		periodicConfig("@every 1m", typeEvaluateIncidents, 50*time.Second, 1),
 		periodicConfig("@every 15s", typeDispatchAssistantOutbox, 14*time.Second, 0),
 		periodicConfig("@every 15s", typeDispatchAssistantFiles, 14*time.Second, 0),
+		// No retries: the next run picks up whatever this one missed.
+		periodicConfig("@every 30s", typeAssistantProactive, 29*time.Second, 0),
+		periodicConfig("@every 10m", typeAssistantAlerts, 9*time.Minute, 0),
+		periodicConfig("@every 15m", typeAssistantReports, 14*time.Minute, 0),
 		periodicConfig("@every 1m", typeSettleReferralMonths, 55*time.Second, 0),
 		periodicConfig("@every 1m", typeRefreshUserProfiles, 50*time.Second, 1),
 		periodicConfig("@every 1h", typeRankUserProfiles, 59*time.Minute, 1),

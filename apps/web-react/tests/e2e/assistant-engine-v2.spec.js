@@ -344,7 +344,7 @@ test.describe('original assistant UI on the v2 engine', () => {
     expect(calls).toContain('DELETE /m-brand')
 
     await card.getByRole('button', { name: '管理记忆' }).click()
-    const panel = page.getByRole('dialog', { name: '记忆' })
+    const panel = page.getByRole('dialog', { name: '记忆与提醒' })
     await expect(panel).toContainText('画面风格')
     await expect(panel).not.toContainText('品牌色')
 
@@ -372,6 +372,42 @@ test.describe('original assistant UI on the v2 engine', () => {
     expect(enabled).toBe(false)
     await page.keyboard.press('Escape')
     await expect(panel).toBeHidden()
+  })
+
+  test('shows proactive messages with a way to their settings', async ({ page }) => {
+    let settings = { taskNotices: true, alerts: true, reportSchedule: '', thresholds: { lowBalancePoints: 50, spikeFactor: 3, spikeMinPoints: 100, failureRate: 0.3, failureMinTasks: 5, reportHour: 9 } }
+    const saved = []
+    const inbox = {
+      id: 'conv-inbox', title: '助手提醒', createdAt: '2026-10-02T08:00:00Z', updatedAt: '2026-10-02T09:00:00Z',
+      messages: [message('m-alert', 'assistant', '提醒一下：你现在可用 30 积分，不到 50。', { kind: 'agent', engine: 'v2', proactive: 'alert' })],
+    }
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations**', (route) => {
+      const path = new URL(route.request().url()).pathname
+      if (path.endsWith('/conversations')) return fulfillJson(route, { conversations: [inbox] })
+      return fulfillJson(route, inbox)
+    })
+    await page.route('**/api/v1/assistant/proactive/settings', async (route) => {
+      if (route.request().method() === 'PUT') {
+        const patch = route.request().postDataJSON()
+        saved.push(patch)
+        settings = { ...settings, ...patch }
+      }
+      return fulfillJson(route, settings)
+    })
+    await page.goto('/assistant?c=conv-inbox', { waitUntil: 'domcontentloaded' })
+
+    const note = page.locator('.assistant-proactive-note')
+    await expect(note).toContainText('助手主动发送 · 异常提醒')
+    await note.getByRole('button', { name: '提醒设置' }).click()
+    const panel = page.getByRole('dialog', { name: '记忆与提醒' })
+    await expect(panel.getByRole('tab', { name: '提醒' })).toHaveAttribute('aria-selected', 'true')
+    await expect(panel).toContainText('积分低于 50')
+    await panel.getByRole('switch', { name: '异常提醒' }).click()
+    await expect(panel.getByRole('switch', { name: '异常提醒' })).not.toBeChecked()
+    await panel.getByLabel('定时用量报告').selectOption('weekly')
+    await expect.poll(() => saved).toEqual([{ alerts: false }, { reportSchedule: 'weekly' }])
+    await expect(panel.getByRole('switch', { name: '长任务完成通知' })).toBeChecked()
   })
 
   test('gives the input back when the run could not be created', async ({ page }) => {

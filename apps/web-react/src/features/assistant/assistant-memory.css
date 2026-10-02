@@ -309,3 +309,38 @@
   font-size: 13px;
   cursor: pointer;
 }
+
+.assistant-workspace .assistant-memory-switch.is-static {
+  cursor: default;
+}
+
+.assistant-workspace .assistant-memory-switch select {
+  flex: none;
+  padding: 5px 8px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 8px;
+  color: var(--assistant-text);
+  background: var(--assistant-card);
+  font: inherit;
+  font-size: 12px;
+}
+
+/* 助手主动发来的消息：底部标明来源并给出关闭入口。 */
+.assistant-workspace .assistant-proactive-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  color: var(--assistant-muted);
+  font-size: 12px;
+}
+
+.assistant-workspace .assistant-proactive-note button {
+  padding: 0;
+  border: 0;
+  color: var(--assistant-accent-ink);
+  background: none;
+  font-size: 12px;
+  cursor: pointer;
+}

@@ -92,19 +92,19 @@ type assistantRunIn struct {
 	Quality                  string                      `json:"quality"`
 	// TransparentBackground asks for a cut-out with an alpha channel; it is
 	// honoured only when the image model supports it, and forces PNG.
-	TransparentBackground bool `json:"transparentBackground"`
-	ReasoningEffort          string                      `json:"reasoningEffort"`
-	ServiceKey               string                      `json:"serviceKey"`
-	Workspace                string                      `json:"workspace"`
-	FastMode                 bool                        `json:"fastMode"`
-	ProposalSourceMessageID  string                      `json:"proposalSourceMessageId"`
-	AutoApproved             bool                        `json:"autoApproved"`
-	ParentOutputURL          string                      `json:"parentOutputUrl"`
-	MaskImage                map[string]any              `json:"maskImage"`
-	MaskBaseImage            map[string]any              `json:"maskBaseImage"`
-	MaskRect                 string                      `json:"maskRect"`
-	CanvasSnapshot           json.RawMessage             `json:"canvasSnapshot"`
-	Queue                    bool                        `json:"queue"`
+	TransparentBackground   bool            `json:"transparentBackground"`
+	ReasoningEffort         string          `json:"reasoningEffort"`
+	ServiceKey              string          `json:"serviceKey"`
+	Workspace               string          `json:"workspace"`
+	FastMode                bool            `json:"fastMode"`
+	ProposalSourceMessageID string          `json:"proposalSourceMessageId"`
+	AutoApproved            bool            `json:"autoApproved"`
+	ParentOutputURL         string          `json:"parentOutputUrl"`
+	MaskImage               map[string]any  `json:"maskImage"`
+	MaskBaseImage           map[string]any  `json:"maskBaseImage"`
+	MaskRect                string          `json:"maskRect"`
+	CanvasSnapshot          json.RawMessage `json:"canvasSnapshot"`
+	Queue                   bool            `json:"queue"`
 	// Engine "v2" routes the run to the rebuilt assistant orchestrator.
 	Engine string `json:"engine"`
 	// Timezone is the browser's IANA zone; v2 uses it for date questions.

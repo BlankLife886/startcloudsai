@@ -5,18 +5,21 @@ import { createPortal } from 'react-dom'
 import {
   createAssistantMemory,
   deleteAssistantMemory,
+  getAssistantProactiveSettings,
   listAssistantMemories,
   setAssistantMemoryEnabled,
   undoAssistantMemoryChange,
   updateAssistantMemory,
+  updateAssistantProactiveSettings,
 } from './services/assistantApi.js'
 import './assistant-commerce-set.css'
 import './assistant-memory.css'
 
 export const OPEN_MEMORY_EVENT = 'assistant:open-memory'
 
-export function openAssistantMemoryPanel() {
-  window.dispatchEvent(new CustomEvent(OPEN_MEMORY_EVENT))
+// tab is "memory" or "reminders".
+export function openAssistantMemoryPanel(tab = 'memory') {
+  window.dispatchEvent(new CustomEvent(OPEN_MEMORY_EVENT, { detail: { tab } }))
 }
 
 const KIND_LABELS = { brand: '品牌资料', product: '商品', style: '风格偏好', habit: '习惯', favorite: '满意方案' }
@@ -142,7 +145,71 @@ function MemoryItem({ memory, busy, onSave, onDelete }) {
   )
 }
 
-export function AssistantMemoryPanel({ open, dark, onClose }) {
+const REPORT_OPTIONS = [
+  { id: '', label: '关闭' },
+  { id: 'daily', label: '每天' },
+  { id: 'weekly', label: '每周一' },
+]
+
+// The 提醒 tab: what the assistant may tell the user without being asked.
+function ReminderSettings() {
+  const [settings, setSettings] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    const controller = new AbortController()
+    getAssistantProactiveSettings({ signal: controller.signal })
+      .then(setSettings)
+      .catch((caught) => { if (caught?.name !== 'AbortError') setError(caught?.message || '提醒设置读取失败') })
+    return () => controller.abort()
+  }, [])
+  const change = async (patch) => {
+    setBusy(true)
+    setError('')
+    try {
+      setSettings(await updateAssistantProactiveSettings(patch))
+    } catch (caught) {
+      setError(caught?.message || '保存失败，请重试')
+    } finally {
+      setBusy(false)
+    }
+  }
+  if (!settings) return <div className="assistant-memory-body">{error ? <p className="assistant-commerce-error" role="alert">{error}</p> : <p className="assistant-data-note">正在读取提醒设置…</p>}</div>
+  const limits = settings.thresholds || {}
+  return (
+    <div className="assistant-memory-body">
+      <p className="assistant-memory-lead">提醒会发到对应的对话（异常提醒和报告发到“助手提醒”对话），同时出现在右上角的通知里。</p>
+      <label className="assistant-memory-switch">
+        <span>
+          <strong>长任务完成通知</strong>
+          <small>电商套图等出图任务结束时告诉你结果，有失败会说明</small>
+        </span>
+        <input type="checkbox" role="switch" aria-label="长任务完成通知" checked={settings.taskNotices} disabled={busy} onChange={() => void change({ taskNotices: !settings.taskNotices })} />
+      </label>
+      <label className="assistant-memory-switch">
+        <span>
+          <strong>异常提醒</strong>
+          <small>{`积分低于 ${limits.lowBalancePoints ?? 50}；当天消耗超过近 7 天日均的 ${limits.spikeFactor ?? 3} 倍（至少 ${limits.spikeMinPoints ?? 100} 积分）；当天失败率超过 ${Math.round((limits.failureRate ?? 0.3) * 100)}%（至少 ${limits.failureMinTasks ?? 5} 次）。每类每天最多一次。`}</small>
+        </span>
+        <input type="checkbox" role="switch" aria-label="异常提醒" checked={settings.alerts} disabled={busy} onChange={() => void change({ alerts: !settings.alerts })} />
+      </label>
+      <div className="assistant-memory-switch is-static">
+        <span>
+          <strong>定时用量报告</strong>
+          <small>{`每天或每周一 ${limits.reportHour ?? 9}:00 后，把上一天或上一周的消耗、出图和成功率发给你`}</small>
+        </span>
+        <select aria-label="定时用量报告" value={settings.reportSchedule || ''} disabled={busy} onChange={(event) => void change({ reportSchedule: event.target.value })}>
+          {REPORT_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+        </select>
+      </div>
+      {error && <p className="assistant-commerce-error" role="alert">{error}</p>}
+    </div>
+  )
+}
+
+export function AssistantMemoryPanel({ open, dark, initialTab = 'memory', onClose }) {
+  const [tab, setTab] = useState(initialTab)
+  useEffect(() => { if (open) setTab(initialTab) }, [open, initialTab])
   const [mounted, setMounted] = useState(open)
   const [entered, setEntered] = useState(false)
   const [data, setData] = useState(null)
@@ -221,14 +288,19 @@ export function AssistantMemoryPanel({ open, dark, onClose }) {
   return createPortal(
     <div className={`asset-library-layer${dark ? ' is-dark' : ''}${entered ? ' is-open' : ''}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div className={`assistant-workspace${dark ? ' is-dark' : ''}`}>
-        <aside className="asset-library-panel assistant-memory-panel" role="dialog" aria-modal="true" aria-label="记忆" onMouseDown={(event) => event.stopPropagation()}>
+        <aside className="asset-library-panel assistant-memory-panel" role="dialog" aria-modal="true" aria-label="记忆与提醒" onMouseDown={(event) => event.stopPropagation()}>
           <header className="asset-library-header">
             <div className="asset-library-heading">
-              <p className="asset-library-kicker">记忆</p>
-              <p className="assistant-memory-lead">助手会记住你的品牌、商品、偏好和满意的方案，出图和回答时自动用上。</p>
+              <p className="asset-library-kicker">记忆与提醒</p>
+              <div className="asset-library-tabs" role="tablist" aria-label="记忆与提醒">
+                <button type="button" role="tab" aria-selected={tab === 'memory'} className={tab === 'memory' ? 'active' : ''} onClick={() => setTab('memory')}>记忆</button>
+                <button type="button" role="tab" aria-selected={tab === 'reminders'} className={tab === 'reminders' ? 'active' : ''} onClick={() => setTab('reminders')}>提醒</button>
+              </div>
             </div>
-            <button className="asset-close" type="button" title="关闭记忆" aria-label="关闭记忆" onClick={onClose}><i className="bi bi-x-lg" /></button>
+            <button className="asset-close" type="button" title="关闭" aria-label="关闭记忆与提醒" onClick={onClose}><i className="bi bi-x-lg" /></button>
           </header>
+          {tab === 'reminders' ? <ReminderSettings /> : <>
+          <p className="assistant-memory-lead">助手会记住你的品牌、商品、偏好和满意的方案，出图和回答时自动用上。</p>
           <label className="assistant-memory-switch">
             <span>
               <strong>使用记忆</strong>
@@ -263,9 +335,21 @@ export function AssistantMemoryPanel({ open, dark, onClose }) {
             <span>{items.length} 条记忆</span>
             <small>最多 {data?.limit || 200} 条，只有你自己能看到</small>
           </footer>
+          </>}
         </aside>
       </div>
     </div>,
     document.body,
+  )
+}
+
+// Footer on messages the assistant sent by itself, with the way to turn them off.
+export function AssistantProactiveNote({ kind }) {
+  const label = { task_done: '任务完成通知', alert: '异常提醒', report: '定时报告' }[kind] || '主动提醒'
+  return (
+    <p className="assistant-proactive-note">
+      <i className="bi bi-bell" aria-hidden="true" /> 助手主动发送 · {label}
+      <button type="button" onClick={() => openAssistantMemoryPanel('reminders')}>提醒设置</button>
+    </p>
   )
 }

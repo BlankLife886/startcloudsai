@@ -381,3 +381,12 @@ export function undoAssistantMemoryChange(change) {
   }
   return Promise.reject(new Error('这次改动无法撤销'))
 }
+
+// 主动提醒：长任务完成通知、异常提醒、定时报告的开关。
+export function getAssistantProactiveSettings({ signal } = {}) {
+  return apiGet('/assistant/proactive/settings', { signal })
+}
+
+export function updateAssistantProactiveSettings(patch) {
+  return apiPut('/assistant/proactive/settings', patch)
+}

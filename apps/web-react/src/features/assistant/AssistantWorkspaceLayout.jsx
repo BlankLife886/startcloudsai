@@ -318,8 +318,9 @@ export function AssistantWorkspaceLayout({ workspace }) {
   } = workspace;
   const [autoApproveDialogOpen, setAutoApproveDialogOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memoryTab, setMemoryTab] = useState("memory");
   useEffect(() => {
-    const open = () => setMemoryOpen(true);
+    const open = (event) => { setMemoryTab(event?.detail?.tab === "reminders" ? "reminders" : "memory"); setMemoryOpen(true); };
     window.addEventListener(OPEN_MEMORY_EVENT, open);
     return () => window.removeEventListener(OPEN_MEMORY_EVENT, open);
   }, []);
@@ -349,9 +350,9 @@ export function AssistantWorkspaceLayout({ workspace }) {
             <i className="bi bi-grid" aria-hidden="true" />
             <span>资产库</span>
           </button>
-          <button className={`sidebar-nav-item${memoryOpen ? " is-active" : ""}`} type="button" onClick={() => setMemoryOpen(true)}>
+          <button className={`sidebar-nav-item${memoryOpen ? " is-active" : ""}`} type="button" onClick={() => { setMemoryTab("memory"); setMemoryOpen(true); }}>
             <i className="bi bi-bookmark-heart" aria-hidden="true" />
-            <span>记忆</span>
+            <span>记忆与提醒</span>
           </button>
         </nav>
         <div className="sidebar-history" data-assistant-tour="history">
@@ -411,7 +412,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
           <button className="assistant-rail-new" type="button" title="搜索" onClick={() => setSearchOpen(true)}><i className="bi bi-search" /></button>
           <button className="assistant-rail-new" type="button" title="新对话" data-assistant-tour="new-chat" onClick={newConversation}><NewChatIcon /></button>
           <button className={`assistant-rail-new${assetLibraryOpen ? " is-active" : ""}`} type="button" title="资产库" data-assistant-tour="assets" onClick={() => setAssetLibraryOpen((value) => !value)}><i className="bi bi-grid" /></button>
-          <button className={`assistant-rail-new${memoryOpen ? " is-active" : ""}`} type="button" title="记忆" onClick={() => setMemoryOpen(true)}><i className="bi bi-bookmark-heart" /></button>
+          <button className={`assistant-rail-new${memoryOpen ? " is-active" : ""}`} type="button" title="记忆与提醒" onClick={() => { setMemoryTab("memory"); setMemoryOpen(true); }}><i className="bi bi-bookmark-heart" /></button>
           <button className="assistant-rail-history" type="button" title="历史" aria-label="历史" data-assistant-tour="history" onClick={() => { setHistoryOpen(true); if (sidebarCollapsed) updateSidebar(); }}>
             <i className="bi bi-clock-history" aria-hidden="true" />
           </button>
@@ -761,7 +762,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
         onPickImage={addAssetReference}
       />
 
-      <AssistantMemoryPanel open={memoryOpen} dark={isDark} onClose={() => setMemoryOpen(false)} />
+      <AssistantMemoryPanel open={memoryOpen} dark={isDark} initialTab={memoryTab} onClose={() => setMemoryOpen(false)} />
 
       <AssistantSearchDialog
         open={searchOpen}

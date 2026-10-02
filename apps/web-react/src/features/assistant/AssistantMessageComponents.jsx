@@ -66,6 +66,7 @@ import {
 } from "./assistantWorkspaceCore.jsx";
 import { AssistantPreviewImage, ModelMenuPrice } from "./AssistantWorkspaceUi.jsx";
 import { AssistantDataViews } from "./AssistantDataViews.jsx";
+import { AssistantProactiveNote } from "./AssistantMemoryViews.jsx";
 
 
 function GeneratedImageGrid({ message, imageModels, loadedImages, failedImages, imageRetryVersions, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference }) {
@@ -1466,6 +1467,7 @@ function AssistantMessageRow({ message, turnId, showDate, expanded, copied, gene
             {message.role === "assistant" && message.kind === "proposal" && message.proposal && <AgentProposal message={message} imageModels={imageModels} generating={generating} executed={proposalExecuted} attachedReferences={attachedReferences} autoApprove={autoApprove} autoApproveBudgetCents={autoApproveBudgetCents} autoApproved={autoApproved} maxMessageCharacters={maxMessageCharacters} onChange={onProposalChange} onDismiss={onProposalDismiss} onRestore={onProposalRestore} onApprove={onProposalApprove} onOpenImage={onOpenImage} />}
             {message.role === "assistant" && message.kind !== "proposal" && message.content && message.content !== message.error ? <AssistantMarkdown content={message.content} streaming={message.pending} highlightQuery={searchHit ? searchQuery : ""} /> : message.role !== "assistant" && message.content && message.content !== message.error ? <p>{searchHit ? highlightSearchNodes(message.content, searchQuery) : message.content}</p> : null}
             {message.role === "assistant" && <AssistantDataViews views={message.dataViews} />}
+            {message.role === "assistant" && message.proactive ? <AssistantProactiveNote kind={message.proactive} /> : null}
             {message.role === "assistant" && <AssistantWebSources searches={message.webSearches} />}
             {message.role === "assistant" && <AssistantArtifacts items={message.artifacts} />}
             {message.role === "assistant" && <AssistantToolActions actions={message.toolActions} busyId={toolActionBusyId} onExecute={(action) => onToolAction?.(message, action)} />}

@@ -13,7 +13,7 @@
 
 AI 助手**沿用原有界面**（`AssistantWorkspaceLayout` 等，不做新 UI），底层换成了 **v2 引擎**：问答和 Agent 模式的消息由 v2 先判断“这一轮要做什么”，查用户自己的数据、排查任务、普通问答由 v2 直接处理；生图方案（包括抠图 / 去背景：gpt-image-2 编辑原图，输出透明 PNG）、联网搜索、站内工具（放大、导出等）在**同一轮内交回原引擎**处理。图片模式不变。
 
-整体路线是 P0–P5 六个阶段，目前 **P0、P1、P2、P4 已完成，P3 完成第一批**，P5 未开始。
+整体路线是 P0–P5 六个阶段，目前 **P0、P1、P2、P4 已完成，P3 完成第一批，P5 前三项（完成通知、异常提醒、定时报告）已完成**，主动建议未做。
 
 ---
 
@@ -37,7 +37,7 @@ AI 助手**沿用原有界面**（`AssistantWorkspaceLayout` 等，不做新 UI�
 
 - **不要从 `main` 开分支**：`main` 比基线分支落后 191 个提交，现有助手、支付等代码都不在 `main` 上。
 - 主工作目录 `startcloudsai`（分支 `codex/publish-current-project`）有 30 多个**未提交**改动（含电商），本分支没有动它们。合并前需要和那批电商改动对齐。
-- 本分支新增了 **3 个数据库迁移**：`00177_assistant_decision_logs.sql`（判断记录表）、`00178_assistant_commerce_sets.sql`（电商套图）、`00179_assistant_memories.sql`（助手记忆与开关）。合并前确认其他分支没有占用这些编号。**本地开发库在 179**（之前短暂应用过一个已删除的 `00179_assistant_job_kinds`，2026-10-02 已手动回滚：删列并删掉 goose 版本记录，然后才应用现在的 179）。
+- 本分支新增了 **4 个数据库迁移**：`00177_assistant_decision_logs.sql`（判断记录表）、`00178_assistant_commerce_sets.sql`（电商套图）、`00179_assistant_memories.sql`（助手记忆与开关）、`00180_assistant_proactive.sql`（主动提醒设置、“助手提醒”对话、套图已通知批次）。合并前确认其他分支没有占用这些编号。**本地开发库在 180**（之前短暂应用过一个已删除的 `00179_assistant_job_kinds`，2026-10-02 已手动回滚：删列并删掉 goose 版本记录，然后才应用现在的 179）。
 - **真实生成要先问用户**：本地服务连接的是真实上游模型，任何可能提交生成的操作（包括在本地页面里发消息）都会真实扣费。
 - **本地服务不要随意重启**：接口和 worker 由启动器以 `go run` 方式运行，环境变量来自启动器而不是 `.env`。只在用户要求时重启。
 - 本地正在运行的接口（`localhost:8000`）跑的是**主工作目录的旧代码**，不认识 `engine=v2`。要真实试用 v2，需要用本工作树的代码另起接口和 worker（还没做，需用户同意）。
@@ -121,7 +121,9 @@ worker.executeAssistantRun（assistant.go）
 | `apps/server/internal/worker/assistant_v2.go` | v2 编排：决策、交回原引擎、工具循环、结算 |
 | `apps/server/internal/assistantmemory/` | 助手记忆：增删改查、同类同名覆盖、上限 200 条、开关、提示词块（预算 2400 字）、按名字找记住的商品、把套图存成满意方案 |
 | `apps/server/internal/assistanttools/my_memory.go` | 记忆工具：`memory_search`、`memory_save`、`memory_update`、`memory_forget`（新级别 `LevelMemory`） |
-| `apps/web-react/src/features/assistant/AssistantMemoryViews.jsx` + `assistant-memory.css` | 回复里的记忆卡片（可撤销）与左侧“记忆”面板 |
+| `apps/web-react/src/features/assistant/AssistantMemoryViews.jsx` + `assistant-memory.css` | 回复里的记忆卡片（可撤销）、左侧“记忆与提醒”面板（记忆 / 提醒两个标签）、主动消息底部的“提醒设置” |
+| `apps/server/internal/assistantproactive/` | 主动能力：设置、`Post`（对话消息 + 铃铛通知同一事务、按来源去重）、套图完成通知、异常提醒、定时报告 |
+| `apps/server/internal/worker/assistant_proactive.go` | 三个定时任务：套图完成（每 30 秒）、异常提醒（每 10 分钟）、定时报告（每 15 分钟） |
 | `apps/web-react/src/features/assistant/useAssistantWorkspaceController.js` | 原 controller：v2 路由与几处状态修复 |
 | `apps/web-react/src/features/assistant/AssistantDataViews.jsx` + `assistant-data-views.css` | 原界面里的统计卡片 |
 | `apps/web-react/src/features/assistant/domain/assistantConversationRefresh.js` | 切回对话时的服务端合并逻辑 |
@@ -227,9 +229,22 @@ worker.executeAssistantRun（assistant.go）
 - 交回原引擎的回合（生图方案、联网、站内工具）里不能新增记忆，只能用记忆；“记住我喜欢暖色调，然后画一张海报”这类混合请求只会出图，不会存。
 - 记忆只用于 AI 助手，没有接到电商工作台等其它页面。
 
-### P5 主动能力 ⬜
+### P5 主动能力 🟡（前三项完成）
 
-定时报告（复用 P1 指标层）、长任务完成通知、异常提醒（消费突增、失败率高、积分将尽）、主动建议。
+已定（2026-10-02）：通知**同时发到对话和右上角铃铛**；默认开启（完成通知、异常提醒），定时报告由用户自己开；不收费、不调用模型（文字全部由数字拼出来）。
+
+| 状态 | 项 | 说明 / 位置 |
+|---|---|---|
+| ✅ | 长任务完成通知 | worker 每 30 秒扫一次“生成中”的电商套图，最新一批全部结束（成功或失败）就在原对话里发一条消息（带实时套图卡片）并发铃铛通知，点开回到该对话。每批（首次生成、每次重做）只通知一次（`announced_attempts`）；用户在卡片上看着它完成（卡片已检查、状态变成已完成）就不再通知；关闭通知期间结束的批次，重新打开后也不补发 |
+| ✅ | 异常提醒 | 每 10 分钟检查最近 24 小时有消耗或任务的用户：可用积分 < 50；当天消耗 ≥ 100 且超过前 7 天日均 3 倍；当天失败率 > 30% 且至少 5 次。每类每天最多一次。数字来自钱包和 P1 指标层，与钱包、个人中心一致。发到每人一个“助手提醒”对话（删掉后下次重建） |
+| ✅ | 定时报告 | 每天 / 每周一 9:00 之后发上一天 / 上一周的用量：消耗（与上一期对比）、创作次数、出图、成功率、消耗最多的功能，附统计卡片。每期只发一次 |
+| ✅ | 设置 | `GET/PUT /assistant/proactive/settings`；左侧入口改名“记忆与提醒”，面板有“提醒”标签：两个开关 + 报告频率；主动消息底部有“助手主动发送 · 提醒设置” |
+| ⬜ | 主动建议 | 依赖记忆和使用习惯，例如“你常做天猫主图，要不要按上次满意的方案来”。还没做 |
+
+限制：
+- 时区固定按 Asia/Shanghai（服务端还不知道用户时区）。
+- 只覆盖助手里发起的电商套图；普通工作台任务、助手里的单次出图没有完成通知（单次出图用户通常就在页面上等）。
+- 主动消息插在对话里，打开的页面不会实时出现，刷新或切回对话时出现。
 
 ---
 

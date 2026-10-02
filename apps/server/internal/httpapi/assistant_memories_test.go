@@ -79,3 +79,21 @@ func TestAssistantMemoryEndpoints(t *testing.T) {
 		t.Fatalf("delete: %d", response.Code)
 	}
 }
+
+func TestAssistantProactiveSettingsEndpoints(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, token := env.newUserSession(t, "user")
+	response := env.do(t, http.MethodGet, "/api/v1/assistant/proactive/settings", nil, token)
+	got, _ := decode(t, response)
+	if response.Code != http.StatusOK || got["taskNotices"] != true || got["alerts"] != true || got["reportSchedule"] != "" {
+		t.Fatalf("defaults: %d %s", response.Code, response.Body.String())
+	}
+	response = env.do(t, http.MethodPut, "/api/v1/assistant/proactive/settings", map[string]any{"alerts": false, "reportSchedule": "weekly"}, token)
+	got, _ = decode(t, response)
+	if response.Code != http.StatusOK || got["alerts"] != false || got["reportSchedule"] != "weekly" || got["taskNotices"] != true {
+		t.Fatalf("update: %d %s", response.Code, response.Body.String())
+	}
+	if response := env.do(t, http.MethodPut, "/api/v1/assistant/proactive/settings", map[string]any{"reportSchedule": "hourly"}, token); response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid schedule: %d", response.Code)
+	}
+}

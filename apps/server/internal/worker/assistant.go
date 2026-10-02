@@ -1672,16 +1672,16 @@ func attachAssistantPlan(metadata map[string]any, steps []assistantstream.PlanSt
 
 func assistantProposalFunctionTool(models []map[string]any) sub2api.FunctionTool {
 	properties := map[string]any{
-		"action":             map[string]any{"type": "string", "enum": []string{"generate", "edit"}},
-		"prompt":             map[string]any{"type": "string", "description": "可直接交给图片模型的完整中文提示词；参考图使用图1、图2指代"},
-		"promptMode":         map[string]any{"type": "string", "enum": []string{assistantPromptModeFaithful, assistantPromptModeEnhanced}, "description": "faithful=忠实执行用户原话；enhanced=补充视觉细节"},
-		"faithfulPrompt":     map[string]any{"type": "string", "description": "保持用户目标和原始约束，不增加未要求主体或风格的执行提示词"},
-		"enhancedPrompt":     map[string]any{"type": "string", "description": "不改变核心目标，补充构图、光线、材质和镜头的优化提示词"},
-		"reason":             map[string]any{"type": "string", "description": "一句话说明方案依据"},
-		"planningSummary":    map[string]any{"type": "string", "description": "面向用户的一句简短方案摘要"},
-		"count":              map[string]any{"type": "integer", "minimum": 1, "maximum": assistantProposalCatalogMaxImages(models)},
-		"model":              map[string]any{"type": "string", "description": "当前可用图片模型目录中的 id"},
-		"referencedImageIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"action":                map[string]any{"type": "string", "enum": []string{"generate", "edit"}},
+		"prompt":                map[string]any{"type": "string", "description": "可直接交给图片模型的完整中文提示词；参考图使用图1、图2指代"},
+		"promptMode":            map[string]any{"type": "string", "enum": []string{assistantPromptModeFaithful, assistantPromptModeEnhanced}, "description": "faithful=忠实执行用户原话；enhanced=补充视觉细节"},
+		"faithfulPrompt":        map[string]any{"type": "string", "description": "保持用户目标和原始约束，不增加未要求主体或风格的执行提示词"},
+		"enhancedPrompt":        map[string]any{"type": "string", "description": "不改变核心目标，补充构图、光线、材质和镜头的优化提示词"},
+		"reason":                map[string]any{"type": "string", "description": "一句话说明方案依据"},
+		"planningSummary":       map[string]any{"type": "string", "description": "面向用户的一句简短方案摘要"},
+		"count":                 map[string]any{"type": "integer", "minimum": 1, "maximum": assistantProposalCatalogMaxImages(models)},
+		"model":                 map[string]any{"type": "string", "description": "当前可用图片模型目录中的 id"},
+		"referencedImageIds":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"transparentBackground": map[string]any{"type": "boolean", "description": "抠图、去背景、要透明底或免抠素材时为 true：输出带透明通道的 PNG"},
 		"referenceMode": map[string]any{
 			"type": "string", "enum": []string{assistantReferenceModeShared, assistantReferenceModeIndividual},
