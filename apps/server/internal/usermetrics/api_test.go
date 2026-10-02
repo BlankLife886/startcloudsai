@@ -166,3 +166,20 @@ func TestListRecordsListsAPICalls(t *testing.T) {
 		t.Fatalf("record = %+v", record)
 	}
 }
+
+func TestQueryOverAnEmptyWindowReturnsZeros(t *testing.T) {
+	f := setup(t)
+	user := f.user("newcomer")
+	f.task(user, "t2i", "m", "succeeded", time.Date(2026, 3, 10, 9, 0, 0, 0, shanghai), 2, 10, 10, "")
+	result, err := Query(f.ctx, f.st, user, Request{
+		Metrics:           []Metric{MetricImages, MetricSpendPoints, MetricAPICalls},
+		TimeRange:         TimeRange{From: "2025-01-01", To: "2025-03-15"},
+		CompareToPrevious: true,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Totals[MetricImages] != 0 || result.PreviousTotals[MetricImages] != 0 {
+		t.Fatalf("totals = %v / %v", result.Totals, result.PreviousTotals)
+	}
+}

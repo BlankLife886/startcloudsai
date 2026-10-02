@@ -8,6 +8,7 @@ import { request } from "@/request";
 interface Thresholds {
   intent: number;
   clarify: number;
+  timeoutMs?: number;
 }
 
 interface Candidate {
@@ -71,6 +72,10 @@ interface EvalReport {
   mistakes: CaseResult[];
   thresholdCurve?: { threshold: number; accuracy: number }[];
   suggestedIntentThreshold?: number;
+  latencyP50Ms?: number;
+  latencyP90Ms?: number;
+  timeoutCurve?: { timeoutMs: number; accuracy: number; fallbackRate: number }[];
+  suggestedTimeoutMs?: number;
   durationMs: number;
 }
 
@@ -123,7 +128,8 @@ const evalModelId = ref("");
 const statsEvaluating = ref(false);
 const statsReport = ref<StatsReport | null>(null);
 const statsCategories = ref<string[]>([]);
-const form = reactive({ modelId: "", intent: 0.6, clarify: 0.75 });
+const DEFAULT_TIMEOUT_SECONDS = 3;
+const form = reactive({ modelId: "", intent: 0.6, clarify: 0.75, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS });
 const savedSignature = ref("");
 
 const intentLabel = (intent: string) => INTENT_LABELS[intent] || intent || "—";
@@ -133,7 +139,8 @@ const modelName = (id: string) => settings.value?.candidates.find((item) => item
 
 // The thresholds edited here belong to the model that will actually run.
 const targetModelId = computed(() => form.modelId || settings.value?.candidates.find((item) => item.pageDefault)?.id || "");
-const signature = () => JSON.stringify([form.modelId, form.intent, form.clarify]);
+const signature = () => JSON.stringify([form.modelId, form.intent, form.clarify, form.timeoutSeconds]);
+const timeoutSecondsOf = (thresholds: Thresholds) => (thresholds.timeoutMs ? thresholds.timeoutMs / 1000 : DEFAULT_TIMEOUT_SECONDS);
 const isDirty = computed(() => Boolean(savedSignature.value) && signature() !== savedSignature.value);
 
 function thresholdsFor(modelId: string): Thresholds {
@@ -147,6 +154,7 @@ function hydrate(next: DecisionSettings) {
   const thresholds = thresholdsFor(targetModelId.value);
   form.intent = thresholds.intent;
   form.clarify = thresholds.clarify;
+  form.timeoutSeconds = timeoutSecondsOf(thresholds);
   if (!evalModelId.value) evalModelId.value = next.effective?.modelId || "";
   savedSignature.value = signature();
 }
@@ -156,6 +164,7 @@ watch(() => form.modelId, () => {
   const thresholds = thresholdsFor(targetModelId.value);
   form.intent = thresholds.intent;
   form.clarify = thresholds.clarify;
+  form.timeoutSeconds = timeoutSecondsOf(thresholds);
 });
 
 async function loadStats() {
@@ -183,7 +192,11 @@ async function save() {
   saving.value = true;
   try {
     const thresholds = { ...(settings.value.override.thresholds || {}) };
-    if (targetModelId.value) thresholds[targetModelId.value] = { intent: form.intent, clarify: form.clarify };
+    if (targetModelId.value) thresholds[targetModelId.value] = {
+      intent: form.intent,
+      clarify: form.clarify,
+      timeoutMs: Math.round(form.timeoutSeconds * 1000),
+    };
     hydrate(await request<DecisionSettings>("/api/v1/admin/assistant/decision", {
       method: "PUT",
       body: { modelId: form.modelId, thresholds },
@@ -253,6 +266,20 @@ function applySuggested() {
   ElMessage.info("已填入建议值，保存后生效");
 }
 
+function applySuggestedTimeout() {
+  if (report.value?.suggestedTimeoutMs == null) return;
+  if (report.value.modelId !== targetModelId.value) {
+    ElMessage.warning("评测的模型与当前设置的判断模型不同，请先切换到同一模型再应用");
+    return;
+  }
+  form.timeoutSeconds = report.value.suggestedTimeoutMs / 1000;
+  ElMessage.info("已填入建议值，保存后生效");
+}
+
+const accuracyAtCurrentTimeout = computed(() =>
+  report.value?.timeoutCurve?.find((point) => point.timeoutMs === Math.round(form.timeoutSeconds * 1000)),
+);
+
 const sourceText = computed(() => {
   switch (settings.value?.source) {
     case "override": return "使用单独指定的判断模型";
@@ -300,6 +327,11 @@ onMounted(load);
           <label for="ad-clarify">追问阈值</label>
           <el-input-number id="ad-clarify" v-model="form.clarify" :min="0" :max="1" :step="0.05" :precision="2" />
           <small>判断“必须先追问”的概率达到该值，才会先问用户一个问题。</small>
+        </div>
+        <div class="ad-field">
+          <label for="ad-timeout">判断等待上限（秒）</label>
+          <el-input-number id="ad-timeout" v-model="form.timeoutSeconds" :min="1" :max="15" :step="1" :precision="0" />
+          <small>每一轮最多等判断模型这么久，超时改用规则。等得越久判断越准，但用户看到第一个字的时间也越晚。</small>
         </div>
         <div class="ad-save">
           <span v-if="targetModelId" class="ad-muted">阈值作用于：{{ modelName(targetModelId) }}</span>
@@ -357,10 +389,16 @@ onMounted(load);
       <el-empty v-if="!report" description="还没有运行评测" :image-size="64" />
       <template v-else>
         <section class="ad-kpis" aria-label="评测结果">
-          <article><small>{{ report.mode === 'model' ? `准确率 · ${modelName(report.modelId)}` : '规则准确率' }}</small><strong class="tnum">{{ percent(report.accuracy) }}</strong><span class="tnum">{{ report.correct }}/{{ report.total }}</span></article>
+          <article><small>{{ report.mode === 'model' ? `准确率（不限等待）· ${modelName(report.modelId)}` : '规则准确率' }}</small><strong class="tnum">{{ percent(report.accuracy) }}</strong><span class="tnum">{{ report.correct }}/{{ report.total }}</span></article>
           <article v-if="report.mode === 'model'"><small>同一批问题的规则准确率</small><strong class="tnum">{{ percent(report.rulesAccuracy) }}</strong></article>
           <article v-if="report.mode === 'model'" :class="{ 'is-warn': report.fallbackCount > 0 }"><small>模型失败、改用规则</small><strong class="tnum">{{ report.fallbackCount }}</strong></article>
-          <article v-if="report.mode === 'model'"><small>平均耗时</small><strong class="tnum">{{ Math.round(report.avgLatencyMs) }} ms</strong></article>
+          <article v-if="report.mode === 'model'"><small>平均耗时</small><strong class="tnum">{{ Math.round(report.avgLatencyMs) }} ms</strong><span v-if="report.latencyP90Ms" class="tnum">中位 {{ report.latencyP50Ms }} · 90% {{ report.latencyP90Ms }} ms</span></article>
+          <article v-if="report.suggestedTimeoutMs != null">
+            <small>建议的判断等待上限</small>
+            <strong class="tnum">{{ report.suggestedTimeoutMs / 1000 }} 秒</strong>
+            <span v-if="accuracyAtCurrentTimeout" class="tnum">按当前设置 {{ form.timeoutSeconds }} 秒：准确率 {{ percent(accuracyAtCurrentTimeout.accuracy) }}，{{ percent(accuracyAtCurrentTimeout.fallbackRate) }} 改用规则</span>
+            <el-button link type="primary" @click="applySuggestedTimeout">填入设置</el-button>
+          </article>
           <article v-if="report.suggestedIntentThreshold != null">
             <small>建议的意图置信度下限</small>
             <strong class="tnum">{{ report.suggestedIntentThreshold.toFixed(2) }}</strong>

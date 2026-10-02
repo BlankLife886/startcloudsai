@@ -188,3 +188,12 @@ func TestEvaluateAggregatesByCategory(t *testing.T) {
 		t.Fatalf("by category = %+v", report.ByCategory)
 	}
 }
+
+func TestUngroundedNumbersAcceptsTotalsOfReturnedFields(t *testing.T) {
+	calls := []Call{{Name: toolStats, Result: `{"totals":{"spend_points":16329,"deduct_points":187983,"refund_points":2046},` +
+		`"previousTotals":{"spend_points":7000,"deduct_points":1033,"refund_points":500}}`}}
+	answer := "已消耗 204,312 积分（16,329 + 187,983），扣除退回后净支出 202,266 积分，比之前 30 天多 196,279 积分。"
+	if got := UngroundedNumbers(answer, "", calls); len(got) != 0 {
+		t.Fatalf("totals flagged: %v", got)
+	}
+}

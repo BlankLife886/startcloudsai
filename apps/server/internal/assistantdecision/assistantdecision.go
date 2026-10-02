@@ -9,7 +9,6 @@ import (
 	"errors"
 	"log"
 	"regexp"
-	"time"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/decision"
@@ -28,9 +27,6 @@ const (
 
 // Intents lists every intent in display order.
 var Intents = []string{IntentAnswer, IntentMyData, IntentCreate, IntentWeb, IntentWorkspace, IntentAccount}
-
-// DecisionTimeout bounds the decision model; past it the rules answer.
-const DecisionTimeout = 3 * time.Second
 
 // DelegatesIntent reports intents whose capabilities still live in the
 // original engine (image proposals, web search, workspace tools).
@@ -101,7 +97,7 @@ type Setup struct {
 // RulesOnly is the setup used when no decision model is available.
 func RulesOnly(prompt string, thresholds decision.Thresholds) Setup {
 	rules := Rules(prompt)
-	return Setup{Decider: decision.Chain{Fallback: rules, Timeout: DecisionTimeout}, Rules: rules, Thresholds: thresholds}
+	return Setup{Decider: decision.Chain{Fallback: rules, Timeout: thresholds.Timeout()}, Rules: rules, Thresholds: thresholds}
 }
 
 // Resolve builds the setup for prompt. modelID chooses a specific chat model
@@ -138,7 +134,7 @@ func Resolve(ctx context.Context, q store.Q, masterKey, prompt, modelID string) 
 	setup.Decider = decision.Chain{
 		Primary:  decision.LLM{Completer: decision.ClientCompleter{Client: client}, Model: selection.Model.ID},
 		Fallback: setup.Rules,
-		Timeout:  DecisionTimeout,
+		Timeout:  setup.Thresholds.Timeout(),
 	}
 	return setup
 }

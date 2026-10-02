@@ -28,9 +28,8 @@ import (
 const AssistantEngineV2 = "v2"
 
 const (
-	assistantV2MaxSteps        = 6
-	assistantV2DecisionTimeout = 3 * time.Second
-	assistantV2MaxViewRows     = 120
+	assistantV2MaxSteps    = 6
+	assistantV2MaxViewRows = 120
 )
 
 // Params carried from v2 into the original engine when a turn is handed over.

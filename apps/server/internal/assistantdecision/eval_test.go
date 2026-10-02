@@ -88,3 +88,34 @@ func TestThresholdCurveSuggestsTheLowestBestThreshold(t *testing.T) {
 		t.Fatalf("suggested = %v curve = %+v", report.SuggestedIntent, report.ThresholdCurve)
 	}
 }
+
+func TestLatencyCurveSuggestsTheShortestNearBestWait(t *testing.T) {
+	results := []CaseResult{}
+	// Ten cases: the model is right on all of them, the rules on none. Two
+	// answers take 5.5 s, the rest 2 s; one more is a model failure.
+	for index := 0; index < 10; index++ {
+		latency := int64(2000)
+		if index < 2 {
+			latency = 5500
+		}
+		results = append(results, CaseResult{EvalCase: EvalCase{Expected: IntentMyData}, Got: IntentMyData,
+			RulesIntent: IntentAnswer, Provider: "llm", LatencyMs: latency})
+	}
+	results = append(results, CaseResult{EvalCase: EvalCase{Expected: IntentAnswer}, Got: IntentAnswer, RulesIntent: IntentAnswer, Provider: "rules"})
+	report := Report{}
+	latencyCurve(&report, results)
+	if report.LatencyP50Ms != 2000 || report.LatencyP90Ms != 5500 || report.LatencyMaxMs != 5500 {
+		t.Fatalf("latency = %d / %d / %d", report.LatencyP50Ms, report.LatencyP90Ms, report.LatencyMaxMs)
+	}
+	at := map[int]TimeoutPoint{}
+	for _, point := range report.TimeoutCurve {
+		at[point.TimeoutMs] = point
+	}
+	if at[1000].Accuracy != round3(1.0/11) || at[3000].Accuracy != round3(9.0/11) || at[6000].Accuracy != 1 {
+		t.Fatalf("curve = %+v", report.TimeoutCurve)
+	}
+	// 3 s loses two cases, so the suggestion is the first limit that keeps both.
+	if report.SuggestedTimeout == nil || *report.SuggestedTimeout != 6000 {
+		t.Fatalf("suggested = %v", report.SuggestedTimeout)
+	}
+}

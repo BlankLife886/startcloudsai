@@ -26,10 +26,29 @@ type Thresholds struct {
 	Intent float64 `json:"intent"`
 	// Clarify is the "yes" probability needed before asking the user first.
 	Clarify float64 `json:"clarify"`
+	// TimeoutMs is how long a turn waits for this model before the rules
+	// answer instead. Zero means DefaultTimeout. Slow models trade first-token
+	// latency for accuracy, so the admin sets it per model from evaluation.
+	TimeoutMs int `json:"timeoutMs,omitempty"`
 }
 
 // DefaultThresholds suit a general chat model's self-reported confidence.
 var DefaultThresholds = Thresholds{Intent: 0.6, Clarify: 0.75}
+
+// Wait limits for the decision model.
+const (
+	DefaultTimeout = 3 * time.Second
+	MinTimeoutMs   = 1000
+	MaxTimeoutMs   = 15000
+)
+
+// Timeout is the wait limit for the decision model.
+func (t Thresholds) Timeout() time.Duration {
+	if t.TimeoutMs <= 0 {
+		return DefaultTimeout
+	}
+	return time.Duration(t.TimeoutMs) * time.Millisecond
+}
 
 // DefaultThresholdsKey holds the thresholds for models without their own.
 const DefaultThresholdsKey = "default"
@@ -66,6 +85,9 @@ func (o Override) Validate() error {
 		}
 		if value.Intent < 0 || value.Intent > 1 || value.Clarify < 0 || value.Clarify > 1 {
 			return errors.New("阈值必须在 0 到 1 之间")
+		}
+		if value.TimeoutMs != 0 && (value.TimeoutMs < MinTimeoutMs || value.TimeoutMs > MaxTimeoutMs) {
+			return errors.New("判断等待上限必须在 1 到 15 秒之间")
 		}
 	}
 	return nil

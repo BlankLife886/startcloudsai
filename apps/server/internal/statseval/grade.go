@@ -168,7 +168,7 @@ func joinIDs[T ~string](values []T) string {
 	return strings.Join(parts, "、")
 }
 
-var changeWords = regexp.MustCompile(`上升|下降|增加|减少|增长|降低|多了|少了|提高|持平|涨|跌|翻倍|环比|相比|比上|较上`)
+var changeWords = regexp.MustCompile(`上升|下降|增加|减少|增长|降低|多了|少了|提高|持平|相同|不变|没有变化|一样|涨|跌|翻倍|环比|相比|比上|较上`)
 
 // GradeTranscript checks one transcript against its case.
 func GradeTranscript(item Case, transcript Transcript, now time.Time, loc *time.Location) Grade {
@@ -319,6 +319,9 @@ func groundValues(calls []Call) groundSet {
 	return groundSet{base: base}
 }
 
+// collectNumbers gathers every number in a tool result. Within one object
+// the sum of any of its numeric fields also counts, so an answer may total a
+// group ("消耗 + 人工扣减") and then compare that total with another one.
 func collectNumbers(value any, into map[float64]bool) {
 	switch typed := value.(type) {
 	case float64:
@@ -334,9 +337,43 @@ func collectNumbers(value any, into map[float64]bool) {
 			collectNumbers(item, into)
 		}
 	case map[string]any:
+		fields := []float64{}
 		for _, item := range typed {
 			collectNumbers(item, into)
+			if number, ok := item.(float64); ok {
+				fields = append(fields, math.Abs(number))
+			}
 		}
+		addSubsetSums(fields, into)
+	}
+}
+
+// maxSubsetFields bounds the subset sums per object (2^8 sums at most).
+const maxSubsetFields = 8
+
+func addSubsetSums(fields []float64, into map[float64]bool) {
+	if len(fields) < 2 {
+		return
+	}
+	if len(fields) > maxSubsetFields {
+		total := 0.0
+		for _, field := range fields {
+			total += field
+		}
+		into[total] = true
+		return
+	}
+	for mask := 1; mask < 1<<len(fields); mask++ {
+		if mask&(mask-1) == 0 {
+			continue // single fields are already in
+		}
+		total := 0.0
+		for index, field := range fields {
+			if mask&(1<<index) != 0 {
+				total += field
+			}
+		}
+		into[total] = true
 	}
 }
 

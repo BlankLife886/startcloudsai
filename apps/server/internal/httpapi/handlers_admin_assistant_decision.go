@@ -160,8 +160,10 @@ func (s *Server) adminRunAssistantDecisionEval(c *gin.Context, _ *store.User) {
 			fail(c, apperr.E("validation_error", "没有可用的判断模型（检查模型是否已分配给 AI 助手页面且服务商可用）", 422))
 			return
 		}
+		// Measure without the production wait limit; the report replays
+		// shorter limits and suggests one.
 		setupFor = func(prompt string) assistantdecision.Setup {
-			return assistantdecision.Resolve(ctx, s.St.Pool, s.Cfg.AppSecret, prompt, probe.ModelID)
+			return assistantdecision.MeasuringSetup(assistantdecision.Resolve(ctx, s.St.Pool, s.Cfg.AppSecret, prompt, probe.ModelID))
 		}
 	}
 	report := assistantdecision.Evaluate(ctx, assistantdecision.BuiltinCases, mode, setupFor, 4)

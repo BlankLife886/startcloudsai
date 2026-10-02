@@ -79,9 +79,9 @@ var BuiltinCases = []Case{
 	{ID: "total-04", Category: "总量", Prompt: "我的生成成功率怎么样", Expect: stats(metrics(um.MetricSuccessRate), um.RangeLast30Days)},
 	{ID: "total-05", Category: "总量", Prompt: "平均一张图要多少积分", Expect: stats(metrics(um.MetricCostPerImage), um.RangeLast30Days)},
 	{ID: "total-06", Category: "总量", Prompt: "生成一次平均要等多久", Expect: stats(metrics(um.MetricAvgSeconds), um.RangeLast30Days)},
-	{ID: "total-07", Category: "总量", Prompt: "今年我总共充了多少积分", Expect: stats(metrics(um.MetricIncomePoints), um.RangeThisYear)},
+	{ID: "total-07", Category: "总量", Prompt: "今年我总共充了多少积分", Expect: Expect{Tool: toolStats, Metrics: metrics(um.MetricIncomePoints), Preset: um.RangeThisYear, AlsoAccept: []string{toolOrders}}, Note: "“充值”也可以理解为已完成的充值订单"},
 	{ID: "total-08", Category: "总量", Prompt: "失败了几次", Expect: Expect{Tool: toolStats, MetricsAny: metrics(um.MetricFailed, um.MetricSuccessRate), Preset: um.RangeLast30Days}},
-	{ID: "total-09", Category: "总量", Prompt: "退回给我的积分一共有多少", Expect: stats(metrics(um.MetricRefundPoints), um.RangeLast30Days)},
+	{ID: "total-09", Category: "总量", Prompt: "退回给我的积分一共有多少", Expect: Expect{Tool: toolStats, Metrics: metrics(um.MetricRefundPoints)}, Note: "“一共”可以理解为全部时间，也可以默认最近 30 天"},
 	{ID: "total-10", Category: "总量", Prompt: "我从注册到现在一共用了多少积分", Expect: stats(metrics(um.MetricSpendPoints), um.RangeAllTime)},
 
 	// 时间：预设和自定义窗口。
@@ -118,7 +118,7 @@ var BuiltinCases = []Case{
 
 	// 明细：具体记录。
 	{ID: "records-01", Category: "明细", Prompt: "最贵的 10 次生成是哪些", Expect: Expect{Tool: toolRecords, RecordType: "spend", Sort: "largest"}},
-	{ID: "records-02", Category: "明细", Prompt: "把我最近失败的几次列出来", Expect: Expect{Tool: toolRecords, RecordType: "creations", Filters: filter("status", "failed")}},
+	{ID: "records-02", Category: "明细", Prompt: "把我最近失败的几次列出来", Expect: Expect{Tool: toolRecords, RecordType: "creations", Filters: filter("status", "failed"), AlsoAccept: []string{toolTaskStat}}, Note: "task_status 的 failed 范围也能回答"},
 	{ID: "records-03", Category: "明细", Prompt: "最近的入账记录", Expect: Expect{Tool: toolRecords, RecordType: "income", Sort: "recent"}},
 	{ID: "records-04", Category: "明细", Prompt: "今天都生成了些什么", Expect: Expect{Tool: toolRecords, RecordType: "creations", Preset: um.RangeToday}},
 	{ID: "records-05", Category: "明细", Prompt: "上个月消耗最多的几笔", Expect: Expect{Tool: toolRecords, RecordType: "spend", Sort: "largest", Preset: um.RangeLastMonth}},
@@ -143,7 +143,7 @@ var BuiltinCases = []Case{
 	{ID: "account-04", Category: "账户", Prompt: "为什么有积分被冻结了", Expect: Expect{Tool: toolAccount}, Note: "冻结额来自余额概况，原因可再查进行中的任务"},
 	{ID: "account-05", Category: "账户", Prompt: "我刚付的款到账了吗", Expect: Expect{Tool: toolOrders}},
 	{ID: "account-06", Category: "账户", Prompt: "有没有没付款的订单", Expect: Expect{Tool: toolOrders, Filters: filter("status", "unsettled")}, Note: "也可以用 pending"},
-	{ID: "account-07", Category: "账户", Prompt: "我买过哪些套餐", Expect: Expect{Tool: toolOrders, Filters: filter("status", "completed")}},
+	{ID: "account-07", Category: "账户", Prompt: "我买过哪些套餐", Expect: Expect{Tool: toolOrders}, Note: "列出全部订单并说明哪些已完成同样正确"},
 	{ID: "account-08", Category: "账户", Prompt: "订阅每天发多少积分，还能发几天", Expect: Expect{Tool: toolAccount}},
 
 	// 扣费：解释单笔。

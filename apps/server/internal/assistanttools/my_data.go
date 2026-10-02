@@ -142,7 +142,7 @@ func NewMyDataManifest(db usermetrics.TxRunner, now func() time.Time) Manifest {
 			},
 			{
 				Name:        ToolMyRecordsList,
-				Description: "列出用户本人的具体记录：creations（创作记录）、spend（消耗明细）、income（入账明细）、api_calls（开发者 API 调用记录），可按最近或金额/图片数最大排序，最多 50 条。每条带可点击的站内链接。要解释某一笔扣费的来龙去脉，把记录的 id 交给 explain_charge。",
+				Description: "列出用户本人的具体记录：creations（创作记录）、spend（消耗明细）、income（入账明细）、api_calls（开发者 API 调用记录），sort=largest 时消耗、入账、API 按积分从大到小，创作记录按图片数从多到少，最多 50 条。问“最贵 / 花费最多的几次生成”要用 type=spend + sort=largest（创作记录不含积分）。每条带可点击的站内链接。要解释某一笔扣费的来龙去脉，把记录的 id 交给 explain_charge。",
 				InputSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{

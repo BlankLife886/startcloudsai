@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/BlankLife886/startcloudsai/server/internal/decision"
 )
 
 // EvalCase is one labeled message: what the user typed (with optional prior
@@ -97,6 +99,24 @@ type ThresholdPoint struct {
 	Accuracy  float64 `json:"accuracy"`
 }
 
+// TimeoutPoint is what the set would score if turns waited at most
+// TimeoutMs for the model before the rules answered.
+type TimeoutPoint struct {
+	TimeoutMs    int     `json:"timeoutMs"`
+	Accuracy     float64 `json:"accuracy"`
+	FallbackRate float64 `json:"fallbackRate"`
+}
+
+// MeasuringSetup lifts the wait limit so an evaluation sees how long the
+// model really takes; the report then replays shorter limits.
+func MeasuringSetup(setup Setup) Setup {
+	if chain, ok := setup.Decider.(decision.Chain); ok && chain.Primary != nil {
+		chain.Timeout = time.Duration(decision.MaxTimeoutMs) * time.Millisecond
+		setup.Decider = chain
+	}
+	return setup
+}
+
 // Report summarises an evaluation.
 type Report struct {
 	ModelID         string           `json:"modelId"`
@@ -112,7 +132,14 @@ type Report struct {
 	Cases           []CaseResult     `json:"cases"`
 	ThresholdCurve  []ThresholdPoint `json:"thresholdCurve,omitempty"`
 	SuggestedIntent *float64         `json:"suggestedIntentThreshold,omitempty"`
-	DurationMs      int64            `json:"durationMs"`
+	// Latency and the timeout curve come from a model run measured without
+	// the production wait limit (see MeasuringSetup).
+	LatencyP50Ms     int64          `json:"latencyP50Ms,omitempty"`
+	LatencyP90Ms     int64          `json:"latencyP90Ms,omitempty"`
+	LatencyMaxMs     int64          `json:"latencyMaxMs,omitempty"`
+	TimeoutCurve     []TimeoutPoint `json:"timeoutCurve,omitempty"`
+	SuggestedTimeout *int           `json:"suggestedTimeoutMs,omitempty"`
+	DurationMs       int64          `json:"durationMs"`
 }
 
 func caseState(item EvalCase) string {
@@ -196,6 +223,7 @@ func Evaluate(ctx context.Context, cases []EvalCase, mode string, setupFor func(
 	}
 	if mode == "model" {
 		report.ThresholdCurve, report.SuggestedIntent = thresholdCurve(results)
+		latencyCurve(&report, results)
 	}
 	sort.SliceStable(report.Mistakes, func(i, j int) bool { return report.Mistakes[i].ID < report.Mistakes[j].ID })
 	report.DurationMs = time.Since(started).Milliseconds()
@@ -232,4 +260,51 @@ func thresholdCurve(results []CaseResult) ([]ThresholdPoint, *float64) {
 		}
 	}
 	return curve, &suggested
+}
+
+// latencyCurve replays wait limits of 1–10 seconds: a case whose model
+// answer took longer is scored with the rules' answer. The suggested limit is
+// the shortest one within one case of the best accuracy, since every second
+// of waiting delays the first visible token of every turn.
+func latencyCurve(report *Report, results []CaseResult) {
+	latencies := []int64{}
+	for _, result := range results {
+		if result.Provider == "llm" {
+			latencies = append(latencies, result.LatencyMs)
+		}
+	}
+	if len(latencies) == 0 || len(results) == 0 {
+		return
+	}
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	percentile := func(p float64) int64 {
+		return latencies[min(len(latencies)-1, int(math.Ceil(p*float64(len(latencies))))-1)]
+	}
+	report.LatencyP50Ms, report.LatencyP90Ms, report.LatencyMaxMs = percentile(0.5), percentile(0.9), latencies[len(latencies)-1]
+	best := 0.0
+	for timeout := 1000; timeout <= 10000; timeout += 1000 {
+		correct, fallback := 0, 0
+		for _, result := range results {
+			intent := result.Got
+			if result.Provider != "llm" || result.LatencyMs > int64(timeout) {
+				intent = result.RulesIntent
+				fallback++
+			}
+			if intent == result.Expected {
+				correct++
+			}
+		}
+		point := TimeoutPoint{TimeoutMs: timeout, Accuracy: round3(float64(correct) / float64(len(results))),
+			FallbackRate: round3(float64(fallback) / float64(len(results)))}
+		report.TimeoutCurve = append(report.TimeoutCurve, point)
+		best = math.Max(best, point.Accuracy)
+	}
+	slack := 1.0/float64(len(results)) + 1e-9
+	for _, point := range report.TimeoutCurve {
+		if point.Accuracy >= best-slack {
+			suggested := point.TimeoutMs
+			report.SuggestedTimeout = &suggested
+			return
+		}
+	}
 }

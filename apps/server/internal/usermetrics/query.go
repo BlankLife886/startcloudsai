@@ -333,11 +333,13 @@ func buildSQL(p plan, filters Filters) (string, []any) {
 		selects = append(selects, dimensionSQL(dimension)+" AS d"+strconv.Itoa(index))
 		groups = append(groups, "d"+strconv.Itoa(index))
 	}
+	// An ungrouped query over an empty window still returns one row, whose
+	// sums are NULL; COALESCE makes it zeros.
 	selects = append(selects,
-		"SUM(creations)::bigint", "SUM(images)::bigint", "SUM(succeeded)::bigint", "SUM(failed)::bigint",
-		"SUM(timed)::bigint", "SUM(seconds)::bigint",
-		"SUM(spend)::bigint", "SUM(deduct)::bigint", "SUM(refund)::bigint", "SUM(income)::bigint",
-		"SUM(api_calls)::bigint", "SUM(api_succeeded)::bigint", "SUM(api_failed)::bigint", "SUM(api_spend)::bigint")
+		"COALESCE(SUM(creations), 0)::bigint", "COALESCE(SUM(images), 0)::bigint", "COALESCE(SUM(succeeded), 0)::bigint", "COALESCE(SUM(failed), 0)::bigint",
+		"COALESCE(SUM(timed), 0)::bigint", "COALESCE(SUM(seconds), 0)::bigint",
+		"COALESCE(SUM(spend), 0)::bigint", "COALESCE(SUM(deduct), 0)::bigint", "COALESCE(SUM(refund), 0)::bigint", "COALESCE(SUM(income), 0)::bigint",
+		"COALESCE(SUM(api_calls), 0)::bigint", "COALESCE(SUM(api_succeeded), 0)::bigint", "COALESCE(SUM(api_failed), 0)::bigint", "COALESCE(SUM(api_spend), 0)::bigint")
 
 	where := []string{"created_at >= $2", "created_at < $3"}
 	args := []any{nil, nil, nil, nil}
