@@ -1846,6 +1846,9 @@ func assistantAgentInstructions(
 	if modelText := renderAssistantModelCatalog(models); modelText != "" {
 		instructions += "\n\n当前可用图片模型：\n" + modelText
 	}
+	if memory := assistantParamString(run.Params, assistantV2MemoryParam, ""); memory != "" {
+		instructions += "\n\n" + memory + "\n出图方案要遵循这些品牌和风格偏好（写进提示词）；用户本轮另有要求时以本轮为准。"
+	}
 	return instructions
 }
 

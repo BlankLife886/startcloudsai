@@ -41,7 +41,7 @@ func TestRulesBaselineOnBuiltinCases(t *testing.T) {
 	if report.Total != len(BuiltinCases) || report.Accuracy != report.RulesAccuracy {
 		t.Fatalf("report = %+v", report)
 	}
-	for _, id := range []string{"answer-02", "answer-03", "answer-04", "answer-05", "web-03", "create-01", "mydata-01"} {
+	for _, id := range []string{"answer-02", "answer-03", "answer-04", "answer-05", "web-03", "create-01", "create-09", "mydata-01", "mydata-13", "mydata-14", "mydata-15"} {
 		for _, mistake := range report.Mistakes {
 			if mistake.ID == id {
 				t.Fatalf("rules regressed on %s: got %s", id, mistake.Got)

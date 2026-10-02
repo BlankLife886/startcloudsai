@@ -4,6 +4,7 @@ import {
   apiGet,
   apiPatch,
   apiPost,
+  apiPut,
   apiRequest,
   buildApiPath,
 } from '@react/legacy-modules/services/apiClient.js'
@@ -341,4 +342,42 @@ export function executeAssistantAssetAction(action) {
 
 export function undoAssistantAssetAction(undo) {
   return apiPost('/assistant/asset-actions/undo', { undo })
+}
+
+// 记忆：助手记住的品牌、商品、偏好与满意方案；回复里的记忆卡片用同一组接口撤销。
+export function listAssistantMemories({ signal } = {}) {
+  return apiGet('/assistant/memories', { signal })
+}
+
+export function createAssistantMemory(memory) {
+  return apiPost('/assistant/memories', memory)
+}
+
+export function rememberAssistantCommerceSet(commerceSetId) {
+  return apiPost('/assistant/memories', { commerceSetId })
+}
+
+export function updateAssistantMemory(id, patch) {
+  return apiPatch(`/assistant/memories/${encodeURIComponent(id)}`, patch)
+}
+
+export function deleteAssistantMemory(id) {
+  return apiDelete(`/assistant/memories/${encodeURIComponent(id)}`)
+}
+
+export function setAssistantMemoryEnabled(enabled) {
+  return apiPut('/assistant/memories/settings', { enabled })
+}
+
+// 撤销一次记忆改动：新建的删掉，修改的改回去，删除的重新记上。
+export function undoAssistantMemoryChange(change) {
+  const previous = change?.previous
+  if (change?.action === 'created' && change.memory?.id) return deleteAssistantMemory(change.memory.id)
+  if (change?.action === 'updated' && previous?.id) {
+    return updateAssistantMemory(previous.id, { kind: previous.kind, title: previous.title, content: previous.content, imageKeys: previous.imageKeys || [] })
+  }
+  if (change?.action === 'deleted' && previous) {
+    return createAssistantMemory({ kind: previous.kind, title: previous.title, content: previous.content, imageKeys: previous.imageKeys || [] })
+  }
+  return Promise.reject(new Error('这次改动无法撤销'))
 }

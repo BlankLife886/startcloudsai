@@ -13,6 +13,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantdecision"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantmemory"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantv2"
@@ -37,6 +38,9 @@ const (
 const (
 	assistantV2IntentParam    = "_v2Intent"
 	assistantV2ConfidentParam = "_v2IntentConfident"
+	// assistantV2MemoryParam carries the recalled memory block, so image
+	// proposals made by the original engine follow the user's brand and taste.
+	assistantV2MemoryParam = "_v2Memory"
 )
 
 func assistantRunUsesV2(run *store.AssistantRun) bool {
@@ -111,15 +115,18 @@ func (w *Worker) recordAssistantV2Decision(ctx context.Context, run *store.Assis
 // proposals, web search and workspace tools live on its Agent path, so the
 // turn runs as Agent with v2's judgment attached (in memory only; the stored
 // run keeps the mode the user picked and was priced for).
-func assistantV2HandOver(run *store.AssistantRun, decided assistantV2Decision) *store.AssistantRun {
+func assistantV2HandOver(run *store.AssistantRun, decided assistantV2Decision, memory string) *store.AssistantRun {
 	handed := *run
 	handed.Mode = "agent"
-	params := make(map[string]any, len(run.Params)+2)
+	params := make(map[string]any, len(run.Params)+3)
 	for key, value := range run.Params {
 		params[key] = value
 	}
 	params[assistantV2IntentParam] = decided.Intent
 	params[assistantV2ConfidentParam] = fmt.Sprint(decided.Confident())
+	if memory != "" {
+		params[assistantV2MemoryParam] = memory
+	}
 	handed.Params = params
 	return &handed
 }
@@ -197,19 +204,34 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	decided := w.assistantV2Decide(ctx, setup, assistantV2DecisionState(history, run, len(references), len(fileIDs)))
 	w.publishAssistantDebug(ctx, run, "decision_done", fmt.Sprintf("%s（置信度 %.2f，来源 %s）",
 		decided.Intent, decided.Confidence, decided.Response.Provider))
-	commerce := w.assistantV2CommerceTurn(ctx, run)
+	recall := w.assistantV2Recall(ctx, run)
+	commerce := w.assistantV2CommerceTurn(ctx, run, recall.Memories)
 	delegating := assistantV2DelegatesIntent(decided.Intent) && !decided.Clarify && !commerce.enabled
 	w.recordAssistantV2Decision(ctx, run, decided, delegating)
 	if delegating {
 		w.publishAssistantDebug(ctx, run, "delegate", "交给原有引擎处理："+decided.Intent)
-		return w.executeAssistantRunLegacy(ctx, assistantV2HandOver(run, decided))
+		return w.executeAssistantRunLegacy(ctx, assistantV2HandOver(run, decided, recall.Block))
+	}
+	if commerce.product != nil && len(references) == 0 {
+		// A remembered product stands in for uploading its photos again; the
+		// planner still looks at them to write the copy.
+		items := make([]map[string]any, 0, len(commerce.inputKeys))
+		for _, key := range commerce.inputKeys {
+			items = append(items, map[string]any{"fileKey": key})
+		}
+		if references, err = w.loadAssistantReferenceItems(ctx, items); err != nil {
+			return err
+		}
 	}
 
-	systemPrompt := assistantV2SystemPrompt(run, time.Now(), decided)
+	systemPrompt := assistantV2SystemPrompt(run, time.Now(), decided) + assistantv2.MemoryPrompt(recall.Enabled, recall.Block)
 	if commerce.enabled {
 		systemPrompt += assistantv2.CommercePrompt
 		if commerce.open != nil {
 			systemPrompt += fmt.Sprintf("\n本对话已有一套电商图：setId=%s，状态 %s。用户的话是在说这套图时，直接对它操作。", commerce.open.ID, commerce.open.Status)
+		}
+		if commerce.product != nil {
+			systemPrompt += fmt.Sprintf("\n本轮没有上传商品图，用的是记忆里的商品“%s”的 %d 张图；策划时参考这条记忆的内容。", commerce.product.Title, len(commerce.inputKeys))
 		}
 	}
 	if len(fileIDs) > 0 {
@@ -233,6 +255,12 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	var extra []assistanttools.Manifest
 	if commerce.enabled {
 		extra = append(extra, w.assistantV2CommerceManifest(run, client, references, commerce))
+	}
+	if recall.Enabled {
+		conversationID := run.ConversationID
+		extra = append(extra, assistanttools.NewMemoryManifest(w.St, assistanttools.MemoryContext{
+			ConversationID: &conversationID, InputKeys: assistantV2ReferenceKeys(run.Params),
+		}))
 	}
 	registry, err := assistantv2.Registry(w.St, time.Now, len(fileIDs) > 0, extra...)
 	if err != nil {
@@ -449,9 +477,24 @@ type assistantV2Commerce struct {
 	enabled   bool
 	inputKeys []string
 	open      *store.CommerceSet
+	// product is the remembered product whose photos stand in for uploads.
+	product *assistantmemory.Memory
 }
 
-func (w *Worker) assistantV2CommerceTurn(ctx context.Context, run *store.AssistantRun) assistantV2Commerce {
+// assistantV2Recall loads what the assistant remembers about the user. A
+// failure only costs this turn its memory; it never fails the turn.
+func (w *Worker) assistantV2Recall(ctx context.Context, run *store.AssistantRun) assistantmemory.Recall {
+	if w.St == nil {
+		return assistantmemory.Recall{}
+	}
+	recall, err := assistantmemory.Load(ctx, w.St.Pool, run.UserID)
+	if err != nil {
+		log.Printf("assistant v2 memory recall failed for run %s: %v", run.ID, err)
+	}
+	return recall
+}
+
+func (w *Worker) assistantV2CommerceTurn(ctx context.Context, run *store.AssistantRun, memories []assistantmemory.Memory) assistantV2Commerce {
 	if w.St == nil {
 		return assistantV2Commerce{}
 	}
@@ -464,6 +507,9 @@ func (w *Worker) assistantV2CommerceTurn(ctx context.Context, run *store.Assista
 	switch {
 	case len(keys) > 0 && assistantdecision.CommerceSetRequested(run.Prompt):
 		turn.enabled = true
+	case len(keys) == 0 && assistantdecision.CommerceSetRequested(run.Prompt) && assistantmemory.ProductFor(memories, run.Prompt) != nil:
+		turn.product = assistantmemory.ProductFor(memories, run.Prompt)
+		turn.enabled, turn.inputKeys = true, turn.product.ImageKeys
 	case open != nil && (assistantdecision.CommerceFollowUp(run.Prompt) || assistantdecision.CommerceSetRequested(run.Prompt)):
 		turn.enabled = true
 		if len(keys) == 0 {

@@ -286,6 +286,94 @@ test.describe('original assistant UI on the v2 engine', () => {
     expect(undone.undo).toMatchObject({ action: 'move', createdGroup: 'g-new' })
   })
 
+  test('remembers from a reply, undoes it, and manages memory in the panel', async ({ page }) => {
+    const brand = { id: 'm-brand', kind: 'brand', kindLabel: '品牌资料', title: '品牌色', content: '雾霾蓝，做图默认主色', imageKeys: [], imageUrls: [], source: 'assistant', createdAt: '2026-10-02T08:00:00Z', updatedAt: '2026-10-02T08:00:00Z' }
+    const style = { id: 'm-style', kind: 'style', kindLabel: '风格偏好', title: '画面风格', content: '喜欢暖色调', imageKeys: [], imageUrls: [], source: 'user', createdAt: '2026-10-02T08:00:00Z', updatedAt: '2026-10-02T08:00:00Z' }
+    let items = [brand, style]
+    let enabled = true
+    const calls = []
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/memories**', async (route) => {
+      const request = route.request()
+      const path = new URL(request.url()).pathname
+      const body = request.postDataJSON?.() ?? null
+      calls.push(`${request.method()} ${path.replace('/api/v1/assistant/memories', '') || '/'}`)
+      if (request.method() === 'GET') {
+        return fulfillJson(route, { enabled, items, limit: 200, kinds: [] })
+      }
+      if (path.endsWith('/settings')) {
+        enabled = body.enabled
+        return fulfillJson(route, { enabled })
+      }
+      const id = path.split('/').pop()
+      if (request.method() === 'DELETE') {
+        const previous = items.find((item) => item.id === id)
+        items = items.filter((item) => item.id !== id)
+        return fulfillJson(route, { action: 'deleted', previous })
+      }
+      if (request.method() === 'PATCH') {
+        const previous = items.find((item) => item.id === id)
+        const memory = { ...previous, ...body }
+        items = items.map((item) => item.id === id ? memory : item)
+        return fulfillJson(route, { action: 'updated', memory, previous })
+      }
+      const memory = { id: `m-${items.length + 1}`, kindLabel: '习惯', imageKeys: [], imageUrls: [], source: 'user', ...body }
+      items = [memory, ...items]
+      return fulfillJson(route, { action: 'created', memory })
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      const body = route.request().postDataJSON()
+      return fulfillJson(route, {
+        run: { id: 'run-6', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: 'succeeded' },
+        userMessage: message(body.clientUserMessageId, 'user', body.prompt),
+        assistantMessage: message(body.clientAssistantMessageId, 'assistant', '记住了：品牌色是雾霾蓝。', {
+          kind: 'agent', engine: 'v2', dataViews: [{ tool: 'memory_save', view: 'memory_change', data: { action: 'created', memory: brand } }],
+        }),
+      }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('记住我的品牌色是雾霾蓝')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    const card = page.locator('.message--assistant').getByRole('region', { name: '记忆' })
+    await expect(card).toContainText('已记住 · 品牌资料')
+    await expect(card).toContainText('雾霾蓝，做图默认主色')
+    await card.getByRole('button', { name: '撤销' }).click()
+    await expect(card).toContainText('已撤销')
+    expect(calls).toContain('DELETE /m-brand')
+
+    await card.getByRole('button', { name: '管理记忆' }).click()
+    const panel = page.getByRole('dialog', { name: '记忆' })
+    await expect(panel).toContainText('画面风格')
+    await expect(panel).not.toContainText('品牌色')
+
+    await panel.getByRole('button', { name: '添加记忆' }).click()
+    await panel.getByLabel('记忆类型').selectOption('habit')
+    await panel.getByLabel('记忆名称').fill('常用平台')
+    await panel.getByLabel('记忆内容').fill('天猫，主图 1:1')
+    await panel.getByRole('button', { name: '保存' }).click()
+    await expect(panel).toContainText('天猫，主图 1:1')
+    expect(calls).toContain('POST /')
+
+    await panel.locator('.assistant-memory-item', { hasText: '画面风格' }).getByRole('button', { name: '编辑' }).click()
+    const form = panel.locator('.assistant-memory-item form')
+    await expect(form.getByLabel('记忆名称')).toHaveValue('画面风格')
+    await form.getByLabel('记忆内容').fill('喜欢冷色调')
+    await form.getByRole('button', { name: '保存' }).click()
+    await expect(panel).toContainText('喜欢冷色调')
+
+    await panel.locator('.assistant-memory-item', { hasText: '常用平台' }).getByRole('button', { name: '删除' }).click()
+    await panel.getByRole('button', { name: '确认删除' }).click()
+    await expect(panel).not.toContainText('常用平台')
+
+    await panel.getByRole('switch', { name: '使用记忆' }).click()
+    await expect(panel).toContainText('已关闭')
+    expect(enabled).toBe(false)
+    await page.keyboard.press('Escape')
+    await expect(panel).toBeHidden()
+  })
+
   test('gives the input back when the run could not be created', async ({ page }) => {
     await mockAssistant(page)
     await page.route('**/api/v1/assistant/runs', async (route) => {

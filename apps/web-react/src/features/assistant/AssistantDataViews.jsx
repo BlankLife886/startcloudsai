@@ -2,6 +2,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { AssistantAssetActionView, AssistantAssetsView } from './AssistantAssetViews.jsx'
+import { AssistantMemoryChangeView } from './AssistantMemoryViews.jsx'
 import { AssistantCommerceSet } from './AssistantCommerceSet.jsx'
 import './assistant-data-views.css'
 
@@ -450,5 +451,6 @@ export function AssistantDataView({ view }) {
   if (view?.view === 'commerce_set') return <AssistantCommerceSet initial={view.data} />
   if (view?.view === 'assets') return <AssistantAssetsView data={view.data} />
   if (view?.view === 'asset_action') return <AssistantAssetActionView data={view.data} />
+  if (view?.view === 'memory_change') return <AssistantMemoryChangeView data={view.data} />
   return null
 }

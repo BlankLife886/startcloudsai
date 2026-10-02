@@ -13,7 +13,7 @@
 
 AI 助手**沿用原有界面**（`AssistantWorkspaceLayout` 等，不做新 UI），底层换成了 **v2 引擎**：问答和 Agent 模式的消息由 v2 先判断“这一轮要做什么”，查用户自己的数据、排查任务、普通问答由 v2 直接处理；生图方案（包括抠图 / 去背景，由 gpt-image-2 编辑原图完成）、联网搜索、站内工具（放大、导出等）在**同一轮内交回原引擎**处理。图片模式不变。
 
-整体路线是 P0–P5 六个阶段，目前 **P0、P1、P2 已完成，P3 完成第一批**，P4–P5 未开始。
+整体路线是 P0–P5 六个阶段，目前 **P0、P1、P2、P4 已完成，P3 完成第一批**，P5 未开始。
 
 ---
 
@@ -37,11 +37,11 @@ AI 助手**沿用原有界面**（`AssistantWorkspaceLayout` 等，不做新 UI�
 
 - **不要从 `main` 开分支**：`main` 比基线分支落后 191 个提交，现有助手、支付等代码都不在 `main` 上。
 - 主工作目录 `startcloudsai`（分支 `codex/publish-current-project`）有 30 多个**未提交**改动（含电商），本分支没有动它们。合并前需要和那批电商改动对齐。
-- 本分支新增了 **2 个数据库迁移**：`00177_assistant_decision_logs.sql`（判断记录表）、`00178_assistant_commerce_sets.sql`（电商套图）。合并前确认其他分支没有占用这些编号。**本地开发库在 178**（曾短暂应用过已删除的 `00179_assistant_job_kinds`，2026-10-02 已手动回滚：删列并删掉 goose 版本记录）。
+- 本分支新增了 **3 个数据库迁移**：`00177_assistant_decision_logs.sql`（判断记录表）、`00178_assistant_commerce_sets.sql`（电商套图）、`00179_assistant_memories.sql`（助手记忆与开关）。合并前确认其他分支没有占用这些编号。**本地开发库在 179**（之前短暂应用过一个已删除的 `00179_assistant_job_kinds`，2026-10-02 已手动回滚：删列并删掉 goose 版本记录，然后才应用现在的 179）。
 - **真实生成要先问用户**：本地服务连接的是真实上游模型，任何可能提交生成的操作（包括在本地页面里发消息）都会真实扣费。
 - **本地服务不要随意重启**：接口和 worker 由启动器以 `go run` 方式运行，环境变量来自启动器而不是 `.env`。只在用户要求时重启。
 - 本地正在运行的接口（`localhost:8000`）跑的是**主工作目录的旧代码**，不认识 `engine=v2`。要真实试用 v2，需要用本工作树的代码另起接口和 worker（还没做，需用户同意）。
-- **本分支的一套本地服务**（2026-10-02 起）：接口 `localhost:8001`、worker，用本地同一个数据库，但 Redis 用 **7 号库**（和 8000 那套的任务队列分开，互不抢任务）。二进制和环境在当次会话的临时目录里，会话结束后可能不在；需要时按同样方式重建：编译本分支 → 沿用 8000 那套的环境，改 `PORT=8001` 和 `REDIS_URL` 的库号 → 分别起 `serve` 和 `worker`。前端用主工作目录 `.claude/launch.json` 里的 `assistant-v2-web-8001`（端口 3104，代理到 8001）。
+- **本分支的一套本地服务**（2026-10-02 起）：接口 `localhost:8001`、worker，用本地同一个数据库，但 Redis 用 **7 号库**（和 8000 那套的任务队列分开，互不抢任务）。二进制和环境在当次会话的临时目录里，会话结束后可能不在；需要时按同样方式重建：编译本分支 → 沿用 8000 那套的环境，改 `PORT=8001` 和 `REDIS_URL` 的库号 → 分别起 `serve` 和 `worker`。**改了 worker 里的代码要两个进程都重启**：助手回合是 worker 进程跑的，只重启 `serve` 不生效（2026-10-02 踩过：旧 worker 跑了几个小时的旧代码）。前端用主工作目录 `.claude/launch.json` 里的 `assistant-v2-web-8001`（端口 3104，代理到 8001）。
 - 前端开发服务器：`.claude/launch.json` 里的 `assistant-v2-web`，端口 **3104**。本地接口的 `ALLOWED_ORIGINS` 只放行 3102–3105、3200、8081，其他端口登录会被拒。
 - 本地测试账号：`sc.local.assistant.test@gmail.com`。本地开了 `DEV_LOGIN_CODE_ECHO`，验证码在 `POST /api/v1/auth/email-verification-codes` 的响应里（`developmentCode`），不会真的发邮件。
 - 工作树里的 `apps/web-react/node_modules` 是用 `npm ci` 装的真实目录（不要用软链接，否则 Vite 会拒绝加载图标字体）。
@@ -119,6 +119,9 @@ worker.executeAssistantRun（assistant.go）
 | `apps/server/internal/assistantv2/` | v2 的系统提示词、工具集和权限，worker 与统计评测共用 |
 | `apps/server/internal/statseval/` | 统计问答评测：64 个问法（`BuiltinCases`）、评分（工具 / 参数 / 时间范围 / 是否对比 / 数字出处）、`NewAgent` 与 `Evaluate` |
 | `apps/server/internal/worker/assistant_v2.go` | v2 编排：决策、交回原引擎、工具循环、结算 |
+| `apps/server/internal/assistantmemory/` | 助手记忆：增删改查、同类同名覆盖、上限 200 条、开关、提示词块（预算 2400 字）、按名字找记住的商品、把套图存成满意方案 |
+| `apps/server/internal/assistanttools/my_memory.go` | 记忆工具：`memory_search`、`memory_save`、`memory_update`、`memory_forget`（新级别 `LevelMemory`） |
+| `apps/web-react/src/features/assistant/AssistantMemoryViews.jsx` + `assistant-memory.css` | 回复里的记忆卡片（可撤销）与左侧“记忆”面板 |
 | `apps/web-react/src/features/assistant/useAssistantWorkspaceController.js` | 原 controller：v2 路由与几处状态修复 |
 | `apps/web-react/src/features/assistant/AssistantDataViews.jsx` + `assistant-data-views.css` | 原界面里的统计卡片 |
 | `apps/web-react/src/features/assistant/domain/assistantConversationRefresh.js` | 切回对话时的服务端合并逻辑 |
@@ -200,9 +203,27 @@ worker.executeAssistantRun（assistant.go）
 - 抠图（专用任务版，已撤掉）：方案、确认、建任务都正常，但上游抠图服务商从本机 TLS 握手失败，任务失败并自动退款。这次测试暴露并修正了套图卡片上的三个问题（保留）：已花积分按成功的图计算（原来显示批准积分）、没有成功的图时不显示下载、未开自动授权时不尝试自动重做（原来会冒出一句多余的确认提示）。
 - 也修正了判断规则：第一次找图时判断模型超时，规则把“找我之前生成的…图片”判成了生成图片，交给了原引擎。现在“找 / 搜 / 翻 + 我以前的图”和“资产库 + 整理 / 移动 / 删除”判为查我的数据，判断评测集加了这两题；撤掉专用抠图后，原“抠图 → 站内工具”一题改为“高清放大 → 站内工具”，另加“抠图 → 生成或修改图片”（共 46 题）。
 
-### P4 记忆 ⬜
+### P4 记忆 ✅
 
-品牌资料、商品库、风格偏好、满意方案；用户可以查看、修改、删除。
+| 状态 | 项 | 说明 / 位置 |
+|---|---|---|
+| ✅ | 存储 | 迁移 `00179_assistant_memories`：`assistant_memories`（类型 brand 品牌资料 / product 商品 / style 风格偏好 / habit 习惯 / favorite 满意方案；标题 ≤60 字、内容 ≤1000 字、最多 6 张图；来源 user / assistant；可关联对话和套图）+ `assistant_memory_settings`（开关，没有记录即开启）。每人最多 200 条；同类型同名（不分大小写）覆盖而不是重复 |
+| ✅ | 对话里记、改、忘 | `memory_save` / `memory_update` / `memory_forget` 直接执行（新级别 `LevelMemory`：只写助手对用户的笔记），每次改动在回复里出一张卡片，可撤销、可打开管理面板。`attachImages` 把本轮上传的图存进商品记忆；`commerceSetId` 把套图的方案和成图存成满意方案 |
+| ✅ | 用上记忆 | 每个 v2 回合把记忆写进系统提示词（品牌、风格、习惯给全文，商品和满意方案只给名字，细节用 `memory_search` 取；总长 2400 字封顶）。交回原引擎的出图回合通过 `_v2Memory` 把同一段记忆带进出图方案的规则里。说“用我的保温杯做一套主图”且没上传图时，用记住的商品图直接走电商套图 |
+| ✅ | 用户管理 | 左侧“记忆”面板（沿用资产库抽屉外框）：按类型筛选、添加、编辑、删除（二次确认）、整体开关。关闭后不读取、不新增，已有记忆保留，助手会提示可以在“记忆”里开启。电商套图卡片完成后有“记住这套方案” |
+| ✅ | 判断 | “记住 / 忘掉 / 你记得我…”判为查我的数据（v2 自己处理，不交回原引擎）；判断评测集加 3 题（共 49 题） |
+| ✅ | 接口 | `GET/POST /assistant/memories`、`PATCH/DELETE /assistant/memories/:id`、`PUT /assistant/memories/settings`；图片只接受本人的 `uploads/<uid>/`、`tasks/<uid>/` 文件 |
+
+**真实测试（2026-10-02，本地 8001，测试账号又补了 100 测试积分）**：
+- “请记住：我的品牌色是雾霾蓝，以后做图都用这个色”——判断模型判为查我的数据（0.99），调用 `memory_save` 存成品牌资料，回复下出现“已记住”卡片。
+- 新对话问“给新品保温杯拍主图，配色和背景怎么定”（没提品牌色）——回答以雾霾蓝为核心色给方案，说明记忆被用上。之后把提示词改成“用上哪条就点明一次”。
+- 面板里添加、编辑、删除、关闭再开启都正常，暗色模式正常；卡片上撤销后记忆被删除。
+- 第一次测试没生效，原因是 8001 的 worker 还是几小时前的旧进程（只重启了接口）；模型当时回答“记住了”却没有调用工具。重启 worker 后正常。
+
+未做 / 后续：
+- 没有自动从对话里“悄悄”提取记忆；只在用户明确要求或说出明显长期的信息时存，并且每次都出卡片。
+- 交回原引擎的回合（生图方案、联网、站内工具）里不能新增记忆，只能用记忆；“记住我喜欢暖色调，然后画一张海报”这类混合请求只会出图，不会存。
+- 记忆只用于 AI 助手，没有接到电商工作台等其它页面。
 
 ### P5 主动能力 ⬜
 
@@ -284,3 +305,5 @@ worker.executeAssistantRun（assistant.go）
 | `c4dabf5` | 原界面接入 v2 引擎；统计卡片；状态修复 |
 | `01e39a4` | 交接文档 |
 | `75b3e7d` | 判断模型设置与阈值、影子对比与判断记录、内置评测集与后台页面、服务端统一判断、附件 / 参考图 / 引用进 v2 |
+| `3c93cec` | 撤掉专用抠图任务：抠图改为 gpt-image-2 编辑原图（走原引擎的出图方案），删除迁移 `00179_assistant_job_kinds` |
+| （本次） | P4 记忆：存储与开关、记忆工具、提示词与出图方案里用上记忆、记住的商品直接做套图、记忆面板与可撤销卡片、“记住这套方案” |

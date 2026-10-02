@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { formatTime, messagePreview } from "./domain/assistantMessages.js";
 import { balancedOptionColumns } from "./adaptiveOptionGrid.js";
@@ -42,6 +42,7 @@ import {
   ConversationMinimap,
 } from "./AssistantMessageComponents.jsx";
 import { MentionMenu } from "../skills/MentionMenu.jsx";
+import { AssistantMemoryPanel, OPEN_MEMORY_EVENT } from "./AssistantMemoryViews.jsx";
 import { useMentionMenu } from "../skills/useMentionMenu.js";
 
 const REFERENCE_PROGRESS_RADIUS = 17;
@@ -316,6 +317,12 @@ export function AssistantWorkspaceLayout({ workspace }) {
     renderSidebarRail,
   } = workspace;
   const [autoApproveDialogOpen, setAutoApproveDialogOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  useEffect(() => {
+    const open = () => setMemoryOpen(true);
+    window.addEventListener(OPEN_MEMORY_EVENT, open);
+    return () => window.removeEventListener(OPEN_MEMORY_EVENT, open);
+  }, []);
   const mentionMenu = useMentionMenu({
     textareaRef,
     value: draft,
@@ -341,6 +348,10 @@ export function AssistantWorkspaceLayout({ workspace }) {
           <button className={`sidebar-nav-item${assetLibraryOpen ? " is-active" : ""}`} type="button" data-assistant-tour="assets" onClick={() => setAssetLibraryOpen((value) => !value)}>
             <i className="bi bi-grid" aria-hidden="true" />
             <span>资产库</span>
+          </button>
+          <button className={`sidebar-nav-item${memoryOpen ? " is-active" : ""}`} type="button" onClick={() => setMemoryOpen(true)}>
+            <i className="bi bi-bookmark-heart" aria-hidden="true" />
+            <span>记忆</span>
           </button>
         </nav>
         <div className="sidebar-history" data-assistant-tour="history">
@@ -400,6 +411,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
           <button className="assistant-rail-new" type="button" title="搜索" onClick={() => setSearchOpen(true)}><i className="bi bi-search" /></button>
           <button className="assistant-rail-new" type="button" title="新对话" data-assistant-tour="new-chat" onClick={newConversation}><NewChatIcon /></button>
           <button className={`assistant-rail-new${assetLibraryOpen ? " is-active" : ""}`} type="button" title="资产库" data-assistant-tour="assets" onClick={() => setAssetLibraryOpen((value) => !value)}><i className="bi bi-grid" /></button>
+          <button className={`assistant-rail-new${memoryOpen ? " is-active" : ""}`} type="button" title="记忆" onClick={() => setMemoryOpen(true)}><i className="bi bi-bookmark-heart" /></button>
           <button className="assistant-rail-history" type="button" title="历史" aria-label="历史" data-assistant-tour="history" onClick={() => { setHistoryOpen(true); if (sidebarCollapsed) updateSidebar(); }}>
             <i className="bi bi-clock-history" aria-hidden="true" />
           </button>
@@ -748,6 +760,8 @@ export function AssistantWorkspaceLayout({ workspace }) {
         onPickFile={addAssetDocument}
         onPickImage={addAssetReference}
       />
+
+      <AssistantMemoryPanel open={memoryOpen} dark={isDark} onClose={() => setMemoryOpen(false)} />
 
       <AssistantSearchDialog
         open={searchOpen}

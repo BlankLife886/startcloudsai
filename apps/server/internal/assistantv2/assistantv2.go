@@ -26,6 +26,7 @@ const (
 	DomainFiles      = "files"
 	DomainCommerce   = assistanttools.DomainCommerceSet
 	DomainMyAssets   = assistanttools.DomainMyAssets
+	DomainMemory     = assistanttools.DomainMemory
 )
 
 // TurnPermissions are granted on every v2 turn; file permissions are added by
@@ -36,6 +37,7 @@ var TurnPermissions = []assistanttools.Permission{
 	assistanttools.PermissionTasksRead,
 	assistanttools.PermissionCommerceSets,
 	assistanttools.PermissionAssetsRead,
+	assistanttools.PermissionMemory,
 }
 
 // Registry builds the capabilities v2 can call. Each domain is one manifest;
@@ -61,7 +63,7 @@ func ToolsFor(registry *assistanttools.Registry) []string {
 	names := []string{}
 	for _, name := range registry.Names() {
 		switch registry.Domain(name) {
-		case DomainMyData, DomainMyAccount, DomainTaskStatus, DomainFiles, DomainCommerce, DomainMyAssets:
+		case DomainMyData, DomainMyAccount, DomainTaskStatus, DomainFiles, DomainCommerce, DomainMyAssets, DomainMemory:
 			names = append(names, name)
 		}
 	}
@@ -78,6 +80,30 @@ const CommercePrompt = `
 - 生成开始后告诉用户可以在卡片上看每张图的进度，出完会自动检查，不合格的可以一键重做；不要承诺具体完成时间。
 - 用户要求修改已生成的某几张时，用 commerce_set_redo（规则同上）；询问进度时用 commerce_set_status。
 - 用户想要的不是电商商品图（例如普通插画、头像）时，说明这里只处理电商套图，并建议到文生图 /text-to-image。`
+
+// MemoryPrompt tells the model what it remembers and how to keep memory.
+// With memory off it only says so: nothing is recalled and no memory tool is
+// offered.
+func MemoryPrompt(enabled bool, block string) string {
+	if !enabled {
+		return "\n\n用户关闭了助手记忆：本轮不能记住、查看或使用任何长期记忆。用户要你记住什么时，告诉他可以在左侧“记忆”里重新开启。"
+	}
+	var builder strings.Builder
+	builder.WriteString(`
+
+记忆：
+- 用户明确要你记住某事（“记住…”“以后都…”），或说出明显长期有效的信息（品牌名、品牌色、常用平台、不喜欢的风格）时，调用 memory_save；一次性的要求不要存。存之前不需要再问用户。
+- 用户说“改一下 / 不对”时用 memory_update，说“忘掉 / 别再用”时用 memory_forget；改和删都要用记忆的 id。
+- 用户问“你记得我什么”时，按类型简要列出；需要商品或满意方案的完整内容时用 memory_search。
+- 回答和策划时主动用上记忆（例如按品牌色和常用平台出方案）。用上了哪条，就在回答里点明一次，例如“按你记下的品牌色雾霾蓝……”，让用户知道记忆在起作用。记忆和本轮要求冲突时以本轮为准。
+- 用户可以在左侧“记忆”里查看、修改和删除全部记忆。`)
+	if block != "" {
+		builder.WriteString("\n\n" + block)
+	} else {
+		builder.WriteString("\n\n目前还没有记住任何关于这位用户的信息。")
+	}
+	return builder.String()
+}
 
 // SystemPrompt is the v2 system prompt for one turn.
 func SystemPrompt(timezone string, now time.Time, intent string, clarify bool) string {

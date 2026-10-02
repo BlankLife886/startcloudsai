@@ -131,7 +131,7 @@ func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 				function, _ := raw.(map[string]any)["function"].(map[string]any)
 				names = append(names, fmt.Sprint(function["name"]))
 			}
-			if strings.Join(names, ",") != "assets_organize,assets_search,explain_charge,my_account_overview,my_orders_list,my_records_list,my_stats_query,task_status" {
+			if strings.Join(names, ",") != "assets_organize,assets_search,explain_charge,memory_forget,memory_save,memory_search,memory_update,my_account_overview,my_orders_list,my_records_list,my_stats_query,task_status" {
 				t.Errorf("exposed tools = %v", names)
 			}
 			messages, _ := body["messages"].([]any)
@@ -332,7 +332,7 @@ func TestAssistantV2LowConfidenceDefersToRulesAndIsLogged(t *testing.T) {
 
 func TestAssistantV2HandOverCarriesTheJudgmentToTheOriginalEngine(t *testing.T) {
 	run := &store.AssistantRun{ID: uuid.New(), Mode: "chat", Prompt: "帮我做一张海报", Params: map[string]any{"_engine": AssistantEngineV2}}
-	handed := assistantV2HandOver(run, assistantV2Decision{Intent: assistantV2IntentCreate, Confidence: 0.9, Thresholds: decision.DefaultThresholds})
+	handed := assistantV2HandOver(run, assistantV2Decision{Intent: assistantV2IntentCreate, Confidence: 0.9, Thresholds: decision.DefaultThresholds}, "品牌资料：\n- 品牌色：雾霾蓝")
 	if handed.Mode != "agent" || run.Mode != "chat" {
 		t.Fatalf("hand-over must run as Agent without mutating the stored run: handed=%s original=%s", handed.Mode, run.Mode)
 	}
@@ -342,12 +342,19 @@ func TestAssistantV2HandOverCarriesTheJudgmentToTheOriginalEngine(t *testing.T) 
 	if _, leaked := run.Params[assistantV2IntentParam]; leaked {
 		t.Fatal("hand-over params leaked into the original run")
 	}
+	// The original engine's image rules carry the user's memory.
+	if instructions := assistantAgentInstructions(handed, nil, nil, true); !strings.Contains(instructions, "雾霾蓝") {
+		t.Fatal("image proposal instructions miss the recalled memory")
+	}
+	if instructions := assistantAgentInstructions(handed, nil, nil, false); strings.Contains(instructions, "雾霾蓝") {
+		t.Fatal("memory sent on a turn without image work")
+	}
 	w := &Worker{}
 	decide := w.classifyAssistantIntentAsync(context.Background(), nil, handed, nil, false, false, false)
 	if got := decide(); got.intent != "image" || !got.confident || got.fromFastPath {
 		t.Fatalf("original engine ignored v2's judgment: %+v", got)
 	}
-	web := assistantV2HandOver(run, assistantV2Decision{Intent: assistantV2IntentWeb, Confidence: 0.2, Thresholds: decision.DefaultThresholds})
+	web := assistantV2HandOver(run, assistantV2Decision{Intent: assistantV2IntentWeb, Confidence: 0.2, Thresholds: decision.DefaultThresholds}, "")
 	if got := w.classifyAssistantIntentAsync(context.Background(), nil, web, nil, false, false, false)(); got.intent != "chat" || got.confident {
 		t.Fatalf("web hand-over = %+v", got)
 	}

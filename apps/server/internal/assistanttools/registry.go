@@ -45,6 +45,9 @@ const (
 //     on a card, which calls the same code with their confirmation).
 //   - LevelChange: modifies or deletes user content; needs confirmation and
 //     should be undoable.
+//   - LevelMemory: writes only the assistant's own notes about the user
+//     (memories). Runs directly when the user has memory on; every write is
+//     shown in the reply with an undo, and the user can edit or delete it.
 //
 // Account and payment operations (purchases, refunds, passwords, API keys)
 // have no level on purpose: the assistant explains and links to the page
@@ -55,6 +58,7 @@ const (
 	LevelRead   Level = "read"
 	LevelSpend  Level = "spend"
 	LevelChange Level = "change"
+	LevelMemory Level = "memory"
 )
 
 type Manifest struct {
@@ -162,7 +166,7 @@ func (r *Registry) Register(manifest Manifest) error {
 			if definition.Risk != RiskRead {
 				return fmt.Errorf("assistant tool %s is level read but risk %q", definition.Name, definition.Risk)
 			}
-		case LevelSpend, LevelChange:
+		case LevelSpend, LevelChange, LevelMemory:
 			if definition.Risk != RiskWrite {
 				return fmt.Errorf("assistant tool %s is level %s but risk %q", definition.Name, definition.Level, definition.Risk)
 			}

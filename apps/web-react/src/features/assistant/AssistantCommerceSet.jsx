@@ -7,8 +7,10 @@ import {
   generateAssistantCommerceSet,
   getAssistantCommerceSet,
   redoAssistantCommerceShots,
+  rememberAssistantCommerceSet,
   reviewAssistantCommerceSet,
 } from './services/assistantApi.js'
+import { openAssistantMemoryPanel } from './AssistantMemoryViews.jsx'
 import './assistant-commerce-set.css'
 
 const POLL_MS = 4000
@@ -73,6 +75,7 @@ export function AssistantCommerceSet({ initial }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [remembered, setRemembered] = useState(false)
   const reviewingRef = useRef(false)
   const id = initial?.id || ''
 
@@ -163,6 +166,14 @@ export function AssistantCommerceSet({ initial }) {
             </a>
           )}
           <Link className="assistant-commerce-link" to={set.workbenchLink || '/ecommerce-design'}>在电商工作台继续调整</Link>
+          {remembered
+            ? <button type="button" className="assistant-commerce-link" onClick={openAssistantMemoryPanel}>已记为满意方案 · 查看</button>
+            : (
+              <button type="button" className="assistant-commerce-link" disabled={busy}
+                onClick={() => act(async () => { await rememberAssistantCommerceSet(id); setRemembered(true) })}>
+                记住这套方案
+              </button>
+            )}
         </div>
       )}
       {generating && !set.ready && (
