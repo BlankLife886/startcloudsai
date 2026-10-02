@@ -129,7 +129,10 @@ export function AssistantCommerceSet({ initial }) {
   const planned = set.status === 'planned'
   const isTool = set.kind === 'tool'
   const title = isTool ? '背景移除' : ['电商套图', set.productName, set.platform].filter(Boolean).join(' · ')
-  const progress = planned ? `${shots.length} 张 · 预计 ${points(set.quotedCents)}` : `已完成 ${set.done}/${set.total} · 已用 ${points(set.approvedCents)}`
+  const spentText = set.reservedCents > 0
+    ? `已花 ${points(set.spentCents)}，进行中预留 ${points(set.reservedCents)}`
+    : `已花 ${points(set.spentCents)}`
+  const progress = planned ? `${shots.length} 张 · 预计 ${points(set.quotedCents)}` : `已完成 ${set.done}/${set.total} · ${spentText}`
 
   return (
     <section className="assistant-data assistant-commerce" aria-label={isTool ? '图片处理' : '电商套图'}>
@@ -155,7 +158,11 @@ export function AssistantCommerceSet({ initial }) {
       )}
       {set.ready && (
         <div className="assistant-commerce-actions">
-          <a className="assistant-commerce-primary" href={assistantCommerceSetArchiveUrl(id)} download>下载全部</a>
+          {set.downloadable > 0 && (
+            <a className="assistant-commerce-primary" href={assistantCommerceSetArchiveUrl(id)} download>
+              {set.downloadable < set.total ? `下载已完成的 ${set.downloadable} 张` : '下载全部'}
+            </a>
+          )}
           <Link className="assistant-commerce-link" to={set.workbenchLink || '/ecommerce-design'}>{isTool ? '在抠图工具里继续处理' : '在电商工作台继续调整'}</Link>
         </div>
       )}

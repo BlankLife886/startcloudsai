@@ -186,7 +186,7 @@ func Search(ctx context.Context, q store.Q, userID uuid.UUID, req SearchRequest,
 			where = append(where, fmt.Sprintf("prompt ILIKE $%d", len(args)))
 		}
 		args = append(args, limit-len(result.Items))
-		rows, err := q.Query(ctx, `SELECT id, type, prompt, created_at, output_keys->>0,
+		rows, err := q.Query(ctx, `SELECT id, type, prompt, COALESCE(params->>'viewLabel', ''), created_at, output_keys->>0,
 				COALESCE(CASE WHEN jsonb_typeof(thumbnail_keys) = 'array' THEN thumbnail_keys->>0 END, '')
 			FROM tasks WHERE `+strings.Join(where, " AND ")+fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d`, len(args)), args...)
 		if err != nil {
@@ -195,16 +195,22 @@ func Search(ctx context.Context, q store.Q, userID uuid.UUID, req SearchRequest,
 		defer rows.Close()
 		for rows.Next() {
 			var id uuid.UUID
-			var taskType, prompt, output, thumb string
+			var taskType, prompt, viewLabel, output, thumb string
 			var created time.Time
-			if err := rows.Scan(&id, &taskType, &prompt, &created, &output, &thumb); err != nil {
+			if err := rows.Scan(&id, &taskType, &prompt, &viewLabel, &created, &output, &thumb); err != nil {
 				return nil, err
 			}
 			if thumb == "" {
 				thumb = output
 			}
 			label := usermetrics.WorkspaceLabels[taskType]
-			result.Items = append(result.Items, Item{ID: "task:" + id.String(), Kind: "generated", Title: truncate(prompt, 40),
+			// Workbench images carry a short name ("商品套图 · 产品白底图");
+			// their prompts start with long shared instructions.
+			title := truncate(prompt, 40)
+			if strings.TrimSpace(viewLabel) != "" {
+				title = truncate(viewLabel, 40)
+			}
+			result.Items = append(result.Items, Item{ID: "task:" + id.String(), Kind: "generated", Title: title,
 				Prompt: truncate(prompt, 500), ImageURL: fileURL(thumb), OriginalURL: fileURL(output), Workspace: label,
 				Time: created.In(loc).Format("2006-01-02 15:04"), Link: "/history"})
 		}

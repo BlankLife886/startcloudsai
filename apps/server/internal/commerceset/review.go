@@ -195,6 +195,15 @@ func (s Service) Review(ctx context.Context, userID, setID uuid.UUID, check Chec
 		if len(redo) == 0 {
 			return nil
 		}
+		// Automatic redos spend without asking, so they only happen for users
+		// who turned auto-approval on; everyone else redoes from the card.
+		user, err := store.GetUserByID(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		if user == nil || !user.AssistantAutoApprove {
+			return nil
+		}
 		// Each redo carries its own shot's issues, so they go one by one;
 		// the first that does not fit the budget stops the rest.
 		for _, id := range redo {

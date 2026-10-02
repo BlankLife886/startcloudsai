@@ -177,7 +177,7 @@ test.describe('original assistant UI on the v2 engine', () => {
         shot('white', '产品白底图', { attempts: 1, status: 'succeeded', imageUrl: '/api/v1/files/out/white.png', canRedo: true, priceCents: 10 }),
         shot('selling', '核心卖点图', { attempts: 1, status: 'succeeded', imageUrl: '/api/v1/files/out/selling.png', canRedo: true, priceCents: 10 }),
       ] }
-    const checked = { ...finished, status: 'done', needsReview: false, ready: true,
+    const checked = { ...finished, status: 'done', needsReview: false, ready: true, downloadable: 2, spentCents: 20,
       shots: [
         { ...finished.shots[0], reviewed: true, pass: true },
         { ...finished.shots[1], reviewed: true, pass: false, issues: ['标题有错别字'] },

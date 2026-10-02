@@ -44,6 +44,12 @@ type View struct {
 	ModelID       string     `json:"modelId"`
 	QuotedCents   int64      `json:"quotedCents"`
 	ApprovedCents int64      `json:"approvedCents"`
+	// SpentCents counts finished images only; failed tasks are refunded.
+	// ReservedCents is held for images still being made.
+	SpentCents    int64 `json:"spentCents"`
+	ReservedCents int64 `json:"reservedCents"`
+	// Downloadable counts shots whose latest image is ready.
+	Downloadable int `json:"downloadable"`
 	Shots         []ShotView `json:"shots"`
 	// Done counts shots whose latest image finished; Ready means every shot
 	// is finished and checked, so the set can be delivered.
@@ -65,11 +71,24 @@ func fileURL(key string) string {
 
 // BuildView reads the latest task of every shot and assembles the view.
 func (s Service) BuildView(ctx context.Context, set *store.CommerceSet) (*View, error) {
+	var spent, reserved int64
 	var brief Brief
 	_ = json.Unmarshal(set.Brief, &brief)
-	tasks, err := s.latestTasks(ctx, set)
+	tasks, err := s.allTasks(ctx, set)
 	if err != nil {
 		return nil, err
+	}
+	for _, shot := range set.Shots {
+		for _, attempt := range shot.Attempts {
+			task := tasks[attempt.TaskID]
+			switch {
+			case task == nil:
+			case task.Status == "succeeded":
+				spent += attempt.PriceCents
+			case !terminal(task.Status):
+				reserved += attempt.PriceCents
+			}
+		}
 	}
 	user, err := store.GetUserByID(ctx, s.St.Pool, set.UserID)
 	if err != nil {
@@ -78,7 +97,7 @@ func (s Service) BuildView(ctx context.Context, set *store.CommerceSet) (*View, 
 	view := &View{
 		ID: set.ID.String(), Kind: set.Kind, Status: set.Status, ProductName: brief.ProductName, Platform: brief.Platform,
 		Language: brief.Language, Summary: set.Summary, ModelID: set.ModelID, QuotedCents: set.QuotedCents,
-		ApprovedCents: set.ApprovedCents, Total: len(set.Shots), Shots: []ShotView{},
+		ApprovedCents: set.ApprovedCents, SpentCents: spent, ReservedCents: reserved, Total: len(set.Shots), Shots: []ShotView{},
 		WorkbenchLink: "/ecommerce-design",
 	}
 	if set.Kind == store.CommerceKindTool {
@@ -105,6 +124,7 @@ func (s Service) BuildView(ctx context.Context, set *store.CommerceSet) (*View, 
 			if task := tasks[attempt.TaskID]; task != nil {
 				item.Status = task.Status
 				if task.Status == "succeeded" && len(task.OutputKeys) > 0 {
+					view.Downloadable++
 					item.OriginalURL = fileURL(task.OutputKeys[0])
 					item.ImageURL = item.OriginalURL
 					if len(task.ThumbnailKeys) > 0 {
@@ -140,4 +160,19 @@ func (s Service) ViewByID(ctx context.Context, userID, setID uuid.UUID) (*View, 
 		return nil, err
 	}
 	return s.BuildView(ctx, set)
+}
+
+// allTasks reads the task of every attempt, so spent points include
+// replaced images as well as the current ones.
+func (s Service) allTasks(ctx context.Context, set *store.CommerceSet) (map[uuid.UUID]*store.Task, error) {
+	ids := []uuid.UUID{}
+	for _, shot := range set.Shots {
+		for _, attempt := range shot.Attempts {
+			ids = append(ids, attempt.TaskID)
+		}
+	}
+	if len(ids) == 0 {
+		return map[uuid.UUID]*store.Task{}, nil
+	}
+	return store.GetTasksByIDs(ctx, s.St.Pool, ids)
 }

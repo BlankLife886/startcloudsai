@@ -288,3 +288,33 @@ func TestToolRunCutsOutEachImage(t *testing.T) {
 		t.Fatalf("view = %+v", view)
 	}
 }
+
+// A failed image without auto-approval waits for the user: no automatic
+// redo, no points counted as spent, nothing offered for download.
+func TestFailedImageWithoutAutoApprovalWaitsForTheUser(t *testing.T) {
+	f := setup(t)
+	set := f.plan(ShotRequest{Type: "white"})
+	confirmed := int64(10)
+	result, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByUser, ExpectedTotalCents: &confirmed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFlight, _ := f.service.ViewByID(f.ctx, f.user.ID, set.ID)
+	if inFlight.ReservedCents != 10 || inFlight.SpentCents != 0 {
+		t.Fatalf("in flight = %+v", inFlight)
+	}
+	if _, err := f.st.Pool.Exec(f.ctx, `UPDATE tasks SET status = 'failed' WHERE id = $1`, result.TaskIDs[0]); err != nil {
+		t.Fatal(err)
+	}
+	review, err := f.service.Review(f.ctx, f.user.ID, set.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(review.AutoRedo) != 0 || review.RedoError != "" || len(review.Failed) != 1 {
+		t.Fatalf("review = %+v", review)
+	}
+	view, _ := f.service.BuildView(f.ctx, review.Set)
+	if view.SpentCents != 0 || view.ReservedCents != 0 || view.Downloadable != 0 || !view.Shots[0].CanRedo || view.Shots[0].Pass {
+		t.Fatalf("view = %+v", view)
+	}
+}

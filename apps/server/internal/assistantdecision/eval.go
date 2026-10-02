@@ -48,6 +48,8 @@ var BuiltinCases = []EvalCase{
 	{ID: "mydata-08", Prompt: "今年我一共充值了多少积分", Expected: IntentMyData},
 	{ID: "mydata-09", Prompt: "我刚才那个任务为什么失败了", Expected: IntentMyData, Note: "任务排查也由 v2 的只读工具处理"},
 	{ID: "mydata-10", Prompt: "失败的那次生图退款了吗", Expected: IntentMyData},
+	{ID: "mydata-11", Prompt: "找一下我之前生成的精华瓶图片", Expected: IntentMyData, Note: "曾被规则误判为生成图片（含“生成”“图片”）"},
+	{ID: "mydata-12", Prompt: "把资产库里的海报都移到节日分组", Expected: IntentMyData},
 	{ID: "create-01", Prompt: "帮我生成一张猫咪海报", Expected: IntentCreate},
 	{ID: "create-02", Prompt: "画一只戴帽子的柴犬", Expected: IntentCreate},
 	{ID: "create-03", Prompt: "做一套保温杯的天猫主图", Expected: IntentCreate},

@@ -212,7 +212,7 @@ async function runEval(mode: "rules" | "model") {
   if (mode === "model") {
     try {
       await ElMessageBox.confirm(
-        `将用「${modelName(evalModelId.value)}」逐条判断 43 个内置问题，会真实调用模型并产生上游费用。`,
+        `将用「${modelName(evalModelId.value)}」逐条判断 45 个内置问题，会真实调用模型并产生上游费用。`,
         "运行模型评测",
         { confirmButtonText: "开始评测", cancelButtonText: "取消", type: "warning" },
       );
@@ -378,7 +378,7 @@ onMounted(load);
       </div>
     </PageCard>
 
-    <PageCard title="评测" subtitle="用 43 个标注好的问题检验判断准确率，其中包含历史上被关键词误判过的问题。规则评测不花钱；模型评测会真实调用模型。">
+    <PageCard title="评测" subtitle="用 45 个标注好的问题检验判断准确率，其中包含历史上被关键词误判过的问题。规则评测不花钱；模型评测会真实调用模型。">
       <template #actions>
         <el-select v-model="evalModelId" placeholder="选择模型" class="ad-select" :disabled="evaluating">
           <el-option v-for="item in settings?.candidates || []" :key="item.id" :value="item.id" :label="item.name" :disabled="!item.available" />

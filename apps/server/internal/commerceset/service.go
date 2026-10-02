@@ -255,9 +255,9 @@ type GenerateResult struct {
 // BudgetMessage explains an ErrNeedsConfirmation to the user.
 func BudgetMessage(user *store.User, set *store.CommerceSet, total int64) string {
 	if user == nil || !user.AssistantAutoApprove {
-		return fmt.Sprintf("这套图预计 %d 积分，需要你在方案卡片上确认后再生成。", total)
+		return fmt.Sprintf("预计 %d 积分，需要你在卡片上确认后开始。", total)
 	}
-	return fmt.Sprintf("这次需要 %d 积分，这套图已批准 %d 积分，合计会超过自动授权预算 %d 积分，需要你确认。",
+	return fmt.Sprintf("这次需要 %d 积分，加上已批准的 %d 积分会超过自动授权预算 %d 积分，需要你在卡片上确认。",
 		total, set.ApprovedCents, user.AssistantAutoApproveBudgetCents)
 }
 
