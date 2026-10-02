@@ -1,6 +1,7 @@
 // Package assistantproactive is the assistant speaking first: it tells the
 // user when long work finishes, warns about unusual spending or failures,
-// and sends scheduled usage reports. Every message goes both into the
+// sends scheduled usage reports, and suggests what to do next from memory
+// and recent work. Every message goes both into the
 // assistant conversation it belongs to and to the site notification bell.
 // Each kind can be switched off; notices and alerts are on by default.
 package assistantproactive
@@ -33,18 +34,19 @@ type Settings struct {
 	TaskNotices      bool       `json:"taskNotices"`
 	Alerts           bool       `json:"alerts"`
 	ReportSchedule   string     `json:"reportSchedule"`
+	Suggestions      bool       `json:"suggestions"`
 	ReportLastSentAt *time.Time `json:"reportLastSentAt,omitempty"`
 }
 
 // Defaults apply until the user changes anything.
-var Defaults = Settings{TaskNotices: true, Alerts: true, ReportSchedule: ReportOff}
+var Defaults = Settings{TaskNotices: true, Alerts: true, ReportSchedule: ReportOff, Suggestions: true}
 
 // Get reads the user's settings, or the defaults.
 func Get(ctx context.Context, q store.Q, userID uuid.UUID) (Settings, error) {
 	settings := Defaults
-	err := q.QueryRow(ctx, `SELECT task_notices, alerts, report_schedule, report_last_sent_at
+	err := q.QueryRow(ctx, `SELECT task_notices, alerts, report_schedule, suggestions, report_last_sent_at
 		FROM assistant_proactive_settings WHERE user_id = $1`, userID).
-		Scan(&settings.TaskNotices, &settings.Alerts, &settings.ReportSchedule, &settings.ReportLastSentAt)
+		Scan(&settings.TaskNotices, &settings.Alerts, &settings.ReportSchedule, &settings.Suggestions, &settings.ReportLastSentAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Defaults, nil
 	}
@@ -56,6 +58,7 @@ type Patch struct {
 	TaskNotices    *bool   `json:"taskNotices"`
 	Alerts         *bool   `json:"alerts"`
 	ReportSchedule *string `json:"reportSchedule"`
+	Suggestions    *bool   `json:"suggestions"`
 }
 
 // Update applies a patch and returns the result.
@@ -70,6 +73,9 @@ func Update(ctx context.Context, q store.Q, userID uuid.UUID, patch Patch) (Sett
 	if patch.Alerts != nil {
 		settings.Alerts = *patch.Alerts
 	}
+	if patch.Suggestions != nil {
+		settings.Suggestions = *patch.Suggestions
+	}
 	if patch.ReportSchedule != nil {
 		switch schedule := strings.TrimSpace(*patch.ReportSchedule); schedule {
 		case ReportOff, ReportDaily, ReportWeekly:
@@ -78,11 +84,11 @@ func Update(ctx context.Context, q store.Q, userID uuid.UUID, patch Patch) (Sett
 			return settings, fmt.Errorf("%w: 定时报告只支持关闭、每天或每周", ErrInvalid)
 		}
 	}
-	_, err = q.Exec(ctx, `INSERT INTO assistant_proactive_settings (user_id, task_notices, alerts, report_schedule)
-		VALUES ($1, $2, $3, $4)
+	_, err = q.Exec(ctx, `INSERT INTO assistant_proactive_settings (user_id, task_notices, alerts, report_schedule, suggestions)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (user_id) DO UPDATE SET task_notices = EXCLUDED.task_notices, alerts = EXCLUDED.alerts,
-			report_schedule = EXCLUDED.report_schedule, updated_at = now()`,
-		userID, settings.TaskNotices, settings.Alerts, settings.ReportSchedule)
+			report_schedule = EXCLUDED.report_schedule, suggestions = EXCLUDED.suggestions, updated_at = now()`,
+		userID, settings.TaskNotices, settings.Alerts, settings.ReportSchedule, settings.Suggestions)
 	return settings, err
 }
 

@@ -390,3 +390,8 @@ export function getAssistantProactiveSettings({ signal } = {}) {
 export function updateAssistantProactiveSettings(patch) {
   return apiPut('/assistant/proactive/settings', patch)
 }
+
+// 主动建议：新对话空白页上“接着做”的卡片（按记忆和最近的套图算，不调用模型）。
+export function getAssistantSuggestions({ signal } = {}) {
+  return apiGet('/assistant/proactive/suggestions', { signal })
+}

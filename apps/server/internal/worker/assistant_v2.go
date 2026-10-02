@@ -14,6 +14,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantdecision"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantmemory"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantproactive"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantv2"
@@ -115,6 +116,20 @@ func (w *Worker) recordAssistantV2Decision(ctx context.Context, run *store.Assis
 // proposals, web search and workspace tools live on its Agent path, so the
 // turn runs as Agent with v2's judgment attached (in memory only; the stored
 // run keeps the mode the user picked and was priced for).
+// assistantV2Habits reads the user's habits for the prompt. They are
+// personalisation like memory, so they go away with memory off or with
+// suggestions off; a failure only drops them from this turn.
+func (w *Worker) assistantV2Habits(ctx context.Context, run *store.AssistantRun, recall assistantmemory.Recall) string {
+	if !recall.Enabled {
+		return ""
+	}
+	facts, err := assistantproactive.HabitFacts(ctx, w.St.Pool, run.UserID, recall.Memories, time.Now())
+	if err != nil {
+		log.Printf("assistant v2 habits failed for run %s: %v", run.ID, err)
+	}
+	return facts
+}
+
 func assistantV2HandOver(run *store.AssistantRun, decided assistantV2Decision, memory string) *store.AssistantRun {
 	handed := *run
 	handed.Mode = "agent"
@@ -206,11 +221,13 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 		decided.Intent, decided.Confidence, decided.Response.Provider))
 	recall := w.assistantV2Recall(ctx, run)
 	commerce := w.assistantV2CommerceTurn(ctx, run, recall.Memories)
+	habits := w.assistantV2Habits(ctx, run, recall)
 	delegating := assistantV2DelegatesIntent(decided.Intent) && !decided.Clarify && !commerce.enabled
 	w.recordAssistantV2Decision(ctx, run, decided, delegating)
 	if delegating {
 		w.publishAssistantDebug(ctx, run, "delegate", "交给原有引擎处理："+decided.Intent)
-		return w.executeAssistantRunLegacy(ctx, assistantV2HandOver(run, decided, recall.Block))
+		memory := strings.TrimSpace(recall.Block + assistantproactive.HabitNote(habits))
+		return w.executeAssistantRunLegacy(ctx, assistantV2HandOver(run, decided, memory))
 	}
 	if commerce.product != nil && len(references) == 0 {
 		// A remembered product stands in for uploading its photos again; the
@@ -227,6 +244,7 @@ func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, cl
 	systemPrompt := assistantV2SystemPrompt(run, time.Now(), decided) + assistantv2.MemoryPrompt(recall.Enabled, recall.Block)
 	if commerce.enabled {
 		systemPrompt += assistantv2.CommercePrompt
+		systemPrompt += assistantproactive.HabitNote(habits)
 		if commerce.open != nil {
 			systemPrompt += fmt.Sprintf("\n本对话已有一套电商图：setId=%s，状态 %s。用户的话是在说这套图时，直接对它操作。", commerce.open.ID, commerce.open.Status)
 		}

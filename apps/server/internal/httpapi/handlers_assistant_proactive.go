@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -50,9 +51,25 @@ func (s *Server) updateAssistantProactiveSettings(c *gin.Context) {
 	ok(c, proactiveSettingsDict(settings))
 }
 
+// getAssistantSuggestions feeds the empty conversation's "carry on" cards.
+func (s *Server) getAssistantSuggestions(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items, err := assistantproactive.Suggest(c.Request.Context(), s.St.Pool, user.ID, time.Now())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"items": items})
+}
+
 func proactiveSettingsDict(settings assistantproactive.Settings) gin.H {
 	return gin.H{
 		"taskNotices": settings.TaskNotices, "alerts": settings.Alerts, "reportSchedule": settings.ReportSchedule,
+		"suggestions":      settings.Suggestions,
 		"reportLastSentAt": settings.ReportLastSentAt,
 		"thresholds": gin.H{
 			"lowBalancePoints": assistantproactive.LowBalancePoints, "spikeFactor": assistantproactive.SpikeFactor,

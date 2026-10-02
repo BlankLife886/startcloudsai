@@ -193,6 +193,13 @@ function ReminderSettings() {
         </span>
         <input type="checkbox" role="switch" aria-label="异常提醒" checked={settings.alerts} disabled={busy} onChange={() => void change({ alerts: !settings.alerts })} />
       </label>
+      <label className="assistant-memory-switch">
+        <span>
+          <strong>主动建议</strong>
+          <small>新对话里按你的记忆和最近做的套图给出“接着做”的建议，例如按上次满意的方案再做一套；对话里没说平台或风格时，会按你的习惯来并说明</small>
+        </span>
+        <input type="checkbox" role="switch" aria-label="主动建议" checked={settings.suggestions !== false} disabled={busy} onChange={() => void change({ suggestions: settings.suggestions === false })} />
+      </label>
       <div className="assistant-memory-switch is-static">
         <span>
           <strong>定时用量报告</strong>

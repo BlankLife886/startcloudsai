@@ -1,6 +1,7 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
+import { getAssistantSuggestions } from "../services/assistantApi.js";
 
 gsap.registerPlugin(useGSAP);
 
@@ -38,18 +39,47 @@ const EMPTY_STATE = {
   },
 };
 
-function emptyStateSuggestions(creationId, editableFilesEnabled) {
+const MAX_CARDS = 4;
+
+function emptyStateSuggestions(creationId, editableFilesEnabled, personal) {
   const suggestions = (EMPTY_STATE[creationId] || EMPTY_STATE.chat).suggestions;
-  return suggestions.filter((item) => !item.requiresEditableFiles || editableFilesEnabled).slice(0, 4);
+  const fixed = suggestions.filter((item) => !item.requiresEditableFiles || editableFilesEnabled);
+  return [...personal, ...fixed].slice(0, MAX_CARDS);
+}
+
+// Personal "carry on" cards from the server (memory + recent sets). They run
+// in Agent mode, so Q&A shows them too and switches over when one is picked;
+// image mode keeps its fixed cards.
+function usePersonalSuggestions(creationId) {
+  const [items, setItems] = useState([]);
+  const offered = creationId !== "image";
+  useEffect(() => {
+    if (!offered) {
+      setItems([]);
+      return undefined;
+    }
+    const controller = new AbortController();
+    getAssistantSuggestions({ signal: controller.signal })
+      .then((result) => setItems(Array.isArray(result?.items) ? result.items.slice(0, MAX_CARDS - 1) : []))
+      .catch(() => setItems([]));
+    return () => controller.abort();
+  }, [offered]);
+  return items.map((item) => ({ ...item, personal: true }));
 }
 
 function motionDisabled() {
   return document.documentElement.classList.contains("settings-no-animations");
 }
 
-export function AssistantEmptyState({ creation, editableFilesEnabled, onPick }) {
+export function AssistantEmptyState({ creation, editableFilesEnabled, onPick, onOpenConversation, onUseAgent }) {
   const rootRef = useRef(null);
   const copy = EMPTY_STATE[creation.id] || EMPTY_STATE.chat;
+  const personal = usePersonalSuggestions(creation.id);
+  const pick = (item) => {
+    if (item.conversationId && onOpenConversation) return onOpenConversation(item.conversationId);
+    if (item.personal && creation.id !== "agent") onUseAgent?.();
+    return onPick(item.prompt || item.text);
+  };
 
   useGSAP(
     () => {
@@ -80,7 +110,7 @@ export function AssistantEmptyState({ creation, editableFilesEnabled, onPick }) 
 
       return () => media.revert();
     },
-    { scope: rootRef, dependencies: [creation.id, editableFilesEnabled], revertOnUpdate: true },
+    { scope: rootRef, dependencies: [creation.id, editableFilesEnabled, personal.length], revertOnUpdate: true },
   );
 
   return (
@@ -92,10 +122,15 @@ export function AssistantEmptyState({ creation, editableFilesEnabled, onPick }) 
           <span className="empty-mode-hint">{copy.hint}</span>
         </p>
         <div className="suggestion-grid">
-          {emptyStateSuggestions(creation.id, editableFilesEnabled).map((item) => (
-            <button key={item.text} type="button" onClick={() => onPick(item.text)}>
-              <span>{item.text}</span>
-              <i className="bi bi-arrow-right suggestion-arrow" />
+          {emptyStateSuggestions(creation.id, editableFilesEnabled, personal).map((item) => (
+            <button key={item.id || item.text} type="button" className={item.personal ? "is-personal" : undefined} title={item.personal ? item.reason : undefined} onClick={() => pick(item)}>
+              {item.personal ? (
+                <span className="suggestion-personal">
+                  <span className="suggestion-text">{item.text}</span>
+                  <small><i className={`bi ${item.icon || "bi-stars"}`} aria-hidden="true" />{item.reason}</small>
+                </span>
+              ) : <span>{item.text}</span>}
+              <i className={`bi ${item.conversationId ? "bi-box-arrow-up-right" : "bi-arrow-right"} suggestion-arrow`} />
             </button>
           ))}
         </div>

@@ -344,3 +344,35 @@
   font-size: 12px;
   cursor: pointer;
 }
+
+/* Personal "carry on" cards on the empty state (主动建议). */
+.assistant-workspace .suggestion-grid button.is-personal {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--assistant-accent) 22%, var(--assistant-border));
+}
+.assistant-workspace .suggestion-grid .suggestion-personal {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  -webkit-line-clamp: unset;
+}
+.assistant-workspace .suggestion-grid .suggestion-personal .suggestion-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.assistant-workspace .suggestion-grid .suggestion-personal small {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--assistant-muted);
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assistant-workspace .suggestion-grid .suggestion-personal small i {
+  color: var(--assistant-accent-ink);
+}
