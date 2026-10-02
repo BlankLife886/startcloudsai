@@ -25,9 +25,12 @@ func reportPeriod(schedule string, local time.Time) (usermetrics.RangePreset, ti
 	case ReportDaily:
 		return usermetrics.RangeYesterday, today.AddDate(0, 0, -1), true
 	case ReportWeekly:
-		// Monday starts the week; the report covers the week before.
-		offset := (int(today.Weekday()) + 6) % 7
-		return usermetrics.RangeLastWeek, today.AddDate(0, 0, -offset-7), true
+		// Sent on Mondays only, as the settings promise; it covers the week
+		// before. A Monday missed (worker down all day) waits for the next.
+		if today.Weekday() != time.Monday {
+			return "", time.Time{}, false
+		}
+		return usermetrics.RangeLastWeek, today.AddDate(0, 0, -7), true
 	}
 	return "", time.Time{}, false
 }

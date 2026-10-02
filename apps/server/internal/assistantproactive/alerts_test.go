@@ -189,8 +189,11 @@ func TestReportsAreSentOncePerPeriodAfterNine(t *testing.T) {
 func TestReportPeriods(t *testing.T) {
 	loc := mustLocation()
 	sunday := time.Date(2026, 10, 4, 10, 0, 0, 0, loc)
-	if _, start, _ := reportPeriod(ReportWeekly, sunday); start.Format("2006-01-02") != "2026-09-21" {
-		t.Fatalf("weekly on Sunday = %s", start)
+	if _, _, ok := reportPeriod(ReportWeekly, sunday); ok {
+		t.Fatal("weekly report due on a Sunday")
+	}
+	if _, start, ok := reportPeriod(ReportWeekly, sunday.AddDate(0, 0, 1)); !ok || start.Format("2006-01-02") != "2026-09-28" {
+		t.Fatalf("weekly on Monday = %s %v", start, ok)
 	}
 	if _, start, _ := reportPeriod(ReportDaily, sunday); start.Format("2006-01-02") != "2026-10-03" {
 		t.Fatalf("daily = %s", start)
