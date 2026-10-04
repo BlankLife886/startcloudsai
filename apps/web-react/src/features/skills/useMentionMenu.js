@@ -6,7 +6,17 @@ import { loadSkillLibrary, SKILL_LIBRARY_UPDATED_EVENT } from "./skillLibrary.js
 
 // 触发条件与 findSkillMentions 的边界一致：`@` 前面不能紧贴 ASCII 字母数字
 // （a@b 这类邮箱不触发），紧贴中文可以（"请用@柔光" 要能出菜单）。
-const TRIGGER_RE = /(^|[^A-Za-z0-9_@/])([@/])([^\s@/]*)$/;
+// @ 和 / 只在开头或空格（含换行）之后才弹出菜单：紧跟在文字后面输入时（邮箱、网址、
+// “A/B”这类写法）不触发，避免打字被菜单打断。
+const TRIGGER_RE = /(^|\s)([@/])([^\s@/]*)$/;
+
+// 支持 @ / / 的输入框统一在占位文字里提示一次。
+export const MENTION_HINT = "@ 调用技能 · / 插入提示词";
+
+export function withMentionHint(placeholder) {
+  const text = String(placeholder || "").trim();
+  return text ? `${text}  ·  ${MENTION_HINT}` : MENTION_HINT;
+}
 const PROMPT_DEBOUNCE_MS = 300;
 const BLUR_CLOSE_MS = 120;
 const MENU_HEIGHT = 320;

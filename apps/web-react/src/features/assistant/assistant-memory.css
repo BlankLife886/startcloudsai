@@ -1,25 +1,100 @@
 /* 记忆：改动卡片与管理面板，沿用原助手界面变量与资产库抽屉外框。 */
+/* 记忆改动卡片：图标 + 一句话内容 + 右侧轻量操作 */
+.assistant-workspace .assistant-data.assistant-memory-change {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  width: min(560px, 100%);
+  padding: 12px 14px;
+}
+
+.assistant-memory-change-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--assistant-accent-ink);
+  background: var(--assistant-accent-soft);
+  font-size: 14px;
+}
+
+.assistant-memory-change-icon.is-deleted {
+  color: var(--assistant-muted);
+  background: var(--assistant-panel-hover);
+}
+
+.assistant-memory-change.is-undone .assistant-memory-change-icon {
+  color: var(--assistant-muted);
+  background: var(--assistant-panel-hover);
+}
+
 .assistant-memory-change-body {
   display: grid;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
   color: var(--assistant-text);
   font-size: 13px;
+}
+
+.assistant-memory-change-body > small {
+  color: var(--assistant-muted);
+  font-size: 12px;
 }
 
 .assistant-memory-change-body p,
 .assistant-workspace .assistant-memory-content {
   margin: 0;
   color: var(--assistant-text-soft);
-  line-height: 1.5;
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.assistant-memory-change-body.is-deleted strong,
-.assistant-memory-change-body.is-deleted p {
+.assistant-memory-change-body > p > strong {
+  margin-right: 8px;
+  color: var(--assistant-text);
+  font-weight: 600;
+}
+
+.assistant-memory-change-body.is-deleted p,
+.assistant-memory-change.is-undone .assistant-memory-change-body p {
+  color: var(--assistant-muted);
   text-decoration: line-through;
-  text-decoration-color: var(--assistant-muted);
+  text-decoration-color: color-mix(in srgb, var(--assistant-muted) 60%, transparent);
+}
+
+.assistant-memory-change-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.assistant-workspace .assistant-memory-change-actions button {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--assistant-text-soft);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.assistant-workspace .assistant-memory-change-actions button:hover:not(:disabled) {
+  color: var(--assistant-text);
+  background: var(--assistant-panel-hover);
+}
+
+.assistant-workspace .assistant-memory-change-actions button:disabled { opacity: 0.6; cursor: default; }
+
+@media (max-width: 520px) {
+  .assistant-workspace .assistant-data.assistant-memory-change { grid-template-columns: auto minmax(0, 1fr); }
+  .assistant-memory-change-actions { grid-column: 2; }
 }
 
 .assistant-workspace .assistant-memory-before {

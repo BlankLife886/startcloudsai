@@ -65,7 +65,7 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { MentionMenu } from "../features/skills/MentionMenu.jsx";
-import { useMentionMenu } from "../features/skills/useMentionMenu.js";
+import { useMentionMenu, withMentionHint } from "../features/skills/useMentionMenu.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ProgressiveAuthenticatedImage } from "../components/ProgressiveAuthenticatedImage.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
@@ -2259,7 +2259,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 aria-label="创作描述"
                 value={prompt}
                 maxLength={promptMaxChars}
-                placeholder="描述主体、场景、光线与风格…"
+                placeholder={withMentionHint("描述主体、场景、光线与风格…")}
                 onFocus={() => setOpenLayer("")}
                 onPointerDown={() => setOpenLayer("")}
                 onChange={promptMention.handleChange}

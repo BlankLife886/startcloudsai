@@ -74,12 +74,12 @@ export function CanvasConfigComposer({ value, inputs, onChange, onClose }: Canva
 
     const syncMention = () => {
         const text = textBeforeCaret();
-        const match = /@([^\s@]*)$/.exec(text);
+        const match = /(^|\s)@([^\s@]*)$/.exec(text);
         if (!match || !inputs.length) {
             closeMention();
             return;
         }
-        setMention({ query: match[1] || "" });
+        setMention({ query: match[2] || "" });
         setActiveIndex(0);
     };
 
@@ -130,7 +130,7 @@ export function CanvasConfigComposer({ value, inputs, onChange, onClose }: Canva
                 <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={onClose} />
             </div>
             <div className="relative rounded-xl">
-                {!value.trim() ? <div className="pointer-events-none absolute left-3 top-2 text-sm leading-7" style={{ color: theme.node.placeholder }}>{t("canvas.composer.placeholder")}</div> : null}
+                {!value.trim() ? <div className="pointer-events-none absolute left-3 top-2 text-sm leading-7" style={{ color: theme.node.placeholder }}>{t("canvas.composer.placeholder")}{inputs.length ? <span className="opacity-70">{"  ·  输入 @ 引用上游素材"}</span> : null}</div> : null}
                 <div
                     ref={editorRef}
                     contentEditable
@@ -338,9 +338,9 @@ function removeActiveMention() {
     if (!selection?.rangeCount) return;
     const range = selection.getRangeAt(0);
     const text = textBeforeCaret();
-    const match = /@([^\s@]*)$/.exec(text);
+    const match = /(^|\s)@([^\s@]*)$/.exec(text);
     if (!match) return;
-    range.setStart(range.startContainer, Math.max(0, range.startOffset - (match[1] || "").length - 1));
+    range.setStart(range.startContainer, Math.max(0, range.startOffset - (match[2] || "").length - 1));
     range.deleteContents();
 }
 

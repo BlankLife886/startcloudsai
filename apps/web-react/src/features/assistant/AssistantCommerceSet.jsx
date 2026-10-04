@@ -3,9 +3,11 @@
 // 全部完成后可打包下载，或记住这套风格供下次沿用。
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
+  ASSISTANT_MEMORIES_CHANGED_EVENT,
   assistantCommerceSetArchiveUrl,
   generateAssistantCommerceSet,
   getAssistantCommerceSet,
+  listAssistantMemories,
   redoAssistantCommerceShots,
   rememberAssistantCommerceSet,
   reviewAssistantCommerceSet,
@@ -17,8 +19,52 @@ import './assistant-commerce-set.css'
 export const COMMERCE_SET_CHANGED_EVENT = 'assistant-commerce-set-changed'
 // 卡片用它打开助手的图片编辑器：(item, index, gallery, meta) => void
 export const AssistantImageOpenContext = createContext(null)
+// 同一套图在一段对话里只显示一张完整卡片：放在最新提到它的那条消息里。
+// 值是 Map<套图 id, 消息 id>；没有提供时每条消息照常显示。
+export const CommerceSetOwnersContext = createContext(null)
+
+export function commerceSetOwners(messages) {
+  const owners = new Map()
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const view of Array.isArray(message?.dataViews) ? message.dataViews : []) {
+      if (view?.view === 'commerce_set' && view.data?.id) owners.set(view.data.id, message.id)
+    }
+  }
+  return owners
+}
+
+// 较早消息里的同一套图：一行引用，点一下滚到最新那张卡片。
+export function CommerceSetReference({ set, ownerMessageId }) {
+  const jump = () => {
+    const target = document.querySelector(`[data-message-id="${CSS.escape(ownerMessageId)}"] .assistant-commerce`)
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+  return (
+    <button type="button" className="assistant-commerce-ref" onClick={jump}>
+      <i className="bi bi-images" aria-hidden="true" />
+      <strong>{set?.productName || '电商套图'}</strong>
+      <span>电商套图 · 最新进度在下方</span>
+      <i className="bi bi-arrow-down" aria-hidden="true" />
+    </button>
+  )
+}
 
 const POLL_MS = 4000
+
+// 哪些套图已存为满意方案：以服务端的记忆列表为准。同一时刻多张卡片共用一次请求，
+// 记忆有任何改动（包括在记忆面板里删除）时作废重查。
+let favoriteSetIdsRequest = null
+function loadFavoriteSetIds() {
+  if (!favoriteSetIdsRequest) {
+    favoriteSetIdsRequest = listAssistantMemories()
+      .then((result) => new Set((Array.isArray(result?.items) ? result.items : []).map((item) => item.commerceSetId).filter(Boolean)))
+      .catch(() => null)
+  }
+  return favoriteSetIdsRequest
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener(ASSISTANT_MEMORIES_CHANGED_EVENT, () => { favoriteSetIdsRequest = null })
+}
 const RUNNING = new Set(['queued', 'running', 'waiting_provider'])
 const STATUS_TEXT = {
   planned: '待生成',
@@ -69,7 +115,6 @@ function ShotTile({ shot, index, busy, onOpen, onRedo }) {
         ) : (
           <div className="assistant-commerce-shot-placeholder">
             {RUNNING.has(shot.status) ? <span className="assistant-commerce-spinner" aria-hidden="true" /> : <i className="bi bi-image" aria-hidden="true" />}
-            {shot.headline && <span>「{shot.headline}」</span>}
           </div>
         )}
         {/* 检查通过只用一个小对勾，不挡画面；需要处理的状态才写字 */}
@@ -77,15 +122,10 @@ function ShotTile({ shot, index, busy, onOpen, onRedo }) {
           {badge.tone === 'busy' ? <span className="assistant-commerce-dot" aria-hidden="true" /> : badge.icon && <i className={`bi ${badge.icon}`} aria-hidden="true" />}
           {badge.compact ? <span className="assistant-commerce-sr">{badge.text}</span> : badge.text}
         </span>
-        {(shot.imageUrl || canRedo) && (
+        {canRedo && (
           <div className="assistant-commerce-shot-tools">
-            {shot.imageUrl && (
-              <button type="button" className="is-icon" title="放大、标注、擦除或换尺寸" aria-label="编辑" onClick={() => onOpen(shot)}>
-                <i className="bi bi-pencil" aria-hidden="true" />
-              </button>
-            )}
             {canRedo && (
-              <button type="button" disabled={busy} title={`按原方案重新生成这一张${shot.priceCents ? `，${points(shot.priceCents)}` : ''}`}
+              <button type="button" className="assistant-commerce-redo" disabled={busy} title={`按原方案重新生成这一张${shot.priceCents ? `，${points(shot.priceCents)}` : ''}`}
                 aria-label={`重做${shot.priceCents ? ` · ${points(shot.priceCents)}` : ''}`} onClick={() => onRedo(shot)}>
                 <i className="bi bi-arrow-repeat" aria-hidden="true" />重做
               </button>
@@ -110,6 +150,7 @@ export function AssistantCommerceSet({ initial }) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [remembered, setRemembered] = useState(false)
+  const [savedHint, setSavedHint] = useState(false)
   const reviewingRef = useRef(false)
   const openImage = useContext(AssistantImageOpenContext)
   const id = initial?.id || ''
@@ -135,6 +176,27 @@ export function AssistantCommerceSet({ initial }) {
     window.addEventListener(COMMERCE_SET_CHANGED_EVENT, onChanged)
     return () => window.removeEventListener(COMMERCE_SET_CHANGED_EVENT, onChanged)
   }, [id, refresh])
+
+  useEffect(() => {
+    if (!id) return undefined
+    let alive = true
+    const check = () => {
+      loadFavoriteSetIds().then((ids) => { if (alive && ids) setRemembered(ids.has(id)) })
+    }
+    check()
+    const onChanged = () => { favoriteSetIdsRequest = null; check() }
+    window.addEventListener(ASSISTANT_MEMORIES_CHANGED_EVENT, onChanged)
+    return () => {
+      alive = false
+      window.removeEventListener(ASSISTANT_MEMORIES_CHANGED_EVENT, onChanged)
+    }
+  }, [id])
+
+  useEffect(() => {
+    if (!savedHint) return undefined
+    const timer = window.setTimeout(() => setSavedHint(false), 4000)
+    return () => window.clearTimeout(timer)
+  }, [savedHint])
 
   const generating = set?.status === 'generating'
   const anyRunning = Boolean(set?.shots?.some((shot) => RUNNING.has(shot.status)))
@@ -204,11 +266,8 @@ export function AssistantCommerceSet({ initial }) {
     <section className="assistant-data assistant-commerce" aria-label="电商套图">
       <header className="assistant-commerce-head">
         <div className="assistant-commerce-title">
-          <span className="assistant-commerce-icon" aria-hidden="true"><i className="bi bi-images" /></span>
-          <div>
-            <strong>{set.productName || '电商套图'}</strong>
-            <span>电商套图{set.platform ? ` · ${set.platform}` : ''}{set.language ? ` · ${set.language}` : ''}</span>
-          </div>
+          <strong>{set.productName || '电商套图'}</strong>
+          <span>{['电商套图', set.platform, set.language].filter(Boolean).join(' · ')}</span>
         </div>
         <div className="assistant-commerce-progress">
           <span className={`assistant-commerce-state${set.ready ? ' is-ready' : planned ? '' : ' is-running'}`}>
@@ -224,7 +283,7 @@ export function AssistantCommerceSet({ initial }) {
         </div>
       )}
       {set.summary && (
-        <p className="assistant-commerce-summary"><span>视觉主线</span>{set.summary}</p>
+        <p className="assistant-commerce-summary" title={`视觉主线：${set.summary}`}>{set.summary}</p>
       )}
       <ul className="assistant-commerce-grid">
         {shots.map((shot, index) => (
@@ -251,18 +310,18 @@ export function AssistantCommerceSet({ initial }) {
           )}
           {remembered
             ? (
-              <button type="button" className="assistant-commerce-secondary is-done" onClick={openAssistantMemoryPanel}>
-                <i className="bi bi-check2" aria-hidden="true" />已记住，下次按这个风格做 · 查看
+              <button type="button" className="assistant-commerce-secondary is-done" title="在「记忆与提醒」里查看或删除" onClick={() => openAssistantMemoryPanel()}>
+                <i className="bi bi-bookmark-check" aria-hidden="true" />已存为满意方案 · 查看
               </button>
             )
             : (
               <button type="button" className="assistant-commerce-secondary" disabled={busy}
-                title="以后做套图会沿用这套的平台、比例和视觉主线"
-                onClick={() => act(async () => { await rememberAssistantCommerceSet(id); setRemembered(true) })}>
-                <i className="bi bi-bookmark-star" aria-hidden="true" />下次按这个风格做
+                title="以后让我做电商套图时（包括新对话），会参考这套的视觉主线、风格和成图。可以在「记忆与提醒」里查看或删除。"
+                onClick={() => act(async () => { await rememberAssistantCommerceSet(id); setRemembered(true); setSavedHint(true) })}>
+                <i className="bi bi-bookmark-star" aria-hidden="true" />存为满意方案
               </button>
             )}
-          <span className="assistant-data-note">点图片可以放大、标注、擦除或换尺寸，改好的图会替换套图里的这一张。</span>
+          {savedHint ? <span className="assistant-commerce-saved-hint" role="status">已存为满意方案，以后做电商套图会参考这一套</span> : null}
         </div>
       )}
       {generating && !set.ready && (

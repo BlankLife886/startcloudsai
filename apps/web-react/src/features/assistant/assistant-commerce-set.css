@@ -309,6 +309,23 @@
   cursor: default;
 }
 
+.assistant-workspace .assistant-commerce-link {
+  justify-self: start;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--assistant-accent-ink);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.assistant-workspace .assistant-commerce-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .assistant-commerce-shot-meta {
   display: grid;
   gap: 3px;
@@ -439,4 +456,154 @@
   .assistant-commerce-shot-tools {
     transition: none;
   }
+}
+
+/* ===== 精简版：一行头部、一行视觉主线、小号操作按钮（图片格子保持原样） ===== */
+.assistant-workspace .assistant-commerce {
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+}
+
+.assistant-workspace .assistant-commerce-head {
+  flex-wrap: nowrap;
+  align-items: baseline;
+}
+
+.assistant-workspace .assistant-commerce-title {
+  align-items: baseline;
+  gap: 8px;
+}
+
+.assistant-workspace .assistant-commerce-title strong { font-size: 14px; font-weight: 600; }
+.assistant-workspace .assistant-commerce-title span { flex: none; font-size: 12px; }
+
+.assistant-workspace .assistant-commerce-progress { flex: none; gap: 8px; }
+
+.assistant-workspace .assistant-commerce-state {
+  gap: 5px;
+  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.assistant-workspace .assistant-commerce-summary {
+  display: block;
+  margin-top: -6px;
+  overflow: hidden;
+  color: var(--assistant-muted);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-workspace .assistant-commerce-actions {
+  gap: 8px 10px;
+  padding-top: 2px;
+}
+
+.assistant-workspace .assistant-commerce-primary,
+.assistant-workspace .assistant-commerce-secondary {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+
+/* 重做：毛玻璃小胶囊，悬停时箭头转半圈，按下轻微回弹 */
+.assistant-workspace .assistant-commerce-shot-tools {
+  transition: opacity 200ms ease, transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button.assistant-commerce-redo {
+  gap: 5px;
+  height: 26px;
+  padding: 0 11px 0 9px;
+  border: 1px solid rgb(255 255 255 / 22%);
+  color: #fff;
+  background: rgb(18 14 28 / 46%);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 18%);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  transition: background-color 180ms ease, border-color 180ms ease, transform 160ms ease;
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button.assistant-commerce-redo:hover:not(:disabled) {
+  border-color: rgb(255 255 255 / 34%);
+  background: rgb(18 14 28 / 64%);
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button.assistant-commerce-redo:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.assistant-workspace .assistant-commerce-redo > i {
+  display: inline-block;
+  font-size: 12px;
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.assistant-workspace .assistant-commerce-redo:hover:not(:disabled) > i {
+  transform: rotate(180deg);
+}
+
+.assistant-workspace .assistant-commerce-redo:disabled > i {
+  animation: assistant-commerce-spin 0.9s linear infinite;
+}
+
+@keyframes assistant-commerce-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-workspace .assistant-commerce-redo > i,
+  .assistant-workspace .assistant-commerce-shot-tools { transition: none; }
+  .assistant-workspace .assistant-commerce-redo:disabled > i { animation: none; }
+}
+
+/* 较早消息里的同一套图：一行引用 */
+.assistant-workspace .assistant-commerce-ref {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 10px;
+  color: var(--assistant-muted);
+  background: var(--assistant-card);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.assistant-workspace .assistant-commerce-ref strong {
+  overflow: hidden;
+  color: var(--assistant-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-workspace .assistant-commerce-ref:hover {
+  border-color: var(--assistant-border-strong);
+  color: var(--assistant-text-soft);
+}
+
+.assistant-workspace .assistant-commerce-ref > .bi-arrow-down { transition: transform 0.2s ease; }
+.assistant-workspace .assistant-commerce-ref:hover > .bi-arrow-down { transform: translateY(2px); }
+
+.assistant-workspace .assistant-commerce-saved-hint {
+  color: var(--assistant-success);
+  font-size: 12.5px;
+  animation: assistant-commerce-hint 260ms ease both;
+}
+
+@keyframes assistant-commerce-hint {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: none; }
 }

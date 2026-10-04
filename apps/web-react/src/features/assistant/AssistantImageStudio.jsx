@@ -261,6 +261,23 @@ export function AssistantImageStudio({
   }, [currentKey, resetEditing]);
 
   const currentSrc = item ? imageSource(item) : "";
+
+  // 对比原图：对话里的改图结果带着 editSource；在这里改出来的版本，原图就是它的来源图。
+  const compareSource = useMemo(() => {
+    if (!item) return null;
+    if (item.editSource && imageSource(item.editSource)) return item.editSource;
+    const version = versionEntries.find((entry) => entry.image && imageKey(entry.image) === currentKey);
+    if (!version?.source) return null;
+    return gallery.find((entry) => imageKey(entry) === version.source)
+      || versionEntries.find((entry) => entry.image && imageKey(entry.image) === version.source)?.image
+      || null;
+  }, [currentKey, gallery, item, versionEntries]);
+  const [comparing, setComparing] = useState(false);
+  const [comparePosition, setComparePosition] = useState(50);
+  useEffect(() => {
+    setComparing(false);
+    setComparePosition(50);
+  }, [currentKey]);
   useEffect(() => {
     if (!currentSrc) return undefined;
     let cancelled = false;
@@ -707,6 +724,7 @@ export function AssistantImageStudio({
         else if (activePin) setActivePin("");
         else if (tool === "markup" && (markup.selectedId || markup.menu)) { markup.setSelectedId(""); markup.setMenu(""); }
         else if (confirmLeave) setConfirmLeave(null);
+        else if (comparing) setComparing(false);
         else if (tool) leave("exit");
         else onClose?.();
         return;
@@ -723,7 +741,7 @@ export function AssistantImageStudio({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activePin, applyZoom, confirmLeave, go, item, leave, markup, moreOpen, onClose, resizeMenu, tool, zoomBy, zoomOpen]);
+  }, [activePin, applyZoom, comparing, confirmLeave, go, item, leave, markup, moreOpen, onClose, resizeMenu, tool, zoomBy, zoomOpen]);
 
   if (!item || !imageSource(item)) return null;
   const title = String(meta.title || meta.prompt || item.revisedPrompt || item.name || "图片").trim();
@@ -748,6 +766,12 @@ export function AssistantImageStudio({
           {strip.length > 1 && stripIndex >= 0 && <span className="ais-count">{`${stripIndex + 1}/${strip.length}`}</span>}
         </div>
         <div className="ais-top-right">
+          {compareSource && !tool ? (
+            <button type="button" className={`ais-compare-toggle${comparing ? " is-active" : ""}`} aria-pressed={comparing}
+              title={comparing ? "退出对比 (Esc)" : "和改之前的原图对比"} onClick={() => setComparing((value) => !value)}>
+              <i className={`bi ${comparing ? "bi-x-lg" : "bi-layout-split"}`} aria-hidden="true" />{comparing ? "退出对比" : "对比原图"}
+            </button>
+          ) : null}
           <div className="ais-menu-wrap" ref={zoomMenu.wrapRef}>
             <button type="button" className={`ais-zoom${zoomOpen ? " is-open" : ""}`} aria-haspopup="menu" aria-expanded={zoomOpen} aria-label={`缩放：${zoom === "fit" ? "适应窗口" : zoomLabel}`}
               onClick={(event) => { zoomMenu.toggle(event); setMoreOpen(false); }}>
@@ -925,6 +949,17 @@ export function AssistantImageStudio({
             alt={title}
             draggable={false}
           />
+          {comparing && compareSource && ready && !tool ? (
+            <div className="ais-compare" style={{ "--compare-position": `${comparePosition}%` }}
+              onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+              <img className="ais-compare-before" src={imageSource(compareSource)} alt="原图" draggable={false} />
+              <span className="ais-compare-line" aria-hidden="true"><i className="bi bi-arrow-left-right" /></span>
+              <span className="ais-compare-tag is-before">原图</span>
+              <span className="ais-compare-tag is-after">改后</span>
+              <input type="range" min="0" max="100" step="0.5" value={comparePosition} aria-label="拖动对比原图和改后"
+                onChange={(event) => setComparePosition(Number(event.target.value))} />
+            </div>
+          ) : null}
           <div className="ais-overlay" style={{ width: imageBox.width, height: imageBox.height }}>
           {tool === "markup" && ready && natural.width > 0 && (
             <MarkupLayer markup={markup} width={natural.width} height={natural.height} scale={imageBox.width / natural.width} />

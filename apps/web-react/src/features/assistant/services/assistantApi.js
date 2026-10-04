@@ -383,31 +383,40 @@ export function undoAssistantAssetAction(undo) {
 }
 
 // 记忆：助手记住的品牌、商品、偏好与满意方案；回复里的记忆卡片用同一组接口撤销。
+// 任何增删改成功后都广播 ASSISTANT_MEMORIES_CHANGED_EVENT，界面上依赖记忆的地方（如套图卡片的
+// “已收藏风格”）据此重新核对，不靠各自记的本地状态。
+export const ASSISTANT_MEMORIES_CHANGED_EVENT = 'assistant:memories-changed'
+
+function announceMemoriesChanged(result) {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(ASSISTANT_MEMORIES_CHANGED_EVENT))
+  return result
+}
+
 export function listAssistantMemories({ signal } = {}) {
   return apiGet('/assistant/memories', { signal })
 }
 
 export function createAssistantMemory(memory) {
-  return apiPost('/assistant/memories', memory)
+  return apiPost('/assistant/memories', memory).then(announceMemoriesChanged)
 }
 
 export function rememberAssistantCommerceSet(commerceSetId) {
-  return apiPost('/assistant/memories', { commerceSetId })
+  return apiPost('/assistant/memories', { commerceSetId }).then(announceMemoriesChanged)
 }
 
 export function updateAssistantMemory(id, patch) {
-  return apiPatch(`/assistant/memories/${encodeURIComponent(id)}`, patch)
+  return apiPatch(`/assistant/memories/${encodeURIComponent(id)}`, patch).then(announceMemoriesChanged)
 }
 
 export function deleteAssistantMemory(id) {
-  return apiDelete(`/assistant/memories/${encodeURIComponent(id)}`)
+  return apiDelete(`/assistant/memories/${encodeURIComponent(id)}`).then(announceMemoriesChanged)
 }
 
 export function setAssistantMemoryEnabled(enabled) {
   return apiPut('/assistant/memories/settings', { enabled })
 }
 
-// 撤销一次记忆改动：新建的删掉，修改的改回去，删除的重新记上。
+// 撤销一次记忆改动：新建的删掉，修改的改回去，删除的重新记上（收藏的套图风格按原套图重新收藏）。
 export function undoAssistantMemoryChange(change) {
   const previous = change?.previous
   if (change?.action === 'created' && change.memory?.id) return deleteAssistantMemory(change.memory.id)
@@ -415,6 +424,7 @@ export function undoAssistantMemoryChange(change) {
     return updateAssistantMemory(previous.id, { kind: previous.kind, title: previous.title, content: previous.content, imageKeys: previous.imageKeys || [] })
   }
   if (change?.action === 'deleted' && previous) {
+    if (previous.commerceSetId) return rememberAssistantCommerceSet(previous.commerceSetId)
     return createAssistantMemory({ kind: previous.kind, title: previous.title, content: previous.content, imageKeys: previous.imageKeys || [] })
   }
   return Promise.reject(new Error('这次改动无法撤销'))

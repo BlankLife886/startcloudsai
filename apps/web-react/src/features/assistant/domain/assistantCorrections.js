@@ -2,9 +2,9 @@
 // 一条“本该怎么做”的标签。文字和模式与服务端 assistantreview.CorrectionFor 一致；
 // mode 为空时沿用被纠正那一轮的模式。
 export const ASSISTANT_CORRECTIONS = {
-  just_asking: { label: "我只是问问", icon: "bi-chat-dots", prompt: "我只是问问，不用出图。", mode: "chat" },
-  draw_it: { label: "帮我画出来", icon: "bi-image", prompt: "帮我画出来。", mode: "agent" },
-  search_web: { label: "联网查一下", icon: "bi-globe2", prompt: "联网查一下最新信息。", mode: "" },
+  just_asking: { label: "我只是问问", icon: "bi-chat", prompt: "我只是问问，不用出图。", mode: "chat" },
+  draw_it: { label: "帮我画出来", icon: "bi-brush", prompt: "帮我画出来。", mode: "agent" },
+  search_web: { label: "联网查一下", icon: "bi-search", prompt: "联网查一下最新信息。", mode: "" },
 };
 
 // 最新那条回复下面给哪些纠正：出图方案给“我只是问问”，文字回答给“帮我画出来”

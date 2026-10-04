@@ -72,6 +72,11 @@ export const router = createBrowserRouter([
     path: "/__migration",
     element: <MigrationPreview />,
   },
+  ...(import.meta.env.DEV ? [{
+    path: "/__assistant-gallery",
+    HydrateFallback: RouteHydrationFallback,
+    lazy: lazyView(() => import("./views/AssistantMessageGalleryView.jsx"), "AssistantMessageGalleryView"),
+  }] : []),
   {
     path: "/privacy",
     lazy: lazyView(() => import("./views/LegalPages.jsx"), "PrivacyPolicyPage"),

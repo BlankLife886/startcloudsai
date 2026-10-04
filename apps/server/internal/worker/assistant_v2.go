@@ -193,6 +193,7 @@ func (w *Worker) assistantAgentPlatformFor(
 		}
 		instructions.WriteString(assistantproactive.HabitNote(w.assistantV2Habits(ctx, run, recall)))
 	}
+	instructions.WriteString(assistantNextPromptInstruction)
 	if commerce.enabled {
 		instructions.WriteString(assistantv2.CommercePrompt)
 		if commerce.open != nil {

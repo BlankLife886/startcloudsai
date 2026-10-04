@@ -140,7 +140,7 @@ test.describe('React assistant workspace contract', () => {
     await expect(emptyState.locator('.suggestion-grid')).not.toContainText('画一张星空下的雪山桌面壁纸')
 
     await page.locator('.agent-mode-button').click()
-    await page.getByRole('button', { name: '图片生成' }).click()
+    await page.locator('.creation-type-menu').getByRole('button', { name: '图片生成' }).click()
     await expect(emptyState.getByRole('heading', { level: 1 })).toHaveText('今天想画什么？')
     await expect(emptyState.locator('.empty-mode-chip')).toContainText('图片生成')
     await expect(emptyState.locator('.suggestion-grid')).toContainText('画一张星空下的雪山桌面壁纸')
@@ -222,7 +222,7 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await page.locator('.agent-mode-button').click()
-    await page.getByRole('button', { name: 'Agent 模式' }).click()
+    await page.locator('.creation-type-menu').getByRole('button', { name: 'Agent 模式' }).click()
     await page.getByLabel('消息输入').fill('生成两张主视觉')
     await page.getByRole('button', { name: '发送' }).click()
     const dialog = page.getByRole('dialog', { name: '确认本轮费用' })
@@ -263,7 +263,7 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await page.locator('.agent-mode-button').click()
-    await page.getByRole('button', { name: '图片生成' }).click()
+    await page.locator('.creation-type-menu').getByRole('button', { name: '图片生成' }).click()
     await page.getByRole('button', { name: /Image Basic/ }).click()
     await page.locator('.image-model-menu').getByRole('button', { name: /Image Pro/ }).click()
     await page.locator('.image-settings-button').click()
@@ -320,7 +320,7 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await page.locator('.agent-mode-button').click()
-    await page.getByRole('button', { name: '图片生成' }).click()
+    await page.locator('.creation-type-menu').getByRole('button', { name: '图片生成' }).click()
     await page.getByRole('button', { name: /Image Basic/ }).click()
     await page.locator('.image-model-menu').getByRole('button', { name: /Schema Only/ }).click()
     await page.locator('.image-settings-button').click()
@@ -361,13 +361,14 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await page.locator('.agent-mode-button').click()
-    await page.getByRole('button', { name: '图片生成' }).click()
+    await page.locator('.creation-type-menu').getByRole('button', { name: '图片生成' }).click()
     await page.locator('.image-settings-button').click()
 
     const panel = page.locator('.image-mode-preferences')
     await expect(panel).toBeVisible()
     await expect(panel.locator('.ratio-options button')).toHaveCount(5)
-    await expect(panel.locator('.image-count-options button')).toHaveCount(16)
+    // 上限 16 张时按倍数给出选项（1/2/4/8/16），而不是从 1 排到 16。
+    await expect(panel.locator('.image-count-options button')).toHaveText(['1', '2', '4', '8', '16'])
     await expect(panel.locator('.image-quality-options button')).toHaveCount(3)
 
     const layout = await panel.evaluate((element) => {
@@ -398,11 +399,12 @@ test.describe('React assistant workspace contract', () => {
     })
 
     expect(layout.ratioWidth).toBeGreaterThan(48)
+    // 5 个张数选项排在同一行。
     expect(layout).toMatchObject({
       resolutionColumns: 1,
-      countColumns: 8,
+      countColumns: 5,
       qualityColumns: 3,
-      countRows: [8, 8],
+      countRows: [5],
     })
     expect(layout.panelTop).toBeGreaterThanOrEqual(0)
     expect(layout.panelBottom).toBeLessThanOrEqual(layout.viewportHeight)
@@ -425,7 +427,7 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await page.locator('.agent-mode-button').click()
-    await page.getByRole('button', { name: '图片生成' }).click()
+    await page.locator('.creation-type-menu').getByRole('button', { name: '图片生成' }).click()
     await page.locator('.image-settings-button').click()
     await page.locator('.image-count-options').getByRole('button', { name: '4', exact: true }).click()
     await page.getByLabel('消息输入').fill('你好')
@@ -851,6 +853,8 @@ test.describe('React assistant workspace contract', () => {
 
   test('stops an active run and settles the pending message', async ({ page }) => {
     let patchBody = null
+    let stopped = false
+    let assistantMessageId = ''
     await mockAssistant(page)
     await page.route('**/api/v1/assistant/conversations', (route) =>
       fulfillJson(route, { id: 'running-conversation', title: '新对话', messages: [] }, 201),
@@ -860,20 +864,31 @@ test.describe('React assistant workspace contract', () => {
       const url = new URL(route.request().url())
       if (method === 'POST') {
         const body = route.request().postDataJSON()
+        assistantMessageId = body.clientAssistantMessageId
         await fulfillJson(route, {
-          run: { id: 'run-active', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, status: 'running', stage: 'thinking', mode: 'agent' },
+          run: { id: 'run-active', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, status: 'running', stage: 'thinking', mode: 'agent', cancelPolicy: { allowed: true, mode: 'abandon_execution', upstreamSubmitted: true, message: '本轮推理已经开始。停止后将不再接收结果，本轮已使用的积分不会退回。' } },
           assistantMessage: message(body.clientAssistantMessageId, 'assistant', '', { status: 'running', pending: true }),
         }, 201)
         return
       }
       if (method === 'PATCH') {
         patchBody = route.request().postDataJSON()
+        stopped = true
         await fulfillJson(route, { run: { id: 'run-active', status: 'canceled' }, canceled: true })
         return
       }
       if (url.pathname.endsWith('/run-active')) {
+        // 和真实服务端一致：停止之后再查询，任务就是已取消。
+        if (stopped) {
+          await fulfillJson(route, {
+            run: { id: 'run-active', conversationId: 'running-conversation', assistantMessageId, status: 'canceled', stage: 'canceled', mode: 'agent' },
+            assistantMessage: { status: 'canceled', pending: false, content: '' },
+          })
+          return
+        }
         await fulfillJson(route, {
-          run: { id: 'run-active', conversationId: 'running-conversation', status: 'running', stage: 'thinking', mode: 'agent' },
+          // 真实接口每次都带 assistantMessageId，停止时靠它找到要收尾的消息。
+          run: { id: 'run-active', conversationId: 'running-conversation', assistantMessageId, status: 'running', stage: 'thinking', mode: 'agent', cancelPolicy: { allowed: true, mode: 'abandon_execution', upstreamSubmitted: true, message: '本轮推理已经开始。停止后将不再接收结果，本轮已使用的积分不会退回。' } },
           assistantMessage: { status: 'running', pending: true, content: '' },
         })
         return
@@ -885,11 +900,13 @@ test.describe('React assistant workspace contract', () => {
     await page.getByLabel('消息输入').fill('执行一个长任务')
     await page.getByRole('button', { name: '发送' }).click()
     await page.getByRole('button', { name: '停止生成' }).click()
-    await expect(page.getByRole('dialog', { name: '停止本次生成？' })).toContainText('主动停止后，本轮已预留的积分不会退还')
-    await page.getByRole('button', { name: '确认停止' }).click()
+    // 弹窗里的费用说明来自服务端的 cancelPolicy，按任务当前阶段给出。
+    await expect(page.getByRole('dialog', { name: '停止本次生成？' })).toContainText('本轮已使用的积分不会退回')
+    // 推理已提交上游：停止的意思是放弃结果，按钮写清楚。
+    await page.getByRole('button', { name: '放弃结果并停止' }).click()
 
     await expect(page.locator('.message--assistant')).toContainText('你已主动停止生成')
-    expect(patchBody).toEqual({ status: 'canceled' })
+    expect(patchBody).toEqual({ status: 'canceled', acknowledgeUpstream: true })
   })
 
   test('restores a running task after refresh', async ({ page }) => {
@@ -1336,6 +1353,72 @@ test.describe('React assistant workspace contract', () => {
     await expect(page.locator('.assistant-reasoning-body')).toHaveText('先确认目标，再给出可执行的结论。')
   })
 
+  test('offers the reply\'s next step in the empty composer and Tab accepts it', async ({ page }) => {
+    const conversations = [{
+      id: 'next-step-conversation',
+      title: '下一步建议',
+      messages: [
+        message('next-user', 'user', '帮我想几个台灯海报方向'),
+        message('next-assistant', 'assistant', '可以，有三个方向：1. 暖光卧室 2. 极简白底 3. 节日氛围。', { nextPrompt: '帮我按第 1 个方向出图' }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const input = page.getByLabel('消息输入')
+    await expect(input).toHaveAttribute('placeholder', '帮我按第 1 个方向出图')
+    await expect(page.locator('.composer-next-hint')).toBeVisible()
+    await input.focus()
+    await page.keyboard.press('Tab')
+    await expect(input).toHaveValue('帮我按第 1 个方向出图')
+    await expect(page.locator('.composer-next-hint')).toHaveCount(0)
+    await input.fill('')
+    await input.pressSequentially('我自己写')
+    await expect(page.locator('.composer-next-hint')).toHaveCount(0)
+  })
+
+  test('compares an edited image with its original in the full-screen viewer', async ({ page }) => {
+    const original = { id: 'edit-ref', name: '原图', dataUrl: '/sucai/home-intro-03.png', fileKey: 'uploads/edit-ref.png' }
+    const conversations = [{
+      id: 'edit-compare-conversation',
+      title: '改图对比',
+      messages: [
+        message('edit-user', 'user', '把背景换成大理石台面', { referenceImages: [original] }),
+        message('edit-result', 'assistant', '', { kind: 'image', images: [{ id: 'edited', dataUrl: '/sucai/home-intro-02.png', width: 1024, height: 1024 }] }),
+        message('plain-user', 'user', '再画一只猫'),
+        message('plain-result', 'assistant', '', { kind: 'image', images: [{ id: 'cat', dataUrl: '/sucai/home-intro-02.png', width: 1024, height: 1024 }] }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    const viewer = page.getByRole('dialog', { name: '图片查看与编辑' })
+
+    // 普通生成的图没有原图可比。
+    await page.locator('[data-message-id="plain-result"] .generated-image-preview').click()
+    await expect(viewer).toBeVisible()
+    await expect(viewer.getByRole('button', { name: '对比原图' })).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await expect(viewer).toHaveCount(0)
+
+    // 对话里不显示对比，打开大图后才有。
+    const edited = page.locator('[data-message-id="edit-result"]')
+    await edited.scrollIntoViewIfNeeded()
+    await expect(edited.getByRole('button', { name: '对比原图' })).toHaveCount(0)
+    await edited.locator('.generated-image-preview').click()
+    await viewer.getByRole('button', { name: '对比原图' }).click()
+    const slider = viewer.getByRole('slider', { name: '拖动对比原图和改后' })
+    await expect(slider).toBeVisible()
+    await expect(viewer.locator('.ais-compare-before')).toHaveAttribute('src', '/sucai/home-intro-03.png')
+    await slider.fill('25')
+    await expect(viewer.locator('.ais-compare')).toHaveAttribute('style', /--compare-position: 25%/)
+    // Esc 先退出对比，再按一次才关闭查看器。
+    await page.keyboard.press('Escape')
+    await expect(viewer.locator('.ais-compare')).toHaveCount(0)
+    await expect(viewer).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(viewer).toHaveCount(0)
+  })
+
   test('renders fenced code as a dark editor card with copy', async ({ page }) => {
     const conversations = [{
       id: 'code-conversation',
@@ -1564,6 +1647,55 @@ test.describe('React assistant workspace contract', () => {
     })
   })
 
+  test('labels each independent image with its own reference numbering', async ({ page }) => {
+    const image = (id, name) => ({ id, fileKey: `tasks/set/${name}.png`, dataUrl: `/api/v1/files/tasks/set/${name}.png`, width: 1086, height: 1448 })
+    const selling = image('selling', '2')
+    const scene = image('scene', '3')
+    const proposal = {
+      action: 'edit', prompt: '分别将图1和图2改为9:16竖版', model: 'image-pro', ratio: '9:16', resolution: '1K', count: 2, quality: 'medium',
+      referenceImages: [selling, scene], referencedImageIds: ['selling', 'scene'], referenceMode: 'shared',
+      items: [
+        { id: 'item-1', title: '产品卖点展示·9:16', prompt: '将图1改为9:16竖版产品核心卖点A+详情图。', ratio: '9:16', resolution: '1K', quality: 'medium', referencedImageIds: ['selling'], referenceImages: [selling] },
+        { id: 'item-2', title: '场景与细节·9:16', prompt: '将图1改为9:16竖版使用场景与细节A+详情图。', ratio: '9:16', resolution: '1K', quality: 'medium', referencedImageIds: ['scene'], referenceImages: [scene] },
+      ],
+    }
+    let runBody = null
+    await mockAssistant(page, {
+      conversations: [{
+        id: 'set-edit-conversation',
+        title: '套图改比例',
+        messages: [
+          message('set-user', 'user', '把第二和第三张改为9:16的'),
+          message('set-proposal', 'assistant', '我会只重做第 2 张和第 3 张', { kind: 'proposal', proposal }),
+        ],
+      }],
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      runBody = route.request().postDataJSON()
+      return fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    // 第二张只带场景图，它的提示词写的“图1”就是场景图；卡片顶部场景图是图2，就显示成图2。
+    const prompts = page.locator('.agent-proposal-plan-prompt')
+    await expect(prompts.nth(0)).toContainText('将图1改为9:16竖版产品核心卖点')
+    await expect(prompts.nth(1)).toContainText('将图2改为9:16竖版使用场景')
+    await expect(prompts.nth(1).locator('em')).toHaveText('图2')
+    await page.locator('.agent-proposal').screenshot({ path: test.info().outputPath('set-edit-proposal.png') })
+
+    // 用户按卡片上的编号编辑；保存后换回这张图自己的编号，出图模型拿到的还是“图1”。
+    await prompts.nth(1).click()
+    const dialog = page.locator('.agent-proposal-prompt-dialog textarea')
+    await expect(dialog).toHaveValue('将图2改为9:16竖版使用场景与细节A+详情图。')
+    await dialog.fill('把图2改成9:16竖版，背景换成浅灰')
+    await page.locator('.agent-proposal-prompt-dialog').getByRole('button', { name: '完成' }).click()
+    await expect(prompts.nth(1)).toContainText('把图2改成9:16竖版，背景换成浅灰')
+    await page.getByRole('button', { name: '开始生成' }).click()
+    await expect.poll(() => runBody?.imagePlanItems?.length).toBe(2)
+    expect(runBody.imagePlanItems[0].prompt).toBe('将图1改为9:16竖版产品核心卖点A+详情图。')
+    expect(runBody.imagePlanItems[1].prompt).toBe('把图1改成9:16竖版，背景换成浅灰')
+  })
+
   test('edits each image ratio and resolution directly in an independent proposal', async ({ page }) => {
     let runBody = null
     const proposal = {
@@ -1685,20 +1817,29 @@ test.describe('React assistant workspace contract', () => {
 
     await expect(page.locator('.message--assistant')).toHaveCount(12)
     await expect(page.locator('.topbar-context-clear .assistant-context-meter')).toContainText('42%')
-    await page.locator('.assistant-messages').evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')) })
+    // 页面打开时会自动滚到底部（下一帧执行），先等它滚完再往上滚，否则会被拉回底部。
+    const scroller = page.locator('.assistant-messages')
+    await expect.poll(() => scroller.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight <= 24)).toBe(true)
+    await page.waitForTimeout(100)
+    await scroller.evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')) })
     await expect(page.getByRole('button', { name: '回到底部' })).toBeVisible()
     await page.getByRole('button', { name: '回到底部' }).click()
     await expect(page.getByRole('button', { name: '回到底部' })).toHaveCount(0)
     await expect(page.locator('.conversation-minimap')).toBeVisible()
 
+    // 收起后，悬停左侧窄栏里的对话会弹出预览。
     await page.getByRole('button', { name: '收起侧栏' }).click()
-    await page.locator('[data-conversation-id="long-conversation"] .conversation-select').hover()
+    await expect(page.getByRole('button', { name: '展开侧栏' })).toBeVisible()
+    await page.locator('.assistant-sidebar-rail').getByRole('button', { name: '长对话' }).hover()
     await expect(page.locator('.assistant-conversation-peek')).toContainText('长对话')
 
-    await page.getByRole('button', { name: '资产库' }).click()
+    await page.locator('.assistant-sidebar-rail').getByRole('button', { name: '资产库' }).click()
     await page.locator('.asset-image-grid button').first().click()
     await expect(page.locator('.reference-card')).toHaveCount(1)
     await page.getByRole('button', { name: '关闭资产库' }).click()
+    // 关闭按钮正好在顶栏头像上方：抽屉收起后鼠标落在头像上会展开账号菜单，先把鼠标移开。
+    await page.mouse.move(640, 420)
+    await expect(page.locator('.asset-library-layer')).toHaveCount(0)
     await page.getByRole('button', { name: '清除上文并保留可见历史' }).click()
     await expect(page.getByText('已从这里开始新的上下文')).toBeVisible()
     await expect(page.locator('.topbar-context-clear .assistant-context-meter')).toContainText('--')
@@ -1990,9 +2131,9 @@ test.describe('React assistant workspace contract', () => {
     await page.locator('.message-reasoning-toggle').click()
     await expect(page.locator('.assistant-reasoning-body')).toContainText('先拆开问题，再组织成可直接阅读的回答。')
     await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
-    await page.locator('.message--assistant .message-status-toggle').click()
-    await expect(page.locator('.message--assistant .message-context-stats')).toContainText('18 条近期消息')
-    await expect(page.locator('.message--assistant .message-context-stats')).toContainText('12 条已压缩')
+    await page.locator('.message--assistant').getByRole('button', { name: '参考了 18 条消息' }).click()
+    await expect(page.locator('.message--assistant .message-context-stats')).toContainText('这次回答参考了最近 18 条消息')
+    await expect(page.locator('.message--assistant .message-context-stats')).toContainText('更早的 12 条已自动概括')
   })
 
   test('does not let a late running poll overwrite a terminal SSE answer', async ({ page }) => {
@@ -2116,7 +2257,8 @@ test.describe('React assistant workspace contract', () => {
     await expect(page.getByLabel('消息输入')).toHaveValue('恢复的图片草稿')
     await expect(page.getByRole('button', { name: /图片生成/ })).toBeVisible()
     await expect(page.getByRole('button', { name: /Image Pro/ })).toBeVisible()
-    await expect(page.locator('.image-settings-button')).toContainText('16:9 | 2K | 3')
+    // 摘要：比例 | 分辨率 | 画质（中文）| 张数
+    await expect(page.locator('.image-settings-button')).toHaveText('16:9 | 2K | 低画质 | 3张')
 
     await page.getByLabel('消息输入').fill('新的持久化草稿')
     await expect.poll(async () => page.evaluate(() => JSON.parse(localStorage.getItem('starclouds-assistant-workspace:user:assistant-user') || '{}').draft)).toBe('新的持久化草稿')
@@ -2145,13 +2287,14 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await page.locator('.agent-mode-button').click()
-    await page.getByRole('button', { name: 'Agent 模式' }).click()
+    await page.locator('.creation-type-menu').getByRole('button', { name: 'Agent 模式' }).click()
     await page.getByLabel('消息输入').fill('把这张图的背景改成白色，生成3张')
     await page.getByRole('button', { name: '发送' }).click()
     await expect(page.locator('.message--assistant').last()).toContainText('已完成你的创作请求。')
     expect(runBody.count).toBe(3)
     expect(runBody.mode).toBe('agent')
     expect(runBody.referenceImages).toEqual([{
+      id: 'recent-image',
       name: '最近生成图',
       dataUrl: '/sucai/home-intro-03.png',
       fileKey: 'tasks/recent-image.png',

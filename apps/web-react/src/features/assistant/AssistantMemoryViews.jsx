@@ -52,24 +52,24 @@ export function AssistantMemoryChangeView({ data }) {
     }
   }
   const before = data.action === 'updated' && data.previous?.content !== memory.content ? data.previous?.content : ''
+  const deleted = data.action === 'deleted'
+  const undone = state === 'undone'
   return (
-    <section className="assistant-data assistant-memory-change" aria-label="记忆">
-      <header className="assistant-data-head">
-        <span><i className="bi bi-bookmark-heart" aria-hidden="true" /> {CHANGE_TITLES[data.action] || '记忆'} · {memory.kindLabel || KIND_LABELS[memory.kind]}</span>
-      </header>
-      <div className={`assistant-memory-change-body${data.action === 'deleted' ? ' is-deleted' : ''}`}>
-        <strong>{memory.title}</strong>
-        {memory.content && <p>{memory.content}</p>}
+    <section className={`assistant-data assistant-memory-change${undone ? ' is-undone' : ''}`} aria-label="记忆">
+      <span className={`assistant-memory-change-icon${deleted ? ' is-deleted' : ''}`} aria-hidden="true">
+        <i className={`bi ${undone ? 'bi-arrow-counterclockwise' : deleted ? 'bi-bookmark-x' : 'bi-bookmark-check'}`} />
+      </span>
+      <div className={`assistant-memory-change-body${deleted ? ' is-deleted' : ''}`}>
+        <small>{undone ? '已撤销' : (CHANGE_TITLES[data.action] || '记忆')} · {memory.kindLabel || KIND_LABELS[memory.kind]}</small>
+        <p><strong>{memory.title}</strong>{memory.content ? <span>{memory.content}</span> : null}</p>
         {before && <p className="assistant-memory-before">原来：{before}</p>}
         <MemoryThumbs urls={memory.imageUrls} />
+        {error && <p className="assistant-commerce-error" role="alert">{error}</p>}
       </div>
-      <div className="assistant-commerce-actions">
-        {state === 'undone'
-          ? <span className="assistant-data-note">已撤销。</span>
-          : <button type="button" className="assistant-commerce-link" disabled={state === 'working'} onClick={() => void undo()}>{state === 'working' ? '撤销中…' : '撤销'}</button>}
-        <button type="button" className="assistant-commerce-link" onClick={openAssistantMemoryPanel}>管理记忆</button>
+      <div className="assistant-memory-change-actions">
+        {undone ? null : <button type="button" disabled={state === 'working'} onClick={() => void undo()}>{state === 'working' ? '撤销中…' : '撤销'}</button>}
+        <button type="button" onClick={() => openAssistantMemoryPanel()}>管理记忆</button>
       </div>
-      {error && <p className="assistant-commerce-error" role="alert">{error}</p>}
     </section>
   )
 }

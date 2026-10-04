@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AuthenticatedImage } from "../../../components/AuthenticatedImage.jsx";
 import { RegenerateIcon } from "../../../components/common/RegenerateIcon.jsx";
 import { MentionMenu } from "../../skills/MentionMenu.jsx";
-import { useMentionMenu } from "../../skills/useMentionMenu.js";
+import { useMentionMenu, withMentionHint } from "../../skills/useMentionMenu.js";
 import { CommerceSelect } from "../CommerceSelect.jsx";
 import { HandheldGeneratingStage, HandheldRefCard } from "../HandheldStudio.jsx";
 import "../HandheldStudio.css";
@@ -902,10 +902,10 @@ export function CommerceWorkbench({
                       maxLength={note.max || 2000}
                       rows={2}
                       disabled={running}
-                      placeholder={
+                      placeholder={withMentionHint(
                         note.placeholder ||
-                        "描述色调、构图、氛围、文案位置等细节，例如：暖色木质桌面，右上角留白放标题"
-                      }
+                        "描述色调、构图、氛围、文案位置等细节，例如：暖色木质桌面，右上角留白放标题",
+                      )}
                       aria-label={note.label || "细节补充"}
                       onChange={noteMention.handleChange}
                       onClick={noteMention.handleCaretSync}
@@ -1059,7 +1059,7 @@ export function CommerceWorkbench({
                         onKeyUp={briefMention.handleCaretSync}
                         onBlur={briefMention.handleBlur}
                         onKeyDown={briefMention.handleKeyDown}
-                        placeholder="例如：商品再放大 15%，背景改为浅灰影棚，其他内容保持不变"
+                        placeholder={withMentionHint("例如：商品再放大 15%，背景改为浅灰影棚，其他内容保持不变")}
                       />
                       <MentionMenu {...briefMention.menuProps} />
                     </div>

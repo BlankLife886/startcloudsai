@@ -1553,6 +1553,9 @@ type assistantCatalogImage struct {
 	Label       string
 	Description string
 	Image       map[string]any
+	// Group 是这张图所在的那条消息，Position 是它在那一组里的序号（从 1 开始）。
+	Group    string
+	Position int
 }
 
 const (
@@ -1677,8 +1680,8 @@ func assistantProposalFunctionTool(models []map[string]any) sub2api.FunctionTool
 		"action":                map[string]any{"type": "string", "enum": []string{"generate", "edit"}},
 		"prompt":                map[string]any{"type": "string", "description": "可直接交给图片模型的完整中文提示词；参考图使用图1、图2指代"},
 		"promptMode":            map[string]any{"type": "string", "enum": []string{assistantPromptModeFaithful, assistantPromptModeEnhanced}, "description": "faithful=忠实执行用户原话；enhanced=补充视觉细节"},
-		"faithfulPrompt":        map[string]any{"type": "string", "description": "保持用户目标和原始约束，不增加未要求主体或风格的执行提示词"},
-		"enhancedPrompt":        map[string]any{"type": "string", "description": "不改变核心目标，补充构图、光线、材质和镜头的优化提示词"},
+		"faithfulPrompt":        map[string]any{"type": "string", "description": "保持用户目标和原始约束，不增加未要求主体或风格的执行提示词；参考图用图1、图2指代"},
+		"enhancedPrompt":        map[string]any{"type": "string", "description": "不改变核心目标，补充构图、光线、材质和镜头的优化提示词；参考图用图1、图2指代"},
 		"reason":                map[string]any{"type": "string", "description": "一句话说明方案依据"},
 		"planningSummary":       map[string]any{"type": "string", "description": "面向用户的一句简短方案摘要"},
 		"count":                 map[string]any{"type": "integer", "minimum": 1, "maximum": assistantProposalCatalogMaxImages(models)},
@@ -1817,7 +1820,8 @@ const assistantAgentImageInstruction = `	- 只有用户说出了要做的东西�
 	- 有参考图、编辑已有图片，或用户强调原样、一模一样、提示词不要改时，promptMode=faithful，faithfulPrompt 必须保留用户目标和原始约束，禁止擅自增加风格、主体或构图。只有需求是模糊创意方向时才使用 enhanced。
 	- 用户明确需要一套不同用途的图片（例如主图、场景图、细节图）时，items 为每张图填写独立 title、prompt 和 referencedImageIds，count 必须等于 items 数量。只是同一提示词生成多个随机变体时 items 返回空数组。
 - 如果当前上游不支持工具调用，无法调用 propose_image_action，则只输出一个与该工具参数完全同结构的 JSON 对象，不要 Markdown、代码块或额外文字。
-	- 编辑图片时 referencedImageIds 必须来自图片目录；提示词用“图1、图2”指代参考图，不臆造参考图内容。
+	- 编辑图片时 referencedImageIds 必须来自图片目录；prompt、faithfulPrompt、enhancedPrompt 和 items 里的提示词都按 referencedImageIds 的顺序用“图1、图2”指代参考图。出图模型只看得到这几张图，不要写“第三张、上一张”这类对话里的叫法，也不臆造参考图内容。
+	- 用户说“第二张、第三张”时，指最近一组出图结果里的第几张（看目录里的“这组共N张中的第k张”），不是目录的全局序号图N；用户点名标题（如卖点图、场景图）时按标题找。
 	- “不满意、再来一版、再更新一版、继续优化”等承接上一结果的短反馈，表示继续编辑最近生成的图片；必须引用图片目录里最近的结果并填写 referencedImageIds，禁止返回没有参考图的 edit 方案。
 	- 编辑图片时必须判断参考图映射：用户要求分别、逐张、各自或一一对应处理时 referenceMode=individual，且 count 等于参考图数量；多张参考图需要共同融合、共同指导每张输出时 referenceMode=shared。
 	- 生成全新图片或没有参考图时 referenceMode=shared。
@@ -2056,7 +2060,7 @@ func (w *Worker) executeAssistantAgent(
 	debugFirstToken := false
 	onUpdate := func(fullText, reasoning string) error {
 		fileRequirementsPending := assistantAgentFileRequirementsPending(fileIDs, wantsArtifact, successfulFileTools, artifacts)
-		visibleText := assistantAgentVisibleText(fullText, expectProposal, fileRequirementsPending)
+		visibleText, _ := splitAssistantNextPrompt(assistantAgentVisibleText(fullText, expectProposal, fileRequirementsPending))
 		markAssistantFirstToken(&firstVisible, visibleText)
 		markAssistantFirstToken(&firstVisible, reasoning)
 		if time.Since(lastTerminationCheck) >= 400*time.Millisecond {
@@ -2441,6 +2445,9 @@ func (w *Worker) executeAssistantAgent(
 	if result.ToolCall != nil && result.ToolCall.Name != proposalTool.Name {
 		return fmt.Errorf("工具 %s 已完成，但模型没有生成最终回答，请重试", result.ToolCall.Name)
 	}
+	// 回答末尾的 <next>…</next> 是给输入框的下一步建议，不属于正文。
+	var nextPrompt string
+	result.Text, nextPrompt = splitAssistantNextPrompt(result.Text)
 	if terminated, err := w.assistantRunTerminated(ctx, run.ID); err != nil || terminated {
 		if err != nil {
 			return err
@@ -2582,6 +2589,9 @@ func (w *Worker) executeAssistantAgent(
 	}
 	if strings.TrimSpace(result.Reasoning) != "" {
 		metadata["reasoning"] = result.Reasoning
+	}
+	if nextPrompt != "" {
+		metadata["nextPrompt"] = nextPrompt
 	}
 	platform.attach(metadata, dataViews)
 	w.recordAssistantGoalContract(ctx, run.ID, assistantChatGoalContract(run, len(searches), len(artifacts)))
@@ -2737,7 +2747,7 @@ reason 用一句话说明方案如何响应用户需求；planningSummary 用一
 model 必须从模型目录选择；referencedImageIds 只填写图片目录中的 id，没有历史引用时返回空数组。`
 	system += `生成全新图片时 referencedImageIds 默认返回空数组；只有用户明确提到上一张、图1/图2、之前图片的主体/风格，或明确要求修改历史图片时才可引用图片目录。`
 	if catalogText := renderAssistantImageCatalog(imageCatalog); catalogText != "" {
-		system += "\n\n当前对话图片目录（序号从旧到新，可用于理解‘上一张/第二张/图1’）：\n" + catalogText
+		system += "\n\n当前对话图片目录（序号从旧到新；“上一张”指最新的一张，“第二张”指最近一组结果里的第二张，看“这组共N张中的第k张”）：\n" + catalogText
 	}
 	if modelText := renderAssistantModelCatalog(modelCatalog); modelText != "" {
 		system += "\n\n可用图片模型目录：\n" + modelText
@@ -2945,13 +2955,24 @@ func normalizeAssistantProposalWithModels(proposal assistantImageProposal, run *
 	// 原样交给出图模型就丢了上下文；模型按上下文改写后的忠实提示词优先。只有用户明确
 	// 要求提示词原样不改时才逐字使用用户原话。
 	modelFaithfulPrompt := strings.TrimSpace(proposal.FaithfulPrompt)
+	exactWording := assistantFaithfulPromptCue.MatchString(strings.ToLower(run.Prompt))
 	proposal.FaithfulPrompt = strings.TrimSpace(run.Prompt)
-	if modelFaithfulPrompt != "" && !assistantFaithfulPromptCue.MatchString(strings.ToLower(run.Prompt)) {
+	if modelFaithfulPrompt != "" && !exactWording {
 		proposal.FaithfulPrompt = modelFaithfulPrompt
 	}
 	proposal.EnhancedPrompt = strings.TrimSpace(proposal.EnhancedPrompt)
 	if proposal.EnhancedPrompt == "" {
 		proposal.EnhancedPrompt = modelPrompt
+	}
+	// 出图模型只看得到这次带上的参考图，按顺序叫图1、图2；“第三张”“上一张”是对话里的叫法，
+	// 它对不上号。有参考图时，选中的提示词没用图N指代、而模型的 prompt 用了，就换成 prompt。
+	if len(proposal.ReferencedImageIDs) > 0 && assistantReferenceIndexCue.MatchString(modelPrompt) {
+		if !exactWording && !assistantReferenceIndexCue.MatchString(proposal.FaithfulPrompt) {
+			proposal.FaithfulPrompt = modelPrompt
+		}
+		if !assistantReferenceIndexCue.MatchString(proposal.EnhancedPrompt) {
+			proposal.EnhancedPrompt = modelPrompt
+		}
 	}
 	if proposal.EnhancedPrompt == "" {
 		proposal.EnhancedPrompt = proposal.FaithfulPrompt
@@ -3098,6 +3119,8 @@ func uniqueAssistantStrings(values []string, limit int) []string {
 	return out
 }
 
+var assistantReferenceIndexCue = regexp.MustCompile(`图\s*\d+`)
+
 var assistantFaithfulPromptCue = regexp.MustCompile(`原样|不要改|别改|不要优化|无需优化|一模一样|完全一致|保持不变|照着做|提示词.{0,8}(一样|不变)|exact prompt|verbatim|do not (change|rewrite)`)
 
 func assistantDefaultPromptMode(run *store.AssistantRun, action string) string {
@@ -3193,7 +3216,8 @@ func buildAssistantImageCatalog(history []*store.AssistantMessage, excluded ...u
 			fields = append(fields, "images")
 		}
 		for _, field := range fields {
-			for index, image := range assistantMetadataImages(message.Metadata, field) {
+			images := assistantMetadataImages(message.Metadata, field)
+			for index, image := range images {
 				key := assistantMapString(image, "id")
 				if key == "" {
 					key = assistantMapString(image, "fileKey")
@@ -3215,6 +3239,24 @@ func buildAssistantImageCatalog(history []*store.AssistantMessage, excluded ...u
 					copyImage["id"] = id
 				}
 				description := assistantMapString(copyImage, "revisedPrompt")
+				// 一次出的一组图，每张有自己的标题和提示词；目录写明“这组第几张、是哪张”，
+				// 用户说“第二张”时模型才对得上，而不是去数目录里的全局序号。
+				position := ""
+				if field == "images" && len(images) > 1 {
+					slot := assistantMapInt(copyImage, "index")
+					if _, ok := copyImage["index"]; !ok {
+						slot = index
+					}
+					position = fmt.Sprintf("这组共%d张中的第%d张", len(images), index+1)
+					if plan := assistantMetadataImages(message.Metadata, "imagePlanItems"); slot >= 0 && slot < len(plan) {
+						if title := assistantMapString(plan[slot], "title"); title != "" {
+							position += "「" + title + "」"
+						}
+						if description == "" {
+							description = assistantMapString(plan[slot], "prompt")
+						}
+					}
+				}
 				if description == "" {
 					description = assistantMapString(message.Metadata, "prompt")
 				}
@@ -3224,7 +3266,14 @@ func buildAssistantImageCatalog(history []*store.AssistantMessage, excluded ...u
 				if description == "" {
 					description = strings.TrimSpace(message.Content)
 				}
-				out = append(out, assistantCatalogImage{ID: id, Label: fmt.Sprintf("图%d", len(out)+1), Description: truncateAssistantRunes(description, 120), Image: copyImage})
+				description = truncateAssistantRunes(description, 120)
+				if position != "" {
+					description = position + "：" + description
+				}
+				out = append(out, assistantCatalogImage{
+					ID: id, Label: fmt.Sprintf("图%d", len(out)+1), Description: description, Image: copyImage,
+					Group: message.ID.String() + "/" + field, Position: index + 1,
+				})
 			}
 		}
 	}
@@ -3420,25 +3469,60 @@ func resolveAssistantProposalReferences(ids []string, catalog []assistantCatalog
 		out = append(out, catalog[len(catalog)-1].Image)
 	}
 	if len(out) == 0 && len(catalog) > 0 {
-		if match := regexp.MustCompile(`(?:第|图\s*)([1-9])张?`).FindStringSubmatch(prompt); len(match) == 2 {
-			index := int(match[1][0] - '1')
-			if index >= 0 && index < len(catalog) {
-				out = append(out, catalog[index].Image)
-			}
-		}
-		if match := regexp.MustCompile(`第?([一二三四五六七八九])张|图([一二三四五六七八九])`).FindStringSubmatch(prompt); len(match) == 3 {
-			value := match[1]
-			if value == "" {
-				value = match[2]
-			}
-			index := map[string]int{"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "七": 6, "八": 7, "九": 8}[value]
-			if index >= 0 && index < len(catalog) {
-				out = append(out, catalog[index].Image)
-			}
-		}
+		out = assistantCatalogImagesByOrdinal(catalog, prompt)
 	}
 	if len(out) == 0 && len(catalog) > 0 && assistantPromptAllowsHistoricalReferences(prompt, "edit") {
 		out = append(out, catalog[len(catalog)-1].Image)
+	}
+	return out
+}
+
+var (
+	assistantCatalogIndexPattern  = regexp.MustCompile(`图\s*([1-9])`)
+	assistantGroupOrdinalPattern  = regexp.MustCompile(`第\s*([1-9一二三四五六七八九])|[、和与及跟,，]\s*([1-9一二三四五六七八九])\s*张`)
+	assistantChineseOrdinalDigits = map[string]int{"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+)
+
+func assistantOrdinalValue(value string) int {
+	if number, ok := assistantChineseOrdinalDigits[value]; ok {
+		return number
+	}
+	if len(value) == 1 && value[0] >= '1' && value[0] <= '9' {
+		return int(value[0] - '0')
+	}
+	return 0
+}
+
+// assistantCatalogImagesByOrdinal 按用户原话里的序号找图：“图2”是目录的全局序号；“第二张”
+// 指最近一组结果里的第二张（那一组不够张数时才退回全局序号）。“第二和第三张”两张都取。
+func assistantCatalogImagesByOrdinal(catalog []assistantCatalogImage, prompt string) []map[string]any {
+	out := make([]map[string]any, 0, 2)
+	seen := map[int]bool{}
+	add := func(index int) {
+		if index >= 0 && index < len(catalog) && !seen[index] {
+			seen[index] = true
+			out = append(out, catalog[index].Image)
+		}
+	}
+	for _, match := range assistantCatalogIndexPattern.FindAllStringSubmatch(prompt, -1) {
+		add(assistantOrdinalValue(match[1]) - 1)
+	}
+	latest := catalog[len(catalog)-1].Group
+	for _, match := range assistantGroupOrdinalPattern.FindAllStringSubmatch(prompt, -1) {
+		position := assistantOrdinalValue(match[1] + match[2])
+		if position == 0 {
+			continue
+		}
+		found := -1
+		for index, item := range catalog {
+			if latest != "" && item.Group == latest && item.Position == position {
+				found = index
+			}
+		}
+		if found < 0 {
+			found = position - 1
+		}
+		add(found)
 	}
 	return out
 }

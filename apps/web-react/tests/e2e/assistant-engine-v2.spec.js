@@ -237,7 +237,7 @@ test.describe('original assistant UI on the v2 engine', () => {
 
     const card = page.locator('.message--assistant').getByRole('region', { name: '电商套图' })
     await expect(card).toContainText('2 张 · 预计 20 积分')
-    await expect(card).toContainText('「一杯暖一天」')
+    await expect(card).toContainText('一杯暖一天')
     await expect(card).toContainText('需要你在方案卡片上确认')
     await card.getByRole('button', { name: '确认生成（20 积分）' }).click()
     expect(generateBody).toEqual({ expectedTotalCents: 20 })
@@ -249,7 +249,7 @@ test.describe('original assistant UI on the v2 engine', () => {
     await expect(card).toContainText('待修正')
     await expect(card.getByRole('button', { name: '重做 · 10 积分' })).toHaveCount(2)
     await expect(card.getByRole('link', { name: '在电商工作台继续调整' })).toHaveCount(0)
-    await expect(card.getByRole('button', { name: '下次按这个风格做' })).toBeVisible()
+    await expect(card.getByRole('button', { name: '存为满意方案' })).toBeVisible()
 
     // Clicking a shot opens the image editor; a described edit runs as an
     // image edit of that shot and the result replaces it in the set.

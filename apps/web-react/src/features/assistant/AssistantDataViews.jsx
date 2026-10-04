@@ -1,9 +1,9 @@
 // 统计与明细结果卡片：v2 引擎的数据工具返回结构化结果，这里按原界面风格渲染。
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { AssistantAssetActionView, AssistantAssetsView } from './AssistantAssetViews.jsx'
 import { AssistantMemoryChangeView } from './AssistantMemoryViews.jsx'
-import { AssistantCommerceSet } from './AssistantCommerceSet.jsx'
+import { AssistantCommerceSet, CommerceSetOwnersContext, CommerceSetReference } from './AssistantCommerceSet.jsx'
 import './assistant-data-views.css'
 
 const TIME_DIMENSIONS = new Set(['day', 'week', 'month'])
@@ -61,27 +61,10 @@ function niceMax(value) {
   return 10 * exponent
 }
 
-function StatTiles({ metrics, totals, previousTotals }) {
-  return (
-    <div className="assistant-data-tiles">
-      {metrics.map((metric) => {
-        const delta = previousTotals ? formatDelta(totals[metric.id], previousTotals[metric.id], metric.unit) : null
-        return (
-          <div className="assistant-data-tile" key={metric.id}>
-            <span className="assistant-data-tile-label">{metric.label}</span>
-            <strong className="assistant-data-tile-value">{formatMetricValue(totals[metric.id], metric.unit)}</strong>
-            {delta && <span className="assistant-data-tile-delta"><span aria-hidden="true">{delta.arrow}</span> {delta.text}</span>}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function TrendChart({ metric, rows, dimension }) {
+function TrendChart({ metric, rows, dimension, caption = true }) {
   const [ref, width] = useMeasuredWidth()
   const [hover, setHover] = useState(-1)
-  const height = 168
+  const height = 120
   const pad = { top: 12, right: 12, bottom: 26, left: 44 }
   const points = rows.map((row) => ({ label: row.labels[dimension], value: Number(row.values[metric.id]) || 0 }))
   const max = niceMax(Math.max(0, ...points.map((point) => point.value)))
@@ -103,7 +86,7 @@ function TrendChart({ metric, rows, dimension }) {
   const active = hover >= 0 ? points[hover] : null
   return (
     <figure className="assistant-data-chart" ref={ref}>
-      <figcaption>{metric.label}</figcaption>
+      {caption ? <figcaption>{metric.label}</figcaption> : null}
       <svg width={width} height={height} role="img" aria-label={`${metric.label}趋势`}
         onMouseMove={onMove} onMouseLeave={() => setHover(-1)}>
         {ticks.map((tick) => (
@@ -137,38 +120,41 @@ function TrendChart({ metric, rows, dimension }) {
   )
 }
 
-function BarChart({ metric, rows, dimension }) {
-  const [ref, width] = useMeasuredWidth()
-  const [hover, setHover] = useState(-1)
-  const items = rows.slice(0, MAX_BARS).map((row) => ({ label: row.labels[dimension], value: Number(row.values[metric.id]) || 0 }))
-  const labelWidth = Math.min(132, Math.max(64, Math.floor(width * 0.28)))
-  const valueWidth = 88
-  const band = 30
-  const thickness = 16
-  const height = items.length * band + 8
-  const plot = Math.max(40, width - labelWidth - valueWidth - 16)
+const SHARE_MAX_ITEMS = 6
+
+// 分类占比：一条分段条 + 图例，项目少时最省地方；项目多时换成细的排行条。
+function CategoryChart({ metric, rows, dimension }) {
+  const items = rows.slice(0, MAX_BARS).map((row) => ({ label: row.labels[dimension], value: Math.max(0, Number(row.values[metric.id]) || 0) }))
+  const total = items.reduce((sum, item) => sum + item.value, 0)
   const max = Math.max(...items.map((item) => item.value), 0) || 1
+  const share = (value) => (total > 0 ? value / total : 0)
+  const percent = (value) => `${(share(value) * 100).toFixed(share(value) < 0.1 ? 1 : 0)}%`
+  if (!ORDERED_DIMENSIONS.has(dimension) && items.length <= SHARE_MAX_ITEMS && metric.unit !== '%' && total > 0) {
+    return (
+      <figure className="assistant-stats-share" role="img" aria-label={`${metric.label}对比`}>
+        <div className="assistant-stats-share-bar" aria-hidden="true">
+          {items.map((item, index) => item.value > 0 ? <i key={item.label} className={`is-c${index}`} style={{ flexGrow: item.value }} /> : null)}
+        </div>
+        <ul className="assistant-stats-legend">
+          {items.map((item, index) => (
+            <li key={item.label}><i className={`is-c${index}`} aria-hidden="true" /><span>{item.label}</span><b>{formatMetricValue(item.value, metric.unit)}</b><small>{percent(item.value)}</small></li>
+          ))}
+        </ul>
+      </figure>
+    )
+  }
   return (
-    <figure className="assistant-data-chart" ref={ref}>
-      <figcaption>{metric.label}{rows.length > MAX_BARS ? `（前 ${MAX_BARS} 项）` : ''}</figcaption>
-      <svg width={width} height={height} role="img" aria-label={`${metric.label}对比`}>
-        {items.map((item, index) => {
-          const top = index * band + (band - thickness) / 2
-          const length = Math.max(item.value > 0 ? 2 : 0, (item.value / max) * plot)
-          const x0 = labelWidth + 8
-          const radius = Math.min(4, length / 2)
-          // Square at the baseline, 4px rounded at the data end.
-          const path = length <= 0 ? '' : `M${x0},${top} H${x0 + length - radius} Q${x0 + length},${top} ${x0 + length},${top + radius} V${top + thickness - radius} Q${x0 + length},${top + thickness} ${x0 + length - radius},${top + thickness} H${x0} Z`
-          return (
-            <g key={item.label} onMouseEnter={() => setHover(index)} onMouseLeave={() => setHover(-1)} className={hover === index ? 'is-hover' : ''}>
-              <rect className="assistant-data-hit" x="0" y={index * band} width={width} height={band} />
-              <text className="assistant-data-bar-label" x={labelWidth} y={top + thickness - 3} textAnchor="end">{item.label}</text>
-              <path className="assistant-data-bar" d={path} />
-              <text className="assistant-data-bar-value" x={x0 + length + 6} y={top + thickness - 3}>{formatMetricValue(item.value, metric.unit)}</text>
-            </g>
-          )
-        })}
-      </svg>
+    <figure className="assistant-stats-rank" role="img" aria-label={`${metric.label}对比`}>
+      {rows.length > MAX_BARS ? <figcaption>前 {MAX_BARS} 项</figcaption> : null}
+      <ol>
+        {items.map((item) => (
+          <li key={item.label}>
+            <span>{item.label}</span>
+            <span className="assistant-stats-rank-track" aria-hidden="true"><i style={{ width: `${Math.max(item.value > 0 ? 2 : 0, (item.value / max) * 100)}%` }} /></span>
+            <b>{formatMetricValue(item.value, metric.unit)}</b>
+          </li>
+        ))}
+      </ol>
     </figure>
   )
 }
@@ -209,6 +195,11 @@ function StatsTable({ metrics, dimensions, rows, totals, showPrevious }) {
   )
 }
 
+function shortDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''))
+  return match ? `${Number(match[2])}月${Number(match[3])}日` : String(value || '')
+}
+
 function StatsView({ data }) {
   const [showTable, setShowTable] = useState(false)
   const metrics = Array.isArray(data?.metrics) ? data.metrics : []
@@ -218,37 +209,47 @@ function StatsView({ data }) {
   const previousTotals = data?.previousTotals || null
   const dimension = dimensions[0]?.id || ''
   const chart = useMemo(() => {
-    if (dimensions.length !== 1 || !rows.length) return null
+    if (dimensions.length !== 1 || !rows.length || !metrics.length) return null
     if (TIME_DIMENSIONS.has(dimension)) {
-      return metrics.slice(0, 3).map((metric) => <TrendChart key={metric.id} metric={metric} rows={rows} dimension={dimension} />)
+      return metrics.slice(0, 2).map((metric) => <TrendChart key={metric.id} metric={metric} rows={rows} dimension={dimension} caption={metrics.length > 1} />)
     }
-    // Ordered categories (weekday, hour) keep their order; others are ranked.
-    const ordered = ORDERED_DIMENSIONS.has(dimension) ? rows : rows
-    return metrics.slice(0, 2).map((metric) => <BarChart key={metric.id} metric={metric} rows={ordered} dimension={dimension} />)
+    return <CategoryChart metric={metrics[0]} rows={rows} dimension={dimension} />
   }, [dimension, dimensions.length, metrics, rows])
   if (!metrics.length) return null
   const range = data?.range
+  const previous = data?.previousRange
+  const rangeText = [
+    range?.label,
+    range?.from ? `${shortDate(range.from)}–${shortDate(range.to)}` : '',
+    previous?.from ? `对比 ${shortDate(previous.from)}–${shortDate(previous.to)}` : '',
+  ].filter(Boolean).join(' · ')
   return (
-    <section className="assistant-data" aria-label="统计结果">
-      <header className="assistant-data-head">
-        <span>{range?.label}{range?.from ? ` · ${range.from} 至 ${range.to}` : ''}</span>
-        {data?.previousRange && <span className="assistant-data-sub">对比 {data.previousRange.from} 至 {data.previousRange.to}</span>}
+    <section className="assistant-data is-stats" aria-label="统计结果">
+      <header className="assistant-stats-head">
+        <div className="assistant-stats-metrics">
+          {metrics.map((metric) => {
+            const delta = previousTotals ? formatDelta(totals[metric.id], previousTotals[metric.id], metric.unit) : null
+            return (
+              <div className="assistant-stats-metric" key={metric.id}>
+                <span>{metric.label}</span>
+                <strong>{formatMetricValue(totals[metric.id], metric.unit)}</strong>
+                {delta ? <em className={delta.arrow === '↑' ? 'is-up' : delta.arrow === '↓' ? 'is-down' : ''}><span aria-hidden="true">{delta.arrow}</span> {delta.text}</em> : null}
+              </div>
+            )
+          })}
+        </div>
+        {dimensions.length === 1 && rows.length > 0 ? (
+          <button type="button" className="assistant-data-toggle" aria-expanded={showTable} onClick={() => setShowTable((value) => !value)}>
+            <i className={`bi ${showTable ? 'bi-bar-chart' : 'bi-table'}`} aria-hidden="true" />{showTable ? '收起表格' : '查看表格'}
+          </button>
+        ) : null}
       </header>
-      <StatTiles metrics={metrics} totals={totals} previousTotals={previousTotals} />
+      {rangeText ? <p className="assistant-stats-range">{rangeText}</p> : null}
       {chart}
-      {dimensions.length > 1 && !showTable && <p className="assistant-data-note">分组较多，已用表格展示。</p>}
-      {dimensions.length > 0 && (
-        <>
-          {(showTable || dimensions.length > 1) && (
-            <StatsTable metrics={metrics} dimensions={dimensions} rows={rows} totals={totals} showPrevious={false} />
-          )}
-          {dimensions.length === 1 && (
-            <button type="button" className="assistant-data-toggle" onClick={() => setShowTable((value) => !value)}>
-              {showTable ? '收起表格' : '查看表格'}
-            </button>
-          )}
-        </>
-      )}
+      {dimensions.length > 1 && <p className="assistant-data-note">分组较多，已用表格展示。</p>}
+      {(showTable || dimensions.length > 1) && dimensions.length > 0 ? (
+        <StatsTable metrics={metrics} dimensions={dimensions} rows={rows} totals={totals} showPrevious={false} />
+      ) : null}
       {data?.truncated && <p className="assistant-data-note">结果较多，只展示了前 500 组。</p>}
     </section>
   )
@@ -256,44 +257,57 @@ function StatsView({ data }) {
 
 const RECORD_TITLES = { creations: '创作记录', income: '入账明细', spend: '消耗明细', api_calls: 'API 调用记录' }
 
+// “2026-10-02 09:00” → “10月2日 09:00”；今年以外的日期保留年份。
+function shortDateTime(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}:\d{2}))?/.exec(String(value || ''))
+  if (!match) return String(value || '')
+  const year = Number(match[1]) !== new Date().getFullYear() ? `${match[1]}年` : ''
+  return `${year}${Number(match[2])}月${Number(match[3])}日${match[4] ? ` ${match[4]}` : ''}`
+}
+
+function statusTone(record) {
+  const status = String(record.status || '').toLowerCase()
+  if (/fail|error|cancel/.test(status) || /失败|取消/.test(record.statusLabel || '')) return 'is-bad'
+  if (/run|pend|queue/.test(status) || /中$/.test(record.statusLabel || '')) return 'is-wait'
+  return 'is-ok'
+}
+
+function signedPoints(value, sign) {
+  const number = Math.abs(Number(value) || 0)
+  return `${sign}${formatMetricValue(number)}`
+}
+
 function RecordsView({ data }) {
   const records = Array.isArray(data?.records) ? data.records : []
   const type = data?.type
   if (!records.length) {
-    return <section className="assistant-data"><p className="assistant-data-note">这段时间没有相关记录。</p></section>
+    return <section className="assistant-data is-compact"><p className="assistant-data-note">这段时间没有相关记录。</p></section>
   }
   const byStatus = type === 'creations' || type === 'api_calls'
+  const title = [RECORD_TITLES[type] || '消耗明细', data?.range?.label].filter(Boolean).join(' · ')
   return (
-    <section className="assistant-data" aria-label="明细记录">
-      <header className="assistant-data-head">
-        <span>{RECORD_TITLES[type] || '消耗明细'} · {data?.range?.label}</span>
-      </header>
-      <div className="assistant-data-table-wrap">
-        <table className="assistant-data-table">
-          <thead>
-            <tr>
-              <th scope="col">时间</th>
-              <th scope="col">{type === 'api_calls' ? '模型' : '功能'}</th>
-              {byStatus ? <th scope="col">状态</th> : <th scope="col">来源</th>}
-              <th scope="col" className="is-number">{type === 'creations' ? '图片' : '积分'}</th>
-              <th scope="col">内容</th>
-            </tr>
-          </thead>
-          <tbody>
-            {records.map((record) => (
-              <tr key={record.id}>
-                <td className="is-nowrap">{record.time}</td>
-                <td>{type === 'api_calls' ? (record.model || '未记录模型') : record.workspaceLabel}</td>
-                <td>{byStatus ? record.statusLabel : record.sourceLabel}</td>
-                <td className="is-number">{type === 'creations' ? (record.images || 0) : formatMetricValue(record.points)}</td>
-                <td className="assistant-data-record-text">
-                  {record.link ? <Link to={record.link}>{record.prompt || record.note || '查看'}</Link> : (record.prompt || record.note || '—')}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <section className="assistant-data is-compact" aria-label="明细记录">
+      <header className="assistant-data-head"><span>{title}</span><small className="assistant-data-sub">{records.length} 条</small></header>
+      <ul className="assistant-data-list">
+        {records.map((record) => {
+          const label = type === 'api_calls' ? (record.model || '未记录模型') : record.workspaceLabel
+          const text = record.prompt || record.note || ''
+          const tone = byStatus ? statusTone(record) : type === 'income' ? 'is-ok' : ''
+          const value = type === 'creations'
+            ? (tone === 'is-ok' ? `${record.images || 0} 张` : record.statusLabel)
+            : type === 'income' ? `${signedPoints(record.points, '+')} 积分` : type === 'spend' ? `${signedPoints(record.points, '−')} 积分` : `${formatMetricValue(record.points)} 积分`
+          return (
+            <li key={record.id} className={tone}>
+              {byStatus ? <i className="assistant-data-dot" aria-hidden="true" /> : null}
+              <div>
+                <strong>{text ? (record.link ? <Link to={record.link}>{text}</Link> : text) : label}</strong>
+                <small>{[text ? label : '', byStatus ? '' : record.sourceLabel, shortDateTime(record.time)].filter(Boolean).join(' · ')}</small>
+              </div>
+              <b className={tone === 'is-bad' ? 'is-bad' : ''}>{value}</b>
+            </li>
+          )
+        })}
+      </ul>
       {data?.hasMore && <p className="assistant-data-note">还有更多记录，可以让我按条件继续筛选。</p>}
     </section>
   )
@@ -305,46 +319,26 @@ function AccountView({ data }) {
   const orders = data?.orders || {}
   const waiting = (Number(orders.pending) || 0) + (Number(orders.confirming) || 0)
   return (
-    <section className="assistant-data" aria-label="账户概况">
-      <header className="assistant-data-head"><span>积分与订阅</span></header>
-      <div className="assistant-data-tiles">
-        <div className="assistant-data-tile">
-          <span className="assistant-data-tile-label">可用积分</span>
-          <strong className="assistant-data-tile-value">{formatMetricValue(balance.availablePoints)}</strong>
-          {Number(balance.subscriptionPoints) > 0 && (
-            <span className="assistant-data-tile-delta">其中订阅积分 {formatMetricValue(balance.subscriptionPoints)}</span>
-          )}
-        </div>
-        <div className="assistant-data-tile">
-          <span className="assistant-data-tile-label">冻结中</span>
-          <strong className="assistant-data-tile-value">{formatMetricValue(balance.frozenPoints)}</strong>
-        </div>
+    <section className="assistant-data is-compact" aria-label="账户概况">
+      <div className="assistant-data-hero">
+        <span>可用积分</span>
+        <strong>{formatMetricValue(balance.availablePoints)}</strong>
+        {Number(balance.frozenPoints) > 0 ? <em>冻结中 {formatMetricValue(balance.frozenPoints)}</em> : null}
+        {Number(balance.subscriptionPoints) > 0 ? <small>其中订阅积分 {formatMetricValue(balance.subscriptionPoints)}</small> : null}
       </div>
       {subscriptions.length > 0 ? (
-        <div className="assistant-data-table-wrap">
-          <table className="assistant-data-table">
-            <thead>
-              <tr>
-                <th scope="col">套餐</th>
-                <th scope="col">状态</th>
-                <th scope="col">到期时间</th>
-                <th scope="col" className="is-number">每日发放</th>
-                <th scope="col">下次发放</th>
-              </tr>
-            </thead>
-            <tbody>
-              {subscriptions.map((item, index) => (
-                <tr key={`${item.planName}-${index}`}>
-                  <td>{item.planName || '订阅套餐'}</td>
-                  <td>{item.statusLabel}{item.daysLeft ? `（剩 ${item.daysLeft} 天）` : ''}</td>
-                  <td className="is-nowrap">{item.endsAt}</td>
-                  <td className="is-number">{formatMetricValue(item.dailyPoints)}</td>
-                  <td className="is-nowrap">{item.nextGrantAt || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ul className="assistant-data-list">
+          {subscriptions.map((item, index) => (
+            <li key={`${item.planName}-${index}`} className={item.status === 'active' ? 'is-ok' : 'is-wait'}>
+              <i className="assistant-data-dot" aria-hidden="true" />
+              <div>
+                <strong>{item.planName || '订阅套餐'}</strong>
+                <small>{[item.endsAt ? `${shortDateTime(item.endsAt).replace(/ \d{2}:\d{2}$/, '')}到期` : '', item.dailyPoints ? `每日发放 ${formatMetricValue(item.dailyPoints)}` : '', item.nextGrantAt ? `下次 ${shortDateTime(item.nextGrantAt)}` : ''].filter(Boolean).join(' · ')}</small>
+              </div>
+              <b>{item.statusLabel}{item.daysLeft ? ` · 剩 ${item.daysLeft} 天` : ''}</b>
+            </li>
+          ))}
+        </ul>
       ) : (
         <p className="assistant-data-note">最近 90 天没有订阅。<Link to="/pricing">查看套餐</Link></p>
       )}
@@ -356,82 +350,70 @@ function AccountView({ data }) {
 function OrdersView({ data }) {
   const orders = Array.isArray(data?.orders) ? data.orders : []
   if (!orders.length) {
-    return <section className="assistant-data"><p className="assistant-data-note">没有符合条件的订单。</p></section>
+    return <section className="assistant-data is-compact"><p className="assistant-data-note">没有符合条件的订单。</p></section>
   }
   return (
-    <section className="assistant-data" aria-label="订单">
+    <section className="assistant-data is-compact" aria-label="订单">
       <header className="assistant-data-head"><span>订单</span><Link className="assistant-data-sub" to="/orders">全部订单</Link></header>
-      <div className="assistant-data-table-wrap">
-        <table className="assistant-data-table">
-          <thead>
-            <tr>
-              <th scope="col">下单时间</th>
-              <th scope="col">套餐</th>
-              <th scope="col" className="is-number">金额</th>
-              <th scope="col" className="is-number">积分</th>
-              <th scope="col">状态</th>
-            </tr>
-          </thead>
-          <tbody>
-            {orders.map((order) => (
-              <tr key={order.orderNo}>
-                <td className="is-nowrap">{order.createdAt}</td>
-                <td>{order.planName || order.planKind || '—'}</td>
-                <td className="is-number">¥{formatMetricValue(order.amountYuan)}</td>
-                <td className="is-number">{formatMetricValue((Number(order.points) || 0) + (Number(order.bonusPoints) || 0))}</td>
-                <td>{order.statusLabel}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <ul className="assistant-data-list">
+        {orders.map((order) => {
+          const statusText = String(order.statusLabel || '')
+          const shortStatus = statusText.split(/[，,]/)[0]
+          const tone = /失败|关闭|取消|退款/.test(statusText) ? 'is-bad' : /待|中/.test(shortStatus) ? 'is-wait' : 'is-ok'
+          const points = (Number(order.points) || 0) + (Number(order.bonusPoints) || 0)
+          return (
+            <li key={order.orderNo} className={tone}>
+              <i className="assistant-data-dot" aria-hidden="true" />
+              <div>
+                <strong>{order.planName || order.planKind || '订单'}</strong>
+                <small title={statusText}>{[shortStatus, shortDateTime(order.createdAt)].filter(Boolean).join(' · ')}</small>
+              </div>
+              <b>¥{formatMetricValue(order.amountYuan)}<small>{points ? `+${formatMetricValue(points)} 积分` : ''}</small></b>
+            </li>
+          )
+        })}
+      </ul>
       {data?.hasMore && <p className="assistant-data-note">还有更早的订单，可以在订单页查看。</p>}
     </section>
   )
 }
 
+const CHARGE_SIGNS = { spend: '−', release: '+', refund: '+' }
+
 function ChargeView({ data }) {
   if (!data?.found) {
-    return data?.message ? <section className="assistant-data"><p className="assistant-data-note">{data.message}</p></section> : null
+    return data?.message ? <section className="assistant-data is-compact"><p className="assistant-data-note">{data.message}</p></section> : null
   }
   const source = data.source || {}
   const entries = Array.isArray(data.entries) ? data.entries : []
   const totals = data.totals || {}
-  const title = [source.typeLabel, source.workspaceLabel !== source.typeLabel ? source.workspaceLabel : '', source.time].filter(Boolean).join(' · ')
+  const pending = Number(totals.pendingPoints) > 0
+  const title = [source.typeLabel, source.workspaceLabel !== source.typeLabel ? source.workspaceLabel : '', shortDateTime(source.time)].filter(Boolean).join(' · ')
   return (
-    <section className="assistant-data" aria-label="扣费说明">
+    <section className="assistant-data is-compact" aria-label="扣费说明">
       <header className="assistant-data-head">
         <span>{title}</span>
         {source.link && <Link className="assistant-data-sub" to={source.link}>查看原记录</Link>}
       </header>
-      <div className="assistant-data-tiles">
-        <div className="assistant-data-tile">
-          <span className="assistant-data-tile-label">{Number(totals.pendingPoints) > 0 ? '预留中' : '实际花费'}</span>
-          <strong className="assistant-data-tile-value">{formatMetricValue(Number(totals.pendingPoints) > 0 ? totals.pendingPoints : totals.netPoints, '积分')}</strong>
-          {source.statusLabel && <span className="assistant-data-tile-delta">{source.statusLabel}{source.model ? ` · ${source.model}` : ''}</span>}
-        </div>
+      <div className="assistant-data-hero">
+        <span>{pending ? '预留中' : '实际花费'}</span>
+        <strong>{formatMetricValue(pending ? totals.pendingPoints : totals.netPoints, '积分')}</strong>
+        {source.statusLabel ? <em>{source.statusLabel}{source.model ? ` · ${source.model}` : ''}</em> : null}
       </div>
       {entries.length > 0 && (
-        <div className="assistant-data-table-wrap">
-          <table className="assistant-data-table">
-            <thead>
-              <tr>
-                <th scope="col">时间</th>
-                <th scope="col">变动</th>
-                <th scope="col" className="is-number">积分</th>
+        <table className="assistant-data-flow">
+          <caption className="assistant-visually-hidden">积分变动</caption>
+          <tbody>
+            {entries.map((entry, index) => (
+              <tr key={`${entry.time}-${index}`} className={`is-${entry.kind || 'other'}`}>
+                <td><i aria-hidden="true" /></td>
+                <th scope="row">{entry.label}</th>
+                <td>{shortDateTime(entry.time).replace(/^.*日 /, '')}</td>
+                <td>{CHARGE_SIGNS[entry.kind] || ''}{formatMetricValue(Math.abs(Number(entry.points) || 0))}</td>
               </tr>
-            </thead>
-            <tbody>
-              {entries.map((entry, index) => (
-                <tr key={`${entry.time}-${index}`}>
-                  <td className="is-nowrap">{entry.time}</td>
-                  <td>{entry.label}</td>
-                  <td className="is-number">{formatMetricValue(entry.points)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
       )}
     </section>
   )
@@ -447,12 +429,17 @@ function latestCommerceSetViews(views) {
   return views.filter((view, index) => view?.view !== 'commerce_set' || !view.data?.id || lastIndex.get(view.data.id) === index)
 }
 
-export function AssistantDataViews({ views }) {
+export function AssistantDataViews({ views, messageId = '' }) {
   if (!Array.isArray(views) || !views.length) return null
-  return latestCommerceSetViews(views).map((view, index) => <AssistantDataView key={`${view?.tool || 'view'}-${index}`} view={view} />)
+  return latestCommerceSetViews(views).map((view, index) => <AssistantDataView key={`${view?.tool || 'view'}-${index}`} view={view} messageId={messageId} />)
 }
 
-export function AssistantDataView({ view }) {
+export function AssistantDataView({ view, messageId = '' }) {
+  const owners = useContext(CommerceSetOwnersContext)
+  if (view?.view === 'commerce_set' && messageId && owners) {
+    const owner = owners.get(view.data?.id)
+    if (owner && owner !== messageId) return <CommerceSetReference set={view.data} ownerMessageId={owner} />
+  }
   if (view?.view === 'stats') return <StatsView data={view.data} />
   if (view?.view === 'records') return <RecordsView data={view.data} />
   if (view?.view === 'account') return <AccountView data={view.data} />

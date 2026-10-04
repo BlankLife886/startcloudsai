@@ -125,6 +125,16 @@ function summarizeProposalArguments(args) {
 }
 
 /** 从工具参数中提取一句可读摘要，用于时间线上不展开也能看懂这一步做了什么。 */
+// 摘要是给用户看的：ID 类字段（setId、assetIds…）和长得像 ID 的值（UUID、长十六进制串）不展示。
+const ID_KEY = /(^id$|Ids?$|_ids?$)/
+const ID_VALUE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|[a-z]+[:_-][0-9a-f-]{12,})$/i
+
+function readableSummaryValue(key, value) {
+  if (typeof value !== 'string' || !value.trim()) return ''
+  if (ID_KEY.test(key) || ID_VALUE.test(value.trim())) return ''
+  return clampSummary(value)
+}
+
 export function summarizeAssistantToolArguments(raw, name = '') {
   const args = parseToolArguments(raw)
   if (!args) return ''
@@ -132,11 +142,12 @@ export function summarizeAssistantToolArguments(raw, name = '') {
     return summarizeProposalArguments(args)
   }
   for (const key of SUMMARY_KEYS) {
-    const value = args[key]
-    if (typeof value === 'string' && value.trim()) return clampSummary(value)
+    const summary = readableSummaryValue(key, args[key])
+    if (summary) return summary
   }
-  for (const value of Object.values(args)) {
-    if (typeof value === 'string' && value.trim()) return clampSummary(value)
+  for (const [key, value] of Object.entries(args)) {
+    const summary = readableSummaryValue(key, value)
+    if (summary) return summary
   }
   return ''
 }

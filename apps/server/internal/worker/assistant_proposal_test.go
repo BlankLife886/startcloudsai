@@ -207,7 +207,7 @@ func TestBuildAssistantImageCatalogAndResolveSemanticReference(t *testing.T) {
 		}},
 	}}
 	catalog := buildAssistantImageCatalog(history)
-	if len(catalog) != 2 || catalog[1].ID != "image-b" || catalog[0].Description != "红色跑车" {
+	if len(catalog) != 2 || catalog[1].ID != "image-b" || catalog[0].Description != "这组共2张中的第1张：红色跑车" {
 		t.Fatalf("catalog = %#v", catalog)
 	}
 	resolved := resolveAssistantProposalReferences(nil, catalog, "把第二张改成夜景")
@@ -684,5 +684,76 @@ func TestNormalizeAssistantProposalUsesModelFaithfulPromptForFollowUps(t *testin
 	proposal = normalizeAssistantProposal(assistantImageProposal{Action: "generate", FaithfulPrompt: "一辆红色跑车"}, exact)
 	if proposal.Prompt != exact.Prompt {
 		t.Fatalf("exact-wording prompt = %q, want the user's words", proposal.Prompt)
+	}
+}
+
+func TestNormalizeAssistantProposalKeepsReferenceIndexWording(t *testing.T) {
+	run := &store.AssistantRun{Prompt: "第三张改为9:16的", Params: map[string]any{}}
+	proposal := normalizeAssistantProposal(assistantImageProposal{
+		Action: "edit", PromptMode: assistantPromptModeFaithful, ReferencedImageIDs: []string{"third"},
+		Prompt:         "请将图1这张详情图改为9:16竖版，产品和配色保持一致。",
+		FaithfulPrompt: "将第三张A+详情图改为9:16竖版，产品和配色保持一致。",
+		EnhancedPrompt: "将第三张A+详情图重新编排为9:16竖版电商详情页构图。",
+	}, run)
+	if proposal.Prompt != "请将图1这张详情图改为9:16竖版，产品和配色保持一致。" {
+		t.Fatalf("faithful prompt = %q, want the one that names the reference as 图1", proposal.Prompt)
+	}
+	if proposal.EnhancedPrompt != proposal.Prompt {
+		t.Fatalf("enhanced prompt = %q", proposal.EnhancedPrompt)
+	}
+
+	named := normalizeAssistantProposal(assistantImageProposal{
+		Action: "edit", PromptMode: assistantPromptModeFaithful, ReferencedImageIDs: []string{"third"},
+		Prompt: "请将图1改为9:16竖版。", FaithfulPrompt: "将图1改为9:16竖版，保持产品不变。",
+	}, run)
+	if named.Prompt != "将图1改为9:16竖版，保持产品不变。" {
+		t.Fatalf("a faithful prompt that already names 图1 is kept, got %q", named.Prompt)
+	}
+}
+
+func TestAssistantImageCatalogNumbersImagesWithinTheirSet(t *testing.T) {
+	history := []*store.AssistantMessage{
+		{ID: uuid.New(), Role: "assistant", Kind: "image", Status: "complete", Metadata: map[string]any{
+			"prompt": "品牌视觉提案板", "images": []any{map[string]any{"id": "board", "index": 0}},
+		}},
+		{ID: uuid.New(), Role: "assistant", Kind: "image", Status: "complete", Metadata: map[string]any{
+			"prompt": "请以图1为唯一参考，制作3张A+详情图",
+			"images": []any{
+				map[string]any{"id": "hero", "index": 0}, map[string]any{"id": "selling", "index": 1}, map[string]any{"id": "scene", "index": 2},
+			},
+			"imagePlanItems": []any{
+				map[string]any{"title": "A+首屏品牌视觉", "prompt": "首屏图"},
+				map[string]any{"title": "A+产品卖点展示", "prompt": "卖点图"},
+				map[string]any{"title": "A+场景与细节", "prompt": "场景图"},
+			},
+		}},
+	}
+	catalog := buildAssistantImageCatalog(history)
+	if len(catalog) != 4 || catalog[2].Description != "这组共3张中的第2张「A+产品卖点展示」：卖点图" {
+		t.Fatalf("catalog = %#v", catalog)
+	}
+	if catalog[0].Description != "品牌视觉提案板" {
+		t.Fatalf("a single image needs no set position: %q", catalog[0].Description)
+	}
+
+	ids := func(images []map[string]any) []string {
+		out := make([]string, 0, len(images))
+		for _, image := range images {
+			out = append(out, assistantMapString(image, "id"))
+		}
+		return out
+	}
+	if got := ids(resolveAssistantProposalReferences(nil, catalog, "把第二和第三张改为9:16的")); !slices.Equal(got, []string{"selling", "scene"}) {
+		t.Fatalf("第二和第三张 = %v, want the 2nd and 3rd of the latest set", got)
+	}
+	if got := ids(resolveAssistantProposalReferences(nil, catalog, "第2、3张改成竖版")); !slices.Equal(got, []string{"selling", "scene"}) {
+		t.Fatalf("第2、3张 = %v", got)
+	}
+	if got := ids(resolveAssistantProposalReferences(nil, catalog, "把图1的配色换成绿色")); !slices.Equal(got, []string{"board"}) {
+		t.Fatalf("图1 = %v, want the catalog's first image", got)
+	}
+	// 组里不够张数时退回全局序号。
+	if got := ids(resolveAssistantProposalReferences(nil, catalog, "第四张换成白底")); !slices.Equal(got, []string{"scene"}) {
+		t.Fatalf("第四张 = %v", got)
 	}
 }

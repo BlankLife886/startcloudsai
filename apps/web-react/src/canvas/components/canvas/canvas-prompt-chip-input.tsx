@@ -32,6 +32,9 @@ type Token =
 
 // Prompt-panel contentEditable input: @ references embed thumbnail chips instead of plain label text.
 // Serialization converts chips back to reference labels so the generated value matches the former textarea semantics.
+// 有可引用的上游素材时，在占位文字后提示 @ 的用法（@ 只在开头或空格后触发）。
+const CANVAS_MENTION_HINT = "输入 @ 引用上游素材";
+
 export function CanvasPromptChipInput({ value, references, onChange, onSubmit, className, style, placeholder, placeholderClassName, autoFocus }: Props) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const editorRef = useRef<HTMLDivElement>(null);
@@ -88,12 +91,12 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
 
     const syncMention = () => {
         const text = textBeforeCaret();
-        const match = /@([^\s@]*)$/.exec(text);
+        const match = /(^|\s)@([^\s@]*)$/.exec(text);
         if (!match || !activeReferences.length) {
             closeMention();
             return;
         }
-        setMention({ query: match[1] || "", rect: contentEditableCaretRect(editorRef.current) });
+        setMention({ query: match[2] || "", rect: contentEditableCaretRect(editorRef.current) });
         setActiveIndex(0);
     };
 
@@ -143,6 +146,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
             {showPlaceholder && placeholder ? (
                 <div className={`pointer-events-none absolute left-3 top-2 text-sm leading-5 ${placeholderClassName || ""}`.trim()} style={{ color: theme.node.placeholder }}>
                     {placeholder}
+                    {activeReferences.length ? <span className="opacity-70">{"  ·  "}{CANVAS_MENTION_HINT}</span> : null}
                 </div>
             ) : null}
             <div
@@ -294,9 +298,9 @@ function removeActiveMention() {
     if (!selection?.rangeCount) return;
     const range = selection.getRangeAt(0);
     const text = textBeforeCaret();
-    const match = /@([^\s@]*)$/.exec(text);
+    const match = /(^|\s)@([^\s@]*)$/.exec(text);
     if (!match) return;
-    range.setStart(range.startContainer, Math.max(0, range.startOffset - (match[1] || "").length - 1));
+    range.setStart(range.startContainer, Math.max(0, range.startOffset - (match[2] || "").length - 1));
     range.deleteContents();
 }
 

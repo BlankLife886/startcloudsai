@@ -82,6 +82,9 @@ test('partial or unknown tool arguments degrade without throwing', () => {
   assert.equal(summarizeAssistantToolArguments(''), '')
   assert.equal(summarizeAssistantToolArguments('{"count":3}'), '', 'non-string fields make no readable summary')
   assert.equal(summarizeAssistantToolArguments('{"somethingNew":"回退到第一个字符串"}'), '回退到第一个字符串')
+  assert.equal(summarizeAssistantToolArguments('{"setId":"c7363f56-078c-42e3-a62c-01252b03c76c"}'), '', 'ids are never shown to users')
+  assert.equal(summarizeAssistantToolArguments('{"id":"c7363f56-078c-42e3-a62c-01252b03c76c","productName":"保温杯"}'), '保温杯', 'skips the id and shows the next readable field')
+  assert.equal(summarizeAssistantToolArguments('{"target":"asset:3f9a1c2e7b8d4e6f"}'), '', 'prefixed ids are hidden too')
   assert.equal(summarizeAssistantToolArguments(`{"query":"${'长'.repeat(200)}"}`).length, 73, 'long summaries are clamped with an ellipsis')
   assert.equal(assistantToolLabel('a_tool_added_later'), 'a_tool_added_later', 'unknown tools fall back to their raw name')
   assert.equal(

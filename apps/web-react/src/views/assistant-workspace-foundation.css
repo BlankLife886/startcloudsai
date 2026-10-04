@@ -545,7 +545,8 @@
 }
 
 .assistant-workspace .message--assistant:hover .message-actions,
-.assistant-workspace .message-actions:focus-within {
+.assistant-workspace .message-actions:focus-within,
+.assistant-workspace .message-actions:has(.message-more-menu) {
   opacity: 1;
 }
 
@@ -579,7 +580,7 @@
 .assistant-workspace .message-more-menu {
   position: absolute;
   z-index: 12;
-  top: 9px;
+  bottom: calc(100% - 4px);
   left: 190px;
   display: grid;
   width: 164px;
@@ -684,6 +685,11 @@
   z-index: 11000;
   background: rgb(12 12 16 / 0);
   transition: background 280ms ease, backdrop-filter 280ms ease;
+}
+
+/* 打开 / 关闭的过渡期间不挡点击：关闭后的那 0.3 秒里，下面的页面可以立刻操作 */
+.asset-library-layer:not(.is-open) {
+  pointer-events: none;
 }
 
 .asset-library-layer.is-open {
@@ -1369,7 +1375,8 @@
   }
 
   .assistant-workspace .message--assistant:hover .message-actions,
-  .assistant-workspace .message-actions:focus-within {
+  .assistant-workspace .message-actions:focus-within,
+  .assistant-workspace .message-actions:has(.message-more-menu) {
     opacity: 1;
   }
 }

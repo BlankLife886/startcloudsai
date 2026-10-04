@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import "./assistant-auto-approve.css";
 import { conversationTitle } from "./domain/assistantMessages.js";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import { DialogMotion } from "../../components/motion/DialogMotion.jsx";
@@ -364,49 +365,86 @@ function AssistantCostDialog({ payload, light, onCancel, onConfirm }) {
 
 // 开启自动授权前必须让用户看清后果：这是把“花积分”的决定权交给 Agent。
 // 关闭不需要确认，所以这个对话框只在开启方向出现。
+const AUTO_APPROVE_PRESETS = [30, 60, 100, 200];
+
 function AssistantAutoApproveDialog({ open, light, budgetCents, onCancel, onConfirm }) {
   const [budget, setBudget] = useState("");
+  const [custom, setCustom] = useState(false);
+  const confirmRef = useRef(null);
+  const cancelRef = useRef(onCancel);
+  cancelRef.current = onCancel;
   useEffect(() => {
-    if (open) setBudget(String(budgetCents > 0 ? budgetCents : 60));
+    if (!open) return undefined;
+    const initial = budgetCents > 0 ? budgetCents : 60;
+    setBudget(String(initial));
+    setCustom(!AUTO_APPROVE_PRESETS.includes(initial));
+    confirmRef.current?.focus({ preventScroll: true });
+    const onKey = (event) => { if (event.key === "Escape") cancelRef.current(); };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+    };
   }, [open, budgetCents]);
   if (!open) return null;
-  const parsed = Math.max(0, Math.round(Number(budget) || 0));
+  const parsed = Math.max(0, Math.min(100000, Math.round(Number(budget) || 0)));
+  const valid = parsed > 0;
+  const submit = (event) => {
+    event.preventDefault();
+    if (valid) onConfirm(parsed);
+  };
   return createPortal(
-    <div className={`ai-cost-confirm-layer is-elevated${light ? " is-light" : ""}`} onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
-      <section className="ai-cost-confirm-panel is-credits" role="dialog" aria-modal="true" aria-labelledby="assistant-auto-approve-title">
-        <header className="ai-cost-confirm-head">
-          <span className="ai-cost-confirm-icon"><i className="bi bi-lightning-charge" /></span>
-          <div className="ai-cost-confirm-titles">
-            <span className="ai-cost-confirm-eyebrow">Agent 自动授权</span>
-            <h5 id="assistant-auto-approve-title">让 Agent 自行决定何时出图</h5>
-          </div>
-          <button type="button" className="ai-cost-confirm-close" aria-label="关闭自动授权设置" onClick={onCancel}><i className="bi bi-x-lg" /></button>
+    <div className={`assistant-autoapprove-layer${light ? " is-light" : ""}`} onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
+      <form className="assistant-autoapprove" role="dialog" aria-modal="true" aria-labelledby="assistant-auto-approve-title" onSubmit={submit}>
+        <button type="button" className="assistant-autoapprove-close" aria-label="关闭自动授权设置" onClick={onCancel}><i className="bi bi-x-lg" /></button>
+        <header className="assistant-autoapprove-hero">
+          <span className="assistant-autoapprove-icon" aria-hidden="true"><i className="bi bi-lightning-charge-fill" /></span>
+          <h5 id="assistant-auto-approve-title">开启自动出图</h5>
+          <p>Agent 判断需要出图时直接生成，不用每次停下来等你确认方案。</p>
         </header>
-        <p className="ai-cost-confirm-summary">开启后，Agent 判断需要出图时会直接扣积分生成，不再先给你方案卡确认。</p>
-        <div className="ai-cost-confirm-card">
-          <div className="ai-cost-confirm-total">
-            <div className="ai-cost-confirm-total__copy">
-              <span>单轮预算上限</span>
-              <small>超出这个金额仍然会先给你方案卡</small>
-            </div>
-            <label className="assistant-auto-approve-budget">
-              <input type="number" min="0" max="100000" step="10" value={budget}
-                onChange={(event) => setBudget(event.target.value)} aria-label="单轮预算上限（积分）" />
-              <span>积分</span>
-            </label>
+
+        <div className="assistant-autoapprove-compare" aria-hidden="true">
+          <div>
+            <small>现在</small>
+            <span>方案卡<i className="bi bi-arrow-right" />你确认<i className="bi bi-arrow-right" />出图</span>
+          </div>
+          <div className="is-after">
+            <small>开启后</small>
+            <span><i className="bi bi-lightning-charge-fill" />直接出图</span>
           </div>
         </div>
-        <p className="ai-cost-confirm-warn">
-          <i className="bi bi-exclamation-circle" />
-          以下两种情况仍然会先给你方案卡：修改或重绘已有图片、单轮花费超过上面的预算。
-        </p>
-        <footer className="ai-cost-confirm-footer">
-          <div className="ai-cost-confirm-actions">
-            <button type="button" className="ai-cost-confirm-btn ghost" onClick={onCancel}>取消</button>
-            <button type="button" className="ai-cost-confirm-btn primary" onClick={() => onConfirm(parsed)}>我已了解，开启</button>
+
+        <fieldset className="assistant-autoapprove-budget">
+          <legend>每轮自动出图上限</legend>
+          <div className="assistant-autoapprove-presets">
+            {AUTO_APPROVE_PRESETS.map((value) => (
+              <button key={value} type="button" className={!custom && parsed === value ? "is-active" : ""} aria-pressed={!custom && parsed === value} onClick={() => { setCustom(false); setBudget(String(value)); }}>
+                <b>{value}</b><small>积分</small>
+              </button>
+            ))}
+            <label className={`assistant-autoapprove-custom${custom ? " is-active" : ""}`}>
+              <input type="number" inputMode="numeric" min="1" max="100000" step="10" value={custom ? budget : ""} placeholder="自定义"
+                onFocus={() => { if (!custom) { setCustom(true); setBudget(""); } }}
+                onChange={(event) => { setCustom(true); setBudget(event.target.value); }} aria-label="单轮预算上限（积分）" />
+              <small>积分</small>
+            </label>
           </div>
+          <p className={valid ? "" : "is-invalid"}>{valid ? <>一轮花费在 <b>{parsed.toLocaleString("zh-CN")} 积分</b> 以内自动生成，超过就先问你。</> : "请填一个大于 0 的额度。"}</p>
+        </fieldset>
+
+        <div className="assistant-autoapprove-still">
+          <span><i className="bi bi-shield-check" aria-hidden="true" />这些情况仍会先问你</span>
+          <ul>
+            <li>修改或重绘已有图片</li>
+            <li>一轮花费超过上限</li>
+          </ul>
+        </div>
+
+        <footer>
+          <button type="button" className="is-ghost" onClick={onCancel}>暂不开启</button>
+          <button ref={confirmRef} type="submit" className="is-primary" disabled={!valid}><i className="bi bi-lightning-charge-fill" aria-hidden="true" />开启自动出图</button>
         </footer>
-      </section>
+        <p className="assistant-autoapprove-foot">开启后可随时在输入框的「自动授权」按钮关闭</p>
+      </form>
     </div>,
     document.body,
   );

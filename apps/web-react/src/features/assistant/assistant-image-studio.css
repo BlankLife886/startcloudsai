@@ -1500,3 +1500,116 @@
     animation: none;
   }
 }
+
+/* 对比原图：顶栏的切换按钮 + 叠在图片上的滑块。左边露出原图，右边是当前这张。 */
+.ais-compare-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px 0 12px;
+  border: 1px solid var(--ais-border);
+  border-radius: 999px;
+  color: var(--ais-text);
+  background: var(--ais-surface);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.ais-compare-toggle:hover { background: var(--ais-surface-hover); }
+
+.ais-compare-toggle.is-active {
+  border-color: transparent;
+  color: var(--ais-accent-ink);
+  background: var(--ais-accent);
+}
+
+.ais-compare {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  border-radius: 10px;
+  line-height: normal;
+  animation: ais-compare-in 220ms ease both;
+}
+
+.ais-compare-before {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--ais-stage);
+  clip-path: inset(0 calc(100% - var(--compare-position)) 0 0);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.ais-compare-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--compare-position);
+  width: 2px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 14%), 0 0 12px rgb(0 0 0 / 18%);
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+
+.ais-compare-line i {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 50%;
+  color: #1a1428;
+  background: #fff;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 24%);
+  font-size: 15px;
+  transform: translate(-50%, -50%);
+}
+
+.ais-compare-tag {
+  position: absolute;
+  top: 14px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgb(0 0 0 / 52%);
+  font-size: 12.5px;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+.ais-compare-tag.is-before { left: 14px; }
+.ais-compare-tag.is-after { right: 14px; }
+
+.ais-compare input[type="range"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: ew-resize;
+}
+
+.ais-compare:has(input:focus-visible) .ais-compare-line i { box-shadow: 0 0 0 3px rgb(124 92 255 / 55%), 0 6px 18px rgb(0 0 0 / 24%); }
+
+@keyframes ais-compare-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ais-compare { animation: none; }
+}
