@@ -58,17 +58,39 @@ test("AI commerce opens in a canvas-first commercial shoot workbench", async ({
   await expect(workbench).toBeVisible();
   await expect(page.locator(".commerce-settings")).toHaveCount(0);
   await expect(page.locator(".workbench-toolbar")).toBeVisible();
-  await expect(page.locator(".commerce-header__actions button")).toHaveCount(3);
+  // 业务中心已移除：只剩创作台与电商历史
+  await expect(page.locator(".commerce-header__actions button")).toHaveCount(2);
   await expect(page.getByRole("button", { name: "上传商品" }).first()).toBeVisible();
   await expect(
     page.getByRole("radiogroup", { name: "选择画面比例" }).getByRole("radio"),
   ).toHaveCount(5);
-  const packs = page.getByRole("radiogroup", { name: "选择出图任务" });
-  await expect(packs.getByRole("radio")).toHaveCount(3);
-  await expect(packs.getByRole("radio", { name: /商业成片/ })).toHaveAttribute(
+  await expect(page.getByRole("radiogroup", { name: "选择出图任务" })).toHaveCount(0);
+  const shots = page.getByRole("group", { name: "拍摄镜头" });
+  await expect(shots.getByRole("checkbox")).toHaveCount(6);
+  await expect(shots.getByRole("checkbox", { checked: true })).toHaveCount(4);
+  // 第 1 个选中的镜头是整套定调首张
+  await expect(page.locator(".workbench-shots")).toContainText("4/4 张 · 商品主视觉定调");
+  await expect(page.locator(".workbench-plan li").first()).toHaveClass(/is-anchor/);
+  // 已选满 4 个：未选镜头不能再加
+  await shots.getByRole("checkbox", { name: "尺寸比例" }).click();
+  await expect(shots.getByRole("checkbox", { name: "尺寸比例" })).toHaveAttribute(
     "aria-checked",
-    "true",
+    "false",
   );
+  await expect(page.locator(".workbench-plan")).toContainText(
+    "首张先出定调，其余参照首张成片生成",
+  );
+  // 商品不变项摘要露在画布上，点击打开“商业目标”里的完整设置
+  const factLock = page.getByRole("button", { name: /^商品不变项 6 项/ });
+  await expect(factLock).toBeVisible();
+  await factLock.click();
+  const lockMenu = page.getByRole("dialog", { name: "商业目标设置" });
+  await expect(lockMenu).toBeVisible();
+  await expect(lockMenu.getByPlaceholder("Logo、包装文字、颜色、比例…")).toHaveValue(
+    /商品外形与比例/,
+  );
+  await page.keyboard.press("Escape");
+  await expect(lockMenu).toHaveCount(0);
   await expect(
     page.getByRole("radiogroup", { name: "拍摄方向" }).getByRole("radio"),
   ).toHaveCount(4);
@@ -89,7 +111,8 @@ test("AI commerce opens in a canvas-first commercial shoot workbench", async ({
   await page.keyboard.press("Escape");
   await expect(goalMenu).toHaveCount(0);
 
-  await packs.getByRole("radio", { name: /主图 \+ 场景/ }).click();
+  await shots.getByRole("checkbox", { name: /材质细节/ }).click();
+  await shots.getByRole("checkbox", { name: /卖点表达/ }).click();
   await expect(page.locator(".workbench-plan li")).toHaveCount(2);
   await expect(page.getByRole("button", { name: /^生成商拍成片（2张）/ })).toHaveCount(
     1,
@@ -122,6 +145,84 @@ test("AI commerce opens in a canvas-first commercial shoot workbench", async ({
   await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(1);
   await expect(page.locator(".workbench-angles")).toBeVisible();
   await expect(page.getByRole("button", { name: /^生成商拍成片（2张）/ })).toBeEnabled();
+});
+
+test("commercial shoot creates the hero first and anchors the other shots to it", async ({
+  page,
+}) => {
+  const created = [];
+  await page.route("**/api/v1/tasks", async (route) => {
+    const request = route.request();
+    if (request.method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    const body = request.postDataJSON();
+    const index = Number(body.params?.batchIndex) || 0;
+    // 首张稍慢返回：后续几张必须等它建好才能拿到它的任务 ID
+    if (index === 0) await new Promise((resolve) => setTimeout(resolve, 200));
+    const { seriesAnchorTaskId, ...params } = body.params || {};
+    created.push({ index, seriesAnchorTaskId, prompt: body.prompt, at: Date.now() });
+    await fulfill(route, {
+      id: `e2e-shoot-task-${index + 1}`,
+      type: "ecommerce_design",
+      status: index === 0 ? "running" : "queued",
+      prompt: body.prompt,
+      params: {
+        ...params,
+        ...(seriesAnchorTaskId ? { _seriesAnchorTaskId: seriesAnchorTaskId } : {}),
+      },
+      count: 1,
+      outputUrls: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+  });
+
+  await page.goto("/ecommerce-design?tool=shoot");
+  await expect(page.locator(".commerce-workbench.is-shoot")).toBeVisible();
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles({
+      name: "product.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    });
+  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(1);
+  await page.getByRole("button", { name: /^生成商拍成片（4张）/ }).click();
+  const dialog = page.getByRole("dialog", { name: "确认生成费用" });
+  await expect(dialog).toBeVisible();
+  await page.locator(".ai-cost-confirm-btn.primary").click();
+
+  await expect.poll(() => created.length).toBe(4);
+  const hero = created.find((item) => item.index === 0);
+  const followers = created.filter((item) => item.index > 0);
+  expect(hero.seriesAnchorTaskId).toBeUndefined();
+  for (const follower of followers) {
+    expect(follower.seriesAnchorTaskId).toBe("e2e-shoot-task-1");
+    expect(follower.at).toBeGreaterThanOrEqual(hero.at);
+  }
+  // 拍摄方向只定基调；每张有自己的景别，且不混入文字类要求
+  const promptOf = (index) => created.find((item) => item.index === index).prompt;
+  for (const item of created) {
+    expect(item.prompt).toContain("整套视觉基调：干净棚拍");
+    expect(item.prompt).toContain("真实相机拍摄质感的商业商品摄影");
+    expect(item.prompt).not.toContain("拍摄场景：");
+    expect(item.prompt).not.toContain("文字必须准确清晰");
+  }
+  expect(promptOf(0)).toContain("景别：全景主视觉");
+  expect(promptOf(1)).toContain("景别：中景使用场景");
+  expect(promptOf(1)).toContain("不要影棚纯色背景");
+  expect(promptOf(2)).toContain("景别：微距特写");
+  expect(promptOf(3)).toContain("景别：广告构图");
+
+  // 首张还在生成：后续几张显示“等首张”，方案列表标出等待
+  const thumbs = page.getByLabel("本次套图");
+  await expect(thumbs.getByRole("listitem", { name: /等待首张定调/ })).toHaveCount(3);
+  await expect(page.locator(".workbench-plan li.is-waiting")).toHaveCount(3);
 });
 
 test("workbench exposes seeany-style presets, detail note, resolution and a style reference slot", async ({
@@ -192,7 +293,7 @@ test("canvas-first workbench remains usable on mobile", async ({ page }) => {
   await page.goto("/ecommerce-design?tool=shoot");
 
   await expect(page.locator(".commerce-workbench.is-shoot")).toBeVisible();
-  await expect(page.locator(".mobile-pane-switch button")).toHaveCount(3);
+  await expect(page.locator(".mobile-pane-switch button")).toHaveCount(2);
   await expect(page.locator(".commerce-settings")).toHaveCount(0);
   await expect(
     page.getByRole("radiogroup", { name: "拍摄方向" }).getByRole("radio"),
@@ -249,65 +350,6 @@ test("desktop ecommerce workspace reaches the product library and recovers from 
   await search.fill("不存在的商品");
   await expect(page.getByText("没有匹配的商品", { exact: true })).toBeVisible();
   expect(pageErrors).toEqual([]);
-});
-
-test("commerce operations workspace reviews and approves a commercial asset", async ({
-  page,
-}) => {
-  await page.goto("/ecommerce-design?tool=detail&seedResult=1");
-  await page
-    .locator(".commerce-header__actions button")
-    .filter({ hasText: "业务中心" })
-    .click();
-
-  await expect(
-    page.getByRole("heading", { name: "商拍业务中心" }),
-  ).toBeVisible();
-  await expect(page.locator(".commerce-ops__queue-list article")).toHaveCount(
-    1,
-  );
-  await expect(page.getByText("待质检", { exact: true }).last()).toBeVisible();
-
-  for (const label of [
-    "商品身份",
-    "包装与文字",
-    "颜色与材质",
-    "光影与物理",
-    "渠道规范",
-    "权利与标识",
-  ]) {
-    await page
-      .locator(".commerce-ops__checklist label")
-      .filter({ hasText: label })
-      .click();
-  }
-  await page.getByRole("textbox", { name: "目标渠道" }).fill("Amazon US");
-  await page.getByLabel("审核意见").fill("商品事实与渠道规范已核对");
-  await page.getByRole("button", { name: "批准交付" }).click();
-
-  await expect(page.getByText("成片已批准，可进入交付")).toBeVisible();
-  await expect(page.getByText("已批准", { exact: true }).last()).toBeVisible();
-});
-
-test("commerce operations workspace fits a mobile viewport", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/ecommerce-design?tool=detail&seedResult=1");
-  await page
-    .locator(".mobile-pane-switch button")
-    .filter({ hasText: "业务" })
-    .click();
-  await expect(page.locator(".commerce-ops")).toBeVisible();
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
-    ),
-  ).toBe(true);
-  await expect(page.locator(".commerce-ops__metrics")).toHaveCSS(
-    "grid-template-columns",
-    /.+ .+/,
-  );
 });
 
 test("English ecommerce workspace keeps labels in one locale", async ({
@@ -375,7 +417,7 @@ test("minimum desktop ecommerce workspace stays usable without horizontal overfl
   await expect(page.locator(".commerce-canvas")).toBeVisible();
   await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
   await expect(page.locator(".canvas-facts")).toHaveCount(0);
-  await expect(page.locator(".workbench-plan li")).toHaveCount(6);
+  await expect(page.locator(".listing-plan__list > li")).toHaveCount(7);
   await expect(page.getByRole("button", { name: /从商品库选择/ })).toHaveCount(
     0,
   );
@@ -460,7 +502,7 @@ test("minimum desktop ecommerce workspace stays usable without horizontal overfl
 test("ecommerce workspace uses layered atelier surfaces in light and dark", async ({
   page,
 }) => {
-  await page.goto("/ecommerce-design?tool=listing");
+  await page.goto("/ecommerce-design?tool=campaign");
   await expect(page.locator(".commerce-studio")).toBeVisible();
   await expect(page.locator(".commerce-atmosphere")).toBeVisible();
   await expect(page.locator(".workbench-toolbar")).toBeVisible();
@@ -525,11 +567,11 @@ test("desktop ecommerce layout stays aligned across common workspaces", async ({
       width: viewport.width,
       height: viewport.height,
     });
-    await page.goto("/ecommerce-design?tool=listing");
+    await page.goto("/ecommerce-design?tool=campaign");
     await expect(page.locator(".commerce-settings")).toHaveCount(0);
     await expect(page.locator(".commerce-rail")).toBeVisible();
     await expect(page.locator(".commerce-canvas")).toBeVisible();
-    await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
+    await expect(page.locator(".commerce-workbench.is-campaign")).toBeVisible();
     await expect(page.locator(".commerce-studio")).toHaveAttribute(
       "data-ecommerce-page-motion-state",
       "entered",
@@ -595,12 +637,12 @@ test("mobile ecommerce workspace keeps settings and canvas readable", async ({
   await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
   await expect(page.getByRole("tab", { name: "创作台" })).toBeVisible();
   await expect(page.getByRole("button", { name: "上传商品" }).first()).toBeVisible();
-  // 出图类型默认勾选 6 种，画布上直接可见
-  await expect(page.locator(".workbench-types")).toContainText("已选 6 张");
-  await expect(page.locator(".workbench-plan li")).toHaveCount(6);
-  const generate = page.getByRole("button", { name: /^生成商品套图（6张）/ });
+  // 自由组合默认 2 张主图 + 5 张详情页，策划方案里逐张可见
+  await expect(page.locator(".listing-selected > li")).toHaveCount(7);
+  await expect(page.locator(".listing-plan__list > li")).toHaveCount(7);
+  const generate = page.getByRole("button", { name: "开始 AI 智能策划并生成" });
   await generate.scrollIntoViewIfNeeded();
-  await expect(generate).toContainText("6张");
+  await expect(generate).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth + 1,
@@ -671,44 +713,55 @@ test("best-seller recreation supports an optional replacement product", async ({
   );
 });
 
-test("listing picks image types from an 18-type catalog and plans copy before generating", async ({
+const PIXEL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+
+test("listing studio plans a free combination and lets the seller edit it before generating", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design?tool=listing");
-  const plan = page.locator(".workbench-plan");
-  await expect(plan.locator("li")).toHaveCount(6);
-  await expect(plan).toContainText("首张锁定系列视觉，其余并行");
-  await expect(plan).not.toContainText("顺序生成");
-  await expect(page.getByRole("button", { name: /^自定义结构/ })).toHaveCount(0);
+  const studio = page.locator(".listing-studio");
+  const plan = page.locator(".listing-studio__plan");
+  await expect(studio).toBeVisible();
+  // 平台 / 市场 / 语种 / 风格、商品信息都在套图工作台里，顶栏不再重复
+  await expect(page.getByRole("button", { name: /^投放设置，当前：/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^商品信息，当前：/ })).toHaveCount(0);
+  await expect(studio.getByRole("combobox", { name: "视觉风格" })).toBeVisible();
 
-  // 画布上的出图类型：默认 6 种勾选，取消一种 → 5 张
-  const types = page.locator(".workbench-types");
-  await expect(types).toContainText("已选 6 张");
-  await types.getByRole("checkbox", { name: "规格参数图" }).click();
-  await expect(types).toContainText("已选 5 张");
-  await expect(plan.locator("li")).toHaveCount(5);
-  await expect(page.getByRole("button", { name: /^生成商品套图（5张）/ })).toHaveCount(1);
+  // 默认 2 张主图（1:1）+ 5 张详情页（3:4）
+  await expect(plan.locator(".listing-plan__list > li")).toHaveCount(7);
+  await expect(studio.locator(".listing-stage__head")).toContainText("主图 2 张（1:1）");
+  await expect(studio.locator(".listing-stage__head")).toContainText("详情页 5 张（3:4）");
 
-  // “更多”弹层里能看到全部 18 种，并支持全选 / 清空
-  await types.getByRole("button", { name: /更多/ }).click();
-  const more = page.getByRole("dialog", { name: "更多出图类型" });
-  await expect(more.getByRole("checkbox")).toHaveCount(18);
-  await more.getByRole("checkbox", { name: /亚马逊主图/ }).click();
-  await expect(plan.locator("li")).toHaveCount(6);
-  await more.getByRole("button", { name: "全选" }).click();
-  await expect(plan.locator("li")).toHaveCount(18);
-  await more.getByRole("button", { name: "清空" }).click();
-  await expect(plan.locator("li")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /^生成商品套图/ })).toBeDisabled();
-  await more.getByRole("checkbox", { name: /首屏视觉图/ }).click();
-  await more.getByRole("checkbox", { name: /核心卖点图/ }).click();
-  await page.keyboard.press("Escape");
-  await expect(more).toHaveCount(0);
-  await expect(plan.locator("li")).toHaveCount(2);
+  // 调整张数：核心卖点图 ×2 → 8 张；移除规格参数图 → 7 张
+  await studio.getByRole("button", { name: "增加 核心卖点图" }).click();
+  await expect(plan.locator(".listing-plan__list > li")).toHaveCount(8);
+  await studio.getByRole("button", { name: "减少 规格参数图" }).click();
+  await expect(plan.locator(".listing-plan__list > li")).toHaveCount(7);
 
-  // 智能策划：上传商品图前不可用；上传后调用策划接口，方案文案进入出图结构
-  const planButton = page.getByRole("button", { name: "去智能策划" });
-  await expect(planButton).toBeDisabled();
+  // 类型库：46 种推荐类型分 4 组，可加自定义方向
+  await studio.getByRole("button", { name: /添加出图类型或自定义/ }).click();
+  const library = page.getByRole("dialog", { name: "添加出图类型" });
+  await expect(library).toBeVisible();
+  for (const group of ["商品主图", "核心转化详情页", "信任背书详情页", "营销素材"]) {
+    await expect(library.getByRole("region", { name: group })).toBeVisible();
+  }
+  const detailGroup = library.getByRole("region", { name: "核心转化详情页" });
+  await expect(detailGroup.getByRole("button", { name: /高频问题 FAQ 图/ })).toHaveCount(0);
+  await detailGroup.getByRole("button", { name: /^更多/ }).click();
+  await detailGroup.getByRole("button", { name: /高频问题 FAQ 图/ }).click();
+  await library.getByRole("textbox", { name: "自定义方向标题" }).fill("圣诞礼盒氛围图");
+  await library.getByRole("button", { name: "添加", exact: true }).click();
+  await expect(library.getByRole("list", { name: "已添加的自定义方向" })).toContainText("圣诞礼盒氛围图");
+  await library.getByRole("button", { name: "完成选择" }).click();
+  await expect(library).toHaveCount(0);
+  await expect(plan.locator(".listing-plan__list > li")).toHaveCount(9);
+  await expect(plan).toContainText("圣诞礼盒氛围图");
+
+  // 逐步确认：先策划（不出图），策划结果按 id 对齐进方案，可逐张修改或移除
+  await studio.getByRole("radio", { name: "逐步确认" }).click();
   let planRequest = null;
   await page.route("**/api/v1/commerce/listing-plans", async (route) => {
     planRequest = route.request().postDataJSON();
@@ -722,42 +775,269 @@ test("listing picks image types from an 18-type catalog and plans copy before ge
           items: [
             { id: "hero", headline: "一杯，唤醒清晨", subline: "三档温控", direction: "商品居中，晨光斜射" },
             { id: "selling", headline: "6 小时长效保温", subline: "", direction: "局部放大杯盖密封圈" },
+            { id: "faq", headline: "常见问题", subline: "", direction: "问答卡片" },
           ],
         },
       }),
     });
   });
-  await page
-    .locator('input[type="file"]')
-    .first()
-    .setInputFiles({
-      name: "product.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-        "base64",
-      ),
-    });
-  await expect(planButton).toBeEnabled();
-  await planButton.click();
-  await expect(plan).toContainText("策划方案");
-  await expect(plan).toContainText("一杯，唤醒清晨");
-  await expect(plan).toContainText("6 小时长效保温");
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "product.png",
+    mimeType: "image/png",
+    buffer: PIXEL_PNG,
+  });
+  await expect(studio.locator(".listing-tile")).toHaveCount(9);
+  await studio.getByRole("textbox", { name: "产品信息" }).fill("保温杯，6 小时保温");
+  await studio.getByRole("combobox", { name: "视觉风格" }).fill("高级质感风");
+  const launch = studio.getByRole("button", { name: "开始 AI 智能策划" });
+  await expect(launch).toBeEnabled();
+  await launch.click();
   await expect(plan).toContainText("以清晨厨房光线串起整套图");
-  await expect(page.getByRole("button", { name: "重新策划" })).toBeVisible();
-  expect(planRequest?.types?.map((item) => item.id)).toEqual(["hero", "selling"]);
+  await expect(plan).toContainText("一杯，唤醒清晨");
+  expect(planRequest?.types?.map((item) => item.id)).toEqual([
+    "white",
+    "scene-hero",
+    "hero",
+    "selling",
+    "selling~2",
+    "scene",
+    "craft",
+    "faq",
+    expect.stringMatching(/^custom-/),
+  ]);
+  expect(planRequest?.types?.find((item) => item.id === "white")?.role).toBe("main");
+  expect(planRequest?.style).toBe("高级质感风");
+  expect(planRequest?.sellingPoints).toBe("保温杯，6 小时保温");
   expect(planRequest?.inputKeys).toEqual(["uploads/e2e-user-1/product.png"]);
 
-  // 清除策划回到智能直出
-  await plan.getByRole("button", { name: "清除策划方案" }).click();
+  // 修改第 3 张的标题，移除 FAQ，确认按钮随张数更新
+  await plan.getByRole("button", { name: "修改第 3 张策划" }).click();
+  await plan.getByRole("textbox", { name: "主标题" }).fill("晨光一杯");
+  await expect(plan).toContainText("晨光一杯");
+  await plan.getByRole("button", { name: "从本套移除第 8 张" }).click();
+  await expect(plan.locator(".listing-plan__list > li")).toHaveCount(8);
+  await expect(studio.getByRole("button", { name: "确认方案，生成 8 张" })).toBeEnabled();
+  await plan.getByRole("button", { name: "恢复已移除的 1 张" }).click();
+  await expect(plan.locator(".listing-plan__list > li")).toHaveCount(9);
+
+  // 清除策划回到未策划状态
+  await plan.getByRole("button", { name: "清除" }).click();
   await expect(plan).not.toContainText("一杯，唤醒清晨");
-  await expect(page.getByRole("button", { name: "去智能策划" })).toBeVisible();
+  await expect(studio.getByRole("button", { name: "开始 AI 智能策划" })).toBeVisible();
+});
+
+test("listing studio smart grouping lets AI pick types and category templates build a shot list", async ({
+  page,
+}) => {
+  await page.goto("/ecommerce-design?tool=listing");
+  const studio = page.locator(".listing-studio");
+  const plan = page.locator(".listing-studio__plan");
+
+  // 智能组图：设定张数，AI 从候选类型里挑选；极速出图不可用
+  await studio.getByRole("tab", { name: "智能组图" }).click();
+  await expect(studio.getByRole("radio", { name: "极速出图" })).toHaveCount(0);
+  await studio.getByRole("button", { name: "增加主图数量" }).click();
+  await expect(plan.locator(".listing-plan__list > li")).toHaveCount(7);
+  let planRequest = null;
+  await page.route("**/api/v1/commerce/listing-plans", async (route) => {
+    planRequest = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        success: true,
+        data: {
+          summary: "极简白调",
+          items: [
+            { id: "main-1", type: "white", role: "main", headline: "", direction: "纯白正面" },
+            { id: "main-2", type: "selling-hero", role: "main", headline: "三档温控" },
+            ...[1, 2, 3, 4, 5].map((index) => ({
+              id: `detail-${index}`,
+              type: ["hero", "painpoint", "scene", "spec", "service"][index - 1],
+              role: "detail",
+              headline: `详情 ${index}`,
+            })),
+          ],
+        },
+      }),
+    });
+  });
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "product.png",
+    mimeType: "image/png",
+    buffer: PIXEL_PNG,
+  });
+  await studio.getByRole("radio", { name: "逐步确认" }).click();
+  await studio.getByRole("button", { name: "开始 AI 智能策划" }).click();
+  await expect(plan).toContainText("卖点主图");
+  await expect(plan).toContainText("客户痛点展示");
+  expect(planRequest?.smart).toEqual({ mainCount: 2, detailCount: 5 });
+  expect(planRequest?.candidates?.length).toBe(46);
+  expect(planRequest?.types).toBeUndefined();
+  await expect(studio.getByRole("button", { name: "确认方案，生成 7 张" })).toBeEnabled();
+  // 改张数会作废旧策划
+  await studio.getByRole("button", { name: "减少详情页数量" }).click();
+  await expect(plan).not.toContainText("客户痛点展示");
+
+  // 品类模板：从模板库挑选，分镜进入方案
+  await studio.getByRole("tab", { name: "品类模板" }).click();
+  await expect(plan.locator(".listing-plan__list > li")).toHaveCount(0);
+  await studio.getByRole("button", { name: /打开模板库挑选/ }).click();
+  const templates = page.getByRole("dialog", { name: "选择品类套图模板" });
+  await expect(templates).toBeVisible();
+  await templates.getByRole("button", { name: /手机数码/ }).click();
+  await templates.getByRole("button", { name: "蓝牙耳机", exact: true }).click();
+  await templates.getByRole("button", { name: /蓝牙耳机标准套图/ }).click();
+  await templates.getByRole("button", { name: "确定选择" }).click();
+  await expect(templates).toHaveCount(0);
+  await expect(studio.getByRole("list", { name: "已选模板" })).toContainText("蓝牙耳机标准套图");
+  await expect(plan.locator(".listing-plan__list > li")).toHaveCount(10);
+  await expect(plan).toContainText("接口与细节特写");
+});
+
+test("listing studio smart direct output plans then generates each shot at its own ratio", async ({
+  page,
+}) => {
+  const created = [];
+  await page.route("**/api/v1/tasks", async (route) => {
+    const request = route.request();
+    if (request.method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    const body = request.postDataJSON();
+    created.push(body);
+    await fulfill(route, {
+      id: `e2e-listing-task-${created.length}`,
+      type: "ecommerce_design",
+      status: "queued",
+      prompt: body.prompt,
+      params: body.params,
+      count: 1,
+      outputUrls: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+  });
+  let planCalls = 0;
+  await page.route("**/api/v1/commerce/listing-plans", async (route) => {
+    planCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        success: true,
+        data: {
+          summary: "晨光厨房",
+          items: [{ id: "hero", headline: "一杯，唤醒清晨", subline: "", direction: "晨光斜射" }],
+        },
+      }),
+    });
+  });
+
+  await page.goto("/ecommerce-design?tool=listing");
+  const studio = page.locator(".listing-studio");
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "product.png",
+    mimeType: "image/png",
+    buffer: PIXEL_PNG,
+  });
+  await studio.getByRole("combobox", { name: "视觉风格" }).fill("国风古韵风");
+  // 智能直出：一次点击 = 策划 + 自动出图（仍走费用确认）
+  await studio.getByRole("button", { name: "开始 AI 智能策划并生成" }).click();
+  const dialog = page.getByRole("dialog", { name: "确认生成费用" });
+  await expect(dialog).toBeVisible();
+  expect(planCalls).toBe(1);
+  await page.locator(".ai-cost-confirm-btn.primary").click();
+
+  await expect.poll(() => created.length).toBe(7);
+  const byIndex = [...created].sort((a, b) => a.params.batchIndex - b.params.batchIndex);
+  expect(byIndex.map((item) => item.params.aspectRatio)).toEqual([
+    "1:1",
+    "1:1",
+    "3:4",
+    "3:4",
+    "3:4",
+    "3:4",
+    "3:4",
+  ]);
+  expect(byIndex.map((item) => item.params.viewId)).toEqual([
+    "white",
+    "scene-hero",
+    "hero",
+    "selling",
+    "scene",
+    "craft",
+    "spec",
+  ]);
+  expect(byIndex[2].prompt).toContain("画面标题文案：「一杯，唤醒清晨」");
+  expect(byIndex[0].prompt).not.toContain("画面标题文案");
+  expect(byIndex.every((item) => item.prompt.includes("整套视觉风格：国风古韵"))).toBe(true);
+  expect(byIndex.every((item) => item.prompt.includes("整套图视觉主线：晨光厨房"))).toBe(true);
+});
+
+test("listing studio fast mode skips planning", async ({ page }) => {
+  let planCalls = 0;
+  await page.route("**/api/v1/commerce/listing-plans", async (route) => {
+    planCalls += 1;
+    await route.abort();
+  });
+  await page.goto("/ecommerce-design?tool=listing");
+  const studio = page.locator(".listing-studio");
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "product.png",
+    mimeType: "image/png",
+    buffer: PIXEL_PNG,
+  });
+  await studio.getByRole("radio", { name: "极速出图" }).click();
+  await studio.getByRole("button", { name: "开始生成 7 张套图" }).click();
+  await expect(page.getByRole("dialog", { name: "确认生成费用" })).toBeVisible();
+  expect(planCalls).toBe(0);
+});
+
+test("listing studio AI write fills product info after confirmation", async ({
+  page,
+}) => {
+  let briefRequest = null;
+  await page.route("**/api/v1/commerce/product-briefs", async (route) => {
+    briefRequest = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        success: true,
+        data: {
+          productName: "不锈钢保温杯",
+          sellingPoints:
+            "产品名称：不锈钢保温杯\n核心卖点：\n6 小时保温\n适用人群：通勤上班族\n期望场景：办公室、户外\n具体参数：容量 500ml",
+        },
+      }),
+    });
+  });
+  await page.goto("/ecommerce-design?tool=listing");
+  const studio = page.locator(".listing-studio");
+  const aiWrite = studio.getByRole("button", { name: "AI 帮写" });
+  await expect(aiWrite).toBeDisabled();
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "product.png",
+    mimeType: "image/png",
+    buffer: PIXEL_PNG,
+  });
+  await studio.getByRole("textbox", { name: "产品信息" }).fill("容量 500ml");
+  await expect(aiWrite).toBeEnabled();
+  await aiWrite.click();
+  const dialog = page.getByRole("dialog", { name: "生成商品名称和卖点" });
+  await expect(dialog.getByRole("textbox", { name: "产品信息" })).toHaveValue(/适用人群：通勤上班族/);
+  expect(briefRequest?.detailed).toBe(true);
+  expect(briefRequest?.currentInfo).toContain("容量 500ml");
+  await dialog.getByRole("button", { name: "确认填入" }).click();
+  await expect(studio.getByRole("textbox", { name: "商品名称" })).toHaveValue("不锈钢保温杯");
+  await expect(studio.getByRole("textbox", { name: "产品信息" })).toHaveValue(/期望场景：办公室、户外/);
 });
 
 test("AI product brief waits for confirmation and supports regeneration", async ({
   page,
 }) => {
-  await page.goto("/ecommerce-design?tool=listing");
+  await page.goto("/ecommerce-design?tool=campaign");
   const productMenu = await openWorkbenchMenu(page, "商品信息");
   const brief = productMenu.getByRole("button", { name: "AI 帮写卖点" });
   await expect(brief).toBeDisabled();
@@ -865,7 +1145,7 @@ test("fashion try-on separates garment, model, and scene choices", async ({
     /^1:1.*TikTok/,
     /^4:5/,
     /^9:16/,
-    /^2:3/,
+    // 2:3 不在当前模型的后台画幅配置里，不展示
     /^16:9/,
   ]);
   await page.keyboard.press("Escape");
@@ -1010,20 +1290,22 @@ test("fashion try-on separates garment, model, and scene choices", async ({
   await expect(page.locator(".tryon-stage__notice")).toHaveCount(0);
 });
 
-test("commerce sidebar switches businesses without remounting the page shell", async ({
+// 侧栏每个模块是独立会话（按模块重新挂载），但页面外壳保持连续：
+// 切换时不重播入场动画，页头和侧栏立即可见
+test("commerce sidebar switches businesses without replaying the page shell entrance", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design?tool=tryon");
-
   const studio = page.locator(".commerce-studio");
-  await expect(studio).toBeVisible();
-  await studio.evaluate((node) => {
-    node.dataset.sidebarSwitchProbe = "stable";
-  });
+  await expect(studio).toHaveAttribute("data-ecommerce-page-motion-state", "entered");
 
   await page.getByRole("button", { name: "手持商品图" }).click();
   await expect(page).toHaveURL(/tool=handheld/);
-  await expect(studio).toHaveAttribute("data-sidebar-switch-probe", "stable");
+  await expect(studio).toHaveAttribute("data-ecommerce-business", "handheld");
+  await expect(studio).toHaveAttribute("data-ecommerce-page-motion-state", "entered");
+  await expect(page.locator(".commerce-rail")).toHaveCSS("opacity", "1");
+  await expect(page.locator(".commerce-header")).toHaveCSS("opacity", "1");
+  await expect(page.getByLabel("选择生成模型")).toBeVisible();
 });
 
 test("try-on generation timer resumes from the server start time", async ({
@@ -1674,12 +1956,10 @@ test("switching ecommerce tabs starts an isolated business session", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design?tool=listing");
-  const productMenu = await openWorkbenchMenu(page, "商品信息");
-  await productMenu.getByLabel("商品名称").fill("只属于商品套图的测试商品");
-  await page.keyboard.press("Escape");
-  await expect(
-    page.getByRole("button", { name: "商品信息，当前：已填写" }),
-  ).toBeVisible();
+  const studio = page.locator(".listing-studio");
+  await studio
+    .getByRole("textbox", { name: "商品名称" })
+    .fill("只属于商品套图的测试商品");
   await page
     .locator('input[type="file"]')
     .first()
@@ -1691,7 +1971,7 @@ test("switching ecommerce tabs starts an isolated business session", async ({
         "base64",
       ),
     });
-  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(1);
+  await expect(studio.locator(".listing-upload .handheld-ref-card.has-file")).toHaveCount(1);
 
   await page.getByRole("button", { name: /饰品穿戴/ }).click();
   await expect(page).toHaveURL(/tool=accessory/);
@@ -1703,12 +1983,13 @@ test("switching ecommerce tabs starts an isolated business session", async ({
   await expect(page.getByLabel("饰品名称")).toHaveValue("");
   await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(0);
 
+  // 回到商品套图：本模块自己的草稿原样恢复（其他模块的内容不会带过来）
   await page.getByRole("button", { name: /商品套图/ }).click();
   await expect(page).toHaveURL(/tool=listing/);
-  await expect(page.getByRole("button", { name: "商品信息，当前：可选" })).toBeVisible();
-  const reopened = await openWorkbenchMenu(page, "商品信息");
-  await expect(reopened.getByLabel("商品名称")).toHaveValue("");
-  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(0);
+  await expect(studio.getByRole("textbox", { name: "商品名称" })).toHaveValue(
+    "只属于商品套图的测试商品",
+  );
+  await expect(studio.locator(".listing-upload .handheld-ref-card.has-file")).toHaveCount(1);
 });
 
 test("all ecommerce side tabs resolve to their own business session", async ({
@@ -2009,9 +2290,8 @@ test("product library loads a product into the current task", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design?tool=listing");
-  await expect(
-    page.getByRole("button", { name: "商品信息，当前：可选" }),
-  ).toBeVisible();
+  const studio = page.locator(".listing-studio");
+  await expect(studio.getByRole("textbox", { name: "商品名称" })).toHaveValue("");
   await page
     .locator(".commerce-header__actions button")
     .filter({ hasText: "商品库" })
@@ -2026,14 +2306,48 @@ test("product library loads a product into the current task", async ({
 
   await page.locator(".commerce-product-card__actions .is-primary").click();
   await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
-  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(1);
-  await expect(
-    page.getByRole("button", { name: "商品信息，当前：已填写" }),
-  ).toBeVisible();
-  const productMenu = await openWorkbenchMenu(page, "商品信息");
-  await expect(productMenu.getByLabel("商品名称")).toHaveValue(
+  await expect(studio.locator(".listing-upload .handheld-ref-card.has-file")).toHaveCount(1);
+  await expect(studio.getByRole("textbox", { name: "商品名称" })).toHaveValue(
     "延迟返回的测试商品",
   );
+});
+
+test("listing studio shows a finished set as tiles with result actions", async ({
+  page,
+}) => {
+  await page.goto("/ecommerce-design?tool=listing&seedResult=multi");
+  const studio = page.locator(".listing-studio");
+  await expect(studio.locator(".listing-stage__head")).toContainText("创作结果");
+  const tiles = studio.locator(".listing-tile");
+  await expect(tiles).toHaveCount(4);
+  await expect(tiles.locator("img")).toHaveCount(4);
+  const actions = studio.getByRole("group", { name: "结果操作" });
+  for (const name of ["连续优化", "局部修正", "存入素材库", "下载套图"]) {
+    await expect(actions.getByRole("button", { name })).toBeEnabled();
+  }
+  await expect(actions.getByRole("button", { name: "下载", exact: true })).toBeEnabled();
+
+  // 第一次点选中，连续优化作用于选中的那张
+  await tiles.nth(2).getByRole("button").click();
+  await expect(tiles.nth(2)).toHaveClass(/is-selected/);
+  await actions.getByRole("button", { name: "连续优化" }).click();
+  const revision = page.getByRole("dialog", { name: "继续调整当前成品" });
+  await expect(revision).toBeVisible();
+  await expect(revision.getByRole("button", { name: /生成 V2/ })).toBeDisabled();
+  await revision.getByRole("textbox").fill("标题换成白色，其他保持不变");
+  await expect(revision.getByRole("button", { name: /生成 V2/ })).toBeEnabled();
+  await revision.getByRole("button", { name: "收起连续优化" }).click();
+  await expect(revision).toHaveCount(0);
+
+  const historyCard = page
+    .getByLabel("商品套图历史")
+    .getByRole("listitem", { name: "商品套图，共 4 张" });
+  await expect(historyCard).toHaveAttribute("aria-pressed", "true");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
 });
 
 test("generate asks for credit confirmation before submitting", async ({
@@ -2206,8 +2520,8 @@ test("ecommerce history exposes deletion and removes the record", async ({
 test("workbench keeps result actions reachable after loading history", async ({
   page,
 }) => {
-  await page.goto("/ecommerce-design?tool=listing&seedResult=multi");
-  const workbench = page.locator(".commerce-workbench.is-listing");
+  await page.goto("/ecommerce-design?tool=campaign&seedResult=multi");
+  const workbench = page.locator(".commerce-workbench.is-campaign");
   await expect(workbench).toBeVisible();
   const frame = workbench.locator(".handheld-frame");
   await expect(frame).toHaveClass(/has-image/);
@@ -2231,7 +2545,7 @@ test("workbench keeps result actions reachable after loading history", async ({
   });
   expect(resultFitsStage).toBe(true);
 
-  await expect(page.getByRole("button", { name: "查看商品套图" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看营销图" })).toBeVisible();
   const actions = page.getByLabel("结果操作");
   await expect(actions.getByRole("button", { name: "连续优化" })).toBeVisible();
   await expect(actions.getByRole("button", { name: "局部修正" })).toBeEnabled();
@@ -2252,8 +2566,8 @@ test("workbench keeps result actions reachable after loading history", async ({
   await expect(revision).toHaveCount(0);
 
   const historyCard = page
-    .getByLabel("商品套图历史")
-    .getByRole("listitem", { name: "商品套图，共 4 张" });
+    .getByLabel("营销图历史")
+    .getByRole("listitem", { name: "营销图，共 4 张" });
   await expect(historyCard).toBeVisible();
   await expect(historyCard).toHaveAttribute("aria-pressed", "true");
 });
@@ -2261,7 +2575,7 @@ test("workbench keeps result actions reachable after loading history", async ({
 test("multi-image results render as a stable thumb strip beside the frame", async ({
   page,
 }) => {
-  await page.goto("/ecommerce-design?tool=listing&seedResult=multi");
+  await page.goto("/ecommerce-design?tool=campaign&seedResult=multi");
   const frame = page.locator(".handheld-frame");
   await expect(frame).toHaveClass(/has-image/);
   const thumbs = page.getByRole("list", { name: "本次套图" }).getByRole("listitem");
@@ -2325,7 +2639,27 @@ async function mockEcommerceApis(page) {
   let productStatus = "active";
   let productBriefAttempts = 0;
   let runningTryonSeeded = false;
-  const commerceReviews = new Map();
+  // 通用工作台（营销图）运行中的任务：已经跑了 45 秒，刷新后读秒要从这里续接
+  const runningCampaignStartedAt = new Date(Date.now() - 45_000).toISOString();
+  const runningCampaignTask = () => ({
+    id: "e2e-running-campaign",
+    type: "ecommerce_design",
+    status: "running",
+    prompt: "测试运行中的营销图任务",
+    params: {
+      _kind: "ui-design-ecommerce-campaign-generation",
+      aspectRatio: "1:1",
+      batchId: "e2e-running-campaign-batch",
+      batchIndex: 0,
+      batchSize: 1,
+      batchCreatedAt: runningCampaignStartedAt,
+    },
+    count: 1,
+    originalUrls: [],
+    outputUrls: [],
+    createdAt: runningCampaignStartedAt,
+    startedAt: runningCampaignStartedAt,
+  });
   const runningTryonStartedAt = new Date(Date.now() - 12_000).toISOString();
   const runningTryonTask = () => ({
     id: "e2e-running-tryon",
@@ -2442,33 +2776,6 @@ async function mockEcommerceApis(page) {
       });
       return;
     }
-    if (path === "/api/v1/commerce/reviews" && request.method() === "GET") {
-      await fulfill(route, { items: [...commerceReviews.values()] });
-      return;
-    }
-    if (
-      path.startsWith("/api/v1/commerce/reviews/") &&
-      request.method() === "PUT"
-    ) {
-      const taskId = path.split("/").at(-1);
-      const payload = request.postDataJSON() || {};
-      const review = {
-        id: `review-${taskId}`,
-        taskId,
-        status: payload.status || "pending",
-        checklist: payload.checklist || {},
-        note: payload.note || "",
-        channel: payload.channel || "",
-        reviewedAt:
-          payload.status && payload.status !== "pending"
-            ? "2026-01-01T00:02:00.000Z"
-            : null,
-        updatedAt: "2026-01-01T00:02:00.000Z",
-      };
-      commerceReviews.set(taskId, review);
-      await fulfill(route, review);
-      return;
-    }
     if (path === "/api/v1/files/mock-product.png") {
       await route.fulfill({
         status: 200,
@@ -2541,6 +2848,10 @@ async function mockEcommerceApis(page) {
     if (path === "/api/v1/tasks") {
       const seedResult = new URL(page.url()).searchParams.get("seedResult");
       if (seedResult === "runningTryon") runningTryonSeeded = true;
+      if (seedResult === "runningCampaign") {
+        await fulfill(route, { items: [runningCampaignTask()], nextCursor: null });
+        return;
+      }
       if (runningTryonSeeded) {
         await fulfill(route, { items: [runningTryonTask()], nextCursor: null });
         return;
@@ -2594,7 +2905,9 @@ async function mockEcommerceApis(page) {
           requestedTool === "accessory"
             ? "accessory"
             : seedResult === "multi"
-              ? "listing"
+              ? requestedTool === "campaign"
+                ? "campaign"
+                : "listing"
               : "detail";
         await fulfill(route, {
           items: Array.from({ length: count }, (_, index) => {
@@ -2679,6 +2992,13 @@ async function mockEcommerceApis(page) {
       return;
     }
     if (
+      path === "/api/v1/tasks/e2e-running-campaign" &&
+      request.method() === "GET"
+    ) {
+      await fulfill(route, runningCampaignTask());
+      return;
+    }
+    if (
       path === "/api/v1/tasks/e2e-result-task-1" &&
       request.method() === "DELETE"
     ) {
@@ -2716,3 +3036,82 @@ async function fulfill(route, data) {
     body: JSON.stringify({ success: true, data }),
   });
 }
+
+test("each ecommerce module keeps its own references and only the model is shared", async ({
+  page,
+}) => {
+  const historyKinds = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/tasks" && request.method() === "GET") {
+      historyKinds.push(url.searchParams.get("kind") || "");
+    }
+  });
+  await page.goto("/ecommerce-design?tool=campaign");
+  const workbench = page.locator(".commerce-workbench.is-campaign");
+  await expect(workbench).toBeVisible();
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "campaign-product.png",
+    mimeType: "image/png",
+    buffer: PIXEL_PNG,
+  });
+  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(1);
+  await workbench.getByRole("textbox", { name: "细节补充" }).fill("只属于营销图的补充");
+  await expect.poll(() => historyKinds).toContain("ui-design-ecommerce-campaign-generation");
+
+  // 换到另一个模块：参考图和补充说明都不带过去
+  await page.getByRole("button", { name: /AI 背景图/ }).click();
+  await expect(page).toHaveURL(/tool=background/);
+  const background = page.locator(".commerce-workbench.is-background");
+  await expect(background).toBeVisible();
+  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(0);
+  await expect(background.getByRole("textbox", { name: "细节补充" })).toHaveValue("");
+  await expect.poll(() => historyKinds).toContain("ui-design-ecommerce-background-generation");
+  // 顶部生成模型是唯一共享的设置
+  await expect(page.getByLabel("选择生成模型")).toContainText("E2E 图片模型");
+
+  // 回到营销图：参考图与补充说明原样恢复
+  await page.getByRole("button", { name: /AI 营销图/ }).click();
+  await expect(page).toHaveURL(/tool=campaign/);
+  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(1);
+  await expect(
+    page.locator(".commerce-workbench.is-campaign").getByRole("textbox", { name: "细节补充" }),
+  ).toHaveValue("只属于营销图的补充");
+});
+
+test("listing references and product info survive a page refresh", async ({ page }) => {
+  await page.goto("/ecommerce-design?tool=listing");
+  const studio = page.locator(".listing-studio");
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "product.png",
+    mimeType: "image/png",
+    buffer: PIXEL_PNG,
+  });
+  await studio.getByRole("textbox", { name: "商品名称" }).fill("刷新后还在的保温杯");
+  await expect(studio.locator(".listing-upload .handheld-ref-card.has-file")).toHaveCount(1);
+  // 草稿防抖写入后再刷新
+  await page.waitForTimeout(800);
+  await page.reload();
+  await expect(studio.getByRole("textbox", { name: "商品名称" })).toHaveValue("刷新后还在的保温杯");
+  await expect(studio.locator(".listing-upload .handheld-ref-card.has-file")).toHaveCount(1);
+});
+
+test("a running workbench batch keeps counting after a refresh", async ({ page }) => {
+  await page.goto("/ecommerce-design?tool=campaign&seedResult=runningCampaign");
+  const stage = page.locator(".commerce-workbench.is-campaign [role=status]").filter({
+    hasText: /./,
+  });
+  // 任务 45 秒前创建：读秒从创建时间续接，而不是从 0 开始
+  await expect
+    .poll(async () => {
+      const label = await page
+        .locator(".commerce-workbench.is-campaign [aria-label*='已等待']")
+        .first()
+        .getAttribute("aria-label")
+        .catch(() => "");
+      const match = String(label || "").match(/已等待 (\d+) 秒/);
+      return match ? Number(match[1]) : -1;
+    })
+    .toBeGreaterThanOrEqual(44);
+  await expect(stage.first()).toBeVisible();
+});

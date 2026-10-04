@@ -25,14 +25,16 @@ import {
   AssistantContextMeter,
   AssistantAutoApproveDialog,
   AssistantCostDialog,
+  AssistantArchivedDialog,
+  LineIcon,
+  AssistantConversationUsage,
   AssistantDeleteDialog,
-  AssistantFullscreenPreview,
+  AssistantImageViewer,
   AssistantPreviewImage,
   AssistantRenameDialog,
   AssistantSearchDialog,
   AssistantStopDialog,
   ModelMenuPrice,
-  NewChatIcon,
   PreferenceSegment,
   assistantContextMeterTitle,
 } from "./AssistantWorkspaceUi.jsx";
@@ -43,6 +45,7 @@ import {
 } from "./AssistantMessageComponents.jsx";
 import { MentionMenu } from "../skills/MentionMenu.jsx";
 import { AssistantMemoryPanel, OPEN_MEMORY_EVENT } from "./AssistantMemoryViews.jsx";
+import { AssistantImageOpenContext } from "./AssistantCommerceSet.jsx";
 import { useMentionMenu } from "../skills/useMentionMenu.js";
 
 const REFERENCE_PROGRESS_RADIUS = 17;
@@ -125,6 +128,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
     setAssetSearch,
     libraryAssetsLoading,
     imageModels,
+    imageModel,
     editableFilesEnabled,
     setConversationModel,
     setReasoningEffort,
@@ -244,7 +248,6 @@ export function AssistantWorkspaceLayout({ workspace }) {
     quoteMessage,
     openImage,
     closeImage,
-    stepImage,
     favoriteAssistantImage,
     requestPublishImage,
     requestDeleteImage,
@@ -273,12 +276,21 @@ export function AssistantWorkspaceLayout({ workspace }) {
     cancelRename,
     commitRename,
     togglePinned,
+    archiveConversation,
+    conversationQuota,
+    archivedOpen,
+    setArchivedOpen,
+    archivedItems,
+    archivedLoading,
+    archiveBusyId,
+    openArchived,
+    restoreConversation,
     newConversation,
     swallowComposerMenuClick,
     toggleComposerMenu,
     uploadReferences,
     removeComposerDocument,
-    submitRegionEdit,
+    startStudioEdit,
     requestSend,
     confirmCost,
     cancelCost,
@@ -295,6 +307,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
     submitUserMessageEdit,
     updateProposal,
     approveAgentProposal,
+    sendCorrection,
     assistantAutoApprove,
     assistantAutoApproveBudgetCents,
     setAssistantAutoApprove,
@@ -331,27 +344,54 @@ export function AssistantWorkspaceLayout({ workspace }) {
     promptType: "",
   });
 
+  // 侧栏图标的提示：侧栏是 overflow: hidden，提示挂到 body 上，贴着按钮右侧显示。
+  const [railTip, setRailTip] = useState(null);
+  const showRailTip = (event, label, hint = "") => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setRailTip({ label, hint, top: rect.top + rect.height / 2, left: rect.right + 10 });
+  };
+  const hideRailTip = () => setRailTip(null);
+  useEffect(() => { setRailTip(null); }, [sidebarCollapsed]);
+  // ⌘B / Ctrl+B 收起或展开侧栏。
+  useEffect(() => {
+    const onKey = (event) => {
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== "b") return;
+      if (event.target?.isContentEditable) return;
+      event.preventDefault();
+      updateSidebar();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   return (
+    <AssistantImageOpenContext.Provider value={openImage}>
     <div className={`assistant-workspace${isDark ? " is-dark" : ""}${activeRun ? " is-generating" : ""}${sidebarCollapsed ? " is-sidebar-narrow" : ""}${sidebarAnimating ? " is-sidebar-animating" : ""}`} onClick={() => { setCreationMenuOpen(false); setModelMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); setActiveMessageMenuId(""); setConversationMenuId(""); }}>
       <aside className="assistant-sidebar" onClick={(event) => { event.stopPropagation(); if (!event.target.closest(".conversation-more")) setConversationMenuId(""); }}>
-        <button className="icon-button sidebar-close" type="button" title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"} aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"} onClick={updateSidebar}><i className={`bi ${sidebarCollapsed ? "bi-chevron-right" : "bi-chevron-left"}`} /></button>
+        <button className="icon-button sidebar-close" type="button" aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"} aria-keyshortcuts="Meta+B Control+B" onClick={updateSidebar}
+          onMouseEnter={(event) => showRailTip(event, sidebarCollapsed ? "展开侧栏" : "收起侧栏", "⌘B")} onMouseLeave={hideRailTip}><LineIcon name="sidebar" size={20} /></button>
         {renderSidebarBody ? <div className="assistant-sidebar-body">
         <div className="assistant-brand-row"><div className="assistant-brand"><strong>开启创作</strong></div></div>
         <nav className="sidebar-nav" aria-label="创作入口">
           <button className="sidebar-nav-item" type="button" onClick={() => setSearchOpen(true)}>
-            <i className="bi bi-search" aria-hidden="true" />
+            <LineIcon name="search" size={20} />
             <span>搜索</span>
           </button>
           <button className={`sidebar-nav-item${!activeId ? " is-active" : ""}`} type="button" data-assistant-tour="new-chat" onClick={newConversation}>
-            <NewChatIcon />
+            <LineIcon name="compose" size={20} />
             <span>新对话</span>
           </button>
           <button className={`sidebar-nav-item${assetLibraryOpen ? " is-active" : ""}`} type="button" data-assistant-tour="assets" onClick={() => setAssetLibraryOpen((value) => !value)}>
-            <i className="bi bi-grid" aria-hidden="true" />
+            <LineIcon name="assets" size={20} />
             <span>资产库</span>
           </button>
+          <button className={`sidebar-nav-item${archivedOpen ? " is-active" : ""}`} type="button" onClick={() => void openArchived()}>
+            <LineIcon name="archive" size={20} />
+            <span>已归档</span>
+            {conversationQuota?.archived ? <span className="sidebar-nav-count">{conversationQuota.archived}</span> : null}
+          </button>
           <button className={`sidebar-nav-item${memoryOpen ? " is-active" : ""}`} type="button" onClick={() => { setMemoryTab("memory"); setMemoryOpen(true); }}>
-            <i className="bi bi-bookmark-heart" aria-hidden="true" />
+            <LineIcon name="memory" size={20} />
             <span>记忆与提醒</span>
           </button>
         </nav>
@@ -376,7 +416,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
                           </span>
                           <span className="conversation-copy"><span>{conversation.title}</span></span>
                         </button>
-                        {pinned ? <i className="bi bi-pin-angle-fill conversation-pin" aria-hidden="true" /> : null}
+                        {pinned ? <span className="conversation-pin" aria-hidden="true"><LineIcon name="pin" size={14} /></span> : null}
                         <div className={`conversation-more${conversationMenuId === conversation.id ? " is-open" : ""}`}>
                           <button className="conversation-more-toggle" type="button" title="更多" aria-label="更多" aria-expanded={conversationMenuId === conversation.id} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setConversationMenuId((current) => current === conversation.id ? "" : conversation.id); }}>
                             <i className="bi bi-three-dots" aria-hidden="true" />
@@ -384,15 +424,19 @@ export function AssistantWorkspaceLayout({ workspace }) {
                           {conversationMenuId === conversation.id ? (
                             <div className="conversation-more-menu" role="menu">
                               <button type="button" role="menuitem" onClick={(event) => { event.preventDefault(); event.stopPropagation(); startRename(conversation); }}>
-                                <i className="bi bi-pencil" aria-hidden="true" />
+                                <LineIcon name="rename" />
                                 重新命名
                               </button>
                               <button type="button" role="menuitem" onClick={(event) => { event.preventDefault(); event.stopPropagation(); togglePinned(conversation); }}>
-                                <i className={`bi ${pinned ? "bi-pin-angle-fill" : "bi-pin-angle"}`} aria-hidden="true" />
+                                <LineIcon name={pinned ? "unpin" : "pin"} />
                                 {pinned ? "取消置顶" : "置顶"}
                               </button>
+                              <button type="button" role="menuitem" disabled={archiveBusyId === conversation.id} onClick={(event) => { event.preventDefault(); event.stopPropagation(); void archiveConversation(conversation); }}>
+                                <LineIcon name="archive" />
+                                归档
+                              </button>
                               <button type="button" role="menuitem" className="is-danger" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setConversationMenuId(""); setDeleteTarget(conversation); }}>
-                                <i className="bi bi-trash3" aria-hidden="true" />
+                                <LineIcon name="trash" />
                                 删除
                               </button>
                             </div>
@@ -407,14 +451,26 @@ export function AssistantWorkspaceLayout({ workspace }) {
             </div>
           </div>
         </div>
+        <AssistantConversationUsage quota={conversationQuota} />
         </div> : null}
         {renderSidebarRail ? <div className="assistant-sidebar-rail" aria-hidden={!sidebarCollapsed}>
-          <button className="assistant-rail-new" type="button" title="搜索" onClick={() => setSearchOpen(true)}><i className="bi bi-search" /></button>
-          <button className="assistant-rail-new" type="button" title="新对话" data-assistant-tour="new-chat" onClick={newConversation}><NewChatIcon /></button>
-          <button className={`assistant-rail-new${assetLibraryOpen ? " is-active" : ""}`} type="button" title="资产库" data-assistant-tour="assets" onClick={() => setAssetLibraryOpen((value) => !value)}><i className="bi bi-grid" /></button>
-          <button className={`assistant-rail-new${memoryOpen ? " is-active" : ""}`} type="button" title="记忆与提醒" onClick={() => { setMemoryTab("memory"); setMemoryOpen(true); }}><i className="bi bi-bookmark-heart" /></button>
-          <button className="assistant-rail-history" type="button" title="历史" aria-label="历史" data-assistant-tour="history" onClick={() => { setHistoryOpen(true); if (sidebarCollapsed) updateSidebar(); }}>
-            <i className="bi bi-clock-history" aria-hidden="true" />
+          {[
+            { key: "search", label: "搜索", icon: "search", onClick: () => setSearchOpen(true) },
+            { key: "new", label: "新对话", icon: "compose", active: !activeId, tour: "new-chat", onClick: newConversation },
+            { key: "assets", label: "资产库", icon: "assets", active: assetLibraryOpen, tour: "assets", onClick: () => setAssetLibraryOpen((value) => !value) },
+            { key: "archive", label: "已归档", icon: "archive", active: archivedOpen, badge: conversationQuota?.archived || 0, onClick: () => void openArchived() },
+            { key: "memory", label: "记忆与提醒", icon: "memory", active: memoryOpen, onClick: () => { setMemoryTab("memory"); setMemoryOpen(true); } },
+          ].map((entry) => (
+            <button key={entry.key} className={`assistant-rail-new${entry.active ? " is-active" : ""}`} type="button" aria-label={entry.label} data-assistant-tour={entry.tour}
+              onClick={() => { hideRailTip(); entry.onClick(); }} onMouseEnter={(event) => showRailTip(event, entry.label, entry.badge ? `${entry.badge}` : "")} onMouseLeave={hideRailTip}>
+              <LineIcon name={entry.icon} size={20} />
+              {entry.badge ? <span className="assistant-rail-dot" aria-hidden="true" /> : null}
+            </button>
+          ))}
+          <button className="assistant-rail-history" type="button" aria-label="历史" data-assistant-tour="history"
+            onClick={() => { hideRailTip(); setHistoryOpen(true); if (sidebarCollapsed) updateSidebar(); }}
+            onMouseEnter={(event) => showRailTip(event, "展开全部历史")} onMouseLeave={hideRailTip}>
+            <LineIcon name="history" size={20} />
           </button>
           <div className="assistant-rail-list" aria-label="历史">
             {railConversations.map((conversation) => {
@@ -424,8 +480,8 @@ export function AssistantWorkspaceLayout({ workspace }) {
                 <button
                   key={conversation.id}
                   type="button"
-                  className={`assistant-rail-item${conversation.id === activeId ? " is-active" : ""}${running ? " is-running" : ""}`}
-                  title={conversation.title}
+                  className={`assistant-rail-item${conversation.id === activeId ? " is-active" : ""}${running ? " is-running" : ""}${pinnedIds.includes(conversation.id) ? " is-pinned" : ""}`}
+                  aria-label={conversation.title}
                   onClick={() => selectConversation(conversation.id)}
                   onMouseEnter={(event) => {
                     const rect = event.currentTarget.getBoundingClientRect();
@@ -436,19 +492,21 @@ export function AssistantWorkspaceLayout({ workspace }) {
                   <span className={`assistant-rail-thumb${thumbnail ? " has-image" : ""}`}>
                     {thumbnail ? <AssistantPreviewImage src={thumbnail} alt="" loading="lazy" /> : <b>{conversationMark(conversation)}</b>}
                   </span>
+                  {running ? <span className="assistant-rail-running" aria-hidden="true" /> : null}
                 </button>
               );
             })}
           </div>
         </div> : null}
       </aside>
+      {railTip && createPortal(<div className={`assistant-rail-tip${isDark ? " is-dark" : ""}`} style={{ top: `${railTip.top}px`, left: `${railTip.left}px` }} role="tooltip">{railTip.label}{railTip.hint ? <kbd>{railTip.hint}</kbd> : null}</div>, document.body)}
       {conversationPeek && createPortal(<div className={`assistant-conversation-peek${isDark ? " is-dark" : ""}`} style={{ top: `${conversationPeek.top}px` }} aria-hidden="true"><strong>{conversationPeek.conversation.title}</strong>{(conversationPeek.conversation.messages || []).slice(-2).map((message, index) => <p key={`${message.id}-${index}`}><b>{message.role === "user" ? "我" : "AI"}</b>{message.images?.length ? `[图片 ×${message.images.length}]` : messagePreview(message.content)}</p>)}<small>{formatTime(conversationPeek.conversation.updatedAt)}</small></div>, document.body)}
 
       <main className={`assistant-main${messages.length ? "" : " is-empty"}`}>
         <div className="assistant-ambient-stage" aria-hidden="true"><i className="ambient-blob is-a" /><i className="ambient-blob is-b" /><i className="ambient-blob is-c" /></div>
         {messages.length > 0 && <header className="assistant-topbar"><div className="topbar-title"><label className="thread-search"><i className="bi bi-search" /><input name="assistant-thread-search" value={threadSearch} type="text" placeholder="搜索对话历史" aria-label="搜索对话历史" autoComplete="off" onChange={(event) => { setThreadSearch(event.target.value); setThreadHitIndex(-1); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setThreadSearch(""); setThreadHitIndex(-1); return; } if (event.key !== "Enter" || event.nativeEvent.isComposing) return; event.preventDefault(); jumpToThreadHit(event.shiftKey ? -1 : 1); }} />{threadSearch.trim() ? <span className="thread-search-count" aria-live="polite">{threadSearchHits.length ? (threadHitIndex >= 0 ? `${threadHitIndex + 1}/${threadSearchHits.length}` : `${threadSearchHits.length} 条`) : "无结果"}</span> : null}{threadSearch.trim() ? <button type="button" title="上一条" aria-label="上一条匹配" disabled={!threadSearchHits.length} onClick={() => jumpToThreadHit(-1)}><i className="bi bi-chevron-up" /></button> : null}{threadSearch.trim() ? <button type="button" title="下一条" aria-label="下一条匹配" disabled={!threadSearchHits.length} onClick={() => jumpToThreadHit(1)}><i className="bi bi-chevron-down" /></button> : null}{threadSearch ? <button type="button" title="清空搜索" aria-label="清空搜索" onClick={() => { setThreadSearch(""); setThreadHitIndex(-1); }}><i className="bi bi-x" /></button> : null}</label></div><div className="topbar-filters"><button type="button" className="topbar-context-clear" data-assistant-tour="clear-context" title={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : `${assistantContextMeterTitle(latestContext)}。清除上文并保留可见历史`} aria-label={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} disabled={conversationHasWork || messages.at(-1)?.kind === "context-divider"} onClick={() => void clearConversationContext()}><AssistantContextMeter context={latestContext} /><span>清除上文</span></button></div></header>}
         <div ref={messageScrollerRef} className="assistant-messages" onScroll={handleMessageScroll}>
-          {loading ? <section className="assistant-thread-skeleton" aria-label="正在加载"><div className="sk-bubble is-user"><i style={{ width: "46%" }} /></div><div className="sk-bubble"><i style={{ width: "82%" }} /><i style={{ width: "64%" }} /></div><div className="sk-bubble is-user"><i style={{ width: "30%" }} /></div><div className="sk-bubble"><i style={{ width: "74%" }} /><i style={{ width: "40%" }} /></div></section> : messages.length === 0 ? <AssistantEmptyState creation={selectedCreation} editableFilesEnabled={editableFilesEnabled} onPick={(text) => { setDraft(text); textareaRef.current?.focus(); }} onOpenConversation={selectConversation} onUseAgent={() => setCreationType("agent")} /> : <section className="message-thread" aria-live="polite">{(hiddenMessageCount > 0 || activeConversation?.hasMoreMessages) && <button className="load-earlier-messages" type="button" disabled={loadingEarlierRef.current} onClick={() => { if (hiddenMessageCount > 0) { const scroller = messageScrollerRef.current; if (scroller) { scroller.scrollTop = 0; handleMessageScroll(); } } else { void loadEarlierMessages(); } }}><i className="bi bi-clock-history" /><span>{hiddenMessageCount > 0 ? `加载更早的对话（${hiddenMessageCount}）` : "从服务器加载更早对话"}</span></button>}<div className="message-turns">{renderedMessages.map((message, offset) => {
+          {loading || (activeConversation?.messagesDeferred && !messages.length) ? <section className="assistant-thread-skeleton" aria-label="正在加载"><div className="sk-bubble is-user"><i style={{ width: "46%" }} /></div><div className="sk-bubble"><i style={{ width: "82%" }} /><i style={{ width: "64%" }} /></div><div className="sk-bubble is-user"><i style={{ width: "30%" }} /></div><div className="sk-bubble"><i style={{ width: "74%" }} /><i style={{ width: "40%" }} /></div></section> : messages.length === 0 ? <AssistantEmptyState creation={selectedCreation} editableFilesEnabled={editableFilesEnabled} onPick={(text) => { setDraft(text); textareaRef.current?.focus(); }} onOpenConversation={selectConversation} onUseAgent={() => setCreationType("agent")} /> : <section className="message-thread" aria-live="polite">{(hiddenMessageCount > 0 || activeConversation?.hasMoreMessages) && <button className="load-earlier-messages" type="button" disabled={loadingEarlierRef.current} onClick={() => { if (hiddenMessageCount > 0) { const scroller = messageScrollerRef.current; if (scroller) { scroller.scrollTop = 0; handleMessageScroll(); } } else { void loadEarlierMessages(); } }}><i className="bi bi-clock-history" /><span>{hiddenMessageCount > 0 ? `加载更早的对话（${hiddenMessageCount}）` : "从服务器加载更早对话"}</span></button>}<div className="message-turns">{renderedMessages.map((message, offset) => {
             const originalIndex = firstRenderedMessageIndex + offset;
             const previous = messages[originalIndex - 1];
             const currentDate = new Date(message.createdAt);
@@ -460,7 +518,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
               ? resolveProposalReferences(activeConversation, message).references
               : previousUser?.referenceImages;
             if (hiddenQueuedMessageIds.has(message.id)) return null;
-            return <AssistantMessageRow key={message.id} message={message} turnId={previousUser?.id} showDate={showDate} expanded={expandedStatusId === message.id} copied={copiedMessageId === message.id} generating={conversationHasWork} feedbackBusy={feedbackBusyIds.has(message.id)} isLastAssistant={message.id === lastAssistantId} isLastUser={message.id === lastUserMessageId} editing={editingMessageId === message.id} editingDraft={editingMessageDraft} moreOpen={activeMessageMenuId === message.id} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} imageModels={imageModels} sourceProposal={sourceProposal} proposalExecuted={messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id)} attachedReferences={attachedReferences} autoApprove={assistantAutoApprove} autoApproveBudgetCents={assistantAutoApproveBudgetCents} autoApproved={message.kind === "proposal" ? proposalAutoApproved(message) : false} searchHit={threadSearchHitIds.has(message.id)} searchCurrent={message.id === currentThreadHitId} searchQuery={threadSearch} toolActionBusyId={toolActionBusyId} maxMessageCharacters={maxMessageCharacters} onToolAction={executeAssistantToolAction} onToggleStatus={toggleStatus} onCopy={copyMessage} onFeedback={submitMessageFeedback} onQuote={quoteMessage} onOpenImage={openImage} onImageLoad={markImageLoaded} onImageError={markImageFailed} onImageRetry={retryImage} onUseReference={useGeneratedImageAsReference} onStartEdit={startEditingUserMessage} onEditDraft={setEditingMessageDraft} onCancelEdit={cancelUserMessageEdit} onSubmitEdit={(item) => void submitUserMessageEdit(item)} onRetry={(item) => void retryAssistant(item)} onToggleMore={(id) => setActiveMessageMenuId((current) => current === id ? "" : id)} onDownloadMarkdown={downloadMarkdown} onDelete={(id) => void removeMessage(id)} onProposalChange={(patch) => updateProposal(message.id, patch)} onProposalDismiss={() => updateProposal(message.id, { dismissed: true })} onProposalRestore={() => updateProposal(message.id, { dismissed: false })} onProposalApprove={(options) => approveAgentProposal(message, options)} onReopenProposal={() => reopenSourceProposal(sourceProposal)} />;
+            return <AssistantMessageRow key={message.id} message={message} turnId={previousUser?.id} showDate={showDate} expanded={expandedStatusId === message.id} copied={copiedMessageId === message.id} generating={conversationHasWork} feedbackBusy={feedbackBusyIds.has(message.id)} isLastAssistant={message.id === lastAssistantId} isLastUser={message.id === lastUserMessageId} editing={editingMessageId === message.id} editingDraft={editingMessageDraft} moreOpen={activeMessageMenuId === message.id} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} imageModels={imageModels} sourceProposal={sourceProposal} proposalExecuted={messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id)} attachedReferences={attachedReferences} autoApprove={assistantAutoApprove} autoApproveBudgetCents={assistantAutoApproveBudgetCents} autoApproved={message.kind === "proposal" ? proposalAutoApproved(message) : false} searchHit={threadSearchHitIds.has(message.id)} searchCurrent={message.id === currentThreadHitId} searchQuery={threadSearch} toolActionBusyId={toolActionBusyId} maxMessageCharacters={maxMessageCharacters} onToolAction={executeAssistantToolAction} onToggleStatus={toggleStatus} onCopy={copyMessage} onFeedback={submitMessageFeedback} onQuote={quoteMessage} onOpenImage={openImage} onImageLoad={markImageLoaded} onImageError={markImageFailed} onImageRetry={retryImage} onUseReference={useGeneratedImageAsReference} onStartEdit={startEditingUserMessage} onEditDraft={setEditingMessageDraft} onCancelEdit={cancelUserMessageEdit} onSubmitEdit={(item) => void submitUserMessageEdit(item)} onRetry={(item) => void retryAssistant(item)} onToggleMore={(id) => setActiveMessageMenuId((current) => current === id ? "" : id)} onDownloadMarkdown={downloadMarkdown} onDelete={(id) => void removeMessage(id)} onProposalChange={(patch) => updateProposal(message.id, patch)} onProposalDismiss={() => updateProposal(message.id, { dismissed: true })} onProposalRestore={() => updateProposal(message.id, { dismissed: false })} onProposalApprove={(options) => approveAgentProposal(message, options)} onReopenProposal={() => reopenSourceProposal(sourceProposal)} onCorrection={(action) => void sendCorrection(message, action)} />;
           })}</div></section>}
         </div>
 
@@ -799,6 +857,17 @@ export function AssistantWorkspaceLayout({ workspace }) {
         onClose={() => setStopConfirmOpen(false)}
         onStop={stopRun}
       />
+      <AssistantArchivedDialog
+        open={archivedOpen}
+        dark={isDark}
+        items={archivedItems}
+        loading={archivedLoading}
+        busyId={archiveBusyId}
+        quota={conversationQuota}
+        onClose={() => setArchivedOpen(false)}
+        onRestore={(item) => void restoreConversation(item)}
+        onDelete={(item) => setDeleteTarget(item)}
+      />
       <AssistantDeleteDialog
         target={deleteTarget}
         dark={isDark}
@@ -817,14 +886,16 @@ export function AssistantWorkspaceLayout({ workspace }) {
           void setAssistantAutoApprove(true, budget);
         }}
       />
-      <AssistantFullscreenPreview
+      <AssistantImageViewer
         value={selectedImage}
+        messages={messages}
         models={imageModels}
-        actionBusy={imageActionBusy}
+        currentModel={imageModel}
+        busy={conversationHasWork || Boolean(imageActionBusy)}
+        dark={isDark}
         onClose={closeImage}
-        onStep={stepImage}
+        onEdit={startStudioEdit}
         onUseReference={useGeneratedImageAsReference}
-        onRegionEdit={submitRegionEdit}
         onFavorite={(item, meta) => void favoriteAssistantImage(item, meta)}
         onPublish={requestPublishImage}
         onDelete={requestDeleteImage}
@@ -864,5 +935,6 @@ export function AssistantWorkspaceLayout({ workspace }) {
         document.body,
       )}
     </div>
+    </AssistantImageOpenContext.Provider>
   );
 }

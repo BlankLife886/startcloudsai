@@ -96,14 +96,10 @@ func (s *Server) generateEcommerceDetailPlan(c *gin.Context) {
 		}
 	}
 	allKeys := append(append([]string{}, body.InputKeys...), body.ExtraKeys...)
-	imageURLs := make([]string, 0, len(allKeys))
-	for _, key := range allKeys {
-		presigned, err := s.Storage.PresignGet(c.Request.Context(), key)
-		if err != nil {
-			fail(c, apperr.E("image_read_failed", "商品图片读取失败，请重新上传", 422))
-			return
-		}
-		imageURLs = append(imageURLs, presigned)
+	imageURLs, err := s.ecommerceAnalysisImageURLs(c.Request.Context(), allKeys)
+	if err != nil {
+		fail(c, err)
+		return
 	}
 	client, err := s.ecommerceAnalysisClient(c.Request.Context())
 	if err != nil {

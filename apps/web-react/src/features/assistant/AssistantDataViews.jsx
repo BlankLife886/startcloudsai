@@ -437,9 +437,19 @@ function ChargeView({ data }) {
   )
 }
 
+// Planning and then generating one e-commerce set yields two cards for the same
+// set (older answers stored both); show only the latest one.
+function latestCommerceSetViews(views) {
+  const lastIndex = new Map()
+  views.forEach((view, index) => {
+    if (view?.view === 'commerce_set' && view.data?.id) lastIndex.set(view.data.id, index)
+  })
+  return views.filter((view, index) => view?.view !== 'commerce_set' || !view.data?.id || lastIndex.get(view.data.id) === index)
+}
+
 export function AssistantDataViews({ views }) {
   if (!Array.isArray(views) || !views.length) return null
-  return views.map((view, index) => <AssistantDataView key={`${view?.tool || 'view'}-${index}`} view={view} />)
+  return latestCommerceSetViews(views).map((view, index) => <AssistantDataView key={`${view?.tool || 'view'}-${index}`} view={view} />)
 }
 
 export function AssistantDataView({ view }) {

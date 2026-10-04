@@ -17,6 +17,7 @@ import (
 // refunded. Codes come from developerUpstreamError and the billing helpers.
 var developerAPICallReasons = map[string]string{
 	"upstream_rejected":         "上游拒绝了请求（如内容安全），已退回",
+	openAIContentPolicyCode:     "内容违规被上游驳回，在每日免扣次数内，已退回",
 	"upstream_misconfigured":    "平台上游配置异常，已退回",
 	"upstream_rate_limited":     "上游限流，已退回",
 	"upstream_error":            "上游服务出错，已退回",
@@ -97,6 +98,9 @@ func developerAPICallDict(call *store.DeveloperAPICall, modelNames map[string]st
 		status, charged, reason = "charged", call.PriceCents, ""
 		if call.Note == "client_disconnected" {
 			reason = "结果已产生，调用方中途断开，照常扣费"
+		}
+		if call.ErrorCode == openAIContentPolicyCode {
+			reason = "内容违规被上游驳回，照常扣费"
 		}
 	case store.DeveloperAPIRequestFailed:
 		status, reason = "refunded", developerAPICallReasons[call.ErrorCode]

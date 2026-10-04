@@ -277,6 +277,25 @@ func (s *Server) metaAnnouncements(c *gin.Context) {
 	ok(c, gin.H{"items": items})
 }
 
+const announcementHistoryLimit = 50
+
+// metaAnnouncementHistory 公告记录：过期公告也保留，供用户端公告中心回看。
+func (s *Server) metaAnnouncementHistory(c *gin.Context) {
+	if !s.enforceUsageLimit(c, "public-announcement-history-minute", c.ClientIP(), publicMetadataPerMinute, 1, time.Minute) {
+		return
+	}
+	rows, err := store.ListAnnouncementHistory(c.Request.Context(), s.St.Pool, time.Now().UTC(), announcementHistoryLimit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, a := range rows {
+		items = append(items, announcementDict(a))
+	}
+	ok(c, gin.H{"items": items})
+}
+
 // health H3：db + redis 连通性检查，任一失败返回 503（compose healthcheck 在用）。
 func (s *Server) health(c *gin.Context) {
 	if !s.enforceUsageLimit(c, "public-health-minute", c.ClientIP(), publicMetadataPerMinute, 1, time.Minute) {

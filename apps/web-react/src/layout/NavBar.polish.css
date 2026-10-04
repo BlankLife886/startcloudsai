@@ -269,7 +269,9 @@
     box-shadow 420ms ease,
     visibility 0s;
 }
+/* 顶部公告条会撑高 header；蒙层必须从 header 实际底边开始，否则盖住菜单行导致 hover 开合闪烁 */
 .site-header .nav-backdrop {
+  top: var(--app-header-offset, 62px);
   background: rgb(14 12 28 / 32%);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -1313,4 +1315,30 @@
 .site-header .nav-mega-panel.is-hidden {
   visibility: hidden;
   pointer-events: none;
+}
+
+/* 新公告提醒：铃铛没有通知未读时显示小红点；下拉底部「公告」带未读数 */
+.nav-notify__badge.is-dot {
+  top: -1px;
+  right: -1px;
+  min-width: 8px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+}
+.nav-notify__foot-badge {
+  display: inline-block;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+  vertical-align: 1px;
 }

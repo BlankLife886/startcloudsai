@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/contentpolicy"
 	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
 	"github.com/BlankLife886/startcloudsai/server/internal/executionconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/growth"
@@ -1206,18 +1207,45 @@ func markFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, err
 	if err != nil || !ok {
 		return false, err
 	}
+	// 内容违规是上游已经处理过请求后驳回的：超出每日免扣次数时按预留积分结算，
+	// 无论是否扣费都不发失败补偿。
+	decision, err := contentpolicy.Decide(ctx, q, contentpolicy.Event{
+		UserID: task.UserID, SourceType: contentpolicy.SourceTask, SourceID: task.ID.String(),
+		Feature: firstNonEmpty(stringParam(task.Params, "_kind"), task.Type), ModelID: stringParam(task.Params, "_modelConfigId"),
+		Prompt: task.Prompt, ErrorCode: errorCode, Message: errorMessage, AmountCents: task.CostCents,
+	}, now())
+	if err != nil {
+		return false, err
+	}
+	if decision.Code != errorCode {
+		errorCode = decision.Code
+		if _, err := q.Exec(ctx, `UPDATE tasks SET error_code=$2 WHERE id=$1`, task.ID, errorCode); err != nil {
+			return false, err
+		}
+	}
+	task.ErrorCode = strPtr(errorCode)
+	task.ErrorMessage = strPtr(string(msg))
+	violation := decision.Violation
 	if task.CostCents > 0 {
-		if _, err := wallet.ReleaseForTask(ctx, q, task.UserID, task.ID, task.CostCents, strPtr("任务失败解冻")); err != nil {
+		if decision.Charge {
+			if _, err := wallet.SettleForTask(ctx, q, task.UserID, task.ID, task.CostCents, strPtr("内容违规被驳回：按预留积分结算，不退回")); err != nil {
+				return false, err
+			}
+		} else if _, err := wallet.ReleaseForTask(ctx, q, task.UserID, task.ID, task.CostCents, strPtr("任务失败解冻")); err != nil {
 			return false, err
 		}
 	}
 	if fromStatus == "running" {
-		failedTask := *task
-		failedTask.ErrorCode = strPtr(errorCode)
-		failedTask.ErrorMessage = strPtr(string(msg))
-		if err := recordTaskProfit(ctx, q, &failedTask, 0, task.Count, "failed", now()); err != nil {
+		revenue := int64(0)
+		if decision.Charge {
+			revenue = task.CostCents
+		}
+		if err := recordTaskProfit(ctx, q, task, revenue, task.Count, "failed", now()); err != nil {
 			return false, err
 		}
+	}
+	if violation {
+		return true, nil
 	}
 	if err := growth.ApplyTaskFailureCompensation(ctx, q, task, errorCode, now()); err != nil {
 		return false, err
@@ -1311,10 +1339,32 @@ func NotifyTaskSucceeded(ctx context.Context, q store.Q, task *store.Task, image
 // NotifyTaskFailed 主事务提交后尽力而为发通知，失败仅日志（M4 解耦）。
 func NotifyTaskFailed(ctx context.Context, q store.Q, task *store.Task) {
 	name := taskNotifyName(task)
-	body := name + "执行失败，费用已退回。"
+	body := name + "执行失败，" + FailureBillingNote(task) + "。"
 	if err := store.InsertNotification(ctx, q, &task.UserID, "task", name+"失败", &body); err != nil {
 		log.Printf("notify task %s failed: %v", task.ID, err)
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// FailureBillingNote 说明失败任务的积分去向：内容违规超出免扣次数时按预留积分结算，其余失败退回。
+func FailureBillingNote(task *store.Task) string {
+	if task != nil && task.ErrorCode != nil {
+		switch *task.ErrorCode {
+		case contentpolicy.Code:
+			return "内容违规被驳回，已按预留积分结算，不退回"
+		case contentpolicy.WaivedCode:
+			return "内容违规被驳回，本次按免扣规则退回积分"
+		}
+	}
+	return "费用已退回"
 }
 
 var generatedCountPattern = regexp.MustCompile(`已生成\s*(\d+)\s*张`)
@@ -1345,7 +1395,7 @@ func ApplyTaskNotificationDisplay(n *store.Notification, task *store.Task) {
 		n.Body = &text
 	case strings.Contains(title, "失败") || strings.Contains(body, "失败"):
 		n.Title = name + "失败"
-		text := name + "执行失败，费用已退回。"
+		text := name + "执行失败，" + FailureBillingNote(task) + "。"
 		n.Body = &text
 	default:
 		n.Title = name + "已完成"

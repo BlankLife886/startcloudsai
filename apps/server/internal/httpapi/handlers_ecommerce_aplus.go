@@ -64,14 +64,10 @@ func (s *Server) generateEcommerceAplusPlan(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	imageURLs := make([]string, 0, len(body.InputKeys))
-	for _, key := range body.InputKeys {
-		presigned, err := s.Storage.PresignGet(c.Request.Context(), key)
-		if err != nil {
-			fail(c, apperr.E("image_read_failed", "商品图片读取失败，请重新上传", 422))
-			return
-		}
-		imageURLs = append(imageURLs, presigned)
+	imageURLs, err := s.ecommerceAnalysisImageURLs(c.Request.Context(), body.InputKeys)
+	if err != nil {
+		fail(c, err)
+		return
 	}
 	req := aplus.Request{
 		ASIN:            body.ASIN,

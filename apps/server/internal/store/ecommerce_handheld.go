@@ -235,6 +235,8 @@ func UpdateEcommerceHandheldBatchStatus(ctx context.Context, q Q, userID, batchI
 const (
 	HandheldAnchorTaskParam     = "handheldAnchorTaskId"
 	HandheldAnchorResolvedParam = "handheldAnchorResolved"
+	// 通用电商整套（如 AI 商拍）：创建任务时服务端校验后写入，客户端无法直接设置
+	SeriesAnchorTaskParam = "_seriesAnchorTaskId"
 )
 
 // ResolveHandheldAnchorTask 只对仍在排队、还没处理过主图参考的任务生效：

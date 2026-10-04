@@ -50,7 +50,7 @@ func TestWaitForHandheldAnchor(t *testing.T) {
 		hero := newTask(t, nil, []string{"uploads/u/front.png"})
 		succeed(t, hero.ID)
 		follower := newTask(t, map[string]any{store.HandheldAnchorTaskParam: hero.ID.String()}, []string{"uploads/u/front.png"})
-		waiting, err := w.waitForHandheldAnchor(ctx, follower.ID)
+		waiting, err := w.waitForSeriesAnchor(ctx, follower.ID)
 		if err != nil || waiting {
 			t.Fatalf("waiting=%v err=%v", waiting, err)
 		}
@@ -62,7 +62,7 @@ func TestWaitForHandheldAnchor(t *testing.T) {
 			t.Fatalf("prompt/params not updated: %q %v", got.Prompt, got.Params)
 		}
 		// 已处理过：再次执行不会重复追加
-		if _, err := w.waitForHandheldAnchor(ctx, follower.ID); err != nil {
+		if _, err := w.waitForSeriesAnchor(ctx, follower.ID); err != nil {
 			t.Fatal(err)
 		}
 		if again := reload(t, follower.ID); len(again.InputKeys) != 2 {
@@ -76,7 +76,7 @@ func TestWaitForHandheldAnchor(t *testing.T) {
 			t.Fatal(err)
 		}
 		follower := newTask(t, map[string]any{store.HandheldAnchorTaskParam: hero.ID.String()}, []string{"uploads/u/front.png"})
-		if waiting, err := w.waitForHandheldAnchor(ctx, follower.ID); err != nil || waiting {
+		if waiting, err := w.waitForSeriesAnchor(ctx, follower.ID); err != nil || waiting {
 			t.Fatalf("waiting=%v err=%v", waiting, err)
 		}
 		got := reload(t, follower.ID)
@@ -90,7 +90,7 @@ func TestWaitForHandheldAnchor(t *testing.T) {
 		succeed(t, hero.ID)
 		inputs := []string{"a.png", "b.png", "c.png", "d.png", "e.png", "f.png"}
 		follower := newTask(t, map[string]any{store.HandheldAnchorTaskParam: hero.ID.String()}, inputs)
-		if _, err := w.waitForHandheldAnchor(ctx, follower.ID); err != nil {
+		if _, err := w.waitForSeriesAnchor(ctx, follower.ID); err != nil {
 			t.Fatal(err)
 		}
 		if got := reload(t, follower.ID); len(got.InputKeys) != 6 {
@@ -108,7 +108,7 @@ func TestWaitForHandheldAnchor(t *testing.T) {
 		defer queue.Close()
 		waiting := &Worker{St: st, Queue: queue}
 		// 测试环境没有 Redis：重新排队失败时要把错误交回给队列重试，而不是跳过等待直接执行
-		if deferred, err := waiting.waitForHandheldAnchor(ctx, follower.ID); err == nil || deferred {
+		if deferred, err := waiting.waitForSeriesAnchor(ctx, follower.ID); err == nil || deferred {
 			t.Fatalf("expected enqueue error, got deferred=%v err=%v", deferred, err)
 		}
 		if got := reload(t, follower.ID); got.Params[store.HandheldAnchorResolvedParam] == true || len(got.InputKeys) != 1 {
@@ -116,9 +116,49 @@ func TestWaitForHandheldAnchor(t *testing.T) {
 		}
 	})
 
+	t.Run("series anchor: follower gets the hero with the series prompt", func(t *testing.T) {
+		hero := newTask(t, nil, []string{"uploads/u/front.png"})
+		succeed(t, hero.ID)
+		inputs := []string{"a.png", "b.png", "c.png", "d.png", "e.png", "f.png"}
+		follower := newTask(t, map[string]any{store.SeriesAnchorTaskParam: hero.ID.String()}, inputs)
+		if waiting, err := w.waitForSeriesAnchor(ctx, follower.ID); err != nil || waiting {
+			t.Fatalf("waiting=%v err=%v", waiting, err)
+		}
+		got := reload(t, follower.ID)
+		// 通用整套不受手持 6 张上限限制
+		if len(got.InputKeys) != 7 || got.InputKeys[6] != "tasks/u/hero.png" {
+			t.Fatalf("input keys = %v", got.InputKeys)
+		}
+		if !strings.Contains(got.Prompt, "布景语言") || strings.Contains(got.Prompt, "握法") {
+			t.Fatalf("prompt = %q", got.Prompt)
+		}
+	})
+
+	t.Run("series anchor from another user is ignored", func(t *testing.T) {
+		stranger, err := store.InsertUser(ctx, st.Pool, "handheld-anchor-"+uuid.NewString()+"@example.com", "", "", "user", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hero, err := store.InsertTask(ctx, st.Pool, store.NewTask{
+			ID: uuid.New(), UserID: stranger.ID, Type: "ecommerce_design", Model: "test-model",
+			Prompt: "base", Count: 1, WorkUnits: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		succeed(t, hero.ID)
+		follower := newTask(t, map[string]any{store.SeriesAnchorTaskParam: hero.ID.String()}, []string{"uploads/u/front.png"})
+		if _, err := w.waitForSeriesAnchor(ctx, follower.ID); err != nil {
+			t.Fatal(err)
+		}
+		if got := reload(t, follower.ID); len(got.InputKeys) != 1 || got.Prompt != "base" {
+			t.Fatalf("foreign hero leaked: %v %q", got.InputKeys, got.Prompt)
+		}
+	})
+
 	t.Run("plain tasks are untouched", func(t *testing.T) {
 		plain := newTask(t, nil, []string{"uploads/u/front.png"})
-		if waiting, err := w.waitForHandheldAnchor(ctx, plain.ID); err != nil || waiting {
+		if waiting, err := w.waitForSeriesAnchor(ctx, plain.ID); err != nil || waiting {
 			t.Fatalf("waiting=%v err=%v", waiting, err)
 		}
 		if got := reload(t, plain.ID); got.Prompt != "base" || len(got.InputKeys) != 1 {

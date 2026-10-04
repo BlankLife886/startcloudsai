@@ -53,7 +53,7 @@ func TestAssistantV2RemembersAndRecallsMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := &Worker{St: fixture.st}
-	if err := worker.runAssistantV2(ctx, fixture.run, client, rulesOnlySetup(fixture.run.Prompt)); err != nil {
+	if err := worker.runAssistantV2(ctx, fixture.run, client); err != nil {
 		t.Fatalf("run v2: %v", err)
 	}
 	memories, err := assistantmemory.List(ctx, fixture.st.Pool, fixture.user.ID)
@@ -68,10 +68,6 @@ func TestAssistantV2RemembersAndRecallsMemory(t *testing.T) {
 	views, _ := message.Metadata["dataViews"].([]any)
 	if len(views) != 1 || views[0].(map[string]any)["view"] != "memory_change" {
 		t.Fatalf("dataViews = %#v", message.Metadata["dataViews"])
-	}
-	decided, _ := message.Metadata["_decision"].(map[string]any)
-	if decided["intent"] != assistantV2IntentMyData {
-		t.Fatalf("a memory request must stay in v2: %#v", decided)
 	}
 }
 
@@ -99,7 +95,7 @@ func TestAssistantV2WithMemoryOffNeitherRecallsNorWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := &Worker{St: fixture.st}
-	if err := worker.runAssistantV2(ctx, fixture.run, client, rulesOnlySetup(fixture.run.Prompt)); err != nil {
+	if err := worker.runAssistantV2(ctx, fixture.run, client); err != nil {
 		t.Fatalf("run v2: %v", err)
 	}
 	if len(upstream.requests) != 1 {

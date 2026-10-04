@@ -25,9 +25,11 @@ import {
   COMMERCE_ENTRY_GROUPS,
   ecomToolCover,
 } from "@react/legacy-modules/features/creator-hub/studioTools.js";
-import { displayNotification, isAnnouncementNotification } from "../utils/notificationDisplay.js";
+import { displayNotification, isAnnouncementNotification, notificationHref } from "../utils/notificationDisplay.js";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
 import { REFERRALS_ENABLED } from "../config/referrals.js";
+import { useLiveAnnouncements } from "../features/announcements/useLiveAnnouncements.js";
+import { useReadAnnouncements } from "../features/announcements/announcementRead.js";
 import "@react/legacy-styles/generated/components/layout/NavBar.css";
 import "@react/legacy-styles/generated/components/layout/NavNotificationsMenu.css";
 import "./NavBar.account-menu.css";
@@ -441,6 +443,9 @@ export function NavBar() {
   const [balance, setBalance] = useState(0);
   const [subscription, setSubscription] = useState(null);
   const [notificationUnread, setNotificationUnread] = useState(0);
+  const { items: liveAnnouncements } = useLiveAnnouncements();
+  const { isRead: isAnnouncementRead } = useReadAnnouncements();
+  const unreadAnnouncements = liveAnnouncements.filter((item) => !isAnnouncementRead(item)).length;
   const [notificationItems, setNotificationItems] = useState([]);
   const [notificationLoading, setNotificationLoading] = useState(false);
   const [notificationMarking, setNotificationMarking] = useState(false);
@@ -463,7 +468,7 @@ export function NavBar() {
         setMediaTools((Array.isArray(configured) ? configured : []).map((tool) => ({
           to: `/tools/${encodeURIComponent(tool.id)}`,
           label: String(tool.name || tool.label || "媒体工具"),
-          icon: tool.modality === "video" ? "bi-camera-video" : tool.modality === "audio" ? "bi-soundwave" : "bi-image",
+          icon: tool.modality === "video" ? "bi-camera-video" : tool.modality === "audio" || tool.modality === "music" ? "bi-soundwave" : "bi-image",
         })));
       }).catch(() => active && setMediaTools([]));
     };
@@ -1006,6 +1011,34 @@ export function NavBar() {
     );
   }
 
+  function notificationLinkOf(item) {
+    if (String(item?.kind || "").toLowerCase() === "trial_access") return "/notifications?trial=apply";
+    const href = notificationHref(item);
+    return href && isEntryVisible(href) ? href : "/notifications";
+  }
+
+  // 点开铃铛里的一条：标为已读并同步给通知页；订阅类变动顺带刷新钱包
+  function openNotificationPreview(item) {
+    if (item.readAt) return;
+    markNotificationsRead([item.id])
+      .then(() => {
+        const readAt = new Date().toISOString();
+        const nextItems = notificationItems.map((entry) => (entry.id === item.id ? { ...entry, readAt } : entry));
+        const nextUnread = Math.max(0, notificationUnread - 1);
+        setNotificationItems(nextItems);
+        setNotificationUnread(nextUnread);
+        window.dispatchEvent(
+          new CustomEvent("starclouds:notifications-updated", {
+            detail: { unreadCount: nextUnread, source: "preview", previewItems: nextItems },
+          }),
+        );
+        if (String(item.sourceType || "").startsWith("subscription_")) {
+          window.dispatchEvent(new CustomEvent("starclouds:notifications-updated", { detail: { source: "subscription-change" } }));
+        }
+      })
+      .catch(() => null);
+  }
+
   async function markAllNotificationsRead() {
     if (notificationMarking || notificationUnread <= 0) return;
     setNotificationMarking(true);
@@ -1460,6 +1493,9 @@ export function NavBar() {
                           {notificationUnread > 99 ? "99+" : notificationUnread}
                         </em>
                       )}
+                      {notificationUnread <= 0 && unreadAnnouncements > 0 && (
+                        <em className="nav-notify__badge is-dot" aria-label="有新公告" />
+                      )}
                     </Link>
                     {notificationOpen && (
                       <aside
@@ -1513,12 +1549,10 @@ export function NavBar() {
                                 >
                                   <Link
                                     className="nav-notify__item"
-                                    to={String(item.targetPath || "").startsWith("/subscriptions?") && isEntryVisible(item.targetPath) ? item.targetPath : "/notifications"}
+                                    to={notificationLinkOf(item)}
                                     onClick={() => {
                                       closeMenu();
-                                      if (!item.readAt && String(item.targetPath || "").startsWith("/subscriptions?")) {
-                                        markNotificationsRead([item.id]).then(() => window.dispatchEvent(new CustomEvent("starclouds:notifications-updated", { detail: { source: "subscription-change" } }))).catch(() => null);
-                                      }
+                                      openNotificationPreview(item);
                                     }}
                                   >
                                     <span className="nav-notify__copy">
@@ -1551,8 +1585,11 @@ export function NavBar() {
                           <Link to="/notifications" onClick={closeMenu}>
                             查看全部通知 <i className="bi bi-arrow-right" />
                           </Link>
-                          <Link to="/notifications?tab=announce" onClick={closeMenu}>
+                          <Link to="/announcements" onClick={closeMenu}>
                             公告
+                            {unreadAnnouncements > 0 && (
+                              <em className="nav-notify__foot-badge">{unreadAnnouncements}</em>
+                            )}
                           </Link>
                         </footer>
                       </aside>

@@ -1664,8 +1664,9 @@ Object.assign(EN, {
 
   确认生成费用: 'Confirm cost',
   '确认本次 AI 费用': 'Confirm AI cost',
-  '提交后先冻结预计费用，任务完成后按实际生成结果结算。':
-    'Credits freeze on submit, then settle when the task finishes.',
+  '提交后先冻结预计费用，任务完成后按实际生成结果结算；生成失败自动退回，内容违规被驳回不退回。':
+    'Credits freeze on submit, then settle when the task finishes. Failures are refunded; content policy rejections are not.',
+  '生成失败自动退回，内容违规被驳回不退回。': 'Failures are refunded; content policy rejections are not.',
   '请确认预计调用费用后再提交任务。': 'Confirm the estimated cost before submitting.',
   本次预计: 'Estimated',
   当前可用: 'Available',
@@ -3872,8 +3873,8 @@ export function translateClientText(source, locale) {
     [/^([+-])([\d,]+)\s*积分$/, '$1$2 credits'],
     [/^结算\s*([\d,]+)\s*积分$/, 'Settled $1 credits'],
     [
-      /^提交时预扣\s*(.+?)。成功后从预扣结算，失败会退回。$/,
-      '$1 held on submit. Settles on success, refunds on fail.',
+      /^提交时预扣\s*(.+?)。成功后从预扣结算，失败会退回，内容违规被驳回不退回。$/,
+      '$1 held on submit. Settles on success, refunds on fail, no refund for content policy rejections.',
     ],
     [/^已从预扣中结算\s*(.+?)，可用余额不再另扣。$/, 'Settled $1 from the hold; no extra charge.'],
     [/^实际扣除\s*(.+?)。$/, 'Charged $1.'],

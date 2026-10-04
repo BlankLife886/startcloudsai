@@ -191,7 +191,7 @@ test('the plan tool has no side effects, so it must not block retries or be dedu
 
   const planBranch = worker.slice(
     worker.indexOf('if next.ToolCall.Name == planTool.Name {'),
-    worker.indexOf('if batch := assistantAgentParallelBatch(next)'),
+    worker.indexOf('if batch := assistantAgentParallelBatch(next'),
   )
   assert.ok(planBranch.length > 0, 'the plan tool needs its own branch ahead of the dedup logic')
   assert.doesNotMatch(
@@ -342,11 +342,13 @@ test('the server enforces the auto-approve budget, because the client price is o
 test('withholding the proposal tool stays regex-only, because removing it blocks real requests', async () => {
   const worker = await readFile(new URL('../../server/internal/worker/assistant.go', import.meta.url), 'utf8')
 
+  // 只有窄正则或用户选的问答模式能撤掉出图工具；模型的猜测不行。
   assert.match(
     worker,
-    /withholdProposal := intent\.fromFastPath && intent\.intent == "chat"/,
+    /withholdProposal := \(intent\.fromFastPath && intent\.intent == "chat"\) \|\| chatOnly/,
     'a model guess must not be enough to take the proposal tool away',
   )
+  assert.match(worker, /chatOnly := platform != nil && platform\.chatOnly/)
   assert.match(worker, /expectProposal := intent\.intent == "image" &&/)
 })
 

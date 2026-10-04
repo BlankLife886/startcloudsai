@@ -301,7 +301,7 @@ function ResultPreview({ task, tool, sourcePreview, upscale, busy }) {
   }
   return (
     <div className="mt-result-ready">
-      {modality === "video" ? <video src={url} controls playsInline /> : modality === "audio" ? <audio src={url} controls /> : <AuthenticatedImage src={url} alt="工具处理结果" maxDimension={1800} />}
+      {modality === "video" ? <video src={url} controls playsInline /> : modality === "audio" || modality === "music" ? <audio src={url} controls /> : <AuthenticatedImage src={url} alt="工具处理结果" maxDimension={1800} />}
       <a className="mt-button is-secondary" href={`${url}${url.includes("?") ? "&" : "?"}download=1`}><DownloadIcon />下载结果</a>
     </div>
   );

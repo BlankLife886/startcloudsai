@@ -56,6 +56,7 @@ func TestRouterExposesOnlyVersionedRESTContract(t *testing.T) {
 		"POST /api/v1/admin/announcements/images",
 		"POST /api/v1/admin/announcements/:id/push",
 		"GET /api/v1/announcements/events",
+		"GET /api/v1/announcements/history",
 		"POST /api/v1/admin/home-banners/images",
 		"GET /api/v1/admin/system/metrics",
 		"GET /api/v1/assistant/conversations/:id",

@@ -134,7 +134,7 @@ export function runtimeMediaTools(config) {
   return (config?.features?.["ai.mediaTools"]?.config?.tools || []).map((item) => tool(
     `runtime-media-${item.id}`,
     String(item.name || item.label || "媒体工具"),
-    String(item.description || `${item.modality === "video" ? "视频" : item.modality === "audio" ? "音频" : "图片"}处理模型`),
+    String(item.description || `${item.modality === "video" ? "视频" : item.modality === "audio" ? "音频" : item.modality === "music" ? "音乐" : "图片"}处理模型`),
     { to: `/tools/${encodeURIComponent(item.id)}`, surface: "后台配置媒体工具", status: "confirm", dynamic: true },
   ));
 }

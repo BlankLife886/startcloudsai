@@ -51,6 +51,7 @@ type openAIImagesIntegrationEnv struct {
 	upstreamPaths          []string
 	upstreamInternalFields bool
 	upstreamStatus         int
+	upstreamErrorBody      string
 	upstreamDelay          time.Duration
 	mu                     sync.Mutex
 	objects                map[string]openAIIntegrationObject
@@ -109,13 +110,16 @@ func newOpenAIImagesIntegrationEnv(t *testing.T) *openAIImagesIntegrationEnv {
 		env.mu.Lock()
 		env.upstreamCalls++
 		env.upstreamPaths = append(env.upstreamPaths, request.URL.Path)
-		upstreamStatus, upstreamDelay := env.upstreamStatus, env.upstreamDelay
+		upstreamStatus, upstreamErrorBody, upstreamDelay := env.upstreamStatus, env.upstreamErrorBody, env.upstreamDelay
 		env.mu.Unlock()
 		if upstreamDelay > 0 {
 			time.Sleep(upstreamDelay)
 		}
 		if upstreamStatus != 0 {
-			http.Error(w, "simulated upstream error", upstreamStatus)
+			if upstreamErrorBody == "" {
+				upstreamErrorBody = "simulated upstream error"
+			}
+			http.Error(w, upstreamErrorBody, upstreamStatus)
 			return
 		}
 		writeResult := func(responseFormat string) {

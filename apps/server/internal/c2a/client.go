@@ -68,13 +68,43 @@ type SynchronousImageError struct {
 func (e *SynchronousImageError) Error() string { return e.Err.Error() }
 func (e *SynchronousImageError) Unwrap() error { return e.Err }
 
-func synchronousImageResult(body []byte, err error) ([]string, error) {
+func (c *Client) synchronousImageResult(ctx context.Context, body []byte, err error) ([]string, error) {
 	var images []string
 	if err == nil {
-		images, err = extractB64List(body)
+		images, err = c.syncImagesB64(ctx, body)
 	}
 	if err != nil {
 		return images, &SynchronousImageError{Err: err}
+	}
+	return images, nil
+}
+
+// syncImagesB64 accepts both b64_json and url items. Many OpenAI-compatible
+// gateways ignore response_format=b64_json and return a URL; dropping it would
+// report a successful generation as "no image data".
+func (c *Client) syncImagesB64(ctx context.Context, body []byte) ([]string, error) {
+	var payload struct {
+		Data []map[string]any `json:"data"`
+	}
+	if json.Unmarshal(body, &payload) == nil && imagePayloadNeedsHTTP(payload.Data) {
+		return c.downloadedImagesB64(ctx, payload.Data)
+	}
+	return extractB64List(body)
+}
+
+func (c *Client) downloadedImagesB64(ctx context.Context, data []map[string]any) ([]string, error) {
+	downloaded, _, err := c.taskImagesB64(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+	images := make([]string, 0, len(downloaded))
+	for _, image := range downloaded {
+		if image != "" {
+			images = append(images, image)
+		}
+	}
+	if len(images) == 0 {
+		return nil, &UpstreamError{Message: "上游未返回图片数据"}
 	}
 	return images, nil
 }
@@ -132,17 +162,6 @@ func parseStandardImageResponse(body []byte) (StandardImageResponse, error) {
 		response.Created = time.Now().Unix()
 	}
 	return response, nil
-}
-
-func standardImageB64List(response StandardImageResponse) ([]string, error) {
-	images := make([]string, 0, len(response.Data))
-	for _, item := range response.Data {
-		if strings.TrimSpace(item.B64JSON) == "" {
-			return nil, &UpstreamError{Message: "上游未返回 b64_json 图片数据", StatusCode: http.StatusBadGateway}
-		}
-		images = append(images, item.B64JSON)
-	}
-	return images, nil
 }
 
 // NetworkError 连接/超时类错误（可重试一次）。
@@ -1585,7 +1604,11 @@ func (c *Client) editImagesMultipart(
 	if err != nil {
 		return nil, err
 	}
-	images, err = standardImageB64List(response)
+	data := make([]map[string]any, 0, len(response.Data))
+	for _, item := range response.Data {
+		data = append(data, map[string]any{"b64_json": item.B64JSON, "url": item.URL})
+	}
+	images, err = c.downloadedImagesB64(ctx, data)
 	if err != nil {
 		return nil, &SynchronousImageError{Err: err}
 	}
@@ -1888,7 +1911,7 @@ func (c *Client) GenerateImagesWithOptions(ctx context.Context, taskID, prompt, 
 		body, err := c.doRequestWithHeaders(ctx, http.MethodPost, "/v1/images/generations",
 			standardImageGenerationPayload(prompt, model, n, size, options), c.Timeout,
 			map[string]string{"Idempotency-Key": taskID})
-		return synchronousImageResult(body, err)
+		return c.synchronousImageResult(ctx, body, err)
 	}
 	payload := imageGenerationPayload(prompt, model, n, size, options)
 	images, err := c.submitAndPollImageTask(ctx, "/api/image-tasks/generations", taskID, payload, n)
@@ -1896,7 +1919,7 @@ func (c *Client) GenerateImagesWithOptions(ctx context.Context, taskID, prompt, 
 		return images, err
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/generations", payload, c.Timeout)
-	return synchronousImageResult(body, err)
+	return c.synchronousImageResult(ctx, body, err)
 }
 
 func (c *Client) SubmitGenerateImages(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, bool, error) {
@@ -1917,7 +1940,7 @@ func (c *Client) SubmitGenerateImagesTracked(ctx context.Context, taskID, prompt
 		return images, pending, upstreamTaskID, err
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/generations", payload, c.Timeout)
-	images, err = synchronousImageResult(body, err)
+	images, err = c.synchronousImageResult(ctx, body, err)
 	return images, false, "", err
 }
 
@@ -1965,7 +1988,7 @@ func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, mode
 		payload["client_task_id"] = taskID
 		body, err = c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
 	}
-	return synchronousImageResult(body, err)
+	return c.synchronousImageResult(ctx, body, err)
 }
 
 func (c *Client) SubmitEditImages(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, error) {
@@ -2007,7 +2030,7 @@ func (c *Client) SubmitEditImagesTracked(ctx context.Context, taskID, prompt, mo
 		payload["client_task_id"] = taskID
 		body, err = c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
 	}
-	images, err = synchronousImageResult(body, err)
+	images, err = c.synchronousImageResult(ctx, body, err)
 	return images, false, "", err
 }
 

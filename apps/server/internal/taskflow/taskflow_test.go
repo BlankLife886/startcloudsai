@@ -866,6 +866,62 @@ func TestReleaseOnFailure(t *testing.T) {
 	}
 }
 
+func TestContentPolicyFailureSettlesWithoutRefundOrBonus(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "growth_failure_bonus_enabled", json.RawMessage(`true`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, st.Pool, "growth_failure_bonus_cents", json.RawMessage(`3`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, st.Pool, "growth_failure_bonus_daily_limit", json.RawMessage(`3`)); err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.CostCents <= 0 {
+		t.Fatalf("task cost = %d, want > 0", task.CostCents)
+	}
+	forceRunning(t, st, task.ID)
+	message := "非常抱歉，生成的图片可能违反了关于裸露、色情或情色内容的防护限制。如果你认为此判断有误，请重试或修改提示语。"
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		won, markErr := taskflow.MarkFailed(ctx, tx, task, "upstream_error", message, "running")
+		if !won && markErr == nil {
+			t.Fatal("expected failure transition to win")
+		}
+		return markErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := getWallet(t, st, user.ID)
+	if w.BalanceCents != 100-task.CostCents || w.FrozenCents != 0 {
+		t.Fatalf("wallet = (%d, %d), want (%d, 0)", w.BalanceCents, w.FrozenCents, 100-task.CostCents)
+	}
+	stored, err := store.GetTask(ctx, st.Pool, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ErrorCode == nil || *stored.ErrorCode != "content_policy" {
+		t.Fatalf("error code = %v, want content_policy", stored.ErrorCode)
+	}
+	if note := taskflow.FailureBillingNote(task); !strings.Contains(note, "不退回") {
+		t.Fatalf("billing note = %q, want non-refund note", note)
+	}
+	var rewards int
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM wallet_ledger
+		WHERE user_id=$1 AND source_type='task_failure_bonus'`, user.ID).Scan(&rewards); err != nil {
+		t.Fatal(err)
+	}
+	if rewards != 0 {
+		t.Fatalf("failure bonus entries = %d, want 0", rewards)
+	}
+}
+
 func TestFailureBonusIsIdempotentAndDailyCapped(t *testing.T) {
 	st := testdb.Setup(t)
 	user := newUserWithBalance(t, st, 200)

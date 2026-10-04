@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router";
 import { PageEntryLink as Link } from "../page-control/PageEntryLink.jsx";
@@ -7,7 +7,7 @@ import { useGSAP } from "@gsap/react";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
-import { availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
+import { isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import { useLocale } from "../i18n/index.js";
 import {
@@ -23,9 +23,6 @@ import {
   ecommerceModeById,
   ecommerceShotBlueprints,
   ecommerceConsistencyProfile,
-  LISTING_DEFAULT_TYPE_IDS,
-  LISTING_IMAGE_TYPES,
-  listingShotBlueprintsFromPlan,
   coerceEcommerceImageFile,
   attachEcommerceUploadKey,
   isReusableTaskImageKey,
@@ -109,7 +106,6 @@ import {
   loadAccessoryDraft,
   saveAccessoryDraft,
 } from "@react/legacy-modules/features/ecommerce/accessoryDraftStorage.js";
-import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import { composePendingLaunchPrompt, takePendingPrompt } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import {
   generateCommerceProductBrief,
@@ -161,8 +157,27 @@ import {
 } from "../features/ecommerce/HandheldStudio.jsx";
 import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 import { RegenerateIcon } from "../components/common/RegenerateIcon.jsx";
-import { AccessoryStudio } from "../features/ecommerce/AccessoryStudio.jsx";
+import {
+  ACCESSORY_RATIO_CHANNELS,
+  AccessoryStudio,
+} from "../features/ecommerce/AccessoryStudio.jsx";
 import { DetailStudio } from "../features/ecommerce/DetailStudio.jsx";
+import { ListingStudio } from "../features/ecommerce/ListingStudio.jsx";
+import { findCommerceModel } from "../features/ecommerce/useCommerceModels.js";
+import {
+  businessDraftPreview,
+  loadBusinessDraft,
+  saveBusinessDraftFields,
+  saveBusinessDraftImages,
+} from "../features/ecommerce/businesses/shared/businessDraftStorage.js";
+import { useListingBusinessState } from "../features/ecommerce/businesses/listing/useListingBusinessState.js";
+import {
+  LISTING_RATIO_OPTIONS,
+  listingBlueprints as buildListingBlueprints,
+  listingRunModeAllowed,
+  listingSmartCandidates,
+  listingStylePrompt,
+} from "../features/ecommerce/listing/listingCatalog.js";
 import { DetailTopToolbar } from "../features/ecommerce/businesses/detail/DetailTopToolbar.jsx";
 import {
   aplusCategoryById,
@@ -201,7 +216,6 @@ import {
   packAccessorySlotFiles,
 } from "../features/ecommerce/accessory/accessoryCommerce.js";
 import { CommerceProductLibrary } from "../features/ecommerce/CommerceProductLibrary.jsx";
-import { CommerceOperationsWorkspace } from "../features/ecommerce/CommerceOperationsWorkspace.jsx";
 import { CREATIVE_SHOOT_SHOTS } from "../features/ecommerce/creativeShootShots.js";
 import { CommerceWorkbench } from "../features/ecommerce/workbench/CommerceWorkbench.jsx";
 import { WorkbenchTopToolbar } from "../features/ecommerce/workbench/WorkbenchTopToolbar.jsx";
@@ -209,7 +223,6 @@ import {
   isWorkbenchMode,
   workbenchHasStyleSlot,
   workbenchPackForCount,
-  workbenchPackForShootShots,
   workbenchSpecById,
 } from "../features/ecommerce/workbench/workbenchSpecs.js";
 import {
@@ -222,7 +235,10 @@ import {
   WORKBENCH_RESOLUTIONS,
   workbenchPresetFields,
 } from "../features/ecommerce/workbench/workbenchPresets.js";
-import { normalizeImageModelCapabilities } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import {
+  getModelAspectRatiosForResolution,
+  normalizeImageModelCapabilities,
+} from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { EcommerceMaskEditor } from "../features/ecommerce/EcommerceMaskEditor.jsx";
 import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { TryonFlipLightbox } from "../features/ecommerce/TryonFlipLightbox.jsx";
@@ -266,9 +282,26 @@ import { useAccessoryBusinessState } from "../features/ecommerce/businesses/acce
 import { AccessoryTopToolbar } from "../features/ecommerce/businesses/accessory/AccessoryTopToolbar.jsx";
 import { HANDHELD_ACTIVE_BATCH_STORAGE_KEY } from "../features/ecommerce/businesses/handheld/storageKeys.js";
 import { useHandheldBusinessState } from "../features/ecommerce/businesses/handheld/useHandheldBusinessState.js";
+import {
+  SHOOT_GOAL_LABELS,
+  SHOOT_GOAL_OPTIONS,
+  SHOOT_DIRECTION_OPTIONS,
+  SHOOT_MAX_SHOTS,
+  SHOOT_USE_CASE_LABELS,
+  SHOOT_USE_CASE_OPTIONS,
+  shootDirectionFor,
+  shootPromptLines,
+  shootProtectedItems,
+  useShootBusinessState,
+} from "../features/ecommerce/businesses/shoot/useShootBusinessState.js";
 import "./EcommerceDesignView.css";
 
 gsap.registerPlugin(useGSAP);
+
+const EMPTY_MODELS = [];
+// 侧栏滚动位置：会话按模块重新挂载时沿用
+let commerceRailScrollTop = 0;
+function noopSetModelId() {}
 
 function ecommerceAnimationsDisabled() {
   return (
@@ -385,20 +418,6 @@ const TRYON_LIGHT_HINTS = {
   hard: "强阴影高反差，大片感",
 };
 
-const SHOOT_USE_CASE_LABELS = {
-  listing: "商品上架",
-  social: "社媒种草",
-  ads: "广告投放",
-  brand: "品牌视觉",
-};
-
-const SHOOT_GOAL_LABELS = {
-  conversion: "促进转化",
-  premium: "建立质感",
-  explain: "解释功能",
-  launch: "新品传播",
-};
-
 function isTryonMode(id) {
   return id === "tryon";
 }
@@ -434,26 +453,6 @@ function hidesCommerceSettings(id) {
   );
 }
 
-const SHOOT_DIRECTION_OPTIONS = [
-  { id: "studio", label: "干净棚拍", hint: "主图、官网首屏", scene: "纯色影棚", tone: "极简高级" },
-  { id: "lifestyle", label: "生活场景", hint: "种草、使用情境", scene: "家居生活", tone: "真实自然" },
-  { id: "premium", label: "质感特写", hint: "材质、工艺卖点", scene: "纯色影棚", tone: "轻奢质感" },
-  { id: "concept", label: "概念创意", hint: "新品、广告投放", scene: "科技空间", tone: "科技未来" },
-];
-
-const SHOOT_USE_CASE_OPTIONS = [
-  { id: "listing", label: "商品上架" },
-  { id: "social", label: "社媒种草" },
-  { id: "ads", label: "广告投放" },
-  { id: "brand", label: "品牌视觉" },
-];
-
-const SHOOT_GOAL_OPTIONS = [
-  { id: "conversion", label: "促进转化" },
-  { id: "premium", label: "建立质感" },
-  { id: "explain", label: "解释功能" },
-  { id: "launch", label: "新品传播" },
-];
 
 function catalogOptionById(catalog, id) {
   return catalog.find((item) => item.id === id) || null;
@@ -563,8 +562,6 @@ function localeText() {
         settings: "Generation settings",
         products: "Product library",
         creative: "Creative studio",
-        operations: "Operations",
-        operationsMobile: "Ops",
         emptyProducts: "No matching products",
       }
     : {
@@ -572,8 +569,6 @@ function localeText() {
         settings: "生成设置",
         products: "商品库",
         creative: "创作台",
-        operations: "业务中心",
-        operationsMobile: "业务",
         emptyProducts: "没有匹配的商品",
       };
 }
@@ -723,7 +718,7 @@ function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
         id="ecommerce-cost-confirm-summary"
         className="ai-cost-confirm-summary"
       >
-        提交后先冻结预计费用，任务完成后按实际生成结果结算。
+        提交后先冻结预计费用，任务完成后按实际生成结果结算；生成失败自动退回，内容违规被驳回不退回。
       </p>
       <div className="ai-cost-confirm-card">
         <div className="ai-cost-confirm-total">
@@ -821,6 +816,7 @@ function CancelGenerationDialog({ open, busy, light = false, message, onClose, o
 function BriefDialog({
   state,
   setState,
+  pointsLabel = "核心卖点",
   onRegenerate,
   onConfirm,
   onClose,
@@ -893,9 +889,9 @@ function BriefDialog({
               />
             </label>
             <label>
-              <span>核心卖点</span>
+              <span>{pointsLabel}</span>
               <textarea
-                aria-label="核心卖点"
+                aria-label={pointsLabel}
                 value={state.points}
                 onChange={(event) =>
                   setState((value) => ({
@@ -986,6 +982,9 @@ export function EcommerceBusinessSession({
   businessId,
   availableModeIds = [],
   moduleUnavailable = false,
+  // 顶部生成模型（唯一跨模块共享状态），由 EcommerceDesignView 持有
+  sharedModels = null,
+  animateEntrance = true,
 }) {
   const auth = useAuth();
   const isDark = useIsDark();
@@ -1189,9 +1188,11 @@ export function EcommerceBusinessSession({
   const [language, setLanguage] = useState("英文");
   const [aspectRatio, setAspectRatio] = useState(mode.ratio);
   const [requestedCount, setRequestedCount] = useState(1);
-  const [modelId, setModelId] = useState("");
-  const [models, setModels] = useState([]);
-  const [unitPrice, setUnitPrice] = useState(3);
+  const models = sharedModels?.models || EMPTY_MODELS;
+  const modelId = sharedModels?.modelId || "";
+  const setModelId = sharedModels?.setModelId || noopSetModelId;
+  const defaultUnitPrice = sharedModels?.defaultUnitPrice ?? 3;
+  const [unitPrice, setUnitPrice] = useState(defaultUnitPrice);
   const [scene, setScene] = useState(
     mode.id === "tryon" ? OPTIONS.tryonScene[0] : OPTIONS.scene[0],
   );
@@ -1287,19 +1288,24 @@ export function EcommerceBusinessSession({
       .catch((error) => setSubmitError(error?.message || "参考图载入失败，请重新上传"));
     return undefined;
   }, []);
-  const [shootUseCase, setShootUseCase] = useState("listing");
-  const [shootGoal, setShootGoal] = useState("conversion");
-  const [shootAudience, setShootAudience] = useState("");
-  const [shootSku, setShootSku] = useState("");
-  const [shootProtectedElements, setShootProtectedElements] = useState(
-    "商品外形与比例、颜色与材质、Logo、包装文字、接口位置、部件和配件数量",
-  );
-  const [shootShotIds, setShootShotIds] = useState([
-    "hero",
-    "lifestyle",
-    "detail",
-    "selling",
-  ]);
+  const {
+    shootUseCase,
+    setShootUseCase,
+    shootGoal,
+    setShootGoal,
+    shootAudience,
+    setShootAudience,
+    shootSku,
+    setShootSku,
+    shootProtectedElements,
+    setShootProtectedElements,
+    shootShotIds,
+    setShootShotIds,
+    shootBlueprints,
+    toggleShootShot,
+  } = useShootBusinessState();
+  // 画布上的摘要可以请求打开顶部工具栏的某个菜单（nonce 保证重复点击也生效）
+  const [toolbarMenuRequest, setToolbarMenuRequest] = useState(null);
   // AI 详情页：出图方向多选（16 种内置 + 自定义）、补充参考图、先策划再生成
   const [selectedModules, setSelectedModules] = useState([
     ...DETAIL_DEFAULT_DIRECTION_IDS,
@@ -1319,9 +1325,26 @@ export function EcommerceBusinessSession({
   const [aplusTier, setAplusTier] = useState("basic");
   const [aplusDisclosure, setAplusDisclosure] = useState(true);
   const [aplusBatchText, setAplusBatchText] = useState("");
-  // 商品套图：出图类型多选 + “先策划再生成”
-  const [listingTypeIds, setListingTypeIds] = useState(LISTING_DEFAULT_TYPE_IDS);
+  // 商品套图：出图规划（智能组图 / 自由组合 / 品类模板）+ 出图方式（智能直出 / 逐步确认 / 极速出图）
+  const {
+    listingConfig,
+    patchListingConfig,
+    setListingPlanMode,
+    toggleListingType,
+    stepListingTypeCount,
+    moveListingType,
+    addListingCustomType,
+    removeListingCustomType,
+    setListingSmartCount,
+    toggleListingTemplate,
+    listingSavedTemplates,
+    saveListingTemplate,
+    applyListingSavedTemplate,
+    removeListingSavedTemplate,
+  } = useListingBusinessState();
   const [listingPlan, setListingPlan] = useState(null);
+  // 智能直出：策划完成后自动接着出图（等策划结果进入 generationPlan 后再触发）
+  const [listingAutoRunPending, setListingAutoRunPending] = useState(false);
   const [listingPlanning, setListingPlanning] = useState(false);
   const [listingPlanError, setListingPlanError] = useState("");
   // 通用工作台：细节补充 / 预置字段 / 清晰度 / 风格参考图
@@ -1330,22 +1353,53 @@ export function EcommerceBusinessSession({
   const [resolution, setResolution] = useState("2K");
   const [styleSlot, setStyleSlot] = useState(null);
   const [textStable, setTextStable] = useState(true);
+  // ---------- 模型能力：画幅 / 清晰度 / 参考图上限一律以后台模型配置为准 ----------
+  const selectedImageModel = useMemo(
+    () => findCommerceModel(models, modelId),
+    [models, modelId],
+  );
+  const modelCapabilities = useMemo(
+    () => normalizeImageModelCapabilities(selectedImageModel || {}),
+    [selectedImageModel],
+  );
   // 清晰度只提供当前模型真正支持的档位；不支持时不下发 resolution，由模型默认输出
   const workbenchResolutionOptions = useMemo(() => {
     if (!isWorkbenchMode(mode.id) && !isDetailMode(mode.id)) return [];
-    const selected = models.find((model) =>
-      [model?.id, model?.publicModelKey, model?.model]
-        .map(String)
-        .includes(String(modelId)),
+    return WORKBENCH_RESOLUTIONS.filter((item) =>
+      modelCapabilities.resolutions.includes(item),
     );
-    const supported = normalizeImageModelCapabilities(selected || {}).resolutions;
-    return WORKBENCH_RESOLUTIONS.filter((item) => supported.includes(item));
-  }, [mode.id, modelId, models]);
+  }, [mode.id, modelCapabilities]);
   const workbenchResolution = workbenchResolutionOptions.includes(resolution)
     ? resolution
     : workbenchResolutionOptions.includes("2K")
       ? "2K"
       : workbenchResolutionOptions[0] || "";
+  // 当前清晰度下模型支持的画幅；模型还没加载时不过滤
+  const modelRatioSet = useMemo(
+    () =>
+      selectedImageModel
+        ? new Set(
+            getModelAspectRatiosForResolution(selectedImageModel, workbenchResolution),
+          )
+        : null,
+    [selectedImageModel, workbenchResolution],
+  );
+  const supportsModelRatio = (ratio) =>
+    !modelRatioSet || modelRatioSet.has(String(ratio || ""));
+  // 过滤画幅选项；模型一个都不支持时保留原列表，由提交时的能力校验兜底
+  const withModelRatios = (list, pick) => {
+    const supported = (list || []).filter((item) => supportsModelRatio(pick(item)));
+    return supported.length ? supported : list || [];
+  };
+  // 单任务参考图上限：取模型配置，最多 6 张
+  const referenceLimit = selectedImageModel
+    ? Math.max(1, Math.min(6, Number(modelCapabilities.maxReferenceImages) || 6))
+    : 6;
+  // 通用工作台的风格参考图也占一张参考图额度
+  const workbenchProductLimit = Math.max(
+    1,
+    referenceLimit - (isWorkbenchMode(mode.id) && styleSlot ? 1 : 0),
+  );
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [revisionDirection, setRevisionDirection] = useState("precise");
   const [revisionBrief, setRevisionBrief] = useState("");
@@ -1393,6 +1447,204 @@ export function EcommerceBusinessSession({
     groups: [],
     error: "",
   });
+  // ---------- 模块草稿：参考图 + 表单 + 当前批次，刷新 / 切换模块回来都能恢复 ----------
+  // 试衣 / 手持 / 饰品的参考槽位与选项另有专用草稿，这里只补它们的通用字段
+  const ownsSlotDraft = ["tryon", "handheld", "accessory"].includes(mode.id);
+  const [businessDraftReady, setBusinessDraftReady] = useState(false);
+  const businessDraftFields = ownsSlotDraft
+    ? {
+        productName,
+        sellingPoints,
+        activeUrl,
+        sessionCount,
+        // 手持有独立的批次恢复（含服务端 hydrate），这里不重复记
+        sessionBatchId: mode.id === "handheld" ? "" : sessionBatchId,
+      }
+    : {
+        productName,
+        sellingPoints,
+        platform,
+        market,
+        language,
+        aspectRatio,
+        requestedCount,
+        scene,
+        tone,
+        campaign,
+        modelProfile,
+        pose,
+        shadow,
+        workbenchNote,
+        presetValues,
+        resolution,
+        textStable,
+        selectedModules,
+        detailCustomDirections,
+        detailAutoGenerate,
+        detailPlan,
+        aplusAsin,
+        aplusCompetitorAsin,
+        aplusCategoryId,
+        aplusMarketplaceId,
+        aplusTier,
+        aplusDisclosure,
+        aplusBatchText,
+        listingPlan,
+        shootUseCase,
+        shootGoal,
+        shootAudience,
+        shootSku,
+        shootProtectedElements,
+        shootShotIds,
+        selectedProductId: selectedProduct?.id || "",
+        activeUrl,
+        sessionCount,
+        sessionBatchId,
+      };
+  const businessDraftJson = JSON.stringify(businessDraftFields);
+  useEffect(() => {
+    let alive = true;
+    const isText = (value) => typeof value === "string";
+    loadBusinessDraft(mode.id)
+      .then((draft) => {
+        if (!alive || !draft) return;
+        const fields = draft.fields || {};
+        const textSetters = ownsSlotDraft
+          ? { productName: setProductName, sellingPoints: setSellingPoints, activeUrl: setActiveUrl }
+          : {
+              productName: setProductName,
+              sellingPoints: setSellingPoints,
+              platform: setPlatform,
+              market: setMarket,
+              language: setLanguage,
+              aspectRatio: setAspectRatio,
+              scene: setScene,
+              tone: setTone,
+              campaign: setCampaign,
+              modelProfile: setModelProfile,
+              pose: setPose,
+              shadow: setShadow,
+              workbenchNote: setWorkbenchNote,
+              resolution: setResolution,
+              aplusAsin: setAplusAsin,
+              aplusCompetitorAsin: setAplusCompetitorAsin,
+              aplusCategoryId: setAplusCategoryId,
+              aplusMarketplaceId: setAplusMarketplaceId,
+              aplusTier: setAplusTier,
+              aplusBatchText: setAplusBatchText,
+              shootUseCase: setShootUseCase,
+              shootGoal: setShootGoal,
+              shootAudience: setShootAudience,
+              shootSku: setShootSku,
+              shootProtectedElements: setShootProtectedElements,
+              activeUrl: setActiveUrl,
+            };
+        for (const [key, set] of Object.entries(textSetters)) {
+          if (isText(fields[key]) && (fields[key] || key === "activeUrl")) set(fields[key]);
+        }
+        if (isText(fields.sessionBatchId) && fields.sessionBatchId && mode.id !== "handheld") {
+          setSessionBatchId(fields.sessionBatchId);
+          if (Number(fields.sessionCount) > 0) setSessionCount(Number(fields.sessionCount));
+        }
+        if (!ownsSlotDraft) {
+          if (Number(fields.requestedCount) > 0) setRequestedCount(Number(fields.requestedCount));
+          if (typeof fields.textStable === "boolean") setTextStable(fields.textStable);
+          if (typeof fields.detailAutoGenerate === "boolean") setDetailAutoGenerate(fields.detailAutoGenerate);
+          if (typeof fields.aplusDisclosure === "boolean") setAplusDisclosure(fields.aplusDisclosure);
+          if (fields.presetValues && typeof fields.presetValues === "object") setPresetValues(fields.presetValues);
+          if (Array.isArray(fields.selectedModules) && fields.selectedModules.length) {
+            setSelectedModules(fields.selectedModules.filter(isText));
+          }
+          if (Array.isArray(fields.detailCustomDirections)) {
+            setDetailCustomDirections(fields.detailCustomDirections.filter((item) => item && typeof item === "object"));
+          }
+          if (Array.isArray(fields.shootShotIds) && fields.shootShotIds.length) {
+            setShootShotIds(fields.shootShotIds.filter(isText));
+          }
+          if (fields.detailPlan && typeof fields.detailPlan === "object") setDetailPlan(fields.detailPlan);
+          if (fields.listingPlan && typeof fields.listingPlan === "object") setListingPlan(fields.listingPlan);
+          const restoredFiles = draft.images?.files || [];
+          if (restoredFiles.length) {
+            // 恢复期间用户已经放了新图，就不覆盖
+            setFiles((current) => (current.length ? current : restoredFiles));
+            setPreviews((current) =>
+              current.length ? current : restoredFiles.map(businessDraftPreview),
+            );
+            if (fields.selectedProductId && restoredFiles.every((file) => file.sourceUrl)) {
+              setSelectedProduct((current) => current || { id: fields.selectedProductId });
+            }
+          }
+          const restoredStyle = draft.images?.style?.[0];
+          if (restoredStyle) {
+            setStyleSlot((current) => current || businessDraftPreview(restoredStyle));
+          }
+          const restoredExtras = draft.images?.extras || [];
+          if (restoredExtras.length) {
+            setDetailExtraSlots((current) =>
+              current.length ? current : restoredExtras.map(businessDraftPreview),
+            );
+          }
+        }
+      })
+      .catch(() => {
+        /* 草稿只是便利功能，读取失败不影响使用 */
+      })
+      .finally(() => {
+        if (alive) setBusinessDraftReady(true);
+      });
+    return () => {
+      alive = false;
+    };
+    // 每个模块挂载时恢复一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // 防抖写草稿；切走模块 / 关闭页面时把还没写入的最后一次修改立即补写，避免丢字
+  const pendingDraftSaveRef = useRef(null);
+  const flushDraftSave = useCallback(() => {
+    const pending = pendingDraftSaveRef.current;
+    pendingDraftSaveRef.current = null;
+    pending?.();
+  }, []);
+  useEffect(() => {
+    if (!businessDraftReady) return undefined;
+    const fields = JSON.parse(businessDraftJson);
+    const save = () => {
+      void saveBusinessDraftFields(mode.id, fields).catch(() => {});
+    };
+    pendingDraftSaveRef.current = save;
+    const timer = window.setTimeout(flushDraftSave, 300);
+    return () => window.clearTimeout(timer);
+  }, [businessDraftReady, businessDraftJson, mode.id, flushDraftSave]);
+  const pendingImageSaveRef = useRef(null);
+  useEffect(() => {
+    if (!businessDraftReady || ownsSlotDraft) return undefined;
+    const save = () => {
+      pendingImageSaveRef.current = null;
+      void saveBusinessDraftImages(mode.id, "files", files).catch(() => {});
+      void saveBusinessDraftImages(mode.id, "style", styleSlot?.file ? [styleSlot.file] : []).catch(() => {});
+      void saveBusinessDraftImages(
+        mode.id,
+        "extras",
+        detailExtraSlots.map((item) => item.file),
+      ).catch(() => {});
+    };
+    pendingImageSaveRef.current = save;
+    const timer = window.setTimeout(save, 300);
+    return () => window.clearTimeout(timer);
+  }, [businessDraftReady, ownsSlotDraft, mode.id, files, styleSlot, detailExtraSlots]);
+  useEffect(() => {
+    const flushAll = () => {
+      flushDraftSave();
+      pendingImageSaveRef.current?.();
+    };
+    window.addEventListener("pagehide", flushAll);
+    return () => {
+      window.removeEventListener("pagehide", flushAll);
+      // 模块卸载（切换侧栏）时补写最后一次修改
+      flushAll();
+    };
+  }, [flushDraftSave]);
+
   const jobs = useEcommerceJobs({
     taskKind: `ui-design-ecommerce-${mode.id}-generation`,
     models,
@@ -1407,7 +1659,8 @@ export function EcommerceBusinessSession({
         root,
       );
       root.dataset.ecommercePageMotionState = "entering";
-      if (!targets.length || ecommerceAnimationsDisabled()) {
+      // 切换侧栏模块会重新挂载会话，页头与侧栏不重播入场动画
+      if (!targets.length || ecommerceAnimationsDisabled() || !animateEntrance) {
         gsap.set(targets, {
           autoAlpha: 1,
           clearProps: "opacity,visibility,transform",
@@ -1551,49 +1804,14 @@ export function EcommerceBusinessSession({
   );
 
   useEffect(() => {
-    const controller = new AbortController();
-    Promise.allSettled([
-      fetchRuntimeConfig(),
-      fetch("/api/v1/pricing", { signal: controller.signal }).then((response) =>
-        response.json(),
-      ),
-    ]).then(([runtime, pricing]) => {
-      if (controller.signal.aborted) return;
-      if (runtime.status === "fulfilled") {
-        const feature = runtime.value.features?.["ai.ecommerceDesign"] || {};
-        const list =
-          feature.config?.publicModels ||
-          feature.publicModels ||
-          runtime.value.aiModelCatalog?.featurePublicModels ||
-          [];
-        setModels(list);
-        const available = availableCatalogModels(list);
-        setModelId(
-          String(
-            available.find((item) => item.default)?.id ||
-              available[0]?.id ||
-              available[0]?.publicModelKey ||
-              "",
-          ),
-        );
-      }
-      if (pricing.status === "fulfilled")
-        setUnitPrice(
-          Number(pricing.value?.data?.taskPointPrices?.ecommerce_design || 3),
-        );
-    });
-    return () => controller.abort();
-  }, []);
-
-  useEffect(() => {
     const selected = models.find((item) =>
       [item?.id, item?.publicModelKey, item?.model]
         .map(String)
         .includes(String(modelId)),
     );
     const price = resolveModelPointPricing(selected);
-    if (price.configured) setUnitPrice(Math.max(0, price.effective));
-  }, [modelId, models]);
+    setUnitPrice(price.configured ? Math.max(0, price.effective) : defaultUnitPrice);
+  }, [modelId, models, defaultUnitPrice]);
 
   useEffect(() => {
     tryonRatioHydratedRef.current = false;
@@ -1803,12 +2021,16 @@ export function EcommerceBusinessSession({
       let scenes = [];
       let garments = [];
       try {
+        // 每个侧栏模块独立挂载：只读取本模块自己的草稿与素材目录，
+        // 避免试衣的场景 / 人群 / 画幅等写进其他模块
+        const isTryonSession = mode.id === "tryon";
+        const isHandheldSession = mode.id === "handheld";
         const [draft, handheldDraft, remote, handheldRemote] =
           await Promise.all([
-            loadTryonDraft(),
-            loadHandheldDraft(),
-            listTryonCatalog().catch(() => null),
-            listHandheldCatalog().catch(() => null),
+            isTryonSession ? loadTryonDraft() : null,
+            isHandheldSession ? loadHandheldDraft() : null,
+            isTryonSession ? listTryonCatalog().catch(() => null) : null,
+            isHandheldSession ? listHandheldCatalog().catch(() => null) : null,
           ]);
         if (!alive) return;
         if (remote?.models?.length) models = remote.models;
@@ -2217,7 +2439,8 @@ export function EcommerceBusinessSession({
     }
   }, [mode.id, handheldSlots]);
   useEffect(() => {
-    if (!tryonDraftReady) return undefined;
+    // 只有试衣模块写试衣草稿，其他模块的画幅 / 场景不会混进来
+    if (mode.id !== "tryon" || !tryonDraftReady) return undefined;
     const timer = window.setTimeout(() => {
       void saveTryonDraft({
         slots: tryonSlots,
@@ -2295,7 +2518,7 @@ export function EcommerceBusinessSession({
     // generate 每次渲染都会重建，这里只跟随请求本身触发
   }, [handheldShotRegen]);
   useEffect(() => {
-    if (!handheldDraftReady) return undefined;
+    if (mode.id !== "handheld" || !handheldDraftReady) return undefined;
     const timer = window.setTimeout(() => {
       void saveHandheldDraft({
         slots: handheldSlots,
@@ -2504,11 +2727,17 @@ export function EcommerceBusinessSession({
   const updateRail = useCallback(() => {
     const node = railScroll.current;
     if (!node) return;
+    commerceRailScrollTop = node.scrollTop;
     const max = Math.max(0, node.scrollHeight - node.clientHeight);
     setRailEdges({
       start: node.scrollTop <= 2,
       end: max <= 2 || node.scrollTop >= max - 2,
     });
+  }, []);
+  // 切换模块会重新挂载会话：侧栏保持原来的滚动位置，不跳回顶部
+  useLayoutEffect(() => {
+    const node = railScroll.current;
+    if (node && commerceRailScrollTop) node.scrollTop = commerceRailScrollTop;
   }, []);
   useEffect(() => {
     updateRail();
@@ -2568,10 +2797,57 @@ export function EcommerceBusinessSession({
           ...detailExtraSlots.map(() => DETAIL_EXTRA_REFERENCE_ROLE),
         ]
       : null;
+  // 套图画幅只给当前模型支持的比例；主图 / 详情页各自一个画幅
+  const listingRatioOptions = withModelRatios(LISTING_RATIO_OPTIONS, (item) => item.value);
+  // 换了模型后当前画幅不再支持：自动切到本模块里模型支持的第一个画幅（手持按渠道切换）
+  const modeRatioValues = useMemo(() => {
+    if (mode.id === "tryon") return OPTIONS.tryonRatio.map((item) => item.value);
+    if (mode.id === "accessory") return ACCESSORY_RATIO_CHANNELS.map((item) => item.ratio);
+    if (isDetailMode(mode.id)) return DETAIL_RATIO_OPTIONS.map((item) => item.value);
+    if (mode.id === "handheld" || mode.id === "listing") return [];
+    return (workbenchSpecById(mode.id)?.channels || []).map((item) => item.ratio);
+  }, [mode.id]);
+  useEffect(() => {
+    if (!modelRatioSet) return;
+    if (mode.id === "handheld") {
+      const current = handheldPlatformById(handheldPlatform);
+      if (!current?.ratio || modelRatioSet.has(current.ratio)) return;
+      const next = HANDHELD_PLATFORM_OPTIONS.find((item) => modelRatioSet.has(item.ratio));
+      if (!next) return;
+      setHandheldPlatform(next.id);
+      setAspectRatio(next.ratio);
+      return;
+    }
+    if (!modeRatioValues.length || modelRatioSet.has(String(aspectRatio))) return;
+    const next = modeRatioValues.find((ratio) => modelRatioSet.has(ratio));
+    if (next) setAspectRatio(next);
+  }, [modelRatioSet, mode.id, modeRatioValues, aspectRatio, handheldPlatform]);
+  const pickListingRatio = (value, preferred) =>
+    listingRatioOptions.some((item) => item.value === value)
+      ? value
+      : listingRatioOptions.find((item) => item.value === preferred)?.value ||
+        listingRatioOptions[0].value;
+  const listingMainRatio = pickListingRatio(listingConfig.mainRatio, "1:1");
+  const listingDetailRatio = pickListingRatio(listingConfig.detailRatio, "3:4");
   const listingBlueprints = useMemo(
-    () => listingShotBlueprintsFromPlan(listingPlan, listingTypeIds),
-    [listingPlan, listingTypeIds],
+    () =>
+      buildListingBlueprints({
+        planMode: listingConfig.planMode,
+        freeItems: listingConfig.freeItems,
+        customTypes: listingConfig.customTypes,
+        templateIds: listingConfig.templateIds,
+        smart: listingConfig.smart,
+        plan: listingPlan,
+        mainRatio: listingMainRatio,
+        detailRatio: listingDetailRatio,
+      }),
+    [listingConfig, listingPlan, listingMainRatio, listingDetailRatio],
   );
+  // 智能组图在策划前只有「主图 N / 详情页 M」占位，必须先让 AI 选定类型
+  const listingNeedsPlan =
+    mode.id === "listing" &&
+    (listingBlueprints.some((shot) => shot.pending) ||
+      (listingConfig.runMode !== "fast" && !listingPlan?.items?.length));
   const variantBlueprints = useMemo(
     () =>
       workbenchSpecById(mode.id)?.packKind === "variants"
@@ -2617,13 +2893,6 @@ export function EcommerceBusinessSession({
   );
   const aplusMarketplace = aplusMarketplaceById(aplusMarketplaceId);
   const aplusCategory = aplusCategoryById(aplusCategoryId);
-  const shootBlueprints = useMemo(
-    () =>
-      shootShotIds
-        .map((id) => CREATIVE_SHOOT_SHOTS.find((shot) => shot.id === id))
-        .filter(Boolean),
-    [shootShotIds],
-  );
   const blueprints =
     mode.id === "shoot"
       ? shootBlueprints
@@ -2720,6 +2989,10 @@ export function EcommerceBusinessSession({
   const accessoryHasModel = accessoryPresence.hasModel;
   const accessoryHasScene = accessoryPresence.hasScene;
   const accessoryHasSize = Number.parseFloat(accessorySizeMm) > 0;
+  // AI 商拍：拍摄方向转成整套视觉基调（与 scene / tone 对不上时退回旧的场景 / 风格写法）
+  const shootPromptDirection = isShootMode(mode.id)
+    ? shootDirectionFor(scene, tone)
+    : null;
   const assembledPrompt = isHandheldMode(mode.id)
     ? buildHandheldTaskPrompt({
         productName,
@@ -2789,8 +3062,9 @@ export function EcommerceBusinessSession({
             ? ""
             : `商品名称：${productName.trim() || "根据商品图片准确识别"}。`,
           mode.id === "shoot"
-            ? `商业任务：${SHOOT_USE_CASE_LABELS[shootUseCase] || "商品上架"}；目标渠道：${platform}；目标市场：${market}；商业目标：${SHOOT_GOAL_LABELS[shootGoal] || "促进转化"}。`
+            ? `商业任务：${SHOOT_USE_CASE_LABELS[shootUseCase] || "商品上架"}；目标渠道：${platform}；商业目标：${SHOOT_GOAL_LABELS[shootGoal] || "促进转化"}。`
             : "",
+          ...(mode.id === "shoot" ? shootPromptLines(shootPromptDirection) : []),
           mode.id === "shoot" && shootAudience.trim()
             ? `目标人群：${shootAudience.trim()}。`
             : "",
@@ -2838,14 +3112,23 @@ export function EcommerceBusinessSession({
             ? tryonLightOption.id === "available"
               ? "环境、光线、材质与空间以第 3 张场景参考图为准；禁止把场景图中的人物或商品带入结果，也不要用文字场景名另造布景。"
               : "空间、色温和环境以第 3 张场景参考图为准；禁止把场景图中的人物或商品带入结果。主光仍来自该场景，只用所选光影手法塑形，不要换一套棚灯或改成另一个时段。"
-            : fields.has("scene")
+            : fields.has("scene") && !shootPromptDirection
               ? `拍摄场景：${scene}。`
               : "",
           isTryonMode(mode.id) || mode.id === "shoot"
             ? `画面比例：${aspectRatio}。`
             : "",
-          fields.has("tone") ? `视觉风格：${tone}。` : "",
-          !isTryonMode(mode.id) && textStable
+          fields.has("tone") && !shootPromptDirection && mode.id !== "listing"
+            ? `视觉风格：${tone}。`
+            : "",
+          mode.id === "listing" && listingStylePrompt(listingConfig.style)
+            ? `整套视觉风格：${listingStylePrompt(listingConfig.style)}`
+            : "",
+          mode.id === "listing" && /无需|无文字|不需要文案/.test(language)
+            ? "整套图不出现任何标题、文案、标签或水印，只用画面表达。"
+            : "",
+          // AI 商拍是纯摄影、不出文字；文字稳定性只对带文案的业务有意义
+          !isTryonMode(mode.id) && !isShootMode(mode.id) && textStable
             ? "文字必须准确清晰，无法可靠生成时留白，不得输出乱码。"
             : "",
           // 工作台预置字段（产品类型 / 场景 / 展示方式 / 排版 / 氛围…），留空不写
@@ -2857,7 +3140,9 @@ export function EcommerceBusinessSession({
                 { skipBound: fields },
               )
             : []),
-          isWorkbenchMode(mode.id) && workbenchNote.trim()
+          isWorkbenchMode(mode.id) &&
+          workbenchNote.trim() &&
+          (mode.id !== "listing" || listingConfig.noteOpen)
             ? `用户细节补充：${workbenchNote.trim()}`
             : "",
           workbenchStyleFile ? STYLE_REFERENCE_PROMPT : "",
@@ -2920,6 +3205,7 @@ export function EcommerceBusinessSession({
           hasScene: handheldHasScene,
         })
       : "",
+    anchoredSeries: isShootMode(mode.id),
     shotBlueprints:
       mode.id === "shoot"
         ? shootBlueprints
@@ -3003,7 +3289,10 @@ export function EcommerceBusinessSession({
           : inputFiles.length >= minimumFiles) &&
     modelId &&
     (!fields.has("modules") || selectedModuleDetails.length) &&
-    (mode.id !== "listing" || (listingBlueprints.length >= 1 && !listingPlanning)) &&
+    (mode.id !== "listing" ||
+      (listingBlueprints.length >= 1 &&
+        !listingPlanning &&
+        !listingBlueprints.some((shot) => shot.pending))) &&
     (mode.id !== "detail" || !detailPlanning) &&
     (mode.id !== "accessory" ||
       (accessoryPresence.hasProduct &&
@@ -3035,15 +3324,48 @@ export function EcommerceBusinessSession({
               : inputFiles.length < minimumFiles
                 ? `还需 ${minimumFiles - inputFiles.length} 张参考图`
                 : mode.id === "listing" && listingBlueprints.length < 1
-                  ? "请至少勾选 1 种出图类型"
+                  ? listingConfig.planMode === "template"
+                    ? "请先挑选品类模板"
+                    : listingConfig.planMode === "smart"
+                      ? "请至少规划 1 张图"
+                      : "请至少添加 1 种出图类型"
                   : mode.id === "listing" && listingPlanning
                     ? "AI 正在策划套图文案"
+                    : mode.id === "listing" &&
+                        listingBlueprints.some((shot) => shot.pending)
+                      ? "智能组图需要先由 AI 策划出图类型"
                     : mode.id === "detail" && !selectedModuleDetails.length
                       ? "请至少勾选 1 个出图方向"
                       : mode.id === "detail" && detailPlanning
                         ? "AI 正在策划详情页"
                         : "配置完成，可以生成";
   const costLabel = `${Math.max(1, generationPlan.length) * unitPrice} 积分`;
+  // 套图规划换了（智能组图张数 / 模板 / 规划方向），旧策划的槽位不再对应，直接作废；
+  // 自由组合按类型 id 对齐，增删类型时保留其余张的策划
+  const listingPlanScope = [
+    listingConfig.planMode,
+    listingConfig.planMode === "smart"
+      ? `${listingConfig.smart.main}/${listingConfig.smart.detail}`
+      : "",
+    listingConfig.planMode === "template" ? listingConfig.templateIds.join(",") : "",
+  ].join("|");
+  const listingPlanScopeRef = useRef(listingPlanScope);
+  useEffect(() => {
+    if (listingPlanScopeRef.current === listingPlanScope) return;
+    listingPlanScopeRef.current = listingPlanScope;
+    setListingPlan(null);
+    setListingPlanError("");
+    setListingAutoRunPending(false);
+  }, [listingPlanScope]);
+  // 智能直出：策划结果进入 generationPlan 后自动出图；条件不满足时停在策划方案等用户确认
+  useEffect(() => {
+    if (!listingAutoRunPending) return;
+    setListingAutoRunPending(false);
+    if (mode.id !== "listing" || !listingPlan?.items?.length || !canGenerate) return;
+    void generate();
+    // generate 每次渲染重建，只在「待自动出图」置位时触发一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listingAutoRunPending, listingPlan, canGenerate, mode.id]);
   const detailedCostLabel =
     generationPlan.length > 1
       ? `预计 ${generationPlan.length * unitPrice} 积分（${unitPrice} 积分 / 张 × ${generationPlan.length}）`
@@ -3184,6 +3506,12 @@ export function EcommerceBusinessSession({
           String(task.batchId || task.params?.batchId || "") === liveGroupId,
       )
     : [];
+  // 本轮最早的任务创建时间：所有工作台的读秒都从这里续接，刷新页面不归零
+  const liveRunStartedAt =
+    liveTasks
+      .map((task) => task.params?.batchCreatedAt || task.createdAt || "")
+      .filter(Boolean)
+      .sort()[0] || "";
   const liveActiveTask = liveTasks.find((task) =>
     ["queued", "running", "waiting_provider"].includes(
       String(task.status || "").toLowerCase(),
@@ -3807,15 +4135,10 @@ export function EcommerceBusinessSession({
     }
     const incoming = Array.from(list || []);
     const prepared = prepareEcommerceInputFiles(files, incoming, {
-      // 单任务最多 6 张参考图：详情页的补充参考图要从商品图额度里扣
-      ...(isDetailMode(mode.id)
-        ? {
-            limit: Math.max(
-              1,
-              DETAIL_PRODUCT_REFERENCE_MAX - detailExtraSlots.length,
-            ),
-          }
-        : {}),
+      // 单任务参考图上限取模型配置：详情页的补充参考图、工作台的风格参考图都要从商品图额度里扣
+      limit: isDetailMode(mode.id)
+        ? Math.max(1, referenceLimit - detailExtraSlots.length)
+        : workbenchProductLimit,
       maxBytes: ECOMMERCE_IMAGE_MAX_BYTES,
       skipSizeCap: true,
     });
@@ -3880,7 +4203,9 @@ export function EcommerceBusinessSession({
     if (targetIndex < 0 || targetIndex >= files.length) {
       // 追加：单槽位时只取一张，多角度模式允许多选
       const limit =
-        targetIndex >= 0 || !anglesAllowed ? 1 : Math.max(1, 6 - files.length);
+        targetIndex >= 0 || !anglesAllowed
+          ? 1
+          : Math.max(1, workbenchProductLimit - files.length);
       addFiles(incoming.slice(0, limit));
       return;
     }
@@ -4263,9 +4588,7 @@ export function EcommerceBusinessSession({
       next !== "result" &&
       requestAuth({
         featureLabel:
-          next === "operations"
-            ? text.operations
-            : next === "history"
+          next === "history"
               ? "AI 电商历史"
               : next === "assets"
                 ? "我的资产"
@@ -4311,6 +4634,9 @@ export function EcommerceBusinessSession({
         type: "image/png",
       });
       Object.defineProperty(file, "sourceUrl", { value: asset.url });
+      Object.defineProperty(file, "previewUrl", {
+        value: asset.thumbnailUrl || asset.url,
+      });
       return file;
     });
     setFiles(nextFiles);
@@ -4527,11 +4853,11 @@ export function EcommerceBusinessSession({
       0,
       Math.min(
         DETAIL_EXTRA_REFERENCE_MAX - detailExtraSlots.length,
-        DETAIL_PRODUCT_REFERENCE_MAX - files.length - detailExtraSlots.length,
+        referenceLimit - files.length - detailExtraSlots.length,
       ),
     );
     if (!room) {
-      showTryonUploadNotice("商品图与补充参考图合计最多 6 张");
+      showTryonUploadNotice(`当前模型最多 ${referenceLimit} 张参考图（商品图与补充参考合计）`);
       return;
     }
     const prepared = prepareEcommerceInputFiles([], incoming, {
@@ -4571,12 +4897,24 @@ export function EcommerceBusinessSession({
       return current.filter((_, at) => at !== index);
     });
   }
-  // 商品套图：先让 AI 为每种出图类型策划标题 / 副文案 / 构图方向，再由用户点生成
-  async function planListing() {
+  // 商品套图：先让 AI 为每张图策划标题 / 副文案 / 构图方向；智能组图时由 AI 顺带挑选出图类型。
+  // autoRun = 智能直出：策划完成后自动接着出图
+  async function planListing({ autoRun = false } = {}) {
     if (requestAuth({ featureLabel: "套图智能策划" })) return;
     if (!files.length || listingPlanning || jobs.running) return;
-    if (!listingTypeIds.length) {
-      setListingPlanError("请至少勾选 1 种出图类型");
+    const smartMode = listingConfig.planMode === "smart";
+    const shots = buildListingBlueprints({
+      ...listingConfig,
+      plan: null,
+      mainRatio: listingMainRatio,
+      detailRatio: listingDetailRatio,
+    });
+    if (!shots.length) {
+      setListingPlanError(
+        listingConfig.planMode === "template"
+          ? "请先挑选品类模板"
+          : "请至少添加 1 种出图类型",
+      );
       return;
     }
     setListingPlanError("");
@@ -4600,21 +4938,32 @@ export function EcommerceBusinessSession({
         platform,
         market,
         language,
+        style: listingConfig.style,
         productName,
         sellingPoints,
-        note: workbenchNote,
-        types: LISTING_IMAGE_TYPES.filter((item) =>
-          listingTypeIds.includes(item.id),
-        ).map((item) => ({
-          id: item.id,
-          label: item.label,
-          direction: item.direction,
-        })),
+        note: listingConfig.noteOpen ? workbenchNote : "",
+        ...(smartMode
+          ? {
+              smart: {
+                mainCount: listingConfig.smart.main,
+                detailCount: listingConfig.smart.detail,
+              },
+              candidates: listingSmartCandidates(),
+            }
+          : {
+              types: shots.map((shot) => ({
+                id: shot.id,
+                label: shot.label,
+                direction: shot.direction,
+                role: shot.role,
+              })),
+            }),
       });
       if (!planned?.items?.length) {
         throw new Error("AI 未能给出有效的套图策划");
       }
       setListingPlan(planned);
+      if (autoRun) setListingAutoRunPending(true);
     } catch (error) {
       if (error?.name !== "AbortError") {
         setListingPlanError(error?.message || "套图策划失败，请重试");
@@ -4623,15 +4972,29 @@ export function EcommerceBusinessSession({
       setListingPlanning(false);
     }
   }
-  function toggleListingType(id) {
-    setListingTypeIds((current) =>
-      current.includes(id)
-        ? current.filter((item) => item !== id)
-        : LISTING_IMAGE_TYPES.filter(
-            (item) => current.includes(item.id) || item.id === id,
-          ).map((item) => item.id),
+  function editListingPlanItem(id, patch) {
+    setListingPlan((current) =>
+      current
+        ? {
+            ...current,
+            items: current.items.map((item) =>
+              item.id === id ? { ...item, ...patch } : item,
+            ),
+          }
+        : current,
     );
-    // 类型集合变了，旧策划里多出 / 缺失的条目不再匹配，交给 listingShotBlueprintsFromPlan 按 id 对齐即可
+  }
+  function setListingPlanItemRemoved(id, removed) {
+    setListingPlan((current) =>
+      current
+        ? {
+            ...current,
+            items: current.items.map((item) =>
+              id === null || item.id === id ? { ...item, removed } : item,
+            ),
+          }
+        : current,
+    );
   }
   async function generateBrief() {
     if (requestAuth({ featureLabel: "AI 商品识别" })) return;
@@ -4658,6 +5021,16 @@ export function EcommerceBusinessSession({
         language,
         previousProductName: brief.attempt ? brief.name : "",
         previousSellingPoints: brief.attempt ? brief.points : "",
+        // 商品套图：按 产品名称 / 核心卖点 / 适用人群 / 期望场景 / 具体参数 写完整产品信息，
+        // 已填写的内容作为事实依据保留
+        ...(mode.id === "listing"
+          ? {
+              detailed: true,
+              currentInfo: [productName.trim(), sellingPoints.trim()]
+                .filter(Boolean)
+                .join("\n"),
+            }
+          : {}),
       });
       setBrief((value) => ({
         ...value,
@@ -5202,11 +5575,12 @@ export function EcommerceBusinessSession({
           batchId,
           batchSize: planItems.length,
           expectedUnitPriceCents,
+          anchorFirst: isShootMode(mode.id),
           items: planItems.map((item, index) => ({
             ...item,
             kindVariant: mode.id,
             aspectRatio:
-              mode.id === "detail"
+              mode.id === "detail" || mode.id === "listing"
                 ? item.aspectRatio || aspectRatio
                 : aspectRatio,
             platform: `${platform} · ${market} · ${language}`,
@@ -5579,6 +5953,17 @@ export function EcommerceBusinessSession({
     jobs.clearError();
     setSessionBatchId(batchId);
     setSessionCount((value) => Math.max(value, displayCount, index + 1));
+    // AI 商拍重试后续镜头：本套首张已出图时，继续拿它当整套参考
+    const heroTask =
+      isShootMode(mode.id) && index > 0
+        ? jobs.tasks.find(
+            (task) =>
+              String(task.batchId || "") === batchId &&
+              Number(task.batchIndex) === 0 &&
+              String(task.status || "").toLowerCase() === "succeeded" &&
+              !String(task.id || "").startsWith("local-"),
+          )
+        : null;
     try {
       await jobs.createBatch({
         files: hidesCommerceSettings(mode.id)
@@ -5586,6 +5971,7 @@ export function EcommerceBusinessSession({
           : inputFiles,
         modelId,
         batchId,
+        anchorTaskId: heroTask?.id || "",
         batchSize: Math.max(sessionCount, displayCount, index + 1),
         items: [
           {
@@ -6069,19 +6455,13 @@ export function EcommerceBusinessSession({
   const workbenchPackValue =
     workbenchSpec?.packKind === "count"
       ? workbenchPackForCount(workbenchSpec, requestedCount)?.id || ""
-      : workbenchSpec?.packKind === "shoot"
-        ? workbenchPackForShootShots(workbenchSpec, shootShotIds)?.id || ""
-        : "";
+      : "";
   function changeWorkbenchPack(id) {
     if (!workbenchSpec) return;
     if (workbenchSpec.packKind === "count") {
       const option = workbenchSpec.packs.find((item) => item.id === id);
       if (option) setRequestedCount(Math.max(1, Number(option.count) || 1));
       return;
-    }
-    if (workbenchSpec.packKind === "shoot") {
-      const option = workbenchSpec.packs.find((item) => item.id === id);
-      if (option?.shotIds?.length) setShootShotIds([...option.shotIds]);
     }
   }
   const workbenchBrowsingGroup =
@@ -6091,6 +6471,9 @@ export function EcommerceBusinessSession({
     currentRow.groupId !== liveGroupId
       ? currentGroup
       : null;
+  const workbenchHeroPending = ["queued", "running", "waiting_provider"].includes(
+    String(slots[0]?.task?.status || "").toLowerCase(),
+  );
   const workbenchShots = workbenchSpec
     ? workbenchBrowsingGroup
       ? workbenchBrowsingGroup.map((row, index) => ({
@@ -6110,6 +6493,12 @@ export function EcommerceBusinessSession({
             const task = slot?.task || null;
             const status = String(task?.status || "").toLowerCase();
             return {
+              // 整套锚定：首张还没出图时，后续几张在 Worker 里排队等它定调
+              waiting:
+                !row &&
+                status === "queued" &&
+                Boolean(task?.params?._seriesAnchorTaskId) &&
+                workbenchHeroPending,
               id: generationPlan[index]?.viewId || `shot-${index}`,
               label:
                 generationPlan[index]?.viewLabel?.split(" · ").pop() ||
@@ -6179,7 +6568,7 @@ export function EcommerceBusinessSession({
                   coerceRatioValue(aspectRatio, OPTIONS.tryonRatio) ||
                   "3:4"
                 }
-                options={OPTIONS.tryonRatio}
+                options={withModelRatios(OPTIONS.tryonRatio, (item) => item.value)}
                 onChange={setAspectRatio}
                 ariaLabel="选择画面比例"
                 menuMinWidth={280}
@@ -6444,8 +6833,9 @@ export function EcommerceBusinessSession({
             modelId={modelId}
             modelOptions={commerceModelOptions(models, unitPrice)}
             onChangeModelId={setModelId}
+            // 商品套图的平台 / 市场 / 语种 / 风格、商品信息与清晰度都在套图工作台里填写
             distribution={selectFields
-              .filter((item) => fields.has(item.key))
+              .filter((item) => fields.has(item.key) && mode.id !== "listing")
               .map((item) => ({
                 key: item.key,
                 label: item.label,
@@ -6454,7 +6844,7 @@ export function EcommerceBusinessSession({
                 onChange: item.set,
                 aria: item.aria,
               }))}
-            presets={{
+            presets={mode.id === "listing" ? null : {
               // 预置字段：绑定字段直接读写 scene / tone / campaign，其余存 presetValues
               fields: workbenchPresetFields(mode.id)
                 .filter((field) => !workbenchCanvasPickKeys.has(field.key))
@@ -6529,7 +6919,10 @@ export function EcommerceBusinessSession({
                 : null
             }
             product={
-              mode.id === "outpaint" || mode.id === "enhance" || mode.id === "shadow"
+              mode.id === "outpaint" ||
+              mode.id === "enhance" ||
+              mode.id === "shadow" ||
+              mode.id === "listing"
                 ? null
                 : {
                     name: productName,
@@ -6546,6 +6939,7 @@ export function EcommerceBusinessSession({
                     onToggleTextStable: () => setTextStable((value) => !value),
                   }
             }
+            menuRequest={toolbarMenuRequest}
             disabled={jobs.running}
           />
         ) : (
@@ -6568,10 +6962,9 @@ export function EcommerceBusinessSession({
             ? [
                 ["result", "bi-easel2", text.creative],
                 ["history", "bi-clock-history", "电商历史"],
-                ["operations", "bi-kanban", text.operations],
               ]
             : isTryonMode(mode.id)
-            ? // 试衣不需要业务中心（审核交付）和商品库（商品事实包）
+            ? // 试衣不需要商品库（商品事实包）
               [
                 ["result", "bi-easel2", text.creative],
                 ["history", "bi-clock-history", "电商历史"],
@@ -6579,7 +6972,6 @@ export function EcommerceBusinessSession({
               ]
             : [
                 ["result", "bi-easel2", text.creative],
-                ["operations", "bi-kanban", text.operations],
                 ["history", "bi-clock-history", "电商历史"],
                 ["assets", "bi-collection", "资产与素材"],
                 ["products", "bi-box-seam", text.products],
@@ -6637,16 +7029,6 @@ export function EcommerceBusinessSession({
         >
           历史
         </button>
-        {!isTryonMode(mode.id) && (
-          <button
-            type="button"
-            role="tab"
-            className={workspace === "operations" ? "active" : ""}
-            onClick={() => openWorkspace("operations")}
-          >
-            {text.operationsMobile}
-          </button>
-        )}
         {!isShootMode(mode.id) && (
           <>
             <button
@@ -6844,18 +7226,7 @@ export function EcommerceBusinessSession({
           ref={canvasRef}
           className={`commerce-canvas${pane !== "canvas" ? " is-mobile-hidden" : ""}`}
         >
-          {workspace === "operations" ? (
-            <CommerceOperationsWorkspace
-              english={localStorage.getItem("starclouds-locale") === "en"}
-              tasks={jobs.tasks}
-              historyLoading={jobs.historyLoading}
-              onRefresh={jobs.refreshHistory}
-              onPreview={setPreviewUrl}
-              onOpenProducts={() => openWorkspace("products")}
-              onOpenAssets={() => openWorkspace("assets")}
-              onStartMode={(modeId) => setMode(ecommerceModeById(modeId))}
-            />
-          ) : workspace === "products" ? (
+          {workspace === "products" ? (
             <CommerceProductLibrary
               english={localStorage.getItem("starclouds-locale") === "en"}
               selectedProductId={selectedProduct?.id || ""}
@@ -6953,11 +7324,191 @@ export function EcommerceBusinessSession({
                 )}
               </div>
             </section>
+          ) : mode.id === "listing" ? (
+            <ListingStudio
+              previews={previews}
+              maxFiles={workbenchProductLimit}
+              running={jobs.running}
+              cancelling={jobs.cancelling}
+              onUpload={() => fileInput.current?.click()}
+              onRemoveFile={removeFile}
+              onDropFiles={addFiles}
+              onPreview={setPreviewUrl}
+              productName={productName}
+              onChangeProductName={setProductName}
+              productInfo={sellingPoints}
+              onChangeProductInfo={setSellingPoints}
+              onAiWrite={generateBrief}
+              platform={platform}
+              onChangePlatform={setPlatform}
+              market={market}
+              onChangeMarket={setMarket}
+              language={language}
+              onChangeLanguage={setLanguage}
+              style={listingConfig.style}
+              onChangeStyle={(value) => patchListingConfig({ style: value })}
+              config={{
+                ...listingConfig,
+                mainRatio: listingMainRatio,
+                detailRatio: listingDetailRatio,
+              }}
+              actions={{
+                patch: patchListingConfig,
+                setPlanMode: setListingPlanMode,
+                toggleType: toggleListingType,
+                stepTypeCount: stepListingTypeCount,
+                moveType: moveListingType,
+                addCustomType: addListingCustomType,
+                removeCustomType: removeListingCustomType,
+                setSmartCount: setListingSmartCount,
+                toggleTemplate: toggleListingTemplate,
+                saveTemplate: saveListingTemplate,
+                applySaved: applyListingSavedTemplate,
+                removeSaved: removeListingSavedTemplate,
+              }}
+              savedTemplates={listingSavedTemplates}
+              ratioOptions={listingRatioOptions}
+              resolution={workbenchResolution}
+              resolutionOptions={workbenchResolutionOptions}
+              onChangeResolution={setResolution}
+              note={workbenchNote}
+              onChangeNote={setWorkbenchNote}
+              plan={{
+                data: listingPlan,
+                planning: listingPlanning,
+                error: listingPlanError,
+                onPlan: () => void planListing(),
+                onClear: () => {
+                  setListingPlan(null);
+                  setListingPlanError("");
+                },
+                onEditItem: editListingPlanItem,
+                onRemoveItem: (id) => setListingPlanItemRemoved(id, true),
+                onRestore: () => setListingPlanItemRemoved(null, false),
+                removedCount: (listingPlan?.items || []).filter((item) => item.removed).length,
+                planDisabled:
+                  auth.isAuthenticated && (!files.length || !listingBlueprints.length),
+                planHint: !files.length
+                  ? "先上传商品图"
+                  : !listingBlueprints.length
+                    ? "先规划出图类型"
+                    : "",
+              }}
+              blueprints={listingBlueprints}
+              moduleStates={Array.from(
+                {
+                  length: Math.max(
+                    listingBlueprints.length,
+                    liveTasks.length,
+                    liveGroup.length,
+                  ),
+                },
+                (_, index) => {
+                  const row = liveGroup.find(
+                    (item) => Number(item.index || 0) === index,
+                  );
+                  const task = liveTasks.find(
+                    (item) => Number(item.batchIndex) === index,
+                  );
+                  return {
+                    url: row?.url || "",
+                    display: row?.display || "",
+                    status: String(task?.status || "").toLowerCase(),
+                    startedAt: task?.startedAt || task?.createdAt || "",
+                    error: task?.error || "",
+                  };
+                },
+              )}
+              runStartedAt={
+                liveTasks
+                  .map(
+                    (task) => task.params?.batchCreatedAt || task.createdAt || "",
+                  )
+                  .filter(Boolean)
+                  .sort()[0] || ""
+              }
+              history={modeRows}
+              resultUrl={currentRow?.url || ""}
+              generate={
+                listingNeedsPlan
+                    ? {
+                        label:
+                          listingConfig.runMode === "auto"
+                            ? "开始 AI 智能策划并生成"
+                            : "开始 AI 智能策划",
+                        disabled:
+                          auth.isAuthenticated &&
+                          (!files.length || !listingBlueprints.length || !modelId),
+                        hint: !files.length
+                          ? "还需上传商品图"
+                          : !listingBlueprints.length
+                            ? readiness
+                            : !modelId
+                              ? "请选择生成模型"
+                              : "",
+                        onClick: () =>
+                          void planListing({
+                            autoRun: listingConfig.runMode === "auto",
+                          }),
+                      }
+                    : {
+                        label:
+                          listingPlan?.items?.length && listingConfig.runMode === "confirm"
+                            ? `确认方案，生成 ${generationPlan.length} 张`
+                            : `开始生成 ${generationPlan.length} 张套图`,
+                        disabled: auth.isAuthenticated && !canGenerate,
+                        hint: readiness,
+                        onClick: generate,
+                      }
+              }
+              costLabel={listingBlueprints.length ? costLabel : ""}
+              generationStageLabel={jobs.generationStageLabel || "正在生成"}
+              failed={Boolean((submitError || jobs.error) && !currentRow)}
+              failMessage={submitError || jobs.error || ""}
+              onCancel={jobs.cancelAll}
+              onSelectHistory={setActiveUrl}
+              onResultPreview={(event, payload) =>
+                openImagePreview(payload?.url || "")
+              }
+              onDownload={currentRow ? () => downloadOutput(currentRow) : undefined}
+              onDownloadAll={
+                currentGroup.length > 1 ? () => void downloadWorkbenchPack() : undefined
+              }
+              onMaskEdit={currentRow ? () => setMaskRow(currentRow) : undefined}
+              onSaveAsset={
+                currentRow ? () => void saveCurrentWorkbenchAsset() : undefined
+              }
+              actionBusy={workbenchActionBusy}
+              notice={workbenchNotice || tryonUploadNotice}
+              revision={
+                currentRow
+                  ? {
+                      available: true,
+                      open: revisionOpen,
+                      onToggle: () => setRevisionOpen((value) => !value),
+                      direction: revisionDirection,
+                      directionOptions: ECOMMERCE_REVISION_DIRECTIONS,
+                      onChangeDirection: setRevisionDirection,
+                      brief: revisionBrief,
+                      onChangeBrief: setRevisionBrief,
+                      onSubmit: reviseCurrent,
+                      version: currentVersion,
+                      price: `${unitPrice} 积分`,
+                    }
+                  : { available: false }
+              }
+            />
           ) : workbenchSpec ? (
             <CommerceWorkbench
-              spec={workbenchSpec}
+              spec={{
+                ...workbenchSpec,
+                // 没有画幅选择的模块（清晰增强等）保持 null，不渲染空的“投放到”卡
+                channels: workbenchSpec.channels
+                  ? withModelRatios(workbenchSpec.channels, (item) => item.ratio)
+                  : null,
+              }}
               previews={previews}
-              maxFiles={6}
+              maxFiles={workbenchProductLimit}
               referenceLabel={referenceLabel}
               onUploadSlot={requestWorkbenchUpload}
               onDropSlot={(index, list) => void placeWorkbenchFiles(index, list)}
@@ -6974,20 +7525,27 @@ export function EcommerceBusinessSession({
               packOptions={workbenchPackOptions}
               onChangePack={changeWorkbenchPack}
               picks={workbenchPicks}
-              typePicker={
-                workbenchSpec.packKind === "types"
+              shotPicker={
+                workbenchSpec.packKind === "shots"
                   ? {
-                      label: "出图类型",
-                      options: LISTING_IMAGE_TYPES,
-                      values: listingTypeIds,
-                      visibleLimit: 6,
-                      onToggle: toggleListingType,
-                      onSelectAll: () =>
-                        setListingTypeIds(LISTING_IMAGE_TYPES.map((item) => item.id)),
-                      onClear: () => setListingTypeIds([]),
+                      label: "拍摄镜头",
+                      options: CREATIVE_SHOOT_SHOTS,
+                      values: shootShotIds,
+                      max: SHOOT_MAX_SHOTS,
+                      onToggle: toggleShootShot,
                     }
                   : null
               }
+              factLock={
+                isShootMode(mode.id)
+                  ? {
+                      items: shootProtectedItems(shootProtectedElements),
+                      onEdit: () =>
+                        setToolbarMenuRequest({ id: "shoot", nonce: Date.now() }),
+                    }
+                  : null
+              }
+              seriesAnchored={isShootMode(mode.id)}
               variants={
                 workbenchSpec.packKind === "variants"
                   ? {
@@ -7013,42 +7571,6 @@ export function EcommerceBusinessSession({
                     }
                   : null
               }
-              secondaryAction={
-                workbenchSpec.planning
-                  ? {
-                      label: listingPlan ? "重新策划" : "去智能策划",
-                      sub: listingPlan ? "已按策划出图" : "先定文案再出图",
-                      icon: "bi-magic",
-                      busy: listingPlanning,
-                      busyLabel: "策划中",
-                      active: Boolean(listingPlan),
-                      disabled:
-                        !files.length ||
-                        !listingTypeIds.length ||
-                        (auth.isAuthenticated && !modelId),
-                      hint: !files.length
-                        ? "先上传商品图"
-                        : !listingTypeIds.length
-                          ? "先勾选出图类型"
-                          : "AI 先为每张图写好标题与构图，再一键生成",
-                      onClick: () => void planListing(),
-                    }
-                  : null
-              }
-              planState={
-                workbenchSpec.planning
-                  ? {
-                      busy: listingPlanning,
-                      error: listingPlanError,
-                      active: Boolean(listingPlan),
-                      summary: listingPlan?.summary || "",
-                      onClear: () => {
-                        setListingPlan(null);
-                        setListingPlanError("");
-                      },
-                    }
-                  : null
-              }
               plan={generationPlan.map((item, index) => ({
                 id: item.viewId,
                 label: item.viewLabel.split(" · ").pop(),
@@ -7068,6 +7590,7 @@ export function EcommerceBusinessSession({
                   ? `上次生成未完成：${workbenchFailMessage}`
                   : "")
               }
+              runStartedAt={liveRunStartedAt}
               elapsedSeconds={ecommerceElapsedSeconds(currentRow?.task)}
               generationStageLabel={jobs.generationStageLabel || "正在生成"}
               generateDisabled={auth.isAuthenticated && !canGenerate}
@@ -7370,7 +7893,7 @@ export function EcommerceBusinessSession({
               }}
               recommendedPack={handheldPlatformById(handheldPlatform).packId}
               platform={handheldPlatform}
-              platformOptions={HANDHELD_PLATFORM_OPTIONS}
+              platformOptions={withModelRatios(HANDHELD_PLATFORM_OPTIONS, (item) => item.ratio)}
               onChangePlatform={(id) => {
                 setHandheldPlatform(id);
                 const option = handheldPlatformById(id);
@@ -7569,6 +8092,8 @@ export function EcommerceBusinessSession({
               failed={Boolean((submitError || jobs.error) && !currentRow)}
               failMessage={submitError || jobs.error || ""}
               notice={accessoryNotice}
+              ratioChannels={withModelRatios(ACCESSORY_RATIO_CHANNELS, (item) => item.ratio)}
+              runStartedAt={liveRunStartedAt}
               elapsedSeconds={ecommerceElapsedSeconds(currentRow?.task)}
               generationStageLabel={jobs.generationStageLabel || "正在生成"}
               generateDisabled={auth.isAuthenticated && !canGenerate}
@@ -7616,7 +8141,7 @@ export function EcommerceBusinessSession({
           ) : isDetailMode(mode.id) ? (
             <DetailStudio
               previews={previews}
-              maxProductFiles={DETAIL_PRODUCT_REFERENCE_MAX}
+              maxProductFiles={referenceLimit}
               extraSlots={detailExtraSlots}
               maxExtraFiles={DETAIL_EXTRA_REFERENCE_MAX}
               onUploadExtra={() => {
@@ -7635,7 +8160,7 @@ export function EcommerceBusinessSession({
               note={workbenchNote}
               onChangeNote={setWorkbenchNote}
               ratio={aspectRatio}
-              ratioOptions={DETAIL_RATIO_OPTIONS}
+              ratioOptions={withModelRatios(DETAIL_RATIO_OPTIONS, (item) => item.value)}
               onChangeRatio={setAspectRatio}
               resolution={workbenchResolution}
               resolutionOptions={workbenchResolutionOptions}
@@ -7869,6 +8394,7 @@ export function EcommerceBusinessSession({
       <BriefDialog
         state={brief}
         setState={setBrief}
+        pointsLabel={mode.id === "listing" ? "产品信息" : "核心卖点"}
         dark={isDark}
         onRegenerate={generateBrief}
         onConfirm={() => {

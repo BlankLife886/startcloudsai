@@ -1,0 +1,1502 @@
+/* 图片查看与编辑器：参照 ChatGPT 的图片编辑界面，中性底色，浮动工具条和底部输入。 */
+.ais {
+  --ais-bg: #ffffff;
+  --ais-surface: #ffffff;
+  --ais-surface-hover: #f3f3f3;
+  --ais-surface-active: #ececec;
+  --ais-border: rgba(0, 0, 0, 0.1);
+  --ais-text: #0d0d0d;
+  --ais-muted: #6b6b6b;
+  --ais-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 6px 24px rgba(0, 0, 0, 0.08);
+  --ais-stage: #f9f9f9;
+  --ais-accent: #0d0d0d;
+  --ais-accent-ink: #ffffff;
+  --ais-danger: #d92d20;
+  --ais-mark: rgba(124, 92, 255, 0.5);
+  --ais-erase: rgba(255, 64, 96, 0.45);
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) 96px;
+  grid-template-rows: 64px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "top top top"
+    "versions stage ."
+    "bottom bottom bottom";
+  background: var(--ais-bg);
+  color: var(--ais-text);
+  /* 站点有的地方给数字用了等宽字体，编辑器里统一用系统字体 */
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  font-size: 14px;
+  animation: ais-in 160ms ease-out;
+}
+
+.ais.is-dark {
+  --ais-bg: #212121;
+  --ais-surface: #2f2f2f;
+  --ais-surface-hover: #3a3a3a;
+  --ais-surface-active: #424242;
+  --ais-border: rgba(255, 255, 255, 0.1);
+  --ais-text: #ececec;
+  --ais-muted: #a3a3a3;
+  --ais-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 28px rgba(0, 0, 0, 0.35);
+  --ais-stage: #1a1a1a;
+  --ais-accent: #ececec;
+  --ais-accent-ink: #0d0d0d;
+  --ais-danger: #ff6b5e;
+}
+
+@keyframes ais-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.ais button {
+  font: inherit;
+  color: inherit;
+}
+
+/* 顶栏 */
+.ais-top {
+  grid-area: top;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 16px;
+}
+
+.ais-top-left,
+.ais-top-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ais-title {
+  overflow: hidden;
+  margin: 0;
+  max-width: max(80px, min(42vw, calc(50vw - 340px)));
+  margin-left: 4px;
+  font-size: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ais-count {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--ais-surface-hover);
+  color: var(--ais-muted);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.ais-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 17px;
+}
+
+.ais-icon,
+.ais-zoom {
+  transition: background-color 140ms ease, border-color 140ms ease, transform 100ms ease, color 140ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ais-icon:hover:not(:disabled),
+.ais-icon.is-open {
+  background: var(--ais-surface-hover);
+}
+
+.ais-icon:active:not(:disabled),
+.ais-zoom:active {
+  transform: scale(0.94);
+}
+
+.ais-icon:focus-visible,
+.ais-zoom:focus-visible,
+.ais-menu button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ais-text) 45%, transparent);
+  outline-offset: 2px;
+}
+
+.ais-icon:disabled {
+  cursor: default;
+}
+
+.ais-download.is-done {
+  color: var(--ais-success, #16a34a) !important;
+}
+
+.ais-download .ais-spinner {
+  width: 16px;
+  height: 16px;
+}
+
+.ais-download .bi {
+  animation: ais-pop 220ms ease-out;
+}
+
+@keyframes ais-pop {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.ais-icon.is-small {
+  width: 28px;
+  height: 28px;
+  font-size: 13px;
+}
+
+.ais-zoom {
+  display: inline-flex;
+  min-width: 76px;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--ais-border);
+  border-radius: 999px;
+  background: var(--ais-surface);
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.ais-zoom:hover,
+.ais-zoom.is-open {
+  border-color: color-mix(in srgb, var(--ais-text) 22%, transparent);
+  background: var(--ais-surface-hover);
+}
+
+.ais-zoom .bi {
+  font-size: 11px;
+}
+
+.ais-chevron {
+  transition: transform 180ms ease;
+}
+
+.ais-zoom.is-open .ais-chevron {
+  transform: rotate(180deg);
+}
+
+.ais-menu-wrap {
+  position: relative;
+}
+
+.ais-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 3;
+  display: grid;
+  min-width: 168px;
+  padding: 6px;
+  transform-origin: top left;
+  animation: ais-menu-in 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+  border: 1px solid var(--ais-border);
+  border-radius: 14px;
+  background: var(--ais-surface);
+  box-shadow: var(--ais-shadow);
+}
+
+.ais-menu.is-right {
+  right: 0;
+  left: auto;
+  transform-origin: top right;
+}
+
+/* 打开：从按钮处轻微放大淡入；关闭：快速淡出缩回 */
+@keyframes ais-menu-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ais-menu-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(-4px) scale(0.97); }
+}
+
+.ais-menu.is-closing,
+.ais-markup-pop.is-closing {
+  animation: ais-menu-out 120ms ease-in both;
+  pointer-events: none;
+}
+
+.ais-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ais-menu button {
+  transition: background-color 120ms ease;
+}
+
+.ais-menu button:hover:not(:disabled),
+.ais-menu button:focus-visible {
+  background: var(--ais-surface-hover);
+}
+
+.ais-menu button:active:not(:disabled) {
+  background: var(--ais-surface-active);
+}
+
+.ais-menu button[aria-checked="true"] {
+  font-weight: 600;
+}
+
+.ais-menu .ais-check {
+  margin-left: 8px;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.ais-menu button:not(:has(kbd)) .ais-check {
+  margin-left: auto;
+}
+
+.ais-menu button[aria-checked="true"] .ais-check {
+  opacity: 1;
+  transform: none;
+}
+
+
+
+.ais-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ais-menu kbd {
+  margin-left: auto;
+  padding: 0 0 0 16px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--ais-muted);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+
+.ais-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--ais-border);
+}
+
+.ais-menu button.is-danger {
+  color: var(--ais-danger);
+}
+
+/* 工具条：浮在图片上方居中 */
+/* 编辑工具条和标注工具条都放在顶栏正中，不压在图片上 */
+.ais-toolbar {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  gap: 2px;
+  max-width: calc(100vw - 32px);
+  padding: 4px;
+  overflow-x: auto;
+  border: 1px solid var(--ais-border);
+  border-radius: 999px;
+  background: var(--ais-surface);
+  box-shadow: var(--ais-shadow);
+  transform: translateX(-50%);
+  scrollbar-width: none;
+}
+
+.ais-toolbar button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 14px 0 12px;
+  letter-spacing: 0.01em;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 120ms ease, transform 100ms ease;
+}
+
+.ais-toolbar button .bi {
+  font-size: 15px;
+  opacity: 0.85;
+}
+
+.ais-toolbar button .ais-markup-icon {
+  opacity: 0.88;
+}
+
+.ais-toolbar button:hover:not(:disabled) .ais-markup-icon,
+.ais-toolbar button.is-active .ais-markup-icon {
+  opacity: 1;
+}
+
+.ais-toolbar button:hover:not(:disabled) {
+  background: var(--ais-surface-hover);
+}
+
+.ais-toolbar button:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.ais-toolbar button.is-active {
+  background: var(--ais-surface-active);
+}
+
+.ais-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* 左侧版本 */
+.ais-versions {
+  grid-area: versions;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 0;
+  padding: 12px 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.ais-versions button {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: var(--ais-surface-hover);
+  cursor: pointer;
+  opacity: 0.5;
+  outline: none;
+  transition: opacity 150ms ease, transform 90ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 选中框用独立的一层画：站点全局的 focus 样式会去掉 outline，点完反而看不出选中 */
+.ais-versions button::after {
+  position: absolute;
+  inset: -4px;
+  border: 2px solid var(--ais-accent);
+  border-radius: 15px;
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+
+.ais-versions button:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.ais-versions button:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.ais-versions button.is-current {
+  opacity: 1;
+}
+
+.ais-versions button.is-current::after {
+  opacity: 1;
+}
+
+.ais-versions button:focus-visible:not(.is-current)::after {
+  opacity: 0.45;
+}
+
+.ais-versions button.is-pending,
+.ais-versions button.is-failed {
+  cursor: default;
+  opacity: 1;
+}
+
+.ais-versions button.is-failed {
+  color: var(--ais-danger);
+}
+
+.ais-versions img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  box-shadow: 0 0 0 1px var(--ais-border);
+  object-fit: cover;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 标注模式：图标工具条、弹出的图形和颜色、左侧粗细滑杆、图片上的 SVG 层 */
+.ais-toolbar.ais-markup-bar {
+  top: 9px;
+  z-index: 3;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  overflow: visible;
+}
+
+.ais.is-markup .ais-count {
+  display: none;
+}
+
+.ais-markup-icon {
+  display: block;
+  flex: none;
+}
+
+.ais-toolbar.ais-markup-bar button {
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+}
+
+.ais-markup-sep {
+  flex: none;
+  width: 1px;
+  height: 22px;
+  margin: 0 4px;
+  background: var(--ais-border);
+}
+
+.ais-markup-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.ais-markup-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+
+.ais-markup-pop {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  z-index: 4;
+  transform-origin: top center;
+  animation: ais-pop-in 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--ais-border);
+  border-radius: 16px;
+  background: var(--ais-surface);
+  box-shadow: var(--ais-shadow);
+  transform: translateX(-50%);
+}
+
+.ais-markup-pop.is-shapes {
+  grid-template-columns: repeat(4, 40px);
+}
+
+.ais-markup-pop.is-colors {
+  grid-template-columns: repeat(7, 30px);
+  gap: 8px;
+  padding: 12px;
+}
+
+.ais-toolbar.ais-markup-bar .ais-markup-pop.is-colors button,
+.ais-markup-color {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+}
+
+.ais-toolbar.ais-markup-bar .ais-markup-color.is-active {
+  box-shadow: 0 0 0 2px var(--ais-surface), 0 0 0 4px #2563eb;
+}
+
+.ais-markup-color.is-custom {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: conic-gradient(#f43f5e, #f59e0b, #eab308, #22c55e, #06b6d4, #3b82f6, #8b5cf6, #ec4899, #f43f5e);
+}
+
+.ais-markup-color.is-custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.ais-markup-side {
+  justify-content: center;
+}
+
+.ais-markup-size {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 188px;
+  border: 1px solid var(--ais-border);
+  border-radius: 999px;
+  background: var(--ais-surface);
+  box-shadow: var(--ais-shadow);
+}
+
+.ais-markup-track {
+  position: relative;
+  width: 28px;
+  height: 152px;
+  cursor: ns-resize;
+  outline: none;
+  touch-action: none;
+}
+
+.ais-markup-track:focus-visible {
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ais-accent) 40%, transparent);
+}
+
+.ais-markup-line {
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: 50%;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--ais-border);
+  transform: translateX(-50%);
+}
+
+.ais-markup-knob {
+  position: absolute;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin-bottom: -9px;
+  bottom: calc(9px + (100% - 18px) * var(--size) / 100);
+  border: 1.5px solid color-mix(in srgb, var(--ais-text) 35%, transparent);
+  border-radius: 50%;
+  background: var(--ais-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.ais-markup {
+  position: absolute;
+  inset: 0;
+  line-height: normal;
+  pointer-events: auto;
+}
+
+.ais-markup-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  touch-action: none;
+  user-select: none;
+}
+
+.ais-markup-svg.is-pen,
+.ais-markup-svg.is-eraser {
+  cursor: none;
+}
+
+.ais-markup-svg.is-text {
+  cursor: text;
+}
+
+.ais-markup-svg.is-shape {
+  cursor: crosshair;
+}
+
+.ais-markup-svg.is-select .ais-markup-hit {
+  cursor: move;
+}
+
+.ais-markup-frame rect {
+  fill: #fff;
+  stroke: #2563eb;
+}
+
+.ais-markup-frame rect.is-outline {
+  fill: none;
+  pointer-events: none;
+}
+
+.ais-markup-text {
+  position: absolute;
+  z-index: 2;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  font-weight: 600;
+  line-height: 1.25;
+  /* 宽度固定，超出就换行，和导出时的断行一致 */
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  caret-color: currentColor;
+}
+
+.ais-markup-text::placeholder {
+  color: currentColor;
+  opacity: 0.45;
+}
+
+.ais-markup-cursor {
+  position: absolute;
+  z-index: 3;
+  border: 1.5px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+
+
+@keyframes ais-pop-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-4px) scale(0.96); }
+  to { opacity: 1; transform: translateX(-50%); }
+}
+
+.ais-markup-pop.is-closing {
+  animation-name: ais-pop-out;
+}
+
+@keyframes ais-pop-out {
+  from { opacity: 1; transform: translateX(-50%); }
+  to { opacity: 0; transform: translateX(-50%) translateY(-4px) scale(0.97); }
+}
+
+.ais-markup-pop button,
+.ais-markup-color {
+  transition: background-color 120ms ease, transform 100ms ease, box-shadow 140ms ease;
+}
+
+.ais-markup-pop button:hover:not(.is-active) {
+  background: var(--ais-surface-hover);
+}
+
+.ais-markup-color:hover {
+  transform: scale(1.1);
+}
+
+.ais-markup-color:active,
+.ais-markup-pop button:active {
+  transform: scale(0.92);
+}
+
+/* 擦除和评论的顶部操作条：撤销 / 重做 / 发送 / 退出，或提示 / 发送 / 退出 */
+.ais-toolbar.ais-action-bar {
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+}
+
+.ais-toolbar.ais-action-bar .ais-action-icon {
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+}
+
+.ais-toolbar.ais-action-bar .ais-action-icon .bi {
+  font-size: 17px;
+  opacity: 1;
+}
+
+.ais-action-hint {
+  padding: 0 10px 0 14px;
+  color: var(--ais-muted);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.ais-toolbar.ais-action-bar .ais-action-send {
+  min-width: 64px;
+  height: 36px;
+  padding: 0 16px;
+  background: var(--ais-accent);
+  color: var(--ais-accent-ink) !important;
+  font-weight: 600;
+  transition: background-color 140ms ease, opacity 140ms ease, transform 100ms ease;
+}
+
+.ais-toolbar.ais-action-bar .ais-action-send:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ais-accent) 85%, var(--ais-bg));
+}
+
+.ais-toolbar.ais-action-bar .ais-action-send:disabled {
+  opacity: 1;
+  background: var(--ais-surface-active);
+  color: var(--ais-muted) !important;
+}
+
+.ais-action-send .ais-spinner {
+  width: 16px;
+  height: 16px;
+}
+
+/* 调整尺寸的下拉：挂在顶层，按按钮位置摆放 */
+.ais-menu.is-resize {
+  position: absolute;
+  z-index: 6;
+  width: 252px;
+  transform-origin: top left;
+}
+
+.ais-menu-title {
+  margin: 4px 10px 6px;
+  color: var(--ais-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ais-menu-muted {
+  color: var(--ais-muted);
+  font-size: 13px;
+}
+
+.ais-menu-tag {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--ais-surface-hover);
+  color: var(--ais-muted);
+  font-size: 12px;
+}
+
+.ais-menu.is-resize button:disabled {
+  opacity: 1;
+  color: var(--ais-muted);
+}
+
+.ais-ratio-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+}
+
+.ais-ratio-icon i {
+  display: block;
+  box-sizing: border-box;
+  border: 1.6px solid currentColor;
+  border-radius: 4px;
+}
+
+/* 退出标注前的确认 */
+.ais-confirm-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.32);
+  animation: ais-in 160ms ease-out;
+}
+
+.ais-confirm {
+  animation: ais-menu-in 180ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+
+.ais-confirm {
+  width: min(360px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid var(--ais-border);
+  border-radius: 18px;
+  background: var(--ais-surface);
+  box-shadow: var(--ais-shadow);
+}
+
+.ais-confirm h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.ais-confirm p {
+  margin: 0 0 18px;
+  color: var(--ais-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.ais-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ais-confirm-actions button {
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--ais-border);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ais-confirm-actions .ais-confirm-ok {
+  border-color: transparent;
+  background: var(--ais-danger);
+  color: #fff !important;
+}
+
+/* 图片区 */
+.ais-stage {
+  grid-area: stage;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 0 20px;
+  overflow: hidden;
+}
+
+.ais-pan {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+}
+
+/* 放大后：图片比窗口大就滚动，比窗口小就居中 */
+.ais-stage.is-zoomed {
+  display: block;
+  /* 不能居中对齐：放大后超出左边的部分会滚不到。居中交给里面的 .ais-pan */
+  place-items: normal;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.ais-stage.is-zoomed .ais-pan {
+  width: max-content;
+  height: max-content;
+  min-width: 100%;
+  min-height: 100%;
+}
+
+.ais-stage.is-zoomed .ais-frame {
+  margin: 12px;
+}
+
+.ais-stage.can-pan {
+  cursor: grab;
+}
+
+.ais-stage.is-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.ais-frame {
+  position: relative;
+  display: grid;
+  line-height: 0;
+}
+
+.ais-image {
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  object-fit: contain;
+  box-shadow: 0 0 0 1px var(--ais-border), 0 12px 40px rgba(0, 0, 0, 0.12);
+  user-select: none;
+  -webkit-user-drag: none;
+  /* 透明 PNG 显示棋盘格，看得出背景已去掉 */
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #e8e8e8 25%, transparent 25%),
+    linear-gradient(-45deg, #e8e8e8 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e8e8e8 75%),
+    linear-gradient(-45deg, transparent 75%, #e8e8e8 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+.ais-stage.is-zoomed .ais-image {
+  border-radius: 0;
+}
+
+.ais.is-dark .ais-image {
+  box-shadow: 0 0 0 1px var(--ais-border), 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+
+/* 涂抹层和图片完全重叠；显示的笔迹带颜色，蒙版取的是它的形状 */
+.ais-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.ais-mask {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  touch-action: none;
+}
+
+.ais-pin {
+  pointer-events: auto;
+}
+
+.ais-mask.is-markup,
+.ais-mask.is-erase {
+  pointer-events: auto;
+  cursor: crosshair;
+  opacity: 0.5;
+  filter: drop-shadow(0 0 0 transparent);
+}
+
+/* 擦除：蒙版画布只用来取形状和接收涂抹，看到的是上面的 SVG（浅蓝 + 虚线外轮廓） */
+.ais-mask.is-erase {
+  cursor: none;
+  opacity: 0;
+}
+
+.ais-erase-view {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.ais-erase-fill {
+  opacity: 0.58;
+}
+
+.ais-erase-fill.is-pending {
+  opacity: 0.28;
+}
+
+/* 擦除光标：深色半透明圆圈，任何底色上都看得见 */
+.ais-markup-cursor.is-eraser {
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.12);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+.ais-mask.is-markup {
+  filter: invert(36%) sepia(90%) saturate(3000%) hue-rotate(245deg);
+}
+
+
+.ais-mask.is-comment {
+  pointer-events: auto;
+  cursor: copy;
+  opacity: 0;
+}
+
+.ais-mask.is-idle,
+.ais-mask.is-resize {
+  opacity: 0;
+}
+
+/* 评论图钉：黑底白边的编号圆点，旁边是输入胶囊（✓ 确认、× 删除）；靠右的图钉输入框放在左边。
+   胶囊跟随明暗主题，确认按钮和顶部“发送”同色。 */
+.ais-pin {
+  position: absolute;
+  z-index: 2;
+  width: 0;
+  height: 0;
+  line-height: normal;
+}
+
+.ais-pin-dot {
+  position: absolute;
+  top: -14px;
+  left: -14px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #111;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12), 0 3px 10px rgba(0, 0, 0, 0.28);
+  color: #fff !important;
+  cursor: pointer;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  animation: ais-pop 180ms ease-out;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.ais-pin-dot:hover,
+.ais-pin.is-open .ais-pin-dot {
+  transform: scale(1.08);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12), 0 4px 14px rgba(0, 0, 0, 0.34);
+}
+
+.ais-pin-card {
+  position: absolute;
+  top: 0;
+  left: 22px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 296px;
+  height: 44px;
+  padding: 0 5px 0 16px;
+  border: 1px solid var(--ais-border);
+  border-radius: 999px;
+  background: var(--ais-surface);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.06);
+  transform: translateY(-50%);
+  transform-origin: left center;
+  animation: ais-pin-in 170ms cubic-bezier(0.2, 0.9, 0.3, 1.15) both;
+}
+
+.ais.is-dark .ais-pin-card {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.ais-pin.is-left .ais-pin-card {
+  right: 22px;
+  left: auto;
+  transform-origin: right center;
+}
+
+@keyframes ais-pin-in {
+  from { opacity: 0; transform: translateY(-50%) scale(0.94); }
+  to { opacity: 1; transform: translateY(-50%); }
+}
+
+.ais-pin-card input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ais-text);
+  font: inherit;
+  font-size: 15px;
+}
+
+.ais-pin-card input::placeholder {
+  color: var(--ais-muted);
+}
+
+.ais-pin-ok,
+.ais-pin-remove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 15px;
+  transition: background-color 140ms ease, color 140ms ease, transform 100ms ease;
+}
+
+.ais-pin-ok {
+  background: var(--ais-accent);
+  color: var(--ais-accent-ink) !important;
+}
+
+.ais-pin-ok:disabled {
+  background: var(--ais-surface-active);
+  color: var(--ais-muted) !important;
+  cursor: default;
+}
+
+.ais-pin-remove {
+  background: transparent;
+  color: var(--ais-muted) !important;
+  font-size: 13px;
+}
+
+.ais-pin-remove:hover {
+  background: var(--ais-surface-hover);
+  color: var(--ais-text) !important;
+}
+
+.ais-pin-ok:active:not(:disabled),
+.ais-pin-remove:active {
+  transform: scale(0.9);
+}
+
+.ais-pin-sep {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 3px;
+  background: var(--ais-border);
+}
+
+/* 底部：工具提示 + 描述修改 */
+.ais-bottom {
+  grid-area: bottom;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 0 16px 20px;
+}
+
+.ais-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: 760px;
+}
+
+.ais-chip,
+.ais-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ais-muted);
+  font-size: 13px;
+}
+
+.ais-error {
+  color: var(--ais-danger);
+  font-size: 13px;
+}
+
+.ais-segment {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--ais-border);
+  border-radius: 999px;
+  background: var(--ais-surface);
+}
+
+.ais-segment button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.ais-segment button.is-active {
+  background: var(--ais-accent);
+  color: var(--ais-accent-ink);
+}
+
+.ais-ratio-swatch {
+  display: inline-block;
+  height: 12px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.ais-text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ais-muted) !important;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.ais-text-button:hover:not(:disabled) {
+  background: var(--ais-surface-hover);
+  color: var(--ais-text) !important;
+}
+
+.ais-text-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ais-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: min(100%, 680px);
+  padding: 7px 7px 7px 20px;
+  border: 1px solid var(--ais-border);
+  border-radius: 28px;
+  background: var(--ais-surface);
+  box-shadow: var(--ais-shadow);
+}
+
+.ais-composer textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 140px;
+  margin: 0;
+  padding: 9px 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--ais-text);
+  font: inherit;
+  font-size: 15px;
+  line-height: 22px;
+  field-sizing: content;
+}
+
+.ais-composer textarea::placeholder {
+  color: var(--ais-muted);
+}
+
+.ais-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ais-accent);
+  color: var(--ais-accent-ink) !important;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.ais-send:disabled {
+  cursor: not-allowed;
+  opacity: 0.25;
+}
+
+.ais-composer.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ais-composer:focus-within {
+  border-color: color-mix(in srgb, var(--ais-text) 28%, transparent);
+}
+
+.ais-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ais-spin 0.8s linear infinite;
+  opacity: 0.7;
+}
+
+@keyframes ais-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 顶栏放不下标题和工具条时，工具条放到顶栏下方 */
+@media (max-width: 960px) {
+  .ais-toolbar,
+  .ais-toolbar.ais-markup-bar {
+    top: 62px;
+  }
+
+  .ais-stage {
+    padding-top: 64px;
+  }
+}
+
+/* 手机：版本改成底部横排，工具条可横向滑动 */
+@media (max-width: 720px) {
+  .ais {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 56px minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "top"
+      "stage"
+      "versions"
+      "bottom";
+  }
+
+  .ais-top {
+    padding: 0 8px;
+  }
+
+  .ais-title {
+    max-width: 40vw;
+    font-size: 14px;
+  }
+
+  .ais-toolbar {
+    top: 62px;
+  }
+
+  .ais-toolbar button {
+    gap: 4px;
+    height: 34px;
+    padding: 0 8px;
+    font-size: 13px;
+  }
+
+  .ais-stage {
+    padding: 64px 12px 8px;
+  }
+
+  .ais-versions {
+    flex-direction: row;
+    justify-content: center;
+    padding: 8px 16px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .ais-versions button {
+    width: 48px;
+    height: 48px;
+  }
+
+  /* 手机上滑杆横过来，放在图片下方 */
+  .ais-markup-size {
+    width: 200px;
+    height: 44px;
+  }
+
+  .ais-markup-track {
+    width: 164px;
+    height: 28px;
+    cursor: ew-resize;
+  }
+
+  .ais-markup-line {
+    top: 50%;
+    bottom: auto;
+    left: 9px;
+    right: 9px;
+    width: auto;
+    height: 2px;
+    transform: translateY(-50%);
+  }
+
+  .ais-markup-knob {
+    top: 50%;
+    bottom: auto !important;
+    left: calc(9px + (100% - 18px) * var(--size) / 100);
+    margin: -9px 0 0 -9px;
+    transform: none;
+  }
+
+  .ais-toolbar.ais-markup-bar {
+    gap: 0;
+    padding: 4px;
+  }
+
+  .ais-toolbar.ais-markup-bar button {
+    width: 31px;
+    height: 34px;
+  }
+
+  .ais-toolbar.ais-markup-bar {
+    top: 62px;
+  }
+
+  /* 和缩略图那一行一样高，进出标注时图片不跟着缩放 */
+  .ais-markup-side {
+    min-height: 66px;
+  }
+
+  .ais-markup-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .ais-markup-sep {
+    margin: 0 2px;
+  }
+
+  .ais-bottom {
+    padding: 0 12px 12px;
+  }
+
+  .ais-pin-card {
+    width: 220px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ais,
+  .ais-spinner,
+  .ais-loading,
+  .ais-menu,
+  .ais-markup-pop,
+  .ais-confirm,
+  .ais-confirm-layer,
+  .ais-download .bi {
+    animation: none;
+  }
+}

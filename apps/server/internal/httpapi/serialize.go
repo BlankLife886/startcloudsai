@@ -378,6 +378,7 @@ func publicTaskParams(params map[string]any) map[string]any {
 	allowedInternal := map[string]bool{
 		"_source": true, "_kind": true, "_automatic": true,
 		"_parentTaskId": true, "_modelDisplayName": true,
+		store.SeriesAnchorTaskParam: true,
 	}
 	out := make(map[string]any, len(params))
 	for key, value := range params {

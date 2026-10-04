@@ -34,6 +34,12 @@ export function taskFailureMessage(task, fallback = "生成失败，请稍后重
   const message = safeFailureText(
     task?.errorMessage || task?.error || params.errorMessage || params.error,
   );
+  if (code === "content_policy") {
+    return `${message || "内容违规，已被上游驳回"}（内容违规被驳回，本次积分不退回）`;
+  }
+  if (code === "content_policy_waived") {
+    return `${message || "内容违规，已被上游驳回"}（内容违规被驳回，本次在免扣范围内，积分已退回）`;
+  }
   const knownMessage = ERROR_CODE_MESSAGES[code];
   if (knownMessage && (!message || message.toLowerCase().startsWith(`${code}:`))) {
     return knownMessage;

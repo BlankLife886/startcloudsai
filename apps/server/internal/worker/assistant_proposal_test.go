@@ -628,3 +628,61 @@ func TestAssistantProposalAsksForTransparentCutOuts(t *testing.T) {
 		t.Fatalf("proposal = %+v err = %v", proposal, err)
 	}
 }
+
+func TestAssistantAgentTextDeclinesProposalOnlyForPlainReplies(t *testing.T) {
+	cases := map[string]bool{
+		"可以。请告诉我你想生成什么图片，例如主体、风格和尺寸比例。":                 true,
+		`好的，方案如下：{"action":"generate","prompt":"一只橘猫"}`: false,
+		"方案确认：\n- 主题：橘猫\n- 画面设定：窗台上的橘猫\n- 元素限制：不加文字\n":  false,
+		"": false,
+	}
+	for text, want := range cases {
+		if got := assistantAgentTextDeclinesProposal(text); got != want {
+			t.Errorf("assistantAgentTextDeclinesProposal(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
+
+// “第二张图改为8折”：界面按上下文带上了整组两张图，模型只挑第二张，就只编辑第二张。
+func TestAttachAssistantProposalReferencesNarrowsInferredReferencesToModelPick(t *testing.T) {
+	first := map[string]any{"id": "poster-1", "fileKey": "tasks/u/1.png"}
+	second := map[string]any{"id": "poster-2", "fileKey": "tasks/u/2.png"}
+	catalog := []assistantCatalogImage{{ID: "poster-1", Image: first}, {ID: "poster-2", Image: second}}
+	models := []map[string]any{{"id": "image-model", "maxImages": float64(4), "maxReferenceImages": float64(4)}}
+	params := map[string]any{"referenceImages": []any{first, second}, "referencesInferred": true}
+	proposal := attachAssistantProposalReferences(assistantImageProposal{
+		Action: "edit", Model: "image-model", Count: 2, ReferenceMode: assistantReferenceModeIndividual,
+		ReferencedImageIDs: []string{"poster-2"},
+	}, &store.AssistantRun{Prompt: "第二张图改为8折吧", Params: params}, catalog, models)
+	if !slices.Equal(proposal.ReferencedImageIDs, []string{"poster-2"}) || proposal.Count != 1 || !proposal.ReferencesResolved {
+		t.Fatalf("proposal = %#v, want only poster-2 and one output", proposal)
+	}
+
+	// 用户亲手附的图不能被模型删掉。
+	delete(params, "referencesInferred")
+	proposal = attachAssistantProposalReferences(assistantImageProposal{
+		Action: "edit", Model: "image-model", ReferenceMode: assistantReferenceModeShared,
+		ReferencedImageIDs: []string{"poster-2"},
+	}, &store.AssistantRun{Prompt: "第二张图改为8折吧", Params: params}, catalog, models)
+	if len(proposal.ReferenceImages) != 2 {
+		t.Fatalf("explicit references = %#v, want both kept", proposal.ReferenceImages)
+	}
+}
+
+// 指代性的追问原话交给出图模型没有意义，忠实模式应使用模型按上下文改写的提示词。
+func TestNormalizeAssistantProposalUsesModelFaithfulPromptForFollowUps(t *testing.T) {
+	run := &store.AssistantRun{Prompt: "不要带上第一张图", Params: map[string]any{"referenceImages": []any{map[string]any{"id": "poster-2"}}}}
+	proposal := normalizeAssistantProposal(assistantImageProposal{
+		Action: "edit", PromptMode: assistantPromptModeFaithful,
+		FaithfulPrompt: "将促销海报中的“全场6折”改为“全场8折”，其余保持不变。",
+	}, run)
+	if proposal.Prompt != "将促销海报中的“全场6折”改为“全场8折”，其余保持不变。" {
+		t.Fatalf("prompt = %q", proposal.Prompt)
+	}
+
+	exact := &store.AssistantRun{Prompt: "提示词一模一样，不要改：红色跑车", Params: map[string]any{}}
+	proposal = normalizeAssistantProposal(assistantImageProposal{Action: "generate", FaithfulPrompt: "一辆红色跑车"}, exact)
+	if proposal.Prompt != exact.Prompt {
+		t.Fatalf("exact-wording prompt = %q, want the user's words", proposal.Prompt)
+	}
+}

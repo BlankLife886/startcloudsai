@@ -314,6 +314,8 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
         const requestPage = () =>
           listTasks({
             type: "ecommerce_design",
+            // 每个侧栏模块只拉自己的历史，不被其他模块的任务挤掉
+            kind: taskKind,
             limit: 32,
             cursor: append ? historyCursor : "",
             signal: controller.signal,
@@ -408,6 +410,10 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
       batchId = "",
       batchSize = 0,
       expectedUnitPriceCents = null,
+      // 整套锚定：先建第 1 张，其余几张等它出图后拿它当整套参考（Worker 负责等待）
+      anchorFirst = false,
+      // 单张重试时沿用本套已有的第 1 张任务作为整套参考
+      anchorTaskId = "",
     } = {}) => {
       if (!items.length) {
         throw new Error("没有可生成的内容");
@@ -415,16 +421,19 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
       const selectedModel = models.find((model) =>
         [model?.id, model?.publicModelKey, model?.model].map(String).includes(String(modelId)),
       );
+      const largestReferenceCount = Math.max(
+        files.length,
+        ...items.map((item) => item.inputFiles?.length || 0),
+      );
+      let maxReferences = Infinity;
       if (selectedModel) {
-        const maxReferences = normalizeImageModelCapabilities(selectedModel).maxReferenceImages;
-        const largest = Math.max(
-          files.length,
-          ...items.map((item) => item.inputFiles?.length || 0),
-        );
-        if (largest > maxReferences) {
+        maxReferences = normalizeImageModelCapabilities(selectedModel).maxReferenceImages;
+        if (largestReferenceCount > maxReferences) {
           throw new Error(`当前模型最多支持 ${maxReferences} 张参考图`);
         }
       }
+      // 锚定会给后续几张多追加 1 张参考图；超出模型上限时退回并行生成
+      const anchorFits = largestReferenceCount + 1 <= maxReferences;
       // 单个任务可带自己的参考图（如试衣批量：每件衣服一组），不带则用共享 files
       const itemFiles = items.map((item) =>
         Array.isArray(item.inputFiles) ? item.inputFiles : null,
@@ -481,51 +490,64 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
           throw new Error("参考图上传失败，请重新选择模特、衣服或场景");
         }
         const batchCreatedAt = new Date().toISOString();
-        const settled = await Promise.allSettled(
-          taskItems.map(async (item, index) => {
-            if (controller.signal.aborted) {
-              throw new DOMException("已停止本次生成", "AbortError");
+        const createOne = async (item, index, seriesAnchorTaskId = "") => {
+          if (controller.signal.aborted) {
+            throw new DOMException("已停止本次生成", "AbortError");
+          }
+          const batchIndex = Number.isFinite(Number(item.batchIndex))
+            ? Number(item.batchIndex)
+            : index;
+          const task = await createTask({
+            type: "ecommerce_design",
+            prompt: item.prompt,
+            params: {
+              ...item,
+              publicModelKey: modelId,
+              _kind: `ui-design-ecommerce-${item.kindVariant || "detail"}-generation`,
+              batchId: nextBatchId,
+              batchIndex,
+              batchSize: nextBatchSize,
+              batchCreatedAt,
+              ...(seriesAnchorTaskId && batchIndex > 0 ? { seriesAnchorTaskId } : {}),
+              // 试衣记下本张实际用到的参考图，结果对比时按它回看，不拿当前画布的图
+              ...(item.kindVariant === "tryon"
+                ? { referenceKeys: itemUploads[index] || uploads }
+                : {}),
+            },
+            inputKeys: itemUploads[index] || uploads,
+            count: 1,
+            idempotencyKey: crypto.randomUUID(),
+            expectedUnitPriceCents,
+          });
+          if (controller.signal.aborted) {
+            try {
+              const canceled = await cancelTask(task.id, { acknowledgeUpstream: approvedCancellationsRef.current.has(controller) });
+              upsert(canceled);
+            } catch {
+              upsert(task);
+              if (mountedRef.current) watchTask(normalizeTask(task));
             }
-            const batchIndex = Number.isFinite(Number(item.batchIndex))
-              ? Number(item.batchIndex)
-              : index;
-            const task = await createTask({
-              type: "ecommerce_design",
-              prompt: item.prompt,
-              params: {
-                ...item,
-                publicModelKey: modelId,
-                _kind: `ui-design-ecommerce-${item.kindVariant || "detail"}-generation`,
-                batchId: nextBatchId,
-                batchIndex,
-                batchSize: nextBatchSize,
-                batchCreatedAt,
-                // 试衣记下本张实际用到的参考图，结果对比时按它回看，不拿当前画布的图
-                ...(item.kindVariant === "tryon"
-                  ? { referenceKeys: itemUploads[index] || uploads }
-                  : {}),
-              },
-              inputKeys: itemUploads[index] || uploads,
-              count: 1,
-              idempotencyKey: crypto.randomUUID(),
-              expectedUnitPriceCents,
-            });
-            if (controller.signal.aborted) {
-              try {
-                const canceled = await cancelTask(task.id, { acknowledgeUpstream: approvedCancellationsRef.current.has(controller) });
-                upsert(canceled);
-              } catch {
-                upsert(task);
-                if (mountedRef.current) watchTask(normalizeTask(task));
-              }
-              throw new DOMException("已停止本次生成", "AbortError");
-            }
-            const normalized = normalizeTask(task);
-            upsert(normalized);
-            watchTask(normalized);
-            return normalized;
-          }),
-        );
+            throw new DOMException("已停止本次生成", "AbortError");
+          }
+          const normalized = normalizeTask(task);
+          upsert(normalized);
+          watchTask(normalized);
+          return normalized;
+        };
+        let settled;
+        if (anchorFirst && anchorFits && taskItems.length > 1) {
+          const [hero] = await Promise.allSettled([createOne(taskItems[0], 0)]);
+          const heroId = hero.status === "fulfilled" ? String(hero.value?.id || "") : "";
+          const rest = await Promise.allSettled(
+            taskItems.slice(1).map((item, offset) => createOne(item, offset + 1, heroId)),
+          );
+          settled = [hero, ...rest];
+        } else {
+          const sharedAnchor = anchorFits ? String(anchorTaskId || "") : "";
+          settled = await Promise.allSettled(
+            taskItems.map((item, index) => createOne(item, index, sharedAnchor)),
+          );
+        }
         const created = settled
           .filter((result) => result.status === "fulfilled")
           .map((result) => result.value);

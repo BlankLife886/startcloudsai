@@ -45,20 +45,13 @@ export const WORKBENCH_SPECS = Object.freeze({
     slots: [PRODUCT_SLOT, STYLE_SLOT],
     channels: WORKBENCH_RATIO_CHANNELS,
     channelKicker: "投放到",
-    packKind: "shoot",
-    packs: [
-      { id: "hero", label: "商品主视觉", shotIds: ["hero"] },
-      { id: "duo", label: "主图 + 场景", shotIds: ["hero", "lifestyle"] },
-      {
-        id: "set",
-        label: "商业成片",
-        shotIds: ["hero", "lifestyle", "detail", "selling"],
-      },
-    ],
+    // 镜头多选（ShotPicker）取代固定组合；第 1 个镜头为整套定调首张
+    packKind: "shots",
+    packs: [],
     picks: [{ key: "direction", label: "拍摄方向" }],
     note: true,
     emptyTitle: "还没有商拍成片",
-    emptySteps: ["上传商品图", "选择投放比例与成片组合", "点生成，首张锁定系列视觉"],
+    emptySteps: ["上传实物商品照片（白底或随手拍都行）", "选择投放比例和拍摄镜头", "点生成：首张定调，其余参照首张出图"],
     historyLabel: "AI 商拍",
   },
   listing: {
@@ -273,13 +266,5 @@ export function workbenchPackForCount(spec, count) {
     [...packs].reverse().find((item) => Number(item.count) <= value) ||
     packs[0] ||
     null
-  );
-}
-
-export function workbenchPackForShootShots(spec, shotIds = []) {
-  const packs = spec?.packs || [];
-  const key = shotIds.join("|");
-  return (
-    packs.find((item) => (item.shotIds || []).join("|") === key) || null
   );
 }

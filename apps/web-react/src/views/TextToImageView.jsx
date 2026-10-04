@@ -702,7 +702,7 @@ function CostConfirmDialog({ cost, light = false, onCancel, onConfirm, onRecharg
             <i className="bi bi-x-lg" />
           </button>
         </header>
-        <p id="ai-cost-confirm-summary" className="ai-cost-confirm-summary">提交后先冻结预计费用，任务完成后按实际生成结果结算。</p>
+        <p id="ai-cost-confirm-summary" className="ai-cost-confirm-summary">提交后先冻结预计费用，任务完成后按实际生成结果结算；生成失败自动退回，内容违规被驳回不退回。</p>
         <div className="ai-cost-confirm-card">
           <div className="ai-cost-confirm-total">
             <div className="ai-cost-confirm-total__copy">
@@ -1086,14 +1086,16 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     return () => { disposed = true; };
   }, []);
 
+  // 模型目录加载完之前不校正任何参数：否则草稿里的模型/画幅/清晰度会被当成
+  // “当前模型不支持”清空，紧接着自动保存把默认值写回草稿，刷新后选择就丢了。
   useEffect(() => {
-    if (imageSize.sizeMode === "exact") return;
+    if (loading || imageSize.sizeMode === "exact") return;
     if (!availableModels.length) {
       if (modelId) setModelId("");
       return;
     }
     if (!availableModels.some((item) => item.id === modelId)) setModelId(availableModels.find((item) => item.default)?.id || availableModels[0].id);
-  }, [availableModels, imageSize.sizeMode, modelId]);
+  }, [availableModels, imageSize.sizeMode, loading, modelId]);
 
   const ratioOptions = useMemo(() => {
     const allowed = getModelAspectRatiosForResolution(currentModel || {}, resolution);
@@ -1115,20 +1117,22 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   }, [currentModel]);
 
   useEffect(() => {
+    if (loading) return;
     if (!resolutionOptions.length) {
       if (resolution) setResolution("");
     } else if (!resolutionOptions.some((item) => item.value === resolution)) {
       setResolution(resolutionOptions[0].value);
     }
-  }, [resolution, resolutionOptions]);
+  }, [loading, resolution, resolutionOptions]);
 
   useEffect(() => {
+    if (loading) return;
     if (!ratioOptions.length) {
       if (ratio) setRatio("");
     } else if (!ratioOptions.some((item) => item.value === ratio)) {
       setRatio(ratioOptions[0].value);
     }
-  }, [ratio, ratioOptions]);
+  }, [loading, ratio, ratioOptions]);
 
   // 张数跟随所选模型的「单次张数」配置；模型未加载完时不收紧，避免草稿被默认上限截断。
   const countOptions = useMemo(
@@ -1141,14 +1145,16 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   }, [currentModel]);
 
   useEffect(() => {
+    if (loading) return;
     if (!qualityOptions.length) {
       if (quality) setQuality("");
     } else if (!qualityOptions.some((item) => item.value === quality)) {
       setQuality(qualityOptions[0].value);
     }
-  }, [quality, qualityOptions]);
+  }, [loading, quality, qualityOptions]);
 
   useEffect(() => {
+    if (loading) return;
     if (currentModel && !currentModel.transparentBackground && transparent) {
       setTransparent(false);
     }
@@ -1168,7 +1174,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     } else if (moderation && !supportedModeration.includes(moderation)) {
       setModeration(supportedModeration[0]);
     }
-  }, [autoRemove, backgroundRemovalModel, currentModel, moderation, outputFormat, transparent]);
+  }, [autoRemove, backgroundRemovalModel, currentModel, loading, moderation, outputFormat, transparent]);
 
   useEffect(() => {
     if (pendingRef.current) return;

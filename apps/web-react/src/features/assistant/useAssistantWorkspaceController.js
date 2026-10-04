@@ -26,12 +26,20 @@ import {
   importAssistantConversations,
   listActiveAssistantRuns,
   listAssistantConversations,
+  listAssistantConversationsWithQuota,
+  getAssistantConversationQuota,
+  listArchivedAssistantConversations,
+  archiveAssistantConversation,
+  restoreAssistantConversation,
+  pinAssistantConversation,
   openAssistantRunStream,
   patchAssistantConversation,
   setAssistantMessageFeedback,
   uploadAssistantFile,
   waitForAssistantRun,
+  adoptAssistantCommerceShot,
 } from "./services/assistantApi.js";
+import { COMMERCE_SET_CHANGED_EVENT } from "./AssistantCommerceSet.jsx";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import { scheduleWalletRefresh } from "@react/legacy-modules/services/walletSync.js";
 import {
@@ -60,6 +68,7 @@ import { mergePersistedAssistantMessage, resolveAssistantRetryIdentity } from ".
 import { mergeServerMessages } from "./domain/assistantConversationRefresh.js";
 import { promptNeedsRecentVisual, resolveVisualContext } from "./domain/visualContext.js";
 import { assistantRunGuidance } from "./domain/assistantGuidance.js";
+import { ASSISTANT_CORRECTIONS } from "./domain/assistantCorrections.js";
 import { assistantImageBatchLimit, constrainAssistantImageModels } from "./domain/assistantImageLimits.js";
 import {
   clearAssistantHistory,
@@ -146,6 +155,8 @@ function browserTimezone() {
 }
 
 const PENDING_ASSISTANT_CANCELS_KEY = "starclouds:assistant-pending-cancels";
+// 方案出来后多久之内还能免确认执行，和服务端 assistantAutoApproveWindow 一致。
+const ASSISTANT_AUTO_APPROVE_WINDOW_MS = 10 * 60 * 1000;
 
 function readPendingAssistantCancels() {
   try {
@@ -255,7 +266,7 @@ export function useAssistantWorkspaceController() {
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState("");
   const [draft, setDraft] = useState("");
-  const [creationType, setCreationType] = useState("chat");
+  const [creationType, setCreationType] = useState("agent");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarAnimating, setSidebarAnimating] = useState(false);
   const sidebarMotionTimerRef = useRef(0);
@@ -317,6 +328,12 @@ export function useAssistantWorkspaceController() {
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [stopBusy, setStopBusy] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  // 对话额度（保留数、今天新建数、已归档数）和“已归档”面板。
+  const [conversationQuota, setConversationQuota] = useState(null);
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const [archivedItems, setArchivedItems] = useState([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archiveBusyId, setArchiveBusyId] = useState("");
   const [resumeCandidates, setResumeCandidates] = useState([]);
   const [selectedImage, setSelectedImage] = useState(null);
   const [imageActionBusy, setImageActionBusy] = useState("");
@@ -628,9 +645,10 @@ export function useAssistantWorkspaceController() {
     return query ? files.filter((file) => `${file.label} ${file.name || ""}`.toLowerCase().includes(query)) : files;
   }, [activeConversation, assetSearch, assetTab, conversations]);
   const collectedAssetLibraryLinks = useMemo(() => {
-    if (!assetLibraryMounted || assetKind !== "link") return [];
+    // 打开资产库就统计，类型标签上的数量才准确（不只是切到“链接”时）。
+    if (!assetLibraryMounted) return [];
     return collectConversationLinks(assetTab === "session" ? [activeConversation].filter(Boolean) : conversations);
-  }, [activeConversation, assetKind, assetLibraryMounted, assetTab, conversations]);
+  }, [activeConversation, assetLibraryMounted, assetTab, conversations]);
   const assetLibraryLinks = useMemo(() => {
     const query = assetSearch.trim().toLowerCase();
     return query
@@ -713,6 +731,7 @@ export function useAssistantWorkspaceController() {
           ...conversation,
           messages: mergeServerMessages(conversation.messages, serverMessages),
           hasMoreMessages: keepsOlder ? conversation.hasMoreMessages : Boolean(page?.hasMoreMessages),
+          messagesDeferred: false,
         };
       });
     } catch {
@@ -794,9 +813,10 @@ export function useAssistantWorkspaceController() {
       return;
     }
     const safeIndex = Math.max(0, list.findIndex((entry) => entry === resolved));
-    setSelectedImage({ item: resolved, index: safeIndex < 0 ? 0 : safeIndex, gallery: list.length ? list : [resolved], meta });
+    setSelectedImage({ item: resolved, index: safeIndex < 0 ? 0 : safeIndex, gallery: list.length ? list : [resolved], meta, baseMeta: meta });
   }, []);
   const closeImage = useCallback(() => setSelectedImage(null), []);
+  // 编辑器里切换图片：原图沿用打开时的信息，修改出的版本带它自己的消息信息。
   const stepImage = useCallback((delta) => {
     setSelectedImage((current) => {
       if (!current?.gallery?.length) return current;
@@ -1319,8 +1339,8 @@ export function useAssistantWorkspaceController() {
       const [configResult, conversationResult, runResult, runtimeResult] = await Promise.allSettled([
         fetchAssistantConfig(controller.signal),
         signedIn
-          ? listAssistantConversations({ signal: controller.signal })
-          : Promise.resolve([]),
+          ? listAssistantConversationsWithQuota({ signal: controller.signal })
+          : Promise.resolve({ conversations: [], quota: null }),
         signedIn
           ? listActiveAssistantRuns({ workspace: "assistant", signal: controller.signal })
           : Promise.resolve([]),
@@ -1339,8 +1359,9 @@ export function useAssistantWorkspaceController() {
       const { availableConversation, availableImages } = applyAssistantConfig(configResult.value);
       const workspaceState = loadAssistantWorkspaceState(workspaceScope);
       let rows = conversationResult.status === "fulfilled"
-        ? conversationResult.value.map(normalizeConversation)
+        ? conversationResult.value.conversations.map(normalizeConversation)
         : [];
+      if (conversationResult.status === "fulfilled") setConversationQuota(conversationResult.value.quota);
       if (signedIn && !rows.length && conversationResult.status === "fulfilled") {
         const legacy = await loadAssistantHistory(workspaceScope);
         if (legacy.length) {
@@ -1360,7 +1381,15 @@ export function useAssistantWorkspaceController() {
           ? workspaceState.activeId
           : rows.find((item) => item.messages.length)?.id || "";
       setActiveId(nextActiveId);
-      setPinnedIds(Array.isArray(workspaceState.pinnedIds) ? workspaceState.pinnedIds.filter((id) => rows.some((item) => item.id === id)) : []);
+      // 置顶记在服务端（满额自动归档时不会动置顶的对话）。以前只记在本机的置顶，第一次加载时同步上去。
+      const serverPinned = rows.filter((item) => item.pinned).map((item) => item.id);
+      const localPinned = Array.isArray(workspaceState.pinnedIds) ? workspaceState.pinnedIds.filter((id) => rows.some((item) => item.id === id)) : [];
+      if (!serverPinned.length && localPinned.length) {
+        setPinnedIds(localPinned);
+        for (const id of localPinned) pinAssistantConversation(id, true).catch(() => {});
+      } else {
+        setPinnedIds(serverPinned);
+      }
       if (typeof workspaceState.draft === "string") {
         const restoredDraft = workspaceState.draft.slice(0, messageLimit);
         const savedDraftConversationId = rows.some((item) => item.id === workspaceState.activeId)
@@ -1380,6 +1409,10 @@ export function useAssistantWorkspaceController() {
       if (IMAGE_QUALITY_OPTIONS.some((item) => item.id === String(workspaceState.generationQuality || "").toLowerCase())) setGenerationQuality(String(workspaceState.generationQuality).toLowerCase());
       if (Number.isFinite(Number(workspaceState.generationCount))) setGenerationCount(clampImageCount(workspaceState.generationCount, availableImages.find((item) => item.model === (workspaceState.creationType === "image" ? workspaceState.generationModel : "")) || availableImages[0]));
       const savedModel = String(workspaceState.generationModel || "").trim();
+      const savedImageModel = String(workspaceState.imageModel || "").trim();
+      const savedConversationModel = String(workspaceState.conversationModel || "").trim();
+      if (availableImages.some((item) => item.model === savedImageModel)) setImageModel(savedImageModel);
+      if (availableConversation.some((item) => item.model === savedConversationModel)) setConversationModel(savedConversationModel);
       if (workspaceState.creationType === "image" && (workspaceState.generationSize?.sizeMode === "exact" || availableImages.some((item) => item.model === savedModel))) setImageModel(savedModel);
       if (workspaceState.creationType !== "image" && availableConversation.some((item) => item.model === savedModel)) setConversationModel(savedModel);
       setReasoningEffort(String(workspaceState.reasoningEffort || "").trim().toLowerCase());
@@ -1580,6 +1613,9 @@ export function useAssistantWorkspaceController() {
       creationType,
       generationRatio,
       generationModel,
+      // 两种模式的模型分别记住，切到对话再刷新不会丢掉生图模型的选择。
+      imageModel,
+      conversationModel,
       reasoningEffort: activeReasoningEffort,
       generationResolution,
       generationSize,
@@ -1588,7 +1624,7 @@ export function useAssistantWorkspaceController() {
       pinnedIds,
     });
     syncConversationUrl(activeId);
-  }, [activeId, activeReasoningEffort, creationType, draft, generationCount, generationModel, generationQuality, generationRatio, generationResolution, generationSize, loading, mode, pinnedIds, workspaceScope]);
+  }, [activeId, activeReasoningEffort, conversationModel, creationType, draft, generationCount, generationModel, generationQuality, generationRatio, generationResolution, generationSize, imageModel, loading, mode, pinnedIds, workspaceScope]);
 
   useEffect(() => {
     const handleKeydown = (event) => {
@@ -1911,15 +1947,99 @@ export function useAssistantWorkspaceController() {
 
   const togglePinned = (conversation) => {
     setConversationMenuId("");
-    setPinnedIds((current) => current.includes(conversation.id)
-      ? current.filter((id) => id !== conversation.id)
-      : [conversation.id, ...current]);
+    const pinned = !pinnedIds.includes(conversation.id);
+    const apply = (value) => setPinnedIds((current) => (value
+      ? [conversation.id, ...current.filter((id) => id !== conversation.id)]
+      : current.filter((id) => id !== conversation.id)));
+    apply(pinned);
+    pinAssistantConversation(conversation.id, pinned).catch((error) => {
+      apply(!pinned);
+      notificationService.error(error?.message || (pinned ? "置顶失败" : "取消置顶失败"));
+    });
+  };
+
+  const refreshConversationQuota = useCallback(async () => {
+    try {
+      setConversationQuota(await getAssistantConversationQuota());
+    } catch {
+      // 额度只用于展示，下次操作时会再刷新。
+    }
+  }, []);
+
+  // 服务端自动归档了哪些对话：从列表里移走，告诉用户在哪里能找回来。
+  const applyAutoArchived = useCallback((archived = [], quota = null) => {
+    if (quota) setConversationQuota(quota);
+    const ids = new Set((Array.isArray(archived) ? archived : []).map((item) => item.id));
+    if (!ids.size) return;
+    setConversations((current) => current.filter((item) => !ids.has(item.id)));
+    setPinnedIds((current) => current.filter((id) => !ids.has(id)));
+    const first = archived[0];
+    const days = quota?.archiveDays || 7;
+    notificationService.info(archived.length === 1
+      ? `对话数已达上限，已自动归档「${first.title}」，${days} 天后删除，可在侧栏“已归档”中恢复`
+      : `对话数已达上限，已自动归档 ${archived.length} 个最久没用的对话，${days} 天后删除，可在侧栏“已归档”中恢复`);
+  }, []);
+
+  const archiveConversation = async (conversation) => {
+    setConversationMenuId("");
+    setArchiveBusyId(conversation.id);
+    try {
+      const result = await archiveAssistantConversation(conversation.id);
+      const next = conversationsRef.current.filter((item) => item.id !== conversation.id);
+      setConversations(next);
+      setPinnedIds((current) => current.filter((id) => id !== conversation.id));
+      if (result?.quota) setConversationQuota(result.quota);
+      if (activeId === conversation.id) {
+        selectConversation(next.find((item) => item.messages.length)?.id || "", { preserveCurrentDraft: false });
+      }
+      const days = result?.quota?.archiveDays || 7;
+      notificationService.success(`已归档「${conversation.title}」，${days} 天后自动删除，可在侧栏“已归档”中恢复`);
+    } catch (error) {
+      notificationService.error(error?.message || "归档失败");
+    } finally {
+      setArchiveBusyId("");
+    }
+  };
+
+  const openArchived = async () => {
+    setArchivedOpen(true);
+    setArchivedLoading(true);
+    try {
+      const result = await listArchivedAssistantConversations();
+      setArchivedItems(result.conversations);
+    } catch (error) {
+      notificationService.error(error?.message || "已归档对话加载失败");
+    } finally {
+      setArchivedLoading(false);
+    }
+  };
+
+  const restoreConversation = async (item) => {
+    setArchiveBusyId(item.id);
+    try {
+      const result = await restoreAssistantConversation(item.id);
+      const restored = normalizeConversation(result?.conversation || item);
+      setConversations((current) => [restored, ...current.filter((entry) => entry.id !== restored.id)]);
+      if (restored.pinned) setPinnedIds((current) => [restored.id, ...current.filter((id) => id !== restored.id)]);
+      setArchivedItems((current) => [
+        ...(Array.isArray(result?.archived) ? result.archived : []),
+        ...current.filter((entry) => entry.id !== item.id),
+      ]);
+      applyAutoArchived(result?.archived, result?.quota);
+      setArchivedOpen(false);
+      selectConversation(restored.id);
+      notificationService.success(`已恢复「${restored.title}」`);
+    } catch (error) {
+      notificationService.error(error?.message || "恢复失败");
+    } finally {
+      setArchiveBusyId("");
+    }
   };
 
   const newConversation = () => {
     closeSearch();
     selectConversation("", { forceReset: true, restoreDraft: false });
-    setCreationType("chat");
+    setCreationType("agent");
     setCreationMenuOpen(false);
     setModelMenuOpen(false);
     setPreferencesOpen(false);
@@ -2180,10 +2300,10 @@ export function useAssistantWorkspaceController() {
       unitLabel: responseMode === "image" ? "张" : "轮",
       featureLabel: responseMode === "image" ? "AI 助手生图" : responseMode === "agent" ? "AI 助手 Agent" : "AI 助手对话",
       summary: responseMode === "image"
-        ? "提交后按图片数量预留费用；提交上游前停止会退回，提交后停止只会放弃接收结果且不退款。"
+        ? "提交后按图片数量预留费用；生成失败自动退回，内容违规被驳回不退回；提交上游前停止会退回，提交后停止只会放弃接收结果且不退款。"
         : responseMode === "agent"
           ? `${requestedEffortLabel}推理为 ${chatUnit} 积分/轮；本轮只收 Agent 推理费用，执行生图时另行确认图片费用。主动停止不退还本轮积分。`
-          : `${requestedEffortLabel}推理为 ${chatUnit} 积分/轮；成功后结算，失败自动退回。主动停止不退还本轮积分。`,
+          : `${requestedEffortLabel}推理为 ${chatUnit} 积分/轮；成功后结算，失败自动退回，内容违规被驳回不退回。主动停止不退还本轮积分。`,
     });
     return new Promise((resolve) => { costResolverRef.current = resolve; });
   };
@@ -2362,7 +2482,7 @@ export function useAssistantWorkspaceController() {
   }, [clearConversationRun, monitorRun, patchConversation]);
 
   // 返回 true 表示任务已经创建；返回 false 表示这次没能创建出来，调用方需要把入口还给用户。
-  const launchRun = useCallback(async ({ conversationId, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId = "", proposalSourceMessageId = "", autoApproved = false, maskEdit = null, onNotCreated = null }) => {
+  const launchRun = useCallback(async ({ conversationId, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId = "", proposalSourceMessageId = "", autoApproved = false, maskEdit = null, correction = null, onNotCreated = null }) => {
     const controller = new AbortController();
     let launchedRun = {};
     try {
@@ -2398,7 +2518,9 @@ export function useAssistantWorkspaceController() {
         ...(sourceUserMessageId ? { sourceUserMessageId } : {}),
         proposalSourceMessageId,
         ...(autoApproved ? { autoApproved: true } : {}),
+        ...(correction ? { correction } : {}),
         referenceImages: (userMessage.referenceImages || []).map((image) => ({ id: image.id, name: image.name, dataUrl: image.dataUrl, thumbnailUrl: image.thumbnailUrl, fileKey: image.fileKey })),
+        ...(userMessage.referencesInferred && userMessage.referenceImages?.length ? { referencesInferred: true } : {}),
         imagePlanItems: (assistantMessage.imagePlanItems || userMessage.imagePlanItems || []).map((item, index) => ({
           id: item.id || `item-${index + 1}`,
           title: item.title || `图片 ${index + 1}`,
@@ -2465,49 +2587,76 @@ export function useAssistantWorkspaceController() {
     }
   }, [activeReasoningEffort, applyRunResult, availableImageModels, clearConversationRun, conversationModel, generationCount, generationQuality, generationRatio, generationResolution, imageModel, monitorRun, patchConversation, removeQueuedRun, selectedImageModel]);
 
-  const submitRegionEdit = useCallback(async (payload, item, meta = {}) => {
-    if (!item || !payload?.prompt || !activeConversation || conversationHasWork || imageActionBusy) return false;
-    const preferredModel = String(meta.model || imageModel || availableImageModels[0]?.model || "");
-    const selected = availableImageModels.find((item) => item.model === preferredModel) || selectedImageModel;
-    setImageActionBusy("region-edit");
+  // 图片编辑器发起的一次修改：局部（标注/擦除/评论）带蒙版，整图（描述/去背景/调整尺寸）
+  // 把原图作为参考图。修改作为一轮出图发到当前对话；这里只等到提交成功就返回助手消息 id，
+  // 编辑器据此在左侧显示这个版本。套图里的图改完后自动替换套图中的那一张。
+  const startStudioEdit = useCallback(async ({ item, meta = {}, prompt, displayText, region = null, annotatedFile = null, ratio = "", transparent = false }) => {
+    if (!item || (!String(prompt || "").trim() && !annotatedFile)) return null;
+    if (!activeConversation) {
+      notificationService.error("请先打开一个对话");
+      return null;
+    }
+    if (conversationHasWork || imageActionBusy) {
+      notificationService.info("正在生成，完成后再继续修改");
+      return null;
+    }
+    const preferredModel = String((meta.commerceSetId ? "" : meta.model) || imageModel || availableImageModels[0]?.model || "");
+    const selected = availableImageModels.find((entry) => entry.model === preferredModel) || selectedImageModel;
+    const model = selected?.model || preferredModel;
+    setImageActionBusy("studio-edit");
     try {
-      if (!(await confirmAssistantCost("image", 1, preferredModel, ""))) return false;
-      const [cropUpload, maskUpload] = await Promise.all([
-        uploadFile(payload.cropFile, { referenceUpload: true, behaviorFeature: "assistant" }),
-        uploadFile(payload.maskFile, { referenceUpload: true, behaviorFeature: "assistant" }),
-      ]);
-      let baseImage = item.fileKey
-        ? { id: item.id || "", name: "局部编辑底图", fileKey: item.fileKey, dataUrl: imageUrl(item) }
-        : null;
-      if (!baseImage) {
-        if (!payload.baseFile) throw new Error("原始底图无法上传");
-        const baseUpload = await uploadFile(payload.baseFile, {
-          referenceUpload: true,
-          behaviorFeature: "assistant",
-        });
-        baseImage = { name: "局部编辑底图", fileKey: baseUpload.key, dataUrl: baseUpload.url };
+      if (!(await confirmAssistantCost("image", 1, model, ""))) return null;
+      let referenceImages;
+      let maskEdit = null;
+      if (region) {
+        const [cropUpload, maskUpload] = await Promise.all([
+          uploadFile(region.cropFile, { referenceUpload: true, behaviorFeature: "assistant" }),
+          uploadFile(region.maskFile, { referenceUpload: true, behaviorFeature: "assistant" }),
+        ]);
+        let baseImage = item.fileKey ? { id: item.id || "", name: "局部编辑底图", fileKey: item.fileKey, dataUrl: imageUrl(item) } : null;
+        if (!baseImage) {
+          if (!region.baseFile) throw new Error("原始底图无法上传");
+          const baseUpload = await uploadFile(region.baseFile, { referenceUpload: true, behaviorFeature: "assistant" });
+          baseImage = { name: "局部编辑底图", fileKey: baseUpload.key, dataUrl: baseUpload.url };
+        }
+        referenceImages = [{ id: crypto.randomUUID(), name: "局部编辑区域", fileKey: cropUpload.key, dataUrl: cropUpload.url, thumbnailUrl: cropUpload.thumbnailUrl || cropUpload.url }];
+        maskEdit = {
+          parentOutputUrl: imageUrl(item),
+          maskImage: { name: "局部编辑蒙版", fileKey: maskUpload.key, dataUrl: maskUpload.url },
+          maskBaseImage: baseImage,
+          maskRect: region.maskRect,
+        };
+      } else {
+        referenceImages = [{ id: item.id || crypto.randomUUID(), name: item.name || "原图", fileKey: item.fileKey || "", dataUrl: imageUrl(item), thumbnailUrl: item.thumbUrl || item.thumbnailUrl || imageUrl(item) }];
       }
-      const cropReference = {
-        id: crypto.randomUUID(),
-        name: "局部编辑区域",
-        fileKey: cropUpload.key,
-        dataUrl: cropUpload.url,
-        thumbnailUrl: cropUpload.thumbnailUrl || cropUpload.url,
-      };
-      const prompt = `${payload.prompt.trim()}\n只修改指定局部区域，保持区域外的构图、主体、光线、颜色和材质完全不变。`;
-      const userMessageId = uid();
-      const requestRatio = String(meta.requestRatio || generationRatio || "auto").toLowerCase() === "auto" ? "auto" : meta.requestRatio;
+      let annotated = false;
+      if (annotatedFile) {
+        // 标注图：原图在前、标注图在后；模型只收一张参考图时只给标注图。
+        const upload = await uploadFile(annotatedFile, { referenceUpload: true, behaviorFeature: "assistant" });
+        const marked = { id: crypto.randomUUID(), name: "标注图", fileKey: upload.key, dataUrl: upload.url, thumbnailUrl: upload.thumbnailUrl || upload.url };
+        const limit = normalizeImageModelCapabilities(selected || {}).maxReferenceImages;
+        annotated = limit >= 2 ? "pair" : "single";
+        referenceImages = annotated === "pair" ? [...referenceImages, marked] : [marked];
+      }
+      const instruction = String(prompt || "").trim();
+      const runPrompt = region
+        ? `${instruction}\n只修改指定局部区域，保持区域外的构图、主体、光线、颜色和材质完全不变。`
+        : annotated
+          ? `${annotated === "pair" ? "第一张参考图是原图，第二张是在原图上用彩色线条、图形和文字做的标注" : "参考图是在原图上用彩色线条、图形和文字做的标注"}，标出了要修改的位置和内容。按标注的意思修改原图${instruction ? `：${instruction}` : "。"}\n标注只是修改说明：最终图片里不要出现任何标注线条、图形或标注文字；没有标注的部分保持构图、主体、光线、颜色和材质不变。`
+          : instruction;
+      const requestRatio = ratio || (region || annotated ? String(meta.requestRatio || "auto") : "auto");
       const imageSettings = assistantImageSettings(selected, {
         ratio: requestRatio,
         resolution: meta.resolution || generationResolution,
         quality: meta.quality || generationQuality,
       });
+      const userMessageId = uid();
       const assistantMessage = createLocalAssistantPlaceholder({
-        prompt,
+        prompt: runPrompt,
         responseMode: "image",
         userMessageId,
         defaults: {
-          model: preferredModel,
+          model,
           ratio: imageSettings.ratio,
           resolution: imageSettings.resolution,
           count: 1,
@@ -2515,43 +2664,51 @@ export function useAssistantWorkspaceController() {
           quality: imageSettings.quality,
           width: imageSettings.width,
           height: imageSettings.height,
+          transparentBackground: transparent && selected?.transparentBackground === true,
         },
       });
       const userMessage = {
         id: userMessageId,
         role: "user",
-        content: `局部编辑：${payload.prompt.trim()}`,
+        content: String(displayText || prompt).trim(),
         kind: "chat",
-        referenceImages: [cropReference],
+        referenceImages,
         attachments: [],
         localOnly: true,
         createdAt: new Date().toISOString(),
       };
-      patchConversation(activeConversation.id, (conversation) => ({
+      const conversationId = activeConversation.id;
+      patchConversation(conversationId, (conversation) => ({
         ...conversation,
         updatedAt: assistantMessage.createdAt,
         messages: [...conversation.messages, userMessage, assistantMessage],
       }));
       scrollToBottom();
-      await launchRun({
-        conversationId: activeConversation.id,
-        prompt,
-        userMessage,
-        assistantMessage,
-        responseMode: "image",
-        maskEdit: {
-          parentOutputUrl: imageUrl(item),
-          maskImage: { name: "局部编辑蒙版", fileKey: maskUpload.key, dataUrl: maskUpload.url },
-          maskBaseImage: baseImage,
-          maskRect: payload.maskRect,
-        },
-      });
-      if (selected && selected.model !== imageModel) setImageModel(selected.model);
-      return true;
+      void launchRun({ conversationId, prompt: runPrompt, userMessage, assistantMessage, responseMode: "image", maskEdit })
+        .then(async (ok) => {
+          if (!ok || !meta.commerceSetId || !meta.shotId) return;
+          // 结果写进状态后要等一次渲染才会出现在 conversationsRef 里。
+          let fileKey = "";
+          for (let attempt = 0; attempt < 30 && !fileKey; attempt += 1) {
+            const conversation = conversationsRef.current.find((entry) => entry.id === conversationId);
+            const finished = conversation?.messages.find((entry) => entry.id === assistantMessage.id);
+            fileKey = finished?.images?.find((image) => image?.fileKey)?.fileKey || "";
+            if (!fileKey) await new Promise((resolve) => window.setTimeout(resolve, 100));
+          }
+          if (!fileKey) return;
+          try {
+            const set = await adoptAssistantCommerceShot(meta.commerceSetId, { shotId: meta.shotId, fileKey, note: userMessage.content });
+            window.dispatchEvent(new CustomEvent(COMMERCE_SET_CHANGED_EVENT, { detail: { id: meta.commerceSetId, set } }));
+            notificationService.success(`已替换套图里的「${meta.shotLabel || "这张图"}」`);
+          } catch (error) {
+            notificationService.error(error?.message || "替换套图里的图片失败");
+          }
+        });
+      return assistantMessage.id;
     } finally {
       setImageActionBusy("");
     }
-  }, [activeConversation, availableImageModels, confirmAssistantCost, conversationHasWork, generationQuality, generationRatio, generationResolution, imageActionBusy, imageModel, launchRun, patchConversation, scrollToBottom, selectedImageModel]);
+  }, [activeConversation, availableImageModels, confirmAssistantCost, conversationHasWork, generationQuality, generationResolution, imageActionBusy, imageModel, launchRun, patchConversation, scrollToBottom, selectedImageModel]);
 
   const executeSend = useCallback(async (prompt) => {
     const controller = new AbortController();
@@ -2560,8 +2717,10 @@ export function useAssistantWorkspaceController() {
     let conversation = activeConversation;
     if (!conversation) {
       try {
-        conversation = normalizeConversation(await createAssistantConversation("新对话", { signal: controller.signal }));
+        const created = await createAssistantConversation("新对话", { signal: controller.signal });
+        conversation = normalizeConversation(created);
         if (!mountedRef.current || controller.signal.aborted) return;
+        applyAutoArchived(created?.archived, created?.quota);
       } catch (error) {
         notificationService.error(error?.message || "新建对话失败");
         return;
@@ -2614,7 +2773,10 @@ export function useAssistantWorkspaceController() {
     const currentQuote = quotedMessage ? { ...quotedMessage } : null;
     const userMessage = { id: userMessageId, role: "user", content: prompt, kind: "chat", quoted: currentQuote, referenceImages: references, attachments: documents.filter((item) => item.status === "ready"), localOnly: true, createdAt: new Date().toISOString(), ...(shouldQueue ? { status: "queued" } : {}) };
     const visualContext = resolveVisualContext({ ...conversation, messages: [...conversation.messages, userMessage] }, prompt, maxReferences);
-    if (!userMessage.referenceImages.length && visualContext.length) userMessage.referenceImages = visualContext;
+    if (!userMessage.referenceImages.length && visualContext.length) {
+      userMessage.referenceImages = visualContext;
+      userMessage.referencesInferred = true;
+    }
     const nextTitle = conversation.messages.length ? conversation.title : conversationTitle(prompt);
     patchConversation(conversation.id, (item) => ({ ...item, title: nextTitle, messages: [...item.messages, userMessage, assistantMessage] }));
     setDraft("");
@@ -2638,7 +2800,7 @@ export function useAssistantWorkspaceController() {
         if (currentQuote) setQuotedMessage(currentQuote);
       },
     });
-  }, [activeConversation, activeReasoningEffort, activeRuns, availableRatios, conversationHasWork, conversationModel, conversationModels, creationType, documents, generationCount, generationQuality, generationRatio, generationResolution, generationSize, imageModel, imageModels, launchRun, maxImages, maxReferences, patchConversation, quotedMessage, references, scrollToBottom, selectedImageModel]);
+  }, [activeConversation, activeReasoningEffort, activeRuns, applyAutoArchived, availableRatios, conversationHasWork, conversationModel, conversationModels, creationType, documents, generationCount, generationQuality, generationRatio, generationResolution, generationSize, imageModel, imageModels, launchRun, maxImages, maxReferences, patchConversation, quotedMessage, references, scrollToBottom, selectedImageModel]);
 
   useEffect(() => {
     if (!resumeCandidates.length) return;
@@ -3193,6 +3355,15 @@ export function useAssistantWorkspaceController() {
     const proposal = message?.proposal;
     if (!assistantAutoApprove || !proposal?.autoApprovable) return false;
     if (proposal.dismissed || proposal.autoFailed || !assistantAutoApproveBudgetCents) return false;
+    // 已执行过的照常显示“已自动生成”那一行；没执行过的，只有刚出的方案才自动提交。
+    // 自动花过一次（执行那一轮被删了）或超过时效（重新打开旧对话、后来才开开关）都退回卡片，
+    // 服务端按同一规则拒绝，这里只是不让它白跑一趟。
+    const executed = messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id);
+    if (!executed) {
+      if (proposal.autoExecutedAt) return false;
+      const createdAt = Date.parse(message.createdAt || "");
+      if (!Number.isFinite(createdAt) || Date.now() - createdAt > ASSISTANT_AUTO_APPROVE_WINDOW_MS) return false;
+    }
     const resolved = resolveProposalRequest(message);
     // 拿不到单价时宁可让用户自己确认，也不要按 0 积分放行。
     if (resolved.blocked || !resolved.unitCents) return false;
@@ -3222,6 +3393,36 @@ export function useAssistantWorkspaceController() {
     } finally {
       if (mountedRef.current) updateProposal(proposalMessage.id, { submitting: false });
     }
+  };
+
+  // 一键纠正最新那条回复：发一句固定的话，按纠正要求的模式跑，不动输入框里的草稿和附件。
+  const sendCorrection = async (message, action) => {
+    const definition = ASSISTANT_CORRECTIONS[action];
+    if (!definition || !activeConversation || conversationHasWork) return;
+    if (requestAuth({ featureLabel: "AI 助手" })) return;
+    const responseMode = definition.mode || (message.requestedMode === "agent" ? "agent" : "chat");
+    const sendModel = availableConversationModels.find((item) => item.model === conversationModel)?.model || availableConversationModels[0]?.model || "";
+    if (!(await confirmAssistantCost(responseMode, 1, sendModel, activeReasoningEffort))) return;
+    if (!mountedRef.current) return;
+    if (action === "just_asking" && message.proposal) updateProposal(message.id, { dismissed: true });
+    const imageSettings = assistantImageSettings(selectedImageModel, { ratio: generationRatio, resolution: generationResolution, quality: generationQuality });
+    const userMessage = { id: uid(), role: "user", content: definition.prompt, kind: "chat", referenceImages: [], attachments: [], localOnly: true, createdAt: new Date().toISOString() };
+    const assistantMessage = createLocalAssistantPlaceholder({
+      prompt: definition.prompt,
+      responseMode,
+      userMessageId: userMessage.id,
+      defaults: {
+        model: sendModel, reasoningEffort: activeReasoningEffort, count: 1,
+        ratio: imageSettings.ratio, resolution: imageSettings.resolution, requestSize: imageSettings.requestSize,
+        quality: imageSettings.quality, width: imageSettings.width, height: imageSettings.height,
+      },
+    });
+    patchConversation(activeConversation.id, (conversation) => ({ ...conversation, updatedAt: userMessage.createdAt, messages: [...conversation.messages, userMessage, assistantMessage] }));
+    scrollToBottom();
+    await launchRun({
+      conversationId: activeConversation.id, prompt: definition.prompt, userMessage, assistantMessage, responseMode,
+      correction: { messageId: message.id, action },
+    });
   };
 
   const sourceProposalForImage = (message) => {
@@ -3406,7 +3607,9 @@ export function useAssistantWorkspaceController() {
       if (activeId === deleteTarget.id) {
         selectConversation(next.find((item) => item.messages.length)?.id || "", { preserveCurrentDraft: false });
       }
+      setArchivedItems((current) => current.filter((item) => item.id !== deleteTarget.id));
       setDeleteTarget(null);
+      void refreshConversationQuota();
     } catch (error) {
       notificationService.error(error?.message || "删除对话失败");
     }
@@ -3537,6 +3740,7 @@ export function useAssistantWorkspaceController() {
     setAssetSearch,
     libraryAssetsLoading,
     imageModels,
+    imageModel,
     editableFilesEnabled,
     setConversationModel,
     setReasoningEffort,
@@ -3686,12 +3890,21 @@ export function useAssistantWorkspaceController() {
     cancelRename,
     commitRename,
     togglePinned,
+    archiveConversation,
+    conversationQuota,
+    archivedOpen,
+    setArchivedOpen,
+    archivedItems,
+    archivedLoading,
+    archiveBusyId,
+    openArchived,
+    restoreConversation,
     newConversation,
     swallowComposerMenuClick,
     toggleComposerMenu,
     uploadReferences,
     removeComposerDocument,
-    submitRegionEdit,
+    startStudioEdit,
     requestSend,
     confirmCost,
     cancelCost,
@@ -3712,6 +3925,7 @@ export function useAssistantWorkspaceController() {
     submitUserMessageEdit,
     updateProposal,
     approveAgentProposal,
+    sendCorrection,
     sourceProposalForImage,
     reopenSourceProposal,
     stopRun,

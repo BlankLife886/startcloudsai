@@ -146,10 +146,22 @@ export function WorkbenchTopToolbar({
   product,
   // 创意商拍
   shoot,
+  // 外部请求打开某个菜单：{ id, nonce }
+  menuRequest = null,
   disabled,
 }) {
   const [activeMenu, setActiveMenu] = useState("");
   const rootRef = useRef(null);
+
+  const handledMenuRequestRef = useRef(menuRequest?.nonce);
+  useEffect(() => {
+    // 每个请求只处理一次，避免之后 disabled 变化时把旧请求再打开一遍
+    if (!menuRequest?.id || menuRequest.nonce === handledMenuRequestRef.current) {
+      return;
+    }
+    handledMenuRequestRef.current = menuRequest.nonce;
+    if (!disabled) setActiveMenu(menuRequest.id);
+  }, [menuRequest, disabled]);
 
   useEffect(() => {
     const onPointer = (event) => {

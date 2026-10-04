@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
+	"github.com/BlankLife886/startcloudsai/server/internal/contentpolicy"
 	"github.com/BlankLife886/startcloudsai/server/internal/devapibilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -89,6 +90,49 @@ func TestDeveloperAPIImageRequestsAreIndependent(t *testing.T) {
 	}
 	env.assertDirectBilling(t, 2, 40)
 	if statuses := env.requestStatuses(t); len(statuses) != 2 || statuses[0] != "succeeded" || statuses[1] != "succeeded" {
+		t.Fatalf("request states = %v", statuses)
+	}
+}
+
+// A generation the upstream rejected for content policy was processed upstream,
+// so it is charged like a delivered image and explained to the caller.
+func TestDeveloperAPIContentPolicyRejectionIsCharged(t *testing.T) {
+	env := newOpenAIImagesIntegrationEnv(t)
+	env.mu.Lock()
+	env.upstreamStatus = http.StatusBadRequest
+	env.upstreamErrorBody = `{"error":{"message":"Your request was rejected by the safety system."}}`
+	env.mu.Unlock()
+	response := env.generate(t, `{"model":"compat-image","prompt":"blocked"}`)
+	requireOpenAIIntegrationStatus(t, response, http.StatusBadRequest, "content_policy_violation")
+	if !strings.Contains(response.Body.String(), "扣费") {
+		t.Fatalf("content policy message should explain the charge: %s", response.Body.String())
+	}
+	env.requireWallet(t, 980, 0)
+	if statuses := env.requestStatuses(t); len(statuses) != 1 || statuses[0] != store.DeveloperAPIRequestSucceeded {
+		t.Fatalf("request states = %v", statuses)
+	}
+}
+
+// Within the daily free allowance a content policy rejection is released, and
+// the caller is told it was not charged.
+func TestDeveloperAPIContentPolicyRejectionWithinDailyAllowanceIsReleased(t *testing.T) {
+	env := newOpenAIImagesIntegrationEnv(t)
+	cfg := contentpolicy.DefaultConfig()
+	cfg.DailyFreeCount = 1
+	if _, err := contentpolicy.Save(context.Background(), env.st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	env.mu.Lock()
+	env.upstreamStatus = http.StatusBadRequest
+	env.upstreamErrorBody = `{"error":{"message":"Your request was rejected by the safety system."}}`
+	env.mu.Unlock()
+	response := env.generate(t, `{"model":"compat-image","prompt":"blocked"}`)
+	requireOpenAIIntegrationStatus(t, response, http.StatusBadRequest, "content_policy_violation")
+	if !strings.Contains(response.Body.String(), "不扣费") {
+		t.Fatalf("waived message should say nothing was charged: %s", response.Body.String())
+	}
+	env.requireWallet(t, 1000, 0)
+	if statuses := env.requestStatuses(t); len(statuses) != 1 || statuses[0] != store.DeveloperAPIRequestFailed {
 		t.Fatalf("request states = %v", statuses)
 	}
 }

@@ -494,6 +494,22 @@ func TestAssistantAgentParallelBatchOnlyAcceptsReadOnlyTools(t *testing.T) {
 	if batch := assistantAgentParallelBatch(single); batch != nil {
 		t.Fatal("只有一个工具调用时不该走并行路径")
 	}
+	// 平台的只读工具（两次统计查询做对比）可以一起并发；记忆这类会写的仍然串行。
+	platformRead := func(name string) bool { return name == "my_stats_query" }
+	stats := sub2api.AgentChatResult{ToolCalls: []sub2api.ToolCall{
+		{ID: "a", Name: "my_stats_query", Arguments: `{"timeRange":{"preset":"this_month"}}`},
+		{ID: "b", Name: "my_stats_query", Arguments: `{"timeRange":{"preset":"last_month"}}`},
+	}}
+	if batch := assistantAgentParallelBatch(stats, platformRead); len(batch) != 2 {
+		t.Fatalf("平台只读工具应当并发执行，got %d", len(batch))
+	}
+	withWrite := sub2api.AgentChatResult{ToolCalls: []sub2api.ToolCall{
+		{ID: "a", Name: "my_stats_query", Arguments: `{}`},
+		{ID: "b", Name: "memory_save", Arguments: `{}`},
+	}}
+	if batch := assistantAgentParallelBatch(withWrite, platformRead); batch != nil {
+		t.Fatal("混进会写的平台工具必须退回串行")
+	}
 }
 
 // 上游要求每个 tool_call 都有配对的结果，少一条整轮请求就会被拒。

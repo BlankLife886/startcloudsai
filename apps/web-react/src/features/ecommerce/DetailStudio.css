@@ -786,3 +786,15 @@ html.color-scheme-dark .detail-frame__demo {
     width: min(100%, 320px);
   }
 }
+
+/* A+ 卡片在窄右栏里：标签在左、控件在右，一行一个字段，下拉值不再被截成“A…” */
+.detail-amazon__fields {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+}
+
+.detail-amazon__fields label {
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}

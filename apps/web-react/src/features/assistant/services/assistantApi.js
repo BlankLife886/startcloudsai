@@ -29,12 +29,45 @@ export async function fetchAssistantConfig(signal) {
 }
 
 export async function listAssistantConversations({ signal } = {}) {
+  return (await listAssistantConversationsWithQuota({ signal })).conversations
+}
+
+// 对话列表和额度（保留数、今天新建数、已归档数）一起返回。
+export async function listAssistantConversationsWithQuota({ signal } = {}) {
   const data = await apiGet('/assistant/conversations', {
     query: { messageLimit: 24 },
     signal,
     fallbackMessage: '对话记录加载失败',
   })
-  return Array.isArray(data?.conversations) ? data.conversations : []
+  return {
+    conversations: Array.isArray(data?.conversations) ? data.conversations : [],
+    quota: data?.quota || null,
+  }
+}
+
+export async function getAssistantConversationQuota({ signal } = {}) {
+  const data = await apiGet('/assistant/conversation-quota', { signal, fallbackMessage: '对话额度加载失败' })
+  return data?.quota || null
+}
+
+export async function listArchivedAssistantConversations({ signal } = {}) {
+  const data = await apiGet('/assistant/conversation-archive', { signal, fallbackMessage: '已归档对话加载失败' })
+  return {
+    conversations: Array.isArray(data?.conversations) ? data.conversations : [],
+    archiveDays: Number(data?.archiveDays) || 7,
+  }
+}
+
+export async function archiveAssistantConversation(id) {
+  return apiPost(`/assistant/conversations/${encodeURIComponent(id)}/archive`, {}, { fallbackMessage: '归档失败' })
+}
+
+export async function restoreAssistantConversation(id) {
+  return apiPost(`/assistant/conversations/${encodeURIComponent(id)}/restore`, {}, { fallbackMessage: '恢复失败' })
+}
+
+export async function pinAssistantConversation(id, pinned) {
+  return apiPut(`/assistant/conversations/${encodeURIComponent(id)}/pin`, { pinned: Boolean(pinned) }, { fallbackMessage: pinned ? '置顶失败' : '取消置顶失败' })
 }
 
 export async function getAssistantConversation(id, { beforeMessageId = '', messageLimit = 80, signal } = {}) {
@@ -329,6 +362,11 @@ export function redoAssistantCommerceShots(id, { shotIds, note = '', expectedTot
 
 export function reviewAssistantCommerceSet(id) {
   return apiPost(`/assistant/commerce-sets/${encodeURIComponent(id)}/review`, {})
+}
+
+// 图片编辑器里改好的图替换套图中的一张。
+export function adoptAssistantCommerceShot(id, { shotId, fileKey, note = '' }) {
+  return apiPost(`/assistant/commerce-sets/${encodeURIComponent(id)}/adopt`, { shotId, fileKey, note })
 }
 
 export function assistantCommerceSetArchiveUrl(id) {

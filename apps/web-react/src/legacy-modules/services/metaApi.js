@@ -30,6 +30,14 @@ export async function getActiveAnnouncements({ signal } = {}) {
   throw new Error('公告响应格式不正确')
 }
 
+/** 公告记录：已上线的公告，含已结束的。 */
+export async function getAnnouncementHistory({ signal } = {}) {
+  const data = await apiGet('/announcements/history', { signal, cache: 'no-store', fallbackMessage: '公告记录读取失败' })
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data?.items)) return data.items
+  throw new Error('公告响应格式不正确')
+}
+
 /** Public announcement snapshots; EventSource reconnects transport failures. */
 export function openAnnouncementEvents({ onSnapshot, onOpen, onError } = {}) {
   if (typeof EventSource === 'undefined') return null

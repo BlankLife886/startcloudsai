@@ -21,7 +21,6 @@ const [
     LISTING_DEFAULT_TYPE_IDS,
     LISTING_IMAGE_TYPES,
     listingImageTypeById,
-    listingShotBlueprintsFromPlan,
     normalizeTaskImageKey,
     prepareEcommerceInputFiles,
     coerceEcommerceImageFile,
@@ -88,6 +87,16 @@ const [
     detailExportChecklist,
     isAmazonPlatform,
   },
+  {
+    LISTING_MAX_SHOTS,
+    LISTING_TEMPLATE_CATEGORIES,
+    listingBlueprints,
+    listingSmartCandidates,
+    listingStylePrompt,
+    listingTemplateById,
+    listingTemplatesFor,
+    listingRunModeAllowed,
+  },
 ] = await Promise.all([
   vite.ssrLoadModule(
     '/src/legacy-modules/features/ecommerce/ecommerceTools.js',
@@ -102,6 +111,7 @@ const [
     '/src/features/ecommerce/workbench/workbenchPresets.js',
   ),
   vite.ssrLoadModule('/src/features/ecommerce/aplus/detailPage.js'),
+  vite.ssrLoadModule('/src/features/ecommerce/listing/listingCatalog.js'),
 ])
 await vite.close()
 
@@ -159,12 +169,16 @@ assert.deepEqual(
   defaultListingPlan.map((item) => item.viewId),
   LISTING_DEFAULT_TYPE_IDS,
 )
-assert.equal(LISTING_IMAGE_TYPES.length, 18)
-assert.equal(new Set(LISTING_IMAGE_TYPES.map((item) => item.id)).size, 18)
-assert.ok(LISTING_IMAGE_TYPES.every((item) => item.label && item.direction))
-assert.equal(ecommerceModeById('listing').maxCount, 18)
+assert.equal(LISTING_IMAGE_TYPES.length, 46)
+assert.equal(new Set(LISTING_IMAGE_TYPES.map((item) => item.id)).size, 46)
+assert.ok(LISTING_IMAGE_TYPES.every((item) => item.label && item.direction && item.hint))
+assert.ok(LISTING_IMAGE_TYPES.every((item) => ['main', 'detail'].includes(item.role)))
+assert.equal(ecommerceModeById('listing').maxCount, LISTING_MAX_SHOTS)
+// 智能组图的候选覆盖全部内置类型，且 id 满足服务端 32 字符限制
+assert.equal(listingSmartCandidates().length, LISTING_IMAGE_TYPES.length)
+assert.ok(listingSmartCandidates().every((item) => item.id.length <= 32 && item.role))
 
-// 全选 18 种时每张职责各不相同，亚马逊主图带 85% 占比规范
+// 全选时按上限截断为 18 张，亚马逊主图带 85% 占比规范
 const fullListingPlan = buildEcommerceGenerationPlan({
   modeId: 'listing',
   count: 18,
@@ -179,17 +193,41 @@ assert.ok(
     .prompt.includes('85%'),
 )
 
-// “先策划再生成”：策划文案按 id 对齐进 direction，未策划的类型保持原职责
-const plannedShots = listingShotBlueprintsFromPlan(
-  {
+// 自由组合：按类型与张数展开，主图 / 详情页各用自己的画幅；同类型多张的 id 不重复
+const freeShots = listingBlueprints({
+  planMode: 'free',
+  freeItems: [
+    { id: 'white', count: 1 },
+    { id: 'hero', count: 2 },
+    { id: 'custom-abc123', count: 1 },
+  ],
+  customTypes: [{ id: 'custom-abc123', label: '圣诞礼盒', direction: '雪景氛围', role: 'main' }],
+  mainRatio: '1:1',
+  detailRatio: '3:4',
+})
+assert.deepEqual(freeShots.map((item) => item.id), ['white', 'hero', 'hero~2', 'custom-abc123'])
+assert.deepEqual(freeShots.map((item) => item.aspectRatio), ['1:1', '3:4', '3:4', '1:1'])
+assert.ok(freeShots[2].direction.includes('不同的构图'))
+assert.ok(freeShots[3].direction.includes('圣诞礼盒') && freeShots[3].direction.includes('雪景氛围'))
+assert.ok(freeShots.every((item) => item.id.length <= 32))
+
+// “先策划再生成”：策划文案按 id 对齐进 direction，未策划的张保持原职责；removed 的张不出图
+const plannedShots = listingBlueprints({
+  planMode: 'free',
+  freeItems: [
+    { id: 'white', count: 1 },
+    { id: 'hero', count: 1 },
+    { id: 'spec', count: 1 },
+  ],
+  plan: {
     summary: '以清晨厨房光线串起整套图',
     items: [
       { id: 'hero', headline: '一杯，唤醒清晨', subline: '三档温控', direction: '商品居中，晨光斜射' },
+      { id: 'spec', headline: '参数', removed: true },
       { id: 'ghost', headline: '不该出现' },
     ],
   },
-  ['white', 'hero'],
-)
+})
 assert.deepEqual(plannedShots.map((item) => item.id), ['white', 'hero'])
 assert.equal(plannedShots[0].headline, undefined)
 assert.equal(plannedShots[1].headline, '一杯，唤醒清晨')
@@ -198,10 +236,56 @@ assert.ok(plannedShots[1].direction.includes('策划方向：商品居中，晨�
 assert.ok(plannedShots[1].direction.includes('「一杯，唤醒清晨」'))
 assert.ok(plannedShots[1].direction.includes('副文案：「三档温控」'))
 assert.ok(plannedShots[1].direction.startsWith(listingImageTypeById('hero').direction))
-assert.deepEqual(
-  listingShotBlueprintsFromPlan(null, ['white']).map((item) => item.id),
-  ['white'],
-)
+
+// 智能组图：策划前只有占位，策划后按 AI 选定的类型出图
+const smartPending = listingBlueprints({ planMode: 'smart', smart: { main: 2, detail: 3 } })
+assert.deepEqual(smartPending.map((item) => item.id), ['main-1', 'main-2', 'detail-1', 'detail-2', 'detail-3'])
+assert.ok(smartPending.every((item) => item.pending))
+const smartPlanned = listingBlueprints({
+  planMode: 'smart',
+  smart: { main: 1, detail: 1 },
+  mainRatio: '1:1',
+  detailRatio: '3:4',
+  plan: {
+    items: [
+      { id: 'main-1', type: 'white', role: 'main', headline: '' },
+      { id: 'detail-1', type: 'faq', role: 'detail', headline: '常见问题', direction: '问答卡片' },
+    ],
+  },
+})
+assert.deepEqual(smartPlanned.map((item) => [item.id, item.typeId, item.aspectRatio]), [
+  ['main-1', 'white', '1:1'],
+  ['detail-1', 'faq', '3:4'],
+])
+assert.ok(!smartPlanned.some((item) => item.pending))
+assert.ok(smartPlanned[1].direction.includes('「常见问题」'))
+
+// 品类模板：22 个一级品类，每个分镜都指向真实的出图类型
+assert.equal(LISTING_TEMPLATE_CATEGORIES.length, 22)
+for (const category of LISTING_TEMPLATE_CATEGORIES) {
+  const templates = listingTemplatesFor(category.id, 0)
+  assert.ok(templates.length >= 3, `${category.label} 至少 3 个模板`)
+  for (const template of templates) {
+    assert.ok(template.shots.length >= 6 && template.shots.length <= 10, template.name)
+    assert.ok(template.shots.every((item) => listingImageTypeById(item.type)), template.name)
+    assert.ok(`${template.id}~${template.shots.length}`.length <= 32, template.id)
+  }
+}
+const dressTemplate = listingTemplateById('women.0.std')
+assert.equal(dressTemplate.name, '连衣裙标准套图')
+const templateShots = listingBlueprints({ planMode: 'template', templateIds: ['women.0.std', 'women.0.amz'] })
+assert.equal(templateShots.length, LISTING_MAX_SHOTS)
+assert.equal(templateShots[0].id, 'women.0.std~1')
+assert.ok(templateShots[0].direction.includes('本张画面：正面全身白底展示图'))
+
+// 极速出图只能用于自由组合；视觉风格预置展开成具体描述，自定义风格原样使用
+assert.ok(listingRunModeAllowed('fast', 'free'))
+assert.ok(!listingRunModeAllowed('fast', 'smart'))
+assert.ok(!listingRunModeAllowed('fast', 'template'))
+assert.ok(listingStylePrompt('高级质感风').includes('材质'))
+assert.equal(listingStylePrompt('赛博朋克'), '赛博朋克。')
+assert.equal(listingStylePrompt(''), '')
+
 const plannedListingPlan = buildEcommerceGenerationPlan({
   modeId: 'listing',
   count: 2,

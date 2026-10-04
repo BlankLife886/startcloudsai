@@ -479,13 +479,15 @@ type Task struct {
 }
 
 type AssistantConversation struct {
-	ID        uuid.UUID
-	UserID    uuid.UUID
-	Title     string
-	Workspace string
-	ProjectID *uuid.UUID
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	Title      string
+	Workspace  string
+	ProjectID  *uuid.UUID
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	PinnedAt   *time.Time
+	ArchivedAt *time.Time
 }
 
 type AssistantMessage struct {

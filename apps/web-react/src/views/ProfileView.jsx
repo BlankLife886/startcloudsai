@@ -408,6 +408,7 @@ function FigureCostDialog({ cost, isDark, onCancel, onConfirm }) {
           {cost.mode === "outfit"
             ? "将以当前立绘为参考图，按你上传的配件图或填写的描述生成一张 2:3 高清透明底立绘。"
             : "将按你上传的参考图，用 gpt-image-2 生成一张 2:3 高清透明底立绘。"}
+          生成失败自动退回，内容违规被驳回不退回。
         </p>
         <div className="ai-cost-confirm-card">
           <div className="ai-cost-confirm-total">

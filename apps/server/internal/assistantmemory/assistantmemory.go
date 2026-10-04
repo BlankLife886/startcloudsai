@@ -401,9 +401,20 @@ func Load(ctx context.Context, q store.Q, userID uuid.UUID) (Recall, error) {
 	return Recall{Enabled: true, Memories: memories, Block: PromptBlock(memories)}, nil
 }
 
+// favoritePromptRunes bounds how much of a remembered set goes into the prompt.
+const favoritePromptRunes = 240
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "…"
+}
+
 // PromptBlock renders memories for the system prompt. Brand, style and habit
-// entries are given in full; products and favourites only by title (the
-// model fetches details with memory_search). Everything stops at the budget.
+// entries are given in full, favourites (remembered sets) in short; products
+// only by title (the model fetches details with memory_search). Everything stops at the budget.
 func PromptBlock(memories []Memory) string {
 	if len(memories) == 0 {
 		return ""
@@ -422,6 +433,15 @@ func PromptBlock(memories []Memory) string {
 			case KindBrand, KindStyle, KindHabit:
 				if m.Content != "" {
 					line += "：" + m.Content
+				}
+			case KindFavorite:
+				// 用户点了“下次按这个风格做”：平台、比例和视觉主线要直接可用，
+				// 做同类图时默认沿用，不必再去查。
+				if m.Content != "" {
+					line += "：" + truncateRunes(strings.ReplaceAll(m.Content, "\n", "；"), favoritePromptRunes)
+				}
+				if len(m.ImageKeys) > 0 {
+					line += fmt.Sprintf("（有 %d 张图）", len(m.ImageKeys))
 				}
 			default:
 				if len(m.ImageKeys) > 0 {
@@ -499,7 +519,12 @@ func FavoriteFromSet(ctx context.Context, q store.Q, userID, setID uuid.UUID) (I
 		if len(shot.Attempts) == 0 || len(keys) >= MaxImages {
 			continue
 		}
-		task, err := store.GetTask(ctx, q, shot.Attempts[len(shot.Attempts)-1].TaskID)
+		attempt := shot.Attempts[len(shot.Attempts)-1]
+		if attempt.FileKey != "" {
+			keys = append(keys, attempt.FileKey)
+			continue
+		}
+		task, err := store.GetTask(ctx, q, attempt.TaskID)
 		if err != nil {
 			continue
 		}

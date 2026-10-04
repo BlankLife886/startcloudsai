@@ -193,6 +193,7 @@ func runServe(cfg *config.Config) error {
 		return fmt.Errorf("initialize HTTP server: %w", err)
 	}
 	defer server.Close()
+	server.AssistantProber = worker.NewReviewProber(cfg, st)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8000"

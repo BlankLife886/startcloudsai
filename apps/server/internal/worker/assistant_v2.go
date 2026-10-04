@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -11,118 +10,202 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
-	"github.com/BlankLife886/startcloudsai/server/internal/assistantdecision"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantmemory"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantproactive"
-	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantv2"
 	"github.com/BlankLife886/startcloudsai/server/internal/commerceset"
-	"github.com/BlankLife886/startcloudsai/server/internal/decision"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
-// AssistantEngineV2 marks runs created by the rebuilt assistant. The run
-// engine (queue, lease, billing, stream, cancel) is shared with v1; only the
-// orchestration in this file differs.
+// AssistantEngineV2 marks runs from the assistant page's 问答 and Agent
+// modes. They run the one agent loop (executeAssistantAgent) with the
+// platform tools added; the run engine (queue, lease, billing, stream,
+// cancel) is shared with every other assistant run.
 const AssistantEngineV2 = "v2"
 
-const (
-	assistantV2MaxSteps    = 6
-	assistantV2MaxViewRows = 120
-)
-
-// Params carried from v2 into the original engine when a turn is handed over.
-const (
-	assistantV2IntentParam    = "_v2Intent"
-	assistantV2ConfidentParam = "_v2IntentConfident"
-	// assistantV2MemoryParam carries the recalled memory block, so image
-	// proposals made by the original engine follow the user's brand and taste.
-	assistantV2MemoryParam = "_v2Memory"
-)
+const assistantV2MaxViewRows = 120
 
 func assistantRunUsesV2(run *store.AssistantRun) bool {
 	return run != nil && assistantParamString(run.Params, "_engine", "") == AssistantEngineV2
 }
 
-// The judgment itself lives in assistantdecision so the admin evaluation runs
-// exactly the code that routes turns; these names keep the worker readable.
-const (
-	assistantV2IntentAnswer    = assistantdecision.IntentAnswer
-	assistantV2IntentMyData    = assistantdecision.IntentMyData
-	assistantV2IntentCreate    = assistantdecision.IntentCreate
-	assistantV2IntentWeb       = assistantdecision.IntentWeb
-	assistantV2IntentWorkspace = assistantdecision.IntentWorkspace
-	assistantV2IntentAccount   = assistantdecision.IntentAccount
-)
+// assistantV2ChatOnly reports a turn sent in 问答 mode. 问答 only answers:
+// it never makes or changes images and never runs site tools; that is what
+// Agent and 图片 modes are for. Web search is still answering.
+func assistantV2ChatOnly(run *store.AssistantRun) bool {
+	return run != nil && run.Mode == "chat"
+}
 
-type (
-	assistantV2DecisionSetup = assistantdecision.Setup
-	assistantV2Decision      = assistantdecision.Result
-)
+// assistantAgentPlatform is what the v2 entry adds to the agent loop: the
+// platform tools with their rules and permissions, and the 问答-mode
+// restriction.
+type assistantAgentPlatform struct {
+	registry     *assistanttools.Registry
+	tools        []sub2api.FunctionTool
+	permissions  map[assistanttools.Permission]bool
+	instructions string
+	chatOnly     bool
+}
 
-func assistantV2DelegatesIntent(intent string) bool { return assistantdecision.DelegatesIntent(intent) }
-
-func assistantV2DecisionQuestions() []decision.Question { return assistantdecision.Questions() }
-
-func assistantV2Rules(prompt string) decision.Rules { return assistantdecision.Rules(prompt) }
-
-// assistantV2DecisionSetupFor resolves the decision model (override, else the
-// assistant page's default chat model) and its thresholds. Any failure leaves
-// the rules in charge; a turn is never blocked on the decision model.
-func (w *Worker) assistantV2DecisionSetupFor(ctx context.Context, prompt string) assistantV2DecisionSetup {
-	if w.St == nil {
-		return assistantdecision.RulesOnly(prompt, decision.DefaultThresholds)
+// offers reports whether name is one of the platform tools given this turn.
+func (p *assistantAgentPlatform) offers(name string) bool {
+	if p == nil {
+		return false
 	}
-	return assistantdecision.Resolve(ctx, w.St.Pool, w.Cfg.AppSecret, prompt, "")
-}
-
-func (w *Worker) assistantV2Decide(ctx context.Context, setup assistantV2DecisionSetup, state string) assistantV2Decision {
-	return assistantdecision.Decide(ctx, setup, state)
-}
-
-func assistantV2DecisionState(history []*store.AssistantMessage, run *store.AssistantRun, references, documents int) string {
-	state := buildAssistantIntentTranscript(history, run.UserMessageID, run.AssistantMessageID, run.Prompt)
-	if references > 0 || documents > 0 {
-		// Attachments change the answer ("把背景换成白色" with an image is an
-		// edit; without one it is a question), so the judge must know.
-		state += fmt.Sprintf("\n（本轮附带 %d 张参考图、%d 个文档）", references, documents)
+	for _, tool := range p.tools {
+		if tool.Name == name {
+			return true
+		}
 	}
-	return state
+	return false
 }
 
-// recordAssistantV2Decision writes the shadow-comparison row. It is best
-// effort: losing a log row must never fail the user's turn.
-func (w *Worker) recordAssistantV2Decision(ctx context.Context, run *store.AssistantRun, decided assistantV2Decision, delegated bool) {
-	if w.St == nil {
+// readOnly reports a platform tool that only reads, so it can run in a
+// parallel batch with other reads ("本月和上月各花了多少" asks for two stats
+// queries at once).
+func (p *assistantAgentPlatform) readOnly(name string) bool {
+	if !p.offers(name) {
+		return false
+	}
+	level, ok := p.registry.Level(name)
+	return ok && level == assistanttools.LevelRead
+}
+
+// attach records the platform tools' cards and marks the answer as v2.
+func (p *assistantAgentPlatform) attach(metadata map[string]any, dataViews []map[string]any) {
+	if p == nil {
 		return
 	}
-	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	defer cancel()
-	if err := store.InsertAssistantDecisionLog(logCtx, w.St.Pool, store.AssistantDecisionLog{
-		RunID: run.ID, UserID: run.UserID, Provider: decided.Response.Provider, Model: decided.Response.Model,
-		Intent: decided.Intent, Confidence: decided.Confidence, RulesIntent: decided.RulesIntent,
-		Clarify: decided.Clarify, LowConfidence: decided.LowConfidence, UsedFallback: decided.UsedFallback(),
-		Delegated: delegated, LatencyMs: decided.Response.LatencyMs,
-	}); err != nil {
-		log.Printf("assistant v2 decision log failed for run %s: %v", run.ID, err)
+	metadata["engine"] = AssistantEngineV2
+	metadata["systemPromptVersion"] = assistantv2.SystemVersion
+	if len(dataViews) > 0 {
+		metadata["dataViews"] = dataViews
 	}
 }
 
-// recordAssistantV2HandOver marks the turn's decision row as delegated after
-// the v2 model handed it over, so the shadow comparison counts it.
-func (w *Worker) recordAssistantV2HandOver(ctx context.Context, run *store.AssistantRun, target string) {
-	if w.St == nil {
-		return
+// executeAssistantV2 runs a 问答 or Agent turn: gather what the platform
+// knows about the user, then hand everything to the one agent loop.
+func (w *Worker) executeAssistantV2(ctx context.Context, run *store.AssistantRun) error {
+	selection, configured, err := w.configuredAssistantModelSelection(ctx, run, modelconfig.ModelKindChat)
+	if err != nil {
+		return err
 	}
-	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	defer cancel()
-	if _, err := w.St.Pool.Exec(logCtx, `UPDATE assistant_decision_logs SET delegated = true, intent = $2 WHERE run_id = $1`, run.ID, target); err != nil {
-		log.Printf("assistant v2 hand-over log failed for run %s: %v", run.ID, err)
+	if !configured {
+		return fmt.Errorf("AI 助手没有可用的对话模型")
 	}
+	client, err := w.configuredAssistantChatClient(selection)
+	if err != nil {
+		return err
+	}
+	client = client.WithMaxOutputTokens(
+		assistantParamInt(run.Params, "_chatMaxOutputTokens", assistantDefaultOutputTokens),
+	).WithReasoningEffort(assistantParamString(run.Params, "reasoningEffort", ""))
+	return w.runAssistantV2(ctx, run, client)
+}
+
+// runAssistantV2 takes the chat client as a parameter so tests can drive it
+// against a fake upstream.
+func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, client *sub2api.Client) error {
+	history, err := store.ListAssistantMessages(ctx, w.St.Pool, run.ConversationID, assistantMessageLimitForContext)
+	if err != nil {
+		history = nil
+	}
+	history = assistantMessagesAfterContextBoundary(history)
+	references, err := w.loadAssistantReferences(ctx, run.Params)
+	if err != nil {
+		return err
+	}
+	chatOnly := assistantV2ChatOnly(run)
+	if !chatOnly {
+		// Editable PSD / PPT files have their own generator.
+		if kind := assistantEditableKind(run); kind != "" {
+			return w.executeAssistantEditableFile(ctx, run, references, kind)
+		}
+	}
+	recall := w.assistantV2Recall(ctx, run)
+	commerce := assistantV2Commerce{}
+	if !chatOnly {
+		commerce = w.assistantV2CommerceTurn(ctx, run, recall.Memories)
+	}
+	if commerce.product != nil && len(references) == 0 {
+		// A remembered product stands in for uploading its photos again; the
+		// planner still looks at them to write the copy.
+		items := make([]map[string]any, 0, len(commerce.inputKeys))
+		for _, key := range commerce.inputKeys {
+			items = append(items, map[string]any{"fileKey": key})
+		}
+		if references, err = w.loadAssistantReferenceItems(ctx, items); err != nil {
+			return err
+		}
+	}
+	platform, err := w.assistantAgentPlatformFor(ctx, run, client, references, recall, commerce)
+	if err != nil {
+		return err
+	}
+	return w.executeAssistantAgent(ctx, client, run, references, history, platform)
+}
+
+// assistantAgentPlatformFor builds the platform tools and rules for a turn.
+func (w *Worker) assistantAgentPlatformFor(
+	ctx context.Context,
+	run *store.AssistantRun,
+	client *sub2api.Client,
+	references []string,
+	recall assistantmemory.Recall,
+	commerce assistantV2Commerce,
+) (*assistantAgentPlatform, error) {
+	chatOnly := assistantV2ChatOnly(run)
+	var extra []assistanttools.Manifest
+	if commerce.enabled {
+		extra = append(extra, w.assistantV2CommerceManifest(run, client, references, commerce))
+	}
+	if recall.Enabled {
+		conversationID := run.ConversationID
+		extra = append(extra, assistanttools.NewMemoryManifest(w.St, assistanttools.MemoryContext{
+			ConversationID: &conversationID, InputKeys: assistantV2ReferenceKeys(run.Params),
+		}))
+	}
+	registry, err := assistantv2.Registry(w.St, time.Now, false, extra...)
+	if err != nil {
+		return nil, err
+	}
+	tools, err := registry.Definitions(assistantv2.AgentToolsFor(registry))
+	if err != nil {
+		return nil, err
+	}
+	permissions := map[assistanttools.Permission]bool{}
+	for _, permission := range assistantv2.TurnPermissions {
+		permissions[permission] = true
+	}
+
+	var instructions strings.Builder
+	instructions.WriteString(assistantv2.PlatformRules)
+	instructions.WriteString("\n\n" + assistantv2.TimeNote(assistantParamString(run.Params, "timezone", "Asia/Shanghai"), time.Now()))
+	instructions.WriteString(assistantv2.MemoryPrompt(recall.Enabled, recall.Block))
+	if chatOnly {
+		instructions.WriteString(assistantv2.ChatOnlyPrompt)
+	} else {
+		if recall.Enabled && recall.Block != "" {
+			instructions.WriteString("\n出图方案要遵循记忆里的品牌和风格偏好（写进提示词）；用户本轮另有要求时以本轮为准。")
+		}
+		instructions.WriteString(assistantproactive.HabitNote(w.assistantV2Habits(ctx, run, recall)))
+	}
+	if commerce.enabled {
+		instructions.WriteString(assistantv2.CommercePrompt)
+		if commerce.open != nil {
+			fmt.Fprintf(&instructions, "\n本对话已有一套电商图：setId=%s，状态 %s。用户的话是在说这套图时，直接对它操作。", commerce.open.ID, commerce.open.Status)
+		}
+		if commerce.product != nil {
+			fmt.Fprintf(&instructions, "\n本轮没有上传商品图，用的是记忆里的商品“%s”的 %d 张图；策划时参考这条记忆的内容。", commerce.product.Title, len(commerce.inputKeys))
+		}
+	}
+	return &assistantAgentPlatform{
+		registry: registry, tools: tools, permissions: permissions,
+		instructions: instructions.String(), chatOnly: chatOnly,
+	}, nil
 }
 
 // assistantV2Habits reads the user's habits for the prompt. They are
@@ -137,30 +220,6 @@ func (w *Worker) assistantV2Habits(ctx context.Context, run *store.AssistantRun,
 		log.Printf("assistant v2 habits failed for run %s: %v", run.ID, err)
 	}
 	return facts
-}
-
-// assistantV2HandOver prepares a run for the original engine: image
-// proposals, web search and workspace tools live on its Agent path, so the
-// turn runs as Agent with v2's judgment attached (in memory only; the stored
-// run keeps the mode the user picked and was priced for).
-func assistantV2HandOver(run *store.AssistantRun, decided assistantV2Decision, memory string) *store.AssistantRun {
-	handed := *run
-	handed.Mode = "agent"
-	params := make(map[string]any, len(run.Params)+3)
-	for key, value := range run.Params {
-		params[key] = value
-	}
-	params[assistantV2IntentParam] = decided.Intent
-	params[assistantV2ConfidentParam] = fmt.Sprint(decided.Confident())
-	if memory != "" {
-		params[assistantV2MemoryParam] = memory
-	}
-	handed.Params = params
-	return &handed
-}
-
-func assistantV2SystemPrompt(run *store.AssistantRun, now time.Time, d assistantV2Decision) string {
-	return assistantv2.SystemPrompt(assistantParamString(run.Params, "timezone", "Asia/Shanghai"), now, d.Intent, d.Clarify)
 }
 
 // assistantV2DataView keeps a tool's structured result for the client to
@@ -188,287 +247,26 @@ func assistantV2DataView(name string, meta map[string]any) map[string]any {
 	return map[string]any{"tool": name, "view": view, "data": generic}
 }
 
-// executeAssistantV2 runs one v2 turn: decide, call tools in a bounded
-// loop, answer, persist and settle. Errors follow v1 conventions so the
-// shared failure, cancel and route-retry handling applies unchanged.
-func (w *Worker) executeAssistantV2(ctx context.Context, run *store.AssistantRun) error {
-	selection, configured, err := w.configuredAssistantModelSelection(ctx, run, modelconfig.ModelKindChat)
-	if err != nil {
-		return err
+// appendAssistantDataView adds a tool card to the answer. Planning and then
+// generating the same e-commerce set returns the same set twice; one live card
+// is enough, so the later view replaces the earlier one.
+func appendAssistantDataView(views []map[string]any, view map[string]any) []map[string]any {
+	if view["view"] == "commerce_set" {
+		id := assistantDataViewID(view)
+		for index, existing := range views {
+			if id != "" && existing["view"] == "commerce_set" && assistantDataViewID(existing) == id {
+				views[index] = view
+				return views
+			}
+		}
 	}
-	if !configured {
-		return errors.New("AI 助手没有可用的对话模型")
-	}
-	client, err := w.configuredAssistantChatClient(selection)
-	if err != nil {
-		return err
-	}
-	client = client.WithMaxOutputTokens(
-		assistantParamInt(run.Params, "_chatMaxOutputTokens", assistantDefaultOutputTokens),
-	).WithReasoningEffort(assistantParamString(run.Params, "reasoningEffort", ""))
-	return w.runAssistantV2(ctx, run, client, w.assistantV2DecisionSetupFor(ctx, run.Prompt))
+	return append(views, view)
 }
 
-// runAssistantV2 is the orchestration itself, with the chat client and the
-// decider injected so tests can drive it against a fake upstream.
-func (w *Worker) runAssistantV2(ctx context.Context, run *store.AssistantRun, client *sub2api.Client, setup assistantV2DecisionSetup) error {
-	started := assistantRunClock(run)
-	ctx = withAssistantDebugLog(ctx, &assistantDebugLog{started: started})
-	const kind = "agent"
-
-	history, err := store.ListAssistantMessages(ctx, w.St.Pool, run.ConversationID, assistantMessageLimitForContext)
-	if err != nil {
-		history = nil
-	}
-	history = assistantMessagesAfterContextBoundary(history)
-	references, err := w.loadAssistantReferences(ctx, run.Params)
-	if err != nil {
-		return err
-	}
-	inheritAssistantDocumentContext(run, history)
-	fileIDs := assistantRunFileIDs(run)
-
-	w.publishAssistantDebug(ctx, run, "decision", "正在判断这一轮需要什么能力")
-	decided := w.assistantV2Decide(ctx, setup, assistantV2DecisionState(history, run, len(references), len(fileIDs)))
-	w.publishAssistantDebug(ctx, run, "decision_done", fmt.Sprintf("%s（置信度 %.2f，来源 %s）",
-		decided.Intent, decided.Confidence, decided.Response.Provider))
-	recall := w.assistantV2Recall(ctx, run)
-	commerce := w.assistantV2CommerceTurn(ctx, run, recall.Memories)
-	habits := w.assistantV2Habits(ctx, run, recall)
-	handOverMemory := strings.TrimSpace(recall.Block + assistantproactive.HabitNote(habits))
-	delegating := assistantV2DelegatesIntent(decided.Intent) && !decided.Clarify && !commerce.enabled
-	w.recordAssistantV2Decision(ctx, run, decided, delegating)
-	if delegating {
-		w.publishAssistantDebug(ctx, run, "delegate", "交给原有引擎处理："+decided.Intent)
-		return w.executeAssistantRunLegacy(ctx, assistantV2HandOver(run, decided, handOverMemory))
-	}
-	if commerce.product != nil && len(references) == 0 {
-		// A remembered product stands in for uploading its photos again; the
-		// planner still looks at them to write the copy.
-		items := make([]map[string]any, 0, len(commerce.inputKeys))
-		for _, key := range commerce.inputKeys {
-			items = append(items, map[string]any{"fileKey": key})
-		}
-		if references, err = w.loadAssistantReferenceItems(ctx, items); err != nil {
-			return err
-		}
-	}
-
-	systemPrompt := assistantV2SystemPrompt(run, time.Now(), decided) + assistantv2.MemoryPrompt(recall.Enabled, recall.Block)
-	if commerce.enabled {
-		systemPrompt += assistantv2.CommercePrompt
-		systemPrompt += assistantproactive.HabitNote(habits)
-		if commerce.open != nil {
-			systemPrompt += fmt.Sprintf("\n本对话已有一套电商图：setId=%s，状态 %s。用户的话是在说这套图时，直接对它操作。", commerce.open.ID, commerce.open.Status)
-		}
-		if commerce.product != nil {
-			systemPrompt += fmt.Sprintf("\n本轮没有上传商品图，用的是记忆里的商品“%s”的 %d 张图；策划时参考这条记忆的内容。", commerce.product.Title, len(commerce.inputKeys))
-		}
-	}
-	if len(fileIDs) > 0 {
-		_, skill, skillErr := w.assistantDocumentSkill(run)
-		if skillErr != nil {
-			return skillErr
-		}
-		systemPrompt += "\n\n本轮附带了文档。先用 files_list / files_search / files_read 读取再回答，引用时注明文件名和位置；没读到的内容不要编造。\n" + skill.Instructions
-	}
-	nextStage := "thinking"
-	if len(fileIDs) > 0 {
-		nextStage = "analyzing-document"
-	} else if len(references) > 0 {
-		nextStage = "analyzing-image"
-	}
-	payload, _, err := w.prepareAssistantContext(ctx, run, kind, systemPrompt, history, references, false, nextStage)
-	if err != nil {
-		return err
-	}
-
-	var extra []assistanttools.Manifest
-	if commerce.enabled {
-		extra = append(extra, w.assistantV2CommerceManifest(run, client, references, commerce))
-	}
-	if recall.Enabled {
-		conversationID := run.ConversationID
-		extra = append(extra, assistanttools.NewMemoryManifest(w.St, assistanttools.MemoryContext{
-			ConversationID: &conversationID, InputKeys: assistantV2ReferenceKeys(run.Params),
-		}))
-	}
-	registry, err := assistantv2.Registry(w.St, time.Now, len(fileIDs) > 0, extra...)
-	if err != nil {
-		return err
-	}
-	toolNames := []string{}
-	if !decided.Clarify {
-		toolNames = assistantv2.ToolsFor(registry)
-	}
-	tools, err := registry.Definitions(toolNames)
-	if err != nil {
-		return err
-	}
-
-	var firstVisible time.Time
-	lastPublish := time.Time{}
-	lastTerminationCheck := time.Time{}
-	visible := ""
-	onUpdate := func(text, reasoning string) error {
-		markAssistantFirstToken(&firstVisible, text)
-		if text != "" {
-			visible = text
-		}
-		if (text != "" || reasoning != "") && time.Since(lastPublish) >= 50*time.Millisecond {
-			lastPublish = time.Now()
-			assistantstream.Publish(ctx, w.Stream, run.ID.String(),
-				assistantstream.Event{Content: text, Reasoning: reasoning, Kind: kind, Stage: "answering"})
-		}
-		if time.Since(lastTerminationCheck) >= 400*time.Millisecond {
-			lastTerminationCheck = time.Now()
-			if terminated, err := w.assistantRunTerminated(ctx, run.ID); err != nil || terminated {
-				if err != nil {
-					return err
-				}
-				return context.Canceled
-			}
-		}
-		return nil
-	}
-
-	upstreamCalls := 0
-	if decided.Response.Provider == "llm" {
-		// The decision model is a real upstream call; profitability reports
-		// must see it even though the user pays per turn.
-		upstreamCalls++
-	}
-	var usage sub2api.ChatUsage
-	addUsage := func(next sub2api.ChatUsage) {
-		usage.PromptTokens += next.PromptTokens
-		usage.CompletionTokens += next.CompletionTokens
-		usage.TotalTokens += next.TotalTokens
-		usage.ReasoningTokens += next.ReasoningTokens
-	}
-	var toolSteps []map[string]any
-	var dataViews []map[string]any
-	observations := map[string]string{}
-	text, reasoning := "", ""
-	messages := payload
-	permissions := map[assistanttools.Permission]bool{
-		assistanttools.PermissionFilesMetadata: len(fileIDs) > 0,
-		assistanttools.PermissionFilesRead:     len(fileIDs) > 0,
-	}
-	for _, permission := range assistantv2.TurnPermissions {
-		permissions[permission] = true
-	}
-
-	for step := 0; ; step++ {
-		if len(tools) == 0 || step >= assistantV2MaxSteps {
-			// No tools for this turn, or the loop budget is spent: answer from
-			// what is known so far.
-			completion, err := client.CompleteChatTextWithImages(ctx, messages, nil, onUpdate)
-			upstreamCalls++
-			if err != nil {
-				return &assistantProviderError{err: err, outputStarted: strings.TrimSpace(visible) != "" || len(toolSteps) > 0}
-			}
-			addUsage(completion.Usage)
-			text, reasoning = completion.Text, completion.Reasoning
-			break
-		}
-		result, err := client.ChatAgentWithTools(ctx, messages, nil, tools, "", onUpdate)
-		upstreamCalls++
-		if err != nil {
-			return &assistantProviderError{err: err, outputStarted: strings.TrimSpace(visible) != "" || len(toolSteps) > 0}
-		}
-		addUsage(result.Usage)
-		if len(result.ToolCalls) == 0 {
-			text, reasoning = result.Text, result.Reasoning
-			break
-		}
-		messages = append(messages, sub2api.Message{Role: "assistant", Content: result.Text, ToolCalls: result.ToolCalls})
-		for index := range result.ToolCalls {
-			call := result.ToolCalls[index]
-			requestID := strings.TrimSpace(call.ID)
-			if requestID == "" {
-				requestID = fmt.Sprintf("v2-%d-%d", step, index)
-				call.ID = requestID
-			}
-			assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
-				Kind: kind, Stage: "tool",
-				Tool: &assistantstream.ToolCallEvent{RequestID: requestID, Name: call.Name, Arguments: call.Arguments, Execution: "server", Status: "running"},
-			})
-			stepStarted := time.Now()
-			observation, meta, toolErr := w.assistantV2InvokeTool(ctx, registry, run, &call, permissions, observations, fileIDs)
-			if record := assistantAgentToolStepRecord(&call, toolErr, time.Since(stepStarted)); record != nil {
-				toolSteps = append(toolSteps, record)
-			}
-			merged, observationErr := assistantAgentToolObservation(&call, observation, toolErr, ctx.Err())
-			if observationErr != nil {
-				return observationErr
-			}
-			if target, _ := meta[assistanttools.HandOverMeta].(string); toolErr == nil && target != "" && step == 0 {
-				// The model corrected the router: this turn needs the original
-				// engine after all (drawing, web, site tools). Hand it over the
-				// same way a delegated judgment does.
-				w.publishAssistantDebug(ctx, run, "delegate", "助手判断需要交给原有引擎："+target)
-				// The answering model chose this with the whole conversation in
-				// view, so the original engine must not second-guess it.
-				decided.Intent, decided.Confidence = target, 1
-				w.recordAssistantV2HandOver(ctx, run, target)
-				return w.executeAssistantRunLegacy(ctx, assistantV2HandOver(run, decided, handOverMemory))
-			}
-			if toolErr == nil {
-				if key := assistantAgentToolCallKey(&call); key != "" {
-					observations[key] = merged
-				}
-				if view := assistantV2DataView(call.Name, meta); view != nil {
-					dataViews = append(dataViews, view)
-				}
-			}
-			event := &assistantstream.ToolCallEvent{RequestID: requestID, Name: call.Name, Arguments: call.Arguments, Execution: "server", Status: "completed"}
-			if toolErr != nil {
-				event.Status, event.Error = "failed", assistantAgentSafeToolError(toolErr)
-			} else if json.Valid([]byte(observation)) {
-				event.Result = json.RawMessage(observation)
-			}
-			assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{Kind: kind, Stage: "tool", Tool: event})
-			messages = append(messages, sub2api.Message{Role: "tool", ToolCallID: requestID, Name: call.Name, Content: merged})
-		}
-	}
-
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return errAssistantAgentEmptyResponse
-	}
-	if terminated, err := w.assistantRunTerminated(ctx, run.ID); err != nil || terminated {
-		if err != nil {
-			return err
-		}
-		return context.Canceled
-	}
-	usage = finalizeAssistantUsage(usage, started, firstVisible, run, text)
-	metadata := assistantMessageMetadata(run, nil, "complete", "")
-	attachAssistantUsage(metadata, usage)
-	attachAssistantReasoning(metadata, reasoning)
-	attachAssistantToolSteps(metadata, toolSteps)
-	metadata["engine"] = AssistantEngineV2
-	metadata["systemPromptVersion"] = assistantv2.SystemVersion
-	// Underscore keys stay server-side: the decision is for evaluation, not display.
-	metadata["_decision"] = decided.Metadata(sanitizeUpstreamMessage)
-	if len(dataViews) > 0 {
-		metadata["dataViews"] = dataViews
-	}
-	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, text, kind, "complete", metadata); err != nil {
-		return err
-	}
-	completed, err := assistantbilling.CompleteAgentAttempt(ctx, w.St, run.ID, run.Attempt, "chat", upstreamCalls)
-	if err != nil {
-		return err
-	}
-	if !completed {
-		return context.Canceled
-	}
-	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
-		Content: text, Reasoning: reasoning, Kind: kind, Stage: "complete", Done: true, Status: "succeeded",
-		Usage: usage.Map(),
-	})
-	return nil
+func assistantDataViewID(view map[string]any) string {
+	data, _ := view["data"].(map[string]any)
+	id, _ := data["id"].(string)
+	return id
 }
 
 // assistantV2InvokeTool enforces the capability level before running a tool.
@@ -513,8 +311,8 @@ func (w *Worker) assistantV2InvokeTool(
 }
 
 // assistantV2Commerce says whether a turn can make e-commerce image sets:
-// the user attached product images and asked for e-commerce images, or the
-// conversation has an open set and the turn acts on it.
+// the user attached images, the conversation has an open set, or the user
+// named a remembered product.
 type assistantV2Commerce struct {
 	enabled   bool
 	inputKeys []string
@@ -546,17 +344,17 @@ func (w *Worker) assistantV2CommerceTurn(ctx context.Context, run *store.Assista
 		log.Printf("assistant v2 open commerce set lookup failed for run %s: %v", run.ID, err)
 	}
 	turn := assistantV2Commerce{inputKeys: keys, open: open}
+	// The set tools are offered whenever a set could be made or is open; the
+	// model decides whether the user wants one. The only text match left picks
+	// which remembered product's photos to load when nothing was uploaded.
 	switch {
-	case len(keys) > 0 && assistantdecision.CommerceSetRequested(run.Prompt):
+	case len(keys) > 0:
 		turn.enabled = true
-	case len(keys) == 0 && assistantdecision.CommerceSetRequested(run.Prompt) && assistantmemory.ProductFor(memories, run.Prompt) != nil:
+	case open != nil:
+		turn.enabled, turn.inputKeys = true, open.InputKeys
+	case assistantv2.CommerceSetRequested(run.Prompt) && assistantmemory.ProductFor(memories, run.Prompt) != nil:
 		turn.product = assistantmemory.ProductFor(memories, run.Prompt)
 		turn.enabled, turn.inputKeys = true, turn.product.ImageKeys
-	case open != nil && (assistantdecision.CommerceFollowUp(run.Prompt) || assistantdecision.CommerceSetRequested(run.Prompt)):
-		turn.enabled = true
-		if len(keys) == 0 {
-			turn.inputKeys = open.InputKeys
-		}
 	}
 	return turn
 }

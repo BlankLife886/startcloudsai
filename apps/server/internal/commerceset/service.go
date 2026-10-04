@@ -316,8 +316,8 @@ func (s Service) generateLocked(ctx context.Context, tx pgx.Tx, set *store.Comme
 				continue
 			}
 			seen[index] = true
-			if len(set.Shots[index].Attempts) >= maxAttemptsPerShot {
-				return result, invalid("「%s」已经重做过 %d 次，请到电商工作台继续调整", set.Shots[index].Label, maxAttemptsPerShot-1)
+			if generatedAttempts(set.Shots[index]) >= maxAttemptsPerShot {
+				return result, invalid("「%s」已经重做过 %d 次，可以点开图片继续修改", set.Shots[index].Label, maxAttemptsPerShot-1)
 			}
 			indexes = append(indexes, index)
 		}

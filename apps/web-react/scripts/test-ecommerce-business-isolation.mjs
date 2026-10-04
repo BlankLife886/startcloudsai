@@ -72,11 +72,21 @@ for (const leakedOwner of [
     `route view still owns business data: ${leakedOwner}`,
   );
 }
-assert.equal(
-  view.includes("key={business.stateNamespace}"),
-  false,
-  "switching tabs must preserve the mounted page shell",
+// 侧栏每个模块是独立会话：按模块 key 重新挂载，只共享顶部生成模型
+assert.ok(
+  view.includes("key={sessionBusinessId}"),
+  "each sidebar business must mount its own isolated session",
 );
+assert.ok(
+  view.includes("sharedModels={commerceModels}"),
+  "the header model selection is the only state shared across businesses",
+);
+assert.ok(
+  session.includes("loadBusinessDraft(mode.id)") &&
+    session.includes("saveBusinessDraftImages(mode.id"),
+  "each business persists its own references and fields across refreshes",
+);
+assert.equal(session.includes("CommerceOperationsWorkspace"), false, "业务中心 is removed");
 assert.match(
   session,
   /function EcommerceBusinessSession\(\{[\s\S]*?businessId,/,

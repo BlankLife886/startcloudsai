@@ -7,19 +7,21 @@ import (
 )
 
 type SubscriptionPolicy struct {
-	ConcurrencyBonus     *int     `json:"concurrencyBonus,omitempty"`
-	CanvasProjectBonus   int      `json:"canvasProjectBonus,omitempty"`
-	LockModelPrices      *bool    `json:"lockModelPrices,omitempty"`
-	AllowTopupPriceLock  bool     `json:"allowTopupPriceLock"`
-	TaskConcurrency      int      `json:"taskConcurrency,omitempty"`
-	AssistantConcurrency int      `json:"assistantConcurrency,omitempty"`
-	RefundWindowHours    *int     `json:"refundWindowHours,omitempty"`
-	Version              int      `json:"version"`
-	Series               string   `json:"series"`
-	Tier                 int      `json:"tier"`
-	Channels             []string `json:"channels"`
-	FeatureKeys          []string `json:"featureKeys"`
-	ModelIDs             []string `json:"modelIds"`
+	ConcurrencyBonus   *int `json:"concurrencyBonus,omitempty"`
+	CanvasProjectBonus int  `json:"canvasProjectBonus,omitempty"`
+	// AssistantConversationBonus 是订阅在后台基础对话数之上追加的 AI 助手对话保留数。
+	AssistantConversationBonus int      `json:"assistantConversationBonus,omitempty"`
+	LockModelPrices            *bool    `json:"lockModelPrices,omitempty"`
+	AllowTopupPriceLock        bool     `json:"allowTopupPriceLock"`
+	TaskConcurrency            int      `json:"taskConcurrency,omitempty"`
+	AssistantConcurrency       int      `json:"assistantConcurrency,omitempty"`
+	RefundWindowHours          *int     `json:"refundWindowHours,omitempty"`
+	Version                    int      `json:"version"`
+	Series                     string   `json:"series"`
+	Tier                       int      `json:"tier"`
+	Channels                   []string `json:"channels"`
+	FeatureKeys                []string `json:"featureKeys"`
+	ModelIDs                   []string `json:"modelIds"`
 	// APIModelIDs scopes the api channel to developer API catalog entries. It
 	// only applies when ModelIDs restricts the plan; an unrestricted plan
 	// covers every API model. It is derived from ModelIDs when the catalog is
@@ -99,6 +101,9 @@ func (p *SubscriptionPolicy) Normalize() error {
 	}
 	if p.CanvasProjectBonus < 0 || p.CanvasProjectBonus > MaxCanvasProjectBonus {
 		return fmt.Errorf("订阅额外画布项目数须为0-%d的整数", MaxCanvasProjectBonus)
+	}
+	if p.AssistantConversationBonus < 0 || p.AssistantConversationBonus > MaxAssistantConversationBonus {
+		return fmt.Errorf("订阅额外助手对话数须为0-%d的整数", MaxAssistantConversationBonus)
 	}
 	if p.TaskConcurrency < 0 || p.TaskConcurrency > 1000 || p.AssistantConcurrency < 0 || p.AssistantConcurrency > 100 {
 		return fmt.Errorf("任务并发须为0-1000，助手并发须为0-100；0使用购买时的平台默认值")

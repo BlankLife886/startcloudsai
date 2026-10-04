@@ -193,7 +193,7 @@ func TestAssistantAgentDoesNotFailoverAfterToolExecution(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			executionErr := w.executeAssistantAgent(ctx, client, run, nil, nil)
+			executionErr := w.executeAssistantAgent(ctx, client, run, nil, nil, nil)
 			var providerErr *assistantProviderError
 			if !errors.As(executionErr, &providerErr) || providerErr.outputStarted != toolFirst || sawToolResult != toolFirst {
 				t.Fatalf("toolFirst=%t observed=%t providerErr=%#v err=%v", toolFirst, sawToolResult, providerErr, executionErr)

@@ -92,3 +92,31 @@ func developerUpstreamError(err error) error {
 		return apperr.E("upstream_error", withUpstreamReason(fmt.Sprintf("上游服务出错（HTTP %d），本次不扣费", status), reason), http.StatusBadGateway)
 	}
 }
+
+// openAIContentPolicyCode 与 OpenAI 被内容安全拒绝时返回的 code 一致。
+const openAIContentPolicyCode = "content_policy_violation"
+
+// developerUpstreamReason 取出上游失败时返回的说明文字，供内容违规识别使用；
+// 不是上游失败（如超时、断网）时返回空字符串。
+func developerUpstreamReason(err error) string {
+	var imageErr *c2a.UpstreamError
+	var chatErr *sub2api.UpstreamError
+	switch {
+	case err == nil:
+		return ""
+	case errors.As(err, &imageErr):
+		return imageErr.Message
+	case errors.As(err, &chatErr):
+		return chatErr.Message
+	}
+	return ""
+}
+
+// developerContentPolicyError 告诉调用方这次生图因内容违规被上游驳回，以及是否扣费。
+func developerContentPolicyError(reason string, charged bool) error {
+	summary := "内容违规，上游已驳回本次生成，按本次价格扣费"
+	if !charged {
+		summary = "内容违规，上游已驳回本次生成；本次在免扣范围内，不扣费"
+	}
+	return apperr.E(openAIContentPolicyCode, withUpstreamReason(summary, reason), http.StatusBadRequest)
+}

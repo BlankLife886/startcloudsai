@@ -207,7 +207,7 @@ func discoverCRUNModels(ctx context.Context, provider modelconfig.Provider, allo
 	warning := ""
 	if len(mediaPayload.Data.Models) > 0 && len(models) < len(entries) {
 		warning = fmt.Sprintf(
-			"CRUN 返回 %d 个媒体任务模型和 %d 个对话模型；当前业务可配置 %d 个。普通视频/音频生成模型仍保持隔离，媒体工具按实时 schema 接入。",
+			"CRUN 返回 %d 个媒体任务模型和 %d 个对话模型；当前业务可配置 %d 个。",
 			len(mediaPayload.Data.Models), len(llmPayload.Data), len(models),
 		)
 	}
@@ -233,10 +233,22 @@ func catalogEntryFromCRUN(raw crunCatalogEntry) CatalogEntry {
 		entry.Kind, entry.Compatible = modelconfig.ModelKindImageTool, true
 	case entry.Modality == "image" && entry.ModelType == "image" && (operations["text-to-image"] || operations["image-edit"]):
 		entry.Kind, entry.Compatible = modelconfig.ModelKindImage, true
+	case isCRUNGeneratedMedia(entry) && len(entry.Operations) > 0 && len(entry.InputFields) > 0:
+		// CRUN uses separate model_type/modality values for video, audio, and
+		// music generation. The site uses the schema-driven media tool surface
+		// for all non-chat media so new modalities do not need a new adapter.
+		entry.Kind, entry.Compatible = modelconfig.ModelKindImageTool, true
 	default:
 		entry.Incompatibility = "当前业务工作流尚未接入该模型能力"
 	}
 	return entry
+}
+
+func isCRUNGeneratedMedia(entry CatalogEntry) bool {
+	modality := strings.ToLower(strings.TrimSpace(entry.Modality))
+	modelType := strings.ToLower(strings.TrimSpace(entry.ModelType))
+	return modality == "video" || modality == "audio" || modality == "music" ||
+		modelType == "video" || modelType == "audio" || modelType == "music"
 }
 
 func DescribeCRUNModel(ctx context.Context, provider modelconfig.Provider, model string, allowPrivate bool) (CatalogEntry, error) {

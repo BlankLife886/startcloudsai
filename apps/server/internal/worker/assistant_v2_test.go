@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/BlankLife886/startcloudsai/server/internal/decision"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
@@ -102,11 +101,6 @@ func sseText(text string) string {
 	return fmt.Sprintf(`data: {"choices":[{"delta":{"content":%q}}]}`+"\n\n", text)
 }
 
-func rulesOnlySetup(prompt string) assistantV2DecisionSetup {
-	rules := assistantV2Rules(prompt)
-	return assistantV2DecisionSetup{Decider: decision.Chain{Fallback: rules}, Rules: rules, Thresholds: decision.DefaultThresholds}
-}
-
 func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 	ctx := context.Background()
 	fixture := newV2Fixture(t, "这个月钱都花哪了？")
@@ -131,8 +125,16 @@ func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 				function, _ := raw.(map[string]any)["function"].(map[string]any)
 				names = append(names, fmt.Sprint(function["name"]))
 			}
-			if strings.Join(names, ",") != "assets_organize,assets_save,assets_search,explain_charge,hand_over,memory_forget,memory_save,memory_search,memory_update,my_account_overview,my_orders_list,my_records_list,my_stats_query,task_status" {
-				t.Errorf("exposed tools = %v", names)
+			// One agent, every tool the mode allows: image proposals and web
+			// search sit next to the platform tools, and nothing routes.
+			joined := "," + strings.Join(names, ",") + ","
+			for _, want := range []string{"propose_image_action", "web_search", "task_status", "my_stats_query", "my_records_list", "my_account_overview", "explain_charge", "assets_search", "memory_save"} {
+				if !strings.Contains(joined, ","+want+",") {
+					t.Errorf("tool %s not offered: %v", want, names)
+				}
+			}
+			if strings.Contains(joined, ",hand_over,") {
+				t.Errorf("hand_over must be gone: %v", names)
 			}
 			messages, _ := body["messages"].([]any)
 			system, _ := messages[0].(map[string]any)["content"].(string)
@@ -159,7 +161,7 @@ func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 	}
 
 	worker := &Worker{St: fixture.st}
-	if err := worker.runAssistantV2(ctx, fixture.run, client, rulesOnlySetup(fixture.run.Prompt)); err != nil {
+	if err := worker.runAssistantV2(ctx, fixture.run, client); err != nil {
 		t.Fatalf("run v2: %v", err)
 	}
 	if len(upstream.requests) != 2 {
@@ -174,10 +176,6 @@ func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 	}
 	if message.Metadata["engine"] != AssistantEngineV2 {
 		t.Fatalf("engine metadata = %#v", message.Metadata["engine"])
-	}
-	decided, _ := message.Metadata["_decision"].(map[string]any)
-	if decided["intent"] != assistantV2IntentMyData || decided["provider"] != "rules" {
-		t.Fatalf("decision = %#v", decided)
 	}
 	views, _ := message.Metadata["dataViews"].([]any)
 	if len(views) != 1 {
@@ -231,147 +229,8 @@ func TestAssistantV2ScopesStatsToTheRunOwner(t *testing.T) {
 	defer server.Close()
 	client, _ := sub2api.New(server.URL, "test-key", "gpt-test", "", 30)
 	worker := &Worker{St: fixture.st}
-	if err := worker.runAssistantV2(ctx, fixture.run, client, rulesOnlySetup(fixture.run.Prompt)); err != nil {
+	if err := worker.runAssistantV2(ctx, fixture.run, client); err != nil {
 		t.Fatalf("run v2: %v", err)
-	}
-}
-
-func TestAssistantV2ClarifiesWithoutToolsWhenDecisionSaysSo(t *testing.T) {
-	ctx := context.Background()
-	fixture := newV2Fixture(t, "帮我弄一下")
-	upstream := &fakeUpstream{script: func(index int, body map[string]any) string {
-		if _, hasTools := body["tools"]; hasTools {
-			t.Error("a clarification turn must not expose tools")
-		}
-		messages, _ := body["messages"].([]any)
-		system, _ := messages[0].(map[string]any)["content"].(string)
-		if !strings.Contains(system, "只问一个最关键的问题") {
-			t.Errorf("system prompt missing clarification hint")
-		}
-		return sseText("你想处理哪一类事情？")
-	}}
-	server := upstream.server(t)
-	defer server.Close()
-	client, _ := sub2api.New(server.URL, "test-key", "gpt-test", "", 30)
-	decider := decision.Rules{
-		"intent":  decision.Fixed(decision.Answer{Choice: assistantV2IntentAnswer, Confidence: 0.9}),
-		"clarify": decision.Fixed(decision.Answer{Yes: 0.95, Confidence: 0.9}),
-	}
-	worker := &Worker{St: fixture.st}
-	setup := assistantV2DecisionSetup{Decider: decider, Thresholds: decision.DefaultThresholds}
-	if err := worker.runAssistantV2(ctx, fixture.run, client, setup); err != nil {
-		t.Fatalf("run v2: %v", err)
-	}
-	if len(upstream.requests) != 1 {
-		t.Fatalf("requests = %d", len(upstream.requests))
-	}
-}
-
-func TestAssistantV2RulesRouteUnsupportedTurnsToTheOriginalEngine(t *testing.T) {
-	cases := map[string]string{
-		"请联网搜索今天的科技新闻":   assistantV2IntentWeb,
-		"帮我生成一张猫咪海报":     assistantV2IntentCreate,
-		"导出交付包":          assistantV2IntentWorkspace,
-		"这个月积分花哪了":       assistantV2IntentMyData,
-		"物联网设备怎么配网":      assistantV2IntentAnswer,
-		"帮我写一段 618 商品文案": assistantV2IntentAnswer,
-	}
-	for prompt, want := range cases {
-		response, err := assistantV2Rules(prompt).Decide(context.Background(), decision.Request{State: "用户：" + prompt, Questions: assistantV2DecisionQuestions()})
-		if err != nil {
-			t.Fatalf("%s: %v", prompt, err)
-		}
-		if got := response.Answers["intent"].Choice; got != want {
-			t.Fatalf("%s: intent = %s, want %s", prompt, got, want)
-		}
-		delegates := want == assistantV2IntentWeb || want == assistantV2IntentCreate || want == assistantV2IntentWorkspace
-		if assistantV2DelegatesIntent(want) != delegates {
-			t.Fatalf("%s: delegation mismatch", prompt)
-		}
-	}
-}
-
-type fixedDecider struct{ response decision.Response }
-
-func (f fixedDecider) Name() string { return f.response.Provider }
-func (f fixedDecider) Decide(context.Context, decision.Request) (decision.Response, error) {
-	return f.response, nil
-}
-
-func TestAssistantV2LowConfidenceDefersToRulesAndIsLogged(t *testing.T) {
-	ctx := context.Background()
-	fixture := newV2Fixture(t, "这个月积分花哪了")
-	model := fixedDecider{response: decision.Response{Provider: "llm", Model: "decider-model", Answers: map[string]decision.Answer{
-		"intent":  {Kind: decision.KindChoice, Choice: assistantV2IntentAnswer, Confidence: 0.3},
-		"clarify": {Kind: decision.KindYesNo, Yes: 0.1},
-	}}}
-	setup := assistantV2DecisionSetup{Decider: model, Rules: assistantV2Rules(fixture.run.Prompt),
-		Thresholds: decision.Thresholds{Intent: 0.6, Clarify: 0.75}}
-	worker := &Worker{St: fixture.st}
-	decided := worker.assistantV2Decide(ctx, setup, "用户：这个月积分花哪了")
-	if decided.Intent != assistantV2IntentMyData || !decided.LowConfidence || decided.RulesIntent != assistantV2IntentMyData {
-		t.Fatalf("decided = %+v", decided)
-	}
-	worker.recordAssistantV2Decision(ctx, fixture.run, decided, false)
-	stats, err := store.GetAssistantDecisionStats(ctx, fixture.st.Pool, time.Now().Add(-time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stats.Total != 1 || stats.ModelAnswered != 1 || stats.LowConfidence != 1 || len(stats.ByModel) != 1 || stats.ByModel[0].Model != "decider-model" {
-		t.Fatalf("stats = %+v", stats)
-	}
-
-	// A confident model answer is kept even when the rules disagree.
-	model.response.Answers["intent"] = decision.Answer{Kind: decision.KindChoice, Choice: assistantV2IntentCreate, Confidence: 0.9}
-	setup.Decider = model
-	decided = worker.assistantV2Decide(ctx, setup, "用户：这个月积分花哪了")
-	if decided.Intent != assistantV2IntentCreate || decided.LowConfidence {
-		t.Fatalf("confident decision overridden: %+v", decided)
-	}
-}
-
-func TestAssistantV2HandOverCarriesTheJudgmentToTheOriginalEngine(t *testing.T) {
-	run := &store.AssistantRun{ID: uuid.New(), Mode: "chat", Prompt: "帮我做一张海报", Params: map[string]any{"_engine": AssistantEngineV2}}
-	handed := assistantV2HandOver(run, assistantV2Decision{Intent: assistantV2IntentCreate, Confidence: 0.9, Thresholds: decision.DefaultThresholds}, "品牌资料：\n- 品牌色：雾霾蓝")
-	if handed.Mode != "agent" || run.Mode != "chat" {
-		t.Fatalf("hand-over must run as Agent without mutating the stored run: handed=%s original=%s", handed.Mode, run.Mode)
-	}
-	if handed.Params[assistantV2IntentParam] != assistantV2IntentCreate || handed.Params[assistantV2ConfidentParam] != "true" {
-		t.Fatalf("params = %#v", handed.Params)
-	}
-	if _, leaked := run.Params[assistantV2IntentParam]; leaked {
-		t.Fatal("hand-over params leaked into the original run")
-	}
-	// The original engine's image rules carry the user's memory.
-	if instructions := assistantAgentInstructions(handed, nil, nil, true); !strings.Contains(instructions, "雾霾蓝") {
-		t.Fatal("image proposal instructions miss the recalled memory")
-	}
-	if instructions := assistantAgentInstructions(handed, nil, nil, false); strings.Contains(instructions, "雾霾蓝") {
-		t.Fatal("memory sent on a turn without image work")
-	}
-	w := &Worker{}
-	decide := w.classifyAssistantIntentAsync(context.Background(), nil, handed, nil, false, false, false)
-	if got := decide(); got.intent != "image" || !got.confident || got.fromFastPath {
-		t.Fatalf("original engine ignored v2's judgment: %+v", got)
-	}
-	// A hand-over by the v2 model itself is confident, whatever the router said.
-	corrected := assistantV2HandOver(run, assistantV2Decision{Intent: assistantV2IntentCreate, Confidence: 1, Thresholds: decision.DefaultThresholds}, "")
-	if got := w.classifyAssistantIntentAsync(context.Background(), nil, corrected, nil, false, false, false)(); got.intent != "image" || !got.confident {
-		t.Fatalf("model hand-over = %+v", got)
-	}
-	web := assistantV2HandOver(run, assistantV2Decision{Intent: assistantV2IntentWeb, Confidence: 0.2, Thresholds: decision.DefaultThresholds}, "")
-	if got := w.classifyAssistantIntentAsync(context.Background(), nil, web, nil, false, false, false)(); got.intent != "chat" || got.confident {
-		t.Fatalf("web hand-over = %+v", got)
-	}
-}
-
-func TestAssistantV2DecisionStateMentionsAttachments(t *testing.T) {
-	run := &store.AssistantRun{UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "把背景换成白色"}
-	if state := assistantV2DecisionState(nil, run, 1, 0); !strings.Contains(state, "1 张参考图") {
-		t.Fatalf("state = %q", state)
-	}
-	if state := assistantV2DecisionState(nil, run, 0, 0); strings.Contains(state, "参考图") {
-		t.Fatalf("state = %q", state)
 	}
 }
 
@@ -423,11 +282,146 @@ func TestAssistantV2ReadsAttachedDocumentsWithFileTools(t *testing.T) {
 	defer server.Close()
 	client, _ := sub2api.New(server.URL, "test-key", "gpt-test", "", 30)
 	worker := &Worker{St: fixture.st}
-	if err := worker.runAssistantV2(ctx, fixture.run, client, rulesOnlySetup(fixture.run.Prompt)); err != nil {
+	if err := worker.runAssistantV2(ctx, fixture.run, client); err != nil {
 		t.Fatalf("run v2: %v", err)
 	}
 	message, _ := store.GetAssistantMessage(ctx, fixture.st.Pool, fixture.assistantMessage)
 	if !strings.Contains(message.Content, "120 万元") {
 		t.Fatalf("content = %q", message.Content)
+	}
+}
+
+// v2ModeRun switches the fixture's run to a mode the user picked.
+func v2ModeRun(t *testing.T, fixture v2Fixture, mode string) {
+	t.Helper()
+	if _, err := fixture.st.Pool.Exec(context.Background(), `UPDATE assistant_runs SET mode = $2 WHERE id = $1`, fixture.run.ID, mode); err != nil {
+		t.Fatal(err)
+	}
+	fixture.run.Mode = mode
+}
+
+// "你可以做图吗" in Agent mode: the model has the image tool but only answers.
+// The answer goes out as chat; nothing is proposed from the user's words, and
+// there is exactly one upstream call (no separate classifier).
+func TestAssistantV2AgentAnswersCapabilityQuestionsWithoutProposing(t *testing.T) {
+	ctx := context.Background()
+	fixture := newV2Fixture(t, "你可以做图吗")
+	upstream := &fakeUpstream{script: func(index int, body map[string]any) string {
+		if !strings.Contains(v2ToolNames(body), "propose_image_action") {
+			t.Errorf("Agent mode must offer the image tool: %s", v2ToolNames(body))
+		}
+		if !strings.Contains(v2SystemPrompt(body), "只问能不能做") {
+			t.Errorf("image rule missing from the prompt")
+		}
+		return sseText("可以。告诉我你想画什么，比如主体、风格和尺寸。")
+	}}
+	server := upstream.server(t)
+	defer server.Close()
+	client, _ := sub2api.New(server.URL, "test-key", "gpt-test", "", 30)
+	worker := &Worker{St: fixture.st}
+	if err := worker.runAssistantV2(ctx, fixture.run, client); err != nil {
+		t.Fatalf("run v2: %v", err)
+	}
+	if len(upstream.requests) != 1 {
+		t.Fatalf("upstream requests = %d, want 1", len(upstream.requests))
+	}
+	message, _ := store.GetAssistantMessage(ctx, fixture.st.Pool, fixture.assistantMessage)
+	if message.Kind == "proposal" || message.Metadata["proposal"] != nil || !strings.Contains(message.Content, "告诉我你想画什么") {
+		t.Fatalf("message = %+v", message)
+	}
+	if message.Metadata["engine"] != AssistantEngineV2 {
+		t.Fatalf("engine = %#v", message.Metadata["engine"])
+	}
+}
+
+// Agent mode: when the user says what to draw, the same loop proposes it.
+func TestAssistantV2AgentProposesImagesInTheSameLoop(t *testing.T) {
+	ctx := context.Background()
+	fixture := newV2Fixture(t, "画一只戴帽子的柴犬")
+	upstream := &fakeUpstream{script: func(index int, body map[string]any) string {
+		return sseToolCall("call_img", "propose_image_action",
+			`{"action":"generate","prompt":"一只戴红色毛线帽的柴犬","promptMode":"enhanced","count":1}`)
+	}}
+	server := upstream.server(t)
+	defer server.Close()
+	client, _ := sub2api.New(server.URL, "test-key", "gpt-test", "", 30)
+	worker := &Worker{St: fixture.st}
+	if err := worker.runAssistantV2(ctx, fixture.run, client); err != nil {
+		t.Fatalf("run v2: %v", err)
+	}
+	message, _ := store.GetAssistantMessage(ctx, fixture.st.Pool, fixture.assistantMessage)
+	proposal, _ := message.Metadata["proposal"].(map[string]any)
+	if message.Kind != "proposal" || !strings.Contains(fmt.Sprint(proposal["prompt"]), "柴犬") {
+		t.Fatalf("message = %+v", message)
+	}
+	if message.Metadata["engine"] != AssistantEngineV2 {
+		t.Fatalf("engine = %#v", message.Metadata["engine"])
+	}
+}
+
+// 问答 mode only answers: no image, set or site tools are offered at all, so
+// no judgment can turn a question into a paid image.
+func TestAssistantV2ChatModeOffersNoImageOrSiteTools(t *testing.T) {
+	ctx := context.Background()
+	fixture := newV2Fixture(t, "画一只猫")
+	v2ModeRun(t, fixture, "chat")
+	upstream := &fakeUpstream{script: func(index int, body map[string]any) string {
+		names := "," + v2ToolNames(body) + ","
+		for _, banned := range []string{"propose_image_action", "media_action", "send_to_workspace", "delivery_export", "commerce_set_plan"} {
+			if strings.Contains(names, ","+banned+",") {
+				t.Errorf("问答 mode offered %s: %s", banned, names)
+			}
+		}
+		for _, kept := range []string{"web_search", "my_stats_query"} {
+			if !strings.Contains(names, ","+kept+",") {
+				t.Errorf("问答 mode should keep %s: %s", kept, names)
+			}
+		}
+		if !strings.Contains(v2SystemPrompt(body), "当前是问答模式") {
+			t.Errorf("system prompt missing the 问答 mode rule")
+		}
+		return sseText("问答模式不能出图，切换到 Agent 模式或图片模式就可以画。")
+	}}
+	server := upstream.server(t)
+	defer server.Close()
+	client, _ := sub2api.New(server.URL, "test-key", "gpt-test", "", 30)
+	worker := &Worker{St: fixture.st}
+	if err := worker.runAssistantV2(ctx, fixture.run, client); err != nil {
+		t.Fatalf("run v2: %v", err)
+	}
+	message, _ := store.GetAssistantMessage(ctx, fixture.st.Pool, fixture.assistantMessage)
+	if message.Kind == "proposal" || message.Metadata["proposal"] != nil {
+		t.Fatalf("message = %+v", message)
+	}
+}
+
+// 问答 mode: even a model that writes a plan as JSON gets no proposal.
+func TestAssistantV2ChatModeNeverTurnsTextIntoAProposal(t *testing.T) {
+	ctx := context.Background()
+	fixture := newV2Fixture(t, "画一只猫")
+	v2ModeRun(t, fixture, "chat")
+	upstream := &fakeUpstream{script: func(index int, body map[string]any) string {
+		return sseText(`{"action":"generate","prompt":"一只猫"}`)
+	}}
+	server := upstream.server(t)
+	defer server.Close()
+	client, _ := sub2api.New(server.URL, "test-key", "gpt-test", "", 30)
+	worker := &Worker{St: fixture.st}
+	if err := worker.runAssistantV2(ctx, fixture.run, client); err != nil {
+		t.Fatalf("run v2: %v", err)
+	}
+	message, _ := store.GetAssistantMessage(ctx, fixture.st.Pool, fixture.assistantMessage)
+	if message.Kind == "proposal" || message.Metadata["proposal"] != nil {
+		t.Fatalf("message = %+v", message)
+	}
+}
+
+func TestAppendAssistantDataViewKeepsOneCardPerCommerceSet(t *testing.T) {
+	views := appendAssistantDataView(nil, map[string]any{"view": "commerce_set", "tool": "commerce_set_plan", "data": map[string]any{"id": "set-1", "status": "planned"}})
+	views = appendAssistantDataView(views, map[string]any{"view": "stats", "data": map[string]any{}})
+	views = appendAssistantDataView(views, map[string]any{"view": "commerce_set", "tool": "commerce_set_generate", "data": map[string]any{"id": "set-1", "status": "generating"}})
+	views = appendAssistantDataView(views, map[string]any{"view": "commerce_set", "data": map[string]any{"id": "set-2"}})
+	if len(views) != 3 || views[0]["tool"] != "commerce_set_generate" || assistantDataViewID(views[2]) != "set-2" {
+		t.Fatalf("views = %#v", views)
 	}
 }

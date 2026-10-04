@@ -21,6 +21,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantprice"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantreview"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
@@ -35,13 +36,18 @@ import (
 )
 
 const (
-	assistantConversationLimit      = 40
-	assistantMessageLimit           = 160
-	assistantActiveRunLimit         = 4
-	assistantConversationQueueLimit = 10
-	assistantUserQueueLimit         = 20
-	assistantGlobalActiveLimit      = 5000
-	assistantCanvasSnapshotMaxBytes = 128 * 1024
+	// 旧版本地历史导入的上限。
+	assistantConversationLimit = 40
+	// 列表最多返回的对话数；只有最近的 assistantConversationPreviewCount 个附带消息，其余打开时再取。
+	assistantConversationListMax      = 1000
+	assistantConversationPreviewCount = 40
+	assistantMessagePreviewLimit      = 24
+	assistantMessageLimit             = 160
+	assistantActiveRunLimit           = 4
+	assistantConversationQueueLimit   = 10
+	assistantUserQueueLimit           = 20
+	assistantGlobalActiveLimit        = 5000
+	assistantCanvasSnapshotMaxBytes   = 128 * 1024
 )
 
 type createAssistantConversationIn struct {
@@ -65,31 +71,33 @@ type importAssistantConversationsIn struct {
 }
 
 type assistantRunIn struct {
-	ConversationID           string                      `json:"conversationId"`
-	IdempotencyKey           string                      `json:"idempotencyKey"`
-	Prompt                   string                      `json:"prompt"`
-	UserMessageContent       string                      `json:"userMessageContent"`
-	Mode                     string                      `json:"mode"`
-	ClientUserMessageID      string                      `json:"clientUserMessageId"`
-	ClientAssistantMessageID string                      `json:"clientAssistantMessageId"`
-	SourceUserMessageID      string                      `json:"sourceUserMessageId"`
-	ReferenceImages          []map[string]any            `json:"referenceImages"`
-	ReferenceMode            string                      `json:"referenceMode"`
-	ImagePlanItems           []assistantRunImagePlanItem `json:"imagePlanItems"`
-	Attachments              []map[string]any            `json:"attachments"`
-	Quoted                   map[string]any              `json:"quoted"`
-	Skill                    string                      `json:"skill"`
-	Model                    string                      `json:"model"`
-	Ratio                    string                      `json:"ratio"`
-	Resolution               string                      `json:"resolution"`
-	Count                    int                         `json:"count"`
-	RequestSize              string                      `json:"requestSize"`
-	SizeMode                 string                      `json:"sizeMode"`
-	ExactWidth               int                         `json:"exactWidth"`
-	ExactHeight              int                         `json:"exactHeight"`
-	Width                    int                         `json:"width"`
-	Height                   int                         `json:"height"`
-	Quality                  string                      `json:"quality"`
+	ConversationID           string           `json:"conversationId"`
+	IdempotencyKey           string           `json:"idempotencyKey"`
+	Prompt                   string           `json:"prompt"`
+	UserMessageContent       string           `json:"userMessageContent"`
+	Mode                     string           `json:"mode"`
+	ClientUserMessageID      string           `json:"clientUserMessageId"`
+	ClientAssistantMessageID string           `json:"clientAssistantMessageId"`
+	SourceUserMessageID      string           `json:"sourceUserMessageId"`
+	ReferenceImages          []map[string]any `json:"referenceImages"`
+	ReferenceMode            string           `json:"referenceMode"`
+	// ReferencesInferred 表示参考图是界面按上下文自动带上的，不是用户亲手附的。
+	ReferencesInferred bool                        `json:"referencesInferred"`
+	ImagePlanItems     []assistantRunImagePlanItem `json:"imagePlanItems"`
+	Attachments        []map[string]any            `json:"attachments"`
+	Quoted             map[string]any              `json:"quoted"`
+	Skill              string                      `json:"skill"`
+	Model              string                      `json:"model"`
+	Ratio              string                      `json:"ratio"`
+	Resolution         string                      `json:"resolution"`
+	Count              int                         `json:"count"`
+	RequestSize        string                      `json:"requestSize"`
+	SizeMode           string                      `json:"sizeMode"`
+	ExactWidth         int                         `json:"exactWidth"`
+	ExactHeight        int                         `json:"exactHeight"`
+	Width              int                         `json:"width"`
+	Height             int                         `json:"height"`
+	Quality            string                      `json:"quality"`
 	// TransparentBackground asks for a cut-out with an alpha channel; it is
 	// honoured only when the image model supports it, and forces PNG.
 	TransparentBackground   bool            `json:"transparentBackground"`
@@ -109,6 +117,8 @@ type assistantRunIn struct {
 	Engine string `json:"engine"`
 	// Timezone is the browser's IANA zone; v2 uses it for date questions.
 	Timezone string `json:"timezone"`
+	// Correction marks this run as a one-tap correction of an earlier reply.
+	Correction *assistantCorrectionIn `json:"correction"`
 	// InlineText asks a chat run to answer in the message body only: no downloadable-file (files_create) mode, even
 	// when the prompt happens to mention files. Canvas plugins that parse the reply (e.g. generated HTML) rely on it.
 	InlineText bool `json:"inlineText"`
@@ -169,7 +179,7 @@ func (s *Server) assistantConversations(c *gin.Context) {
 	if projectID != nil {
 		items, err = store.ListAssistantConversationsByProject(c.Request.Context(), s.St.Pool, user.ID, workspace, *projectID, assistantConversationLimit)
 	} else {
-		items, err = store.ListAssistantConversationsByWorkspace(c.Request.Context(), s.St.Pool, user.ID, workspace, assistantConversationLimit)
+		items, err = store.ListAssistantConversationsByWorkspace(c.Request.Context(), s.St.Pool, user.ID, workspace, assistantConversationListMax)
 	}
 	if err != nil {
 		fail(c, err)
@@ -180,7 +190,15 @@ func (s *Server) assistantConversations(c *gin.Context) {
 	if requested, parseErr := strconv.Atoi(c.Query("messageLimit")); parseErr == nil && requested > 0 {
 		messageLimit = min(assistantMessageLimit, requested)
 	}
-	for _, item := range items {
+	for index, item := range items {
+		if index >= assistantConversationPreviewCount {
+			// 较早的对话只给标题和时间，打开时前端会取最近的消息。
+			serialized := assistantConversationDict(item, nil)
+			serialized["hasMoreMessages"] = true
+			serialized["messagesDeferred"] = true
+			out = append(out, serialized)
+			continue
+		}
 		messages, err := store.ListAssistantMessages(c.Request.Context(), s.St.Pool, item.ID, messageLimit+1)
 		if err != nil {
 			fail(c, err)
@@ -194,7 +212,16 @@ func (s *Server) assistantConversations(c *gin.Context) {
 		serialized["hasMoreMessages"] = hasMore
 		out = append(out, serialized)
 	}
-	ok(c, gin.H{"conversations": out})
+	response := gin.H{"conversations": out}
+	if projectID == nil {
+		quota, err := s.assistantConversationQuota(c.Request.Context(), s.St.Pool, user.ID, workspace, time.Now().UTC())
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		response["quota"] = quota
+	}
+	ok(c, response)
 }
 
 func (s *Server) assistantConversation(c *gin.Context) {
@@ -281,14 +308,34 @@ func (s *Server) createAssistantConversation(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "projectId: 仅支持无限画布会话", 422))
 		return
 	}
-	item, err := store.InsertAssistantConversationBound(
-		c.Request.Context(), s.St.Pool, uuid.New(), user.ID, title, workspace, projectID, time.Now().UTC(),
-	)
+	if !assistantConversationLimited(workspace) {
+		item, err := store.InsertAssistantConversationBound(
+			c.Request.Context(), s.St.Pool, uuid.New(), user.ID, title, workspace, projectID, time.Now().UTC(),
+		)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		respondCreated(c, assistantConversationDict(item, nil))
+		return
+	}
+	now := time.Now().UTC()
+	item, archived, err := s.createLimitedAssistantConversation(c.Request.Context(), user.ID, title, workspace, projectID, now)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	respondCreated(c, assistantConversationDict(item, nil))
+	policy := settings.ResolveAssistantConversationPolicy(c.Request.Context(), s.St.Pool)
+	quota, err := s.assistantConversationQuota(c.Request.Context(), s.St.Pool, user.ID, workspace, now)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	out := assistantConversationDict(item, nil)
+	// 自动归档了哪些对话、现在的额度：前端据此从列表里移走并提示用户。
+	out["archived"] = assistantArchivedSummaries(archived, policy.ArchiveDays)
+	out["quota"] = quota
+	respondCreated(c, out)
 }
 
 func (s *Server) deleteAssistantConversation(c *gin.Context) {
@@ -567,7 +614,32 @@ func (s *Server) setAssistantMessageFeedback(c *gin.Context) {
 		fail(c, apperr.E("not_found", "助手回复不存在", 404))
 		return
 	}
+	if body.Rating == "negative" {
+		s.recordAssistantTurnEventLater(c.Request.Context(), messageID, assistantreview.EventNegativeFeedback)
+	} else if err := store.DeleteAssistantTurnEvent(c.Request.Context(), s.St.Pool, messageID, assistantreview.EventNegativeFeedback); err != nil {
+		log.Printf("assistant turn event cleanup for %s failed: %v", messageID, err)
+	}
 	ok(c, assistantMessageDict(message))
+}
+
+// recordAssistantImageDeleted counts an image deleted soon after it was made
+// against the Agent proposal that produced it: that proposal was the
+// assistant's decision to draw.
+func (s *Server) recordAssistantImageDeleted(ctx context.Context, message *store.AssistantMessage) {
+	if message == nil || time.Since(message.CreatedAt) > imageDeletedSoon {
+		return
+	}
+	run, err := store.GetAssistantRunByAssistantMessage(ctx, s.St.Pool, message.ID)
+	if err != nil || run == nil {
+		return
+	}
+	userMessage, err := store.GetAssistantMessage(ctx, s.St.Pool, run.UserMessageID)
+	if err != nil || userMessage == nil {
+		return
+	}
+	if proposalID, err := uuid.Parse(assistantMapText(userMessage.Metadata, "proposalSourceMessageId")); err == nil {
+		s.recordAssistantTurnEventLater(ctx, proposalID, assistantreview.EventImageDeleted)
+	}
 }
 
 func (s *Server) deleteAssistantMessageImage(c *gin.Context) {
@@ -587,6 +659,7 @@ func (s *Server) deleteAssistantMessageImage(c *gin.Context) {
 		return
 	}
 	messageDeleted := false
+	var imageMessage *store.AssistantMessage
 	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
 		message, getErr := store.GetAssistantMessage(c.Request.Context(), tx, messageID)
 		if getErr != nil {
@@ -595,6 +668,7 @@ func (s *Server) deleteAssistantMessageImage(c *gin.Context) {
 		if message == nil {
 			return apperr.E("not_found", "图片消息不存在", 404)
 		}
+		imageMessage = message
 		conversation, getErr := store.GetUserAssistantConversation(c.Request.Context(), tx, user.ID, message.ConversationID)
 		if getErr != nil {
 			return getErr
@@ -653,6 +727,7 @@ func (s *Server) deleteAssistantMessageImage(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	s.recordAssistantImageDeleted(c.Request.Context(), imageMessage)
 	ok(c, gin.H{"messageDeleted": messageDeleted})
 }
 
@@ -780,6 +855,10 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "engine: 不支持的助手引擎", 422))
 		return
 	}
+	if err := validateAssistantCorrection(body.Correction, body.Mode, engineV2); err != nil {
+		fail(c, err)
+		return
+	}
 	body.Timezone = strings.TrimSpace(body.Timezone)
 	if body.Timezone != "" {
 		if _, tzErr := time.LoadLocation(body.Timezone); tzErr != nil || len(body.Timezone) > 64 || body.Timezone == "Local" {
@@ -893,6 +972,10 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	if conversation.Workspace != workspace {
 		fail(c, apperr.E("validation_error", "workspace: 与对话工作区不一致", 422))
+		return
+	}
+	if err := s.assistantConversationRunBlocked(c.Request.Context(), conversation); err != nil {
+		fail(c, err)
 		return
 	}
 	if body.IdempotencyKey != "" {
@@ -1245,6 +1328,10 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	if engineV2 {
 		params["_engine"] = assistantEngineV2
+	}
+	if body.ReferencesInferred && len(references) > 0 {
+		params["referencesInferred"] = true
+		userMetadata["referencesInferred"] = true
 	}
 	if body.Timezone != "" {
 		params["timezone"] = body.Timezone
@@ -1761,6 +1848,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		ok(c, payload)
 		return
 	}
+	s.recordAssistantTurnSignals(c.Request.Context(), body, run.ConversationID, run.AssistantMessageID)
 	respondCreated(c, payload)
 }
 
@@ -1797,11 +1885,12 @@ func assistantAutoApproveRejection(
 	if parseErr != nil {
 		return apperr.E("assistant_auto_approve_rejected", "自动授权提交缺少来源方案", 422)
 	}
-	source, err := store.GetAssistantMessage(ctx, q, sourceID)
+	// 锁住方案行：同一份方案从两个标签页同时自动提交时，只有一个能过。
+	source, err := store.LockAssistantMessage(ctx, q, sourceID)
 	if err != nil {
 		return err
 	}
-	if source == nil || source.ConversationID != conversationID {
+	if source == nil || source.ConversationID != conversationID || source.Role != "assistant" || source.Kind != "proposal" {
 		return apperr.E("assistant_auto_approve_rejected", "自动授权提交缺少来源方案", 422)
 	}
 	// 资格由 worker 在生成方案时判定并写进消息，客户端说了不算。
@@ -1809,13 +1898,28 @@ func assistantAutoApproveRejection(
 	if approvable, _ := proposal["autoApprovable"].(bool); !approvable {
 		return apperr.E("assistant_auto_approve_rejected", "这份方案需要你确认后才能生成", 422)
 	}
+	// 每份方案最多自动花一次钱。标记记在方案本身上：删掉执行那一轮的消息后，界面会把方案
+	// 当成没执行过而再提交一次，只看消息挡不住。
+	if executedAt, _ := proposal["autoExecutedAt"].(string); executedAt != "" {
+		return apperr.E("assistant_auto_approve_rejected", "这份方案已经自动生成过，需要再生成请确认后提交", 422)
+	}
+	// 自动授权是“刚出方案就替我执行”，不是“以后什么时候看到都执行”：重新打开旧对话、
+	// 之后才开启开关或调高预算，都不该让旧方案自己扣费。
+	if time.Since(source.UpdatedAt) > assistantAutoApproveWindow {
+		return apperr.E("assistant_auto_approve_rejected", "这份方案已过自动执行时效，请确认后再生成", 422)
+	}
 	if imageCostCents > user.AssistantAutoApproveBudgetCents {
 		return apperr.E("assistant_auto_approve_budget_exceeded", fmt.Sprintf(
 			"本次需要 %d 积分，超出自动授权预算 %d 积分，请确认后再生成",
 			imageCostCents, user.AssistantAutoApproveBudgetCents), 422)
 	}
-	return nil
+	// 和建任务在同一个事务里：后面任何一步失败都会一起回滚，标记不会留下。
+	return store.MarkAssistantProposalAutoExecuted(ctx, q, source.ID, time.Now())
 }
+
+// assistantAutoApproveWindow is how long after a proposal is made it may
+// still run without confirmation. The web app uses the same window.
+const assistantAutoApproveWindow = 10 * time.Minute
 
 func assistantRunReservedCost(mode string, chatCostCents, imageCostCents int64) int64 {
 	if mode == "image" {
@@ -2059,6 +2163,7 @@ func (s *Server) cancelAssistantRun(c *gin.Context, user *store.User, id uuid.UU
 		if s.Queue != nil {
 			s.Queue.CancelAssistantRun(id.String())
 		}
+		s.recordAssistantTurnEventLater(c.Request.Context(), run.AssistantMessageID, assistantreview.EventStopped)
 	}
 	updated, _ := store.GetUserAssistantRun(c.Request.Context(), s.St.Pool, user.ID, id)
 	s.dispatchReadyAssistantRuns(c.Request.Context())
@@ -2161,7 +2266,8 @@ func assistantConversationDict(item *store.AssistantConversation, messages []*st
 		serialized = append(serialized, assistantMessageDict(message))
 	}
 	return gin.H{"id": item.ID.String(), "title": item.Title, "workspace": item.Workspace, "projectId": assistantProjectIDValue(item.ProjectID),
-		"createdAt": isoValue(item.CreatedAt), "updatedAt": isoValue(item.UpdatedAt), "messages": serialized}
+		"createdAt": isoValue(item.CreatedAt), "updatedAt": isoValue(item.UpdatedAt), "messages": serialized,
+		"pinned": item.PinnedAt != nil, "pinnedAt": iso(item.PinnedAt), "archivedAt": iso(item.ArchivedAt)}
 }
 
 func assistantConversationWorkspace(value string) (string, error) {

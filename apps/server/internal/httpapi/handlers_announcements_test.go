@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -198,5 +199,52 @@ func TestAdminUploadAnnouncementImage(t *testing.T) {
 		}},
 	}); err != nil {
 		t.Fatalf("uploaded url rejected: %v", err)
+	}
+}
+
+func TestAnnouncementHistoryKeepsExpiredButHidesDisabledAndScheduled(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, adminToken := env.newUserSession(t, "admin")
+	now := time.Now().UTC()
+	create := func(title string, extra gin.H) string {
+		t.Helper()
+		payload := gin.H{"title": title}
+		for key, value := range extra {
+			payload[key] = value
+		}
+		response := env.do(t, http.MethodPost, "/api/v1/admin/announcements", payload, adminToken)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %s: status %d body %s", title, response.Code, response.Body.String())
+		}
+		created, _ := decode(t, response)
+		id, _ := created["id"].(string)
+		return id
+	}
+	expired := create("已结束的活动", gin.H{
+		"startsAt": now.Add(-72 * time.Hour).Format(time.RFC3339),
+		"endsAt":   now.Add(-24 * time.Hour).Format(time.RFC3339),
+	})
+	ongoing := create("进行中的活动", nil)
+	disabled := create("已下线公告", gin.H{"active": false})
+	scheduled := create("未开始公告", gin.H{"startsAt": now.Add(24 * time.Hour).Format(time.RFC3339)})
+
+	response := env.do(t, http.MethodGet, "/api/v1/announcements/history", nil, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("history: status %d body %s", response.Code, response.Body.String())
+	}
+	data, _ := decode(t, response)
+	items, _ := data["items"].([]any)
+	for _, id := range []string{expired, ongoing} {
+		if findPublicAnnouncement(items, id) == nil {
+			t.Fatalf("history missing %s: %#v", id, items)
+		}
+	}
+	for _, id := range []string{disabled, scheduled} {
+		if findPublicAnnouncement(items, id) != nil {
+			t.Fatalf("history leaked %s", id)
+		}
+	}
+	if findPublicAnnouncement(listPublicAnnouncements(t, env), expired) != nil {
+		t.Fatal("expired announcement should not be in the active list")
 	}
 }

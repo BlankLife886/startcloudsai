@@ -81,9 +81,45 @@ export function displayNotificationTitle(title, body) {
   return rawTitle;
 }
 
+// 只按 kind 判断：标题里带「公告」二字的个人通知（例如作品入选公告）不能被误藏。
 export function isAnnouncementNotification(item) {
+  return String(item?.kind || "").toLowerCase().includes("announce");
+}
+
+/** 通知分类：图标、标签、色调与筛选范围。 */
+export function notificationKind(item) {
+  if (String(item?.sourceType || "").startsWith("subscription_"))
+    return { icon: "bi-credit-card", label: "订阅", tone: "wallet", scope: "wallet" };
   const kind = String(item?.kind || "").toLowerCase();
-  return kind.includes("announce") || String(item?.title || "").includes("公告");
+  const title = String(item?.title || "");
+  if (kind === "trial_access")
+    return { icon: "bi-patch-check", label: "试用", tone: "success", scope: "trial" };
+  if (kind.includes("redeem") || title.includes("兑换"))
+    return { icon: "bi-ticket-perforated", label: "兑换", tone: "gold", scope: "wallet" };
+  if (kind.includes("wallet") || ["入账", "积分", "充值"].some((text) => title.includes(text)))
+    return { icon: "bi-wallet2", label: "账户", tone: "wallet", scope: "wallet" };
+  if (kind === "order")
+    return { icon: "bi-receipt", label: "订单", tone: "wallet", scope: "wallet" };
+  if (kind === "assistant")
+    return { icon: "bi-robot", label: "AI 助手", tone: "task", scope: "other" };
+  if (kind.includes("task") || ["任务", "生成"].some((text) => title.includes(text)))
+    return { icon: "bi-stars", label: "任务", tone: "task", scope: "task" };
+  if (kind.includes("gallery") || ["投稿", "审核"].some((text) => title.includes(text)))
+    return { icon: "bi-send-check", label: "审核", tone: "review", scope: "review" };
+  return { icon: "bi-bell", label: "通知", tone: "default", scope: "other" };
+}
+
+/** 点击通知后要去的页面；没有对应页面返回 null。 */
+export function notificationHref(item) {
+  const target = String(item?.targetPath || "");
+  if (target.startsWith("/") && !target.startsWith("//")) return target;
+  const kind = String(item?.kind || "").toLowerCase();
+  if (kind === "trial_access") return null;
+  if (kind === "order") return "/orders";
+  if (kind.includes("task")) return "/history";
+  if (kind.includes("wallet") || kind.includes("redeem")) return "/wallet";
+  if (kind.includes("gallery")) return "/submissions";
+  return null;
 }
 
 export function displayNotification(item) {

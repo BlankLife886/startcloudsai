@@ -163,6 +163,35 @@ func TestGenerateImagesUsesNonStreamingContract(t *testing.T) {
 	}
 }
 
+func TestSyncGenerationFallbackDownloadsURLResult(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/image-tasks/generations":
+			http.Error(w, "not found", http.StatusNotFound)
+		case "/v1/images/generations":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"data":[{"url":%q}]}`, server.URL+"/files/result.png")
+		case "/files/result.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(png)
+		default:
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, err := client.GenerateImages(context.Background(), "earrings", "gpt-image-2", 1, "1024x1024")
+	if err != nil {
+		t.Fatalf("GenerateImages: %v", err)
+	}
+	if len(images) != 1 || images[0] != base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("images = %#v", images)
+	}
+}
+
 func TestStandardImagesUsePublicGenerationContract(t *testing.T) {
 	var payload map[string]any
 	var asyncRequests atomic.Int32

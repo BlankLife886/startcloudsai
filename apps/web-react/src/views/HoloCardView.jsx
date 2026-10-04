@@ -21,6 +21,7 @@ import { HoloCreationGuide, HoloHowToDialog } from '../features/holo-card/HoloCr
 import { DEFAULT_CARD_SETTINGS, describeHoloGenerationError, modelBlockReason, selectSubjectResolution, subjectResolutionOptions } from '../features/holo-card/holoCard.js';
 import { downloadCardBlob, readCardImage } from '../features/holo-card/holoCardImages.js';
 import { useHoloCardJob } from '../features/holo-card/useHoloCardJob.js';
+import { getScopedLocalItem, setScopedLocalItem } from '@react/legacy-modules/services/scopedLocalStorage.js';
 import './holo-card.css';
 
 gsap.registerPlugin(useGSAP);
@@ -65,6 +66,18 @@ function AssetRow({ url, title, description, action, onClick, disabled, onRemove
   </button>{onRemove && <ToolButton label={removeLabel} onClick={onRemove}><X size={14}/></ToolButton>}</div>;
 }
 
+// 生成模型与清晰度按账号记住，刷新或重新进入沿用上次的选择。
+const GENERATION_SETTINGS_KEY = 'holo-card-generation-v1';
+
+function readGenerationSettings() {
+  try {
+    const value = JSON.parse(getScopedLocalItem(GENERATION_SETTINGS_KEY) || 'null');
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
+}
+
 export function HoloCardView() {
   const auth = useAuth();
   return <HoloCardWorkspace key={auth.loading ? 'loading' : auth.user?.id || 'guest'} user={auth.user} authLoading={auth.loading}/>;
@@ -83,7 +96,8 @@ function HoloCardWorkspace({ user, authLoading }) {
   const [librarySection, setLibrarySection] = useState('presets');
   const [helpOpen, setHelpOpen] = useState(false), [acknowledgedCapabilityFailure, setAcknowledgedCapabilityFailure] = useState('');
   const [settings, setSettings] = useState({ ...DEFAULT_CARD_SETTINGS, ...ASTRAL_TEMPLATE_SETTINGS });
-  const [modelId, setModelId] = useState(''), [resolution, setResolution] = useState('2K'), [instructions, setInstructions] = useState('');
+  const savedGeneration = useMemo(readGenerationSettings, []);
+  const [modelId, setModelId] = useState(String(savedGeneration.modelId || '')), [resolution, setResolution] = useState(String(savedGeneration.resolution || '2K')), [instructions, setInstructions] = useState('');
   const [zoom, setZoom] = useState(0), [inspectionBg, setInspectionBg] = useState('checker');
   const [reading, setReading] = useState(false), [exporting, setExporting] = useState(false);
   const [renderReady, setRenderReady] = useState(false), [renderError, setRenderError] = useState('');
@@ -270,6 +284,10 @@ function HoloCardWorkspace({ user, authLoading }) {
   useEffect(() => {
     if (currentModel && currentModel.id !== modelId) setModelId(currentModel.id);
   }, [currentModel, modelId]);
+  useEffect(() => {
+    if (authLoading || !currentModel) return;
+    setScopedLocalItem(GENERATION_SETTINGS_KEY, JSON.stringify({ modelId, resolution }));
+  }, [authLoading, currentModel, modelId, resolution]);
   useEffect(() => {
     if (currentModel && effectiveResolution && effectiveResolution !== resolution) setResolution(effectiveResolution);
   }, [currentModel, effectiveResolution, resolution]);

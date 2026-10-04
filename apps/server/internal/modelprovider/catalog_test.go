@@ -65,7 +65,7 @@ func TestDiscoverCRUNModelsClassifiesLiveCatalogs(t *testing.T) {
 			if r.Header.Get("x-api-key") != "test-key" {
 				t.Fatalf("media catalog x-api-key = %q", r.Header.Get("x-api-key"))
 			}
-			_, _ = w.Write([]byte(`{"code":200,"message":"success","data":{"total":3,"models":[{"model":"google/nano-banana","model_type":"image","modality":"image","operations":["image-edit","text-to-image"],"input_fields":["prompt","img_urls","aspect_ratio"],"required_input_fields":["prompt"],"supports_reference":true},{"model":"image-background-remove","model_type":"tools","modality":"image","operations":["background-remove"],"input_fields":["img_urls"],"required_input_fields":["img_urls"]},{"model":"google/veo","model_type":"video","modality":"video","operations":["text-to-video"],"input_fields":["prompt"]}]}}`))
+			_, _ = w.Write([]byte(`{"code":200,"message":"success","data":{"total":5,"models":[{"model":"google/nano-banana","model_type":"image","modality":"image","operations":["image-edit","text-to-image"],"input_fields":["prompt","img_urls","aspect_ratio"],"required_input_fields":["prompt"],"supports_reference":true},{"model":"image-background-remove","model_type":"tools","modality":"image","operations":["background-remove"],"input_fields":["img_urls"],"required_input_fields":["img_urls"]},{"model":"google/veo","model_type":"video","modality":"video","operations":["text-to-video"],"input_fields":["prompt"]},{"model":"suno/music","model_type":"music","modality":"music","operations":["text-to-music"],"input_fields":["prompt"]},{"model":"elevenlabs/audio","model_type":"audio","modality":"audio","operations":["text-to-audio"],"input_fields":["prompt"]}]}}`))
 		case "/api/v1/models":
 			if r.Header.Get("Authorization") != "Bearer test-key" {
 				t.Fatalf("LLM catalog authorization = %q", r.Header.Get("Authorization"))
@@ -83,7 +83,7 @@ func TestDiscoverCRUNModelsClassifiesLiveCatalogs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Models) != 3 || result.TaskModelCount != 3 || len(result.Entries) != 4 {
+	if len(result.Models) != 6 || result.TaskModelCount != 5 || len(result.Entries) != 6 {
 		t.Fatalf("catalog result = %#v", result)
 	}
 	entries := map[string]CatalogEntry{}
@@ -96,7 +96,12 @@ func TestDiscoverCRUNModelsClassifiesLiveCatalogs(t *testing.T) {
 	if entries["image-background-remove"].Kind != modelconfig.ModelKindImageTool {
 		t.Fatalf("tool entry = %#v", entries["image-background-remove"])
 	}
-	if entries["google/veo"].Compatible || entries["gpt-5.6-sol"].Kind != modelconfig.ModelKindChat {
+	for _, id := range []string{"google/veo", "suno/music", "elevenlabs/audio"} {
+		if entries[id].Kind != modelconfig.ModelKindImageTool || !entries[id].Compatible {
+			t.Fatalf("media entry %s = %#v", id, entries[id])
+		}
+	}
+	if entries["gpt-5.6-sol"].Kind != modelconfig.ModelKindChat {
 		t.Fatalf("classified entries = %#v", entries)
 	}
 }

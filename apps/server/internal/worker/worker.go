@@ -55,6 +55,7 @@ const (
 	typeCleanupUserUploads      = "cron:cleanup_user_uploads"
 	typeCleanupObjectJobs       = "cron:cleanup_object_jobs"
 	typeCleanupCanvasRuns       = "cron:cleanup_canvas_workflow_runs"
+	typePurgeArchivedChats      = "cron:purge_archived_assistant_conversations"
 	typeCleanupTrashedAssets    = "cron:cleanup_trashed_assets"
 	typeEvaluateIncidents       = "cron:evaluate_operational_incidents"
 	typeDispatchAssistantOutbox = "cron:dispatch_assistant_run_outbox"
@@ -220,6 +221,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupUserUploads, w.handleCleanupUserUploads)
 	mux.HandleFunc(typeCleanupObjectJobs, w.handleCleanupObjectJobs)
 	mux.HandleFunc(typeCleanupCanvasRuns, w.handleCleanupCanvasRuns)
+	mux.HandleFunc(typePurgeArchivedChats, w.handlePurgeArchivedAssistantConversations)
 	mux.HandleFunc(typeCleanupTrashedAssets, w.handleCleanupTrashedAssets)
 	mux.HandleFunc(typeEvaluateIncidents, w.handleEvaluateOperationalIncidents)
 	mux.HandleFunc(typeDispatchAssistantOutbox, w.handleDispatchAssistantOutbox)
@@ -319,6 +321,7 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		// No retries: a failed run is simply picked up by the next minute's run.
 		periodicConfig("@every 1m", typeCleanupObjectJobs, 50*time.Second, 0, asynq.Timeout(objectCleanupTimeout)),
 		periodicConfig("@every 1h", typeCleanupCanvasRuns, 59*time.Minute, 0),
+		periodicConfig("@every 1h", typePurgeArchivedChats, 59*time.Minute, 0),
 		periodicConfig("@every 6h", typeCleanupTrashedAssets, 5*time.Hour+59*time.Minute, 1),
 		periodicConfig("@every 1m", typeEvaluateIncidents, 50*time.Second, 1),
 		periodicConfig("@every 15s", typeDispatchAssistantOutbox, 14*time.Second, 0),
@@ -1584,7 +1587,7 @@ func (w *Worker) markFailedOwned(ctx context.Context, taskID uuid.UUID, errorCod
 		// M4：通知在主事务提交后尽力而为
 		taskflow.NotifyTaskFailed(ctx, w.St.Pool, task)
 		w.recordTimeline(ctx, task.ID, "failed", "error",
-			"任务失败："+errorMessage+"，冻结的费用已退回",
+			"任务失败："+errorMessage+"，"+taskflow.FailureBillingNote(task),
 			time.Since(task.CreatedAt).Milliseconds(), map[string]any{"errorCode": errorCode})
 		w.publishTaskEvent(ctx, task, taskstream.Event{
 			Stage: "failed", Status: "failed", Done: true,
@@ -1608,7 +1611,7 @@ func (w *Worker) markFailedClaimed(ctx context.Context, taskID uuid.UUID, errorC
 	if err == nil && won {
 		taskflow.NotifyTaskFailed(ctx, w.St.Pool, task)
 		w.recordTimeline(ctx, task.ID, "failed", "error",
-			"任务失败："+errorMessage+"，冻结的费用已退回",
+			"任务失败："+errorMessage+"，"+taskflow.FailureBillingNote(task),
 			time.Since(task.CreatedAt).Milliseconds(), map[string]any{"errorCode": errorCode})
 		w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "failed", Status: "failed", Done: true})
 	}
@@ -1929,7 +1932,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("bad task_id: %w", err)
 	}
 
-	if waiting, err := w.waitForHandheldAnchor(ctx, taskID); err != nil {
+	if waiting, err := w.waitForSeriesAnchor(ctx, taskID); err != nil {
 		return err
 	} else if waiting {
 		return nil
@@ -2946,7 +2949,7 @@ func (w *Worker) finalizeTaskAfterAttempts(ctx context.Context, attemptTask *sto
 	}
 	if failed != nil {
 		taskflow.NotifyTaskFailed(ctx, w.St.Pool, failed)
-		w.recordTimeline(ctx, failed.ID, "failed", "error", "任务失败："+errorMessage+"，冻结的费用已退回",
+		w.recordTimeline(ctx, failed.ID, "failed", "error", "任务失败："+errorMessage+"，"+taskflow.FailureBillingNote(failed),
 			time.Since(failed.CreatedAt).Milliseconds(), map[string]any{"errorCode": errorCode})
 		w.publishTaskEvent(ctx, failed, taskstream.Event{Stage: "failed", Status: "failed", Done: true})
 	}

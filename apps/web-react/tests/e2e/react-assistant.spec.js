@@ -130,6 +130,9 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     const emptyState = page.locator('.assistant-empty-state')
+    await expect(emptyState.locator('.empty-mode-chip')).toContainText('Agent 模式')
+    await page.locator('.agent-mode-button').click()
+    await page.getByRole('button', { name: '问答模式' }).click()
     await expect(emptyState.getByRole('heading', { level: 1 })).toHaveText('今天想聊点什么？')
     await expect(emptyState.locator('.empty-mode-chip')).toContainText('问答模式')
     await expect(emptyState.locator('.empty-mode-hint')).toHaveText('只进行对话，不会调用图片生成')
@@ -178,14 +181,12 @@ test.describe('React assistant workspace contract', () => {
 
     await expect(page.locator('.message--assistant')).toContainText('已完成你的创作请求。')
     expect(conversationBody).toEqual({ title: '新对话', workspace: 'assistant' })
-    // Q&A mode no longer blocks or re-labels the request in the browser: it
-    // goes to the v2 engine and the server decides whether the turn needs the
-    // Agent (it upgrades image requests and attaches the image catalog).
+    // New conversations start in Agent mode; the request goes to the v2 engine.
     expect(runBody).toMatchObject({
       conversationId: 'conversation-new',
       prompt: '请帮我设计一个简洁的品牌图标',
       userMessageContent: '请帮我设计一个简洁的品牌图标',
-      mode: 'chat',
+      mode: 'agent',
       engine: 'v2',
       referenceImages: [],
       model: 'chat-basic',
@@ -491,6 +492,9 @@ test.describe('React assistant workspace contract', () => {
     let conversationCreates = 0
     let runCreates = 0
     await mockAssistant(page)
+    // 单条消息字数上限来自后台设置（runtime-config 下发）。
+    await page.route('**/api/v1/runtime-config', (route) =>
+      fulfillJson(route, { routes: {}, features: {}, pageLayout: {}, blacklist: { blocked: false }, promptInputLimits: { assistantMessageMaxChars: 12000 } }))
     await page.route('**/api/v1/assistant/conversations', async (route) => {
       if (route.request().method() === 'POST') conversationCreates += 1
       await fulfillJson(route, { conversations: [] })
@@ -513,12 +517,12 @@ test.describe('React assistant workspace contract', () => {
     await expect(input).toHaveValue('第一行\n')
     expect(runCreates).toBe(0)
 
+    // 输入框按后台设置的上限截断，字数提示显示到上限为止。
+    await expect(input).toHaveAttribute('maxlength', '12000')
     await input.fill('x'.repeat(12001))
-    await expect(page.locator('.send-button')).toBeDisabled()
-    await expect(page.locator('.draft-counter')).toHaveClass(/is-over/)
-    await input.press('Enter')
-    await page.waitForTimeout(100)
-    await expect(input).toHaveValue('x'.repeat(12001))
+    await expect(input).toHaveValue('x'.repeat(12000))
+    await expect(page.locator('.draft-counter')).toContainText('12,000 / 12,000')
+    await expect(page.locator('.draft-counter')).not.toHaveClass(/is-over/)
     expect(conversationCreates).toBe(0)
     expect(runCreates).toBe(0)
   })
@@ -937,18 +941,22 @@ test.describe('React assistant workspace contract', () => {
     await expect(firstImage.locator('.generated-image-ratio')).toHaveText('16:9')
     await expect(firstImage.locator('.generated-image-ratio')).toBeVisible()
     await page.locator('.generated-image-preview').first().click()
-    const viewer = page.locator('.wallpaper-fullscreen-preview')
+    const viewer = page.getByRole('dialog', { name: '图片查看与编辑' })
     await expect(viewer).toBeVisible()
-    await expect(viewer).toContainText('1 / 2')
-    await viewer.getByRole('button', { name: '下一张' }).click()
-    await expect(viewer).toContainText('2 / 2')
-    await viewer.getByRole('button', { name: '放大图片' }).click()
-    await expect(viewer.locator('output')).toHaveText('125%')
-    await viewer.getByRole('button', { name: '关闭预览' }).click()
+    const versions = viewer.getByRole('complementary', { name: '图片版本' })
+    await expect(versions.getByRole('button')).toHaveCount(2)
+    await expect(versions.getByRole('button', { name: '查看第 1 张' })).toHaveAttribute('aria-current', 'true')
+    await versions.getByRole('button', { name: '查看第 2 张' }).click()
+    await expect(versions.getByRole('button', { name: '查看第 2 张' })).toHaveAttribute('aria-current', 'true')
+    await expect(viewer.locator('.ais-image')).toHaveAttribute('src', '/sucai/home-intro-03.png')
+    await viewer.getByRole('button', { name: /^缩放/ }).click()
+    await viewer.getByRole('menuitemradio', { name: '200%' }).click()
+    await expect(viewer.getByRole('button', { name: /^缩放/ })).toHaveText('200%')
+    await page.keyboard.press('Escape')
     await expect(viewer).toHaveCount(0)
   })
 
-  test('shared preview exposes assistant actions and submits a painted region edit', async ({ page }) => {
+  test('shared preview exposes assistant actions and submits a markup edit', async ({ page }) => {
     let runBody = null
     const uploads = []
     const conversations = [{
@@ -995,46 +1003,53 @@ test.describe('React assistant workspace contract', () => {
     await page.getByRole('button', { name: '收起侧栏' }).click()
 
     await page.locator('.generated-image-preview').click()
-    const viewer = page.locator('.wallpaper-fullscreen-preview')
+    const viewer = page.getByRole('dialog', { name: '图片查看与编辑' })
     await expect(viewer).toBeVisible()
-    for (const name of ['局部编辑', '复制提示词', '收藏到资产', '发布作品', '删除图片']) {
-      await expect(viewer.getByRole('button', { name })).toBeVisible()
+    await viewer.getByRole('button', { name: '更多操作' }).click()
+    for (const name of ['复制提示词', '用作参考图', '收藏到资产', '发布作品', '删除图片']) {
+      await expect(viewer.getByRole('menuitem', { name })).toBeVisible()
     }
-    await viewer.getByRole('button', { name: '复制提示词' }).click()
+    await viewer.getByRole('menuitem', { name: '复制提示词' }).click()
     await expect(page.locator('.app-toast')).toContainText('提示词已复制')
-    await viewer.getByRole('button', { name: '局部编辑' }).click()
+    await viewer.getByRole('toolbar', { name: '编辑工具' }).getByRole('button', { name: '标注' }).click()
 
-    const editor = page.getByRole('dialog', { name: '图片局部编辑' })
-    await expect(editor).toBeVisible()
-    const canvas = editor.getByLabel('涂抹编辑区域')
-    await expect(canvas).toBeVisible()
+    // Markup swaps in its own toolbar and a size slider; nothing to send until something is drawn.
+    const markupBar = viewer.getByRole('toolbar', { name: '标注工具' })
+    await expect(markupBar.getByRole('button', { name: '画笔' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(viewer.getByRole('slider', { name: '线条粗细' })).toBeVisible()
+    await expect(viewer.getByRole('button', { name: '生成修改' })).toBeDisabled()
+    const canvas = viewer.getByLabel('标注画布')
     const box = await canvas.boundingBox()
     expect(box).not.toBeNull()
     await page.mouse.move(box.x + box.width * 0.42, box.y + box.height * 0.45)
     await page.mouse.down()
     await page.mouse.move(box.x + box.width * 0.58, box.y + box.height * 0.55, { steps: 8 })
     await page.mouse.up()
-    await editor.getByPlaceholder('描述选中区域需要变成什么').fill('把杯子改成绿色磨砂陶瓷')
-    await editor.getByRole('button', { name: '生成局部编辑' }).click()
+    await markupBar.getByRole('button', { name: '图形' }).click()
+    await viewer.getByRole('menuitemradio', { name: '箭头' }).click()
+    await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.2)
+    await page.mouse.down()
+    await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.4, { steps: 6 })
+    await page.mouse.up()
+    await expect(markupBar.getByRole('button', { name: '选择' })).toHaveAttribute('aria-pressed', 'true')
+    await markupBar.getByRole('button', { name: '撤销' }).click()
+    await markupBar.getByRole('button', { name: '重做' }).click()
+    await viewer.getByLabel('描述修改').fill('把杯子改成绿色磨砂陶瓷')
+    await viewer.getByRole('button', { name: '生成修改' }).click()
 
-    await expect.poll(() => uploads.length).toBe(2)
+    // The marked-up picture goes up once and rides along with the original as references; no mask.
+    await expect.poll(() => uploads.length).toBe(1)
     await expect.poll(() => runBody).not.toBeNull()
-    expect(runBody).toMatchObject({
-      mode: 'image',
-      count: 1,
-      parentOutputUrl: '/sucai/home-intro-03.png',
-      maskBaseImage: { fileKey: 'tasks/assistant-user/assistant/source/1.png' },
-    })
-    const regionKeys = new Set([
-      runBody.maskImage?.fileKey,
-      runBody.referenceImages?.[0]?.fileKey,
-    ])
-    expect(regionKeys).toEqual(new Set([
+    expect(runBody).toMatchObject({ mode: 'image', count: 1 })
+    expect(runBody.maskImage).toBeFalsy()
+    expect(runBody.referenceImages.map((image) => image.fileKey)).toEqual([
+      'tasks/assistant-user/assistant/source/1.png',
       'uploads/assistant/region-1.png',
-      'uploads/assistant/region-2.png',
-    ]))
-    expect(runBody.maskRect).toMatch(/^\d+,\d+,\d+,\d+$/)
-    await expect(editor).toHaveCount(0)
+    ])
+    expect(runBody.prompt).toContain('把杯子改成绿色磨砂陶瓷')
+    expect(runBody.prompt).toContain('不要出现任何标注')
+    // The edit shows up as a new version in the viewer.
+    await expect(viewer.getByRole('complementary', { name: '图片版本' }).getByRole('button')).toHaveCount(2)
   })
 
   test('assistant preview favorites, publishes, and deletes the current image', async ({ page }) => {
@@ -1081,11 +1096,12 @@ test.describe('React assistant workspace contract', () => {
       await fulfillJson(route, { messageDeleted: true })
     })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
-    await page.getByRole('button', { name: '收起侧栏' }).click()
+    // 手机宽度下助手没有侧栏，直接操作图片。
 
     await page.locator('.generated-image-preview').click()
-    let viewer = page.locator('.wallpaper-fullscreen-preview')
-    await viewer.getByRole('button', { name: '收藏到资产' }).click()
+    let viewer = page.getByRole('dialog', { name: '图片查看与编辑' })
+    await viewer.getByRole('button', { name: '更多操作' }).click()
+    await viewer.getByRole('menuitem', { name: '收藏到资产' }).click()
     await expect.poll(() => assetBody).not.toBeNull()
     expect(assetBody).toMatchObject({
       title: '极简绿色品牌海报',
@@ -1094,7 +1110,8 @@ test.describe('React assistant workspace contract', () => {
     })
     await expect(page.locator('.app-toast')).toContainText('已收藏到我的资产')
 
-    await viewer.getByRole('button', { name: '发布作品' }).click()
+    await viewer.getByRole('button', { name: '更多操作' }).click()
+    await viewer.getByRole('menuitem', { name: '发布作品' }).click()
     const publishDialog = page.getByRole('dialog', { name: '发布作品' })
     await expect(publishDialog).toBeVisible()
     await publishDialog.getByRole('button', { name: '提交审核' }).click()
@@ -1105,8 +1122,9 @@ test.describe('React assistant workspace contract', () => {
     })
 
     await page.locator('.generated-image-preview').click()
-    viewer = page.locator('.wallpaper-fullscreen-preview')
-    await viewer.getByRole('button', { name: '删除图片' }).click()
+    viewer = page.getByRole('dialog', { name: '图片查看与编辑' })
+    await viewer.getByRole('button', { name: '更多操作' }).click()
+    await viewer.getByRole('menuitem', { name: '删除图片' }).click()
     const deleteDialog = page.getByRole('alertdialog', { name: '删除这张图片？' })
     await expect(deleteDialog).toBeVisible()
     await deleteDialog.getByRole('button', { name: '确认删除' }).click()
@@ -1798,7 +1816,7 @@ test.describe('React assistant workspace contract', () => {
     await page.getByRole('tab', { name: '文件' }).click()
     await expect(page.locator('.asset-library-footer')).toContainText('1 个文件资产')
     await expect(page.locator('.asset-file-row')).toContainText('产品说明.md')
-    await expect(page.locator('.asset-file-row')).toContainText('输出')
+    await expect(page.locator('.asset-file-row')).toContainText('助手生成')
     await expect(page.locator('.asset-file-row')).toHaveAttribute('title', '下载 产品说明.md')
   })
 
@@ -2152,7 +2170,8 @@ test.describe('React assistant workspace contract', () => {
       localStorage.setItem('starclouds-assistant:user:assistant-user', JSON.stringify([conversation]))
     }, legacyConversation)
     await mockAssistant(page)
-    await page.route('**/api/v1/assistant/conversations', async (route) => {
+    // 列表请求带着 ?messageLimit=24，路由要连查询参数一起匹配。
+    await page.route('**/api/v1/assistant/conversations?**', async (route) => {
       await fulfillJson(route, { conversations: didImport ? [legacyConversation] : [] })
     })
     await page.route('**/api/v1/assistant/conversation-imports', async (route) => {

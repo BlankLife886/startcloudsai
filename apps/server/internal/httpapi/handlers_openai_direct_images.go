@@ -20,6 +20,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
+	"github.com/BlankLife886/startcloudsai/server/internal/contentpolicy"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -203,6 +204,26 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 		result, err = directOpenAIImageResponse(upstream, request.ResponseFormat)
 	}
 	record := directImageProfit{UserID: user.ID, APIKeyID: key.ID, Selection: selection, Request: request, Editing: editing, UpstreamCost: upstreamCost}
+	if reason := developerUpstreamReason(err); reason != "" {
+		// 内容违规是上游处理过请求后驳回的：超出每日免扣次数时按价格结算，否则照常退回。
+		decision, decideErr := s.finishDeveloperAPIContentPolicy(billingCtx, billing, user.ID, contentpolicy.Event{
+			UserID: user.ID, SourceType: contentpolicy.SourceDeveloperAPI, SourceID: billing.BillingID,
+			Feature: "developer-api-image", ModelID: selection.Model.ID, Prompt: request.Prompt,
+			ErrorCode: "upstream_rejected", Message: reason, AmountCents: billing.PriceCents,
+		})
+		switch {
+		case decideErr != nil:
+			log.Printf("developer API content policy decision failed billing_id=%s: %v", billing.BillingID, decideErr)
+		case decision.Charge:
+			s.recordOpenAIImageProfitLogged(billingCtx, record, billing, "failed", openAIContentPolicyCode)
+			failOpenAI(c, developerContentPolicyError(reason, true), "prompt")
+			return
+		case decision.Violation:
+			s.recordOpenAIImageProfitLogged(billingCtx, record, billing, "failed", openAIContentPolicyCode)
+			failOpenAI(c, developerContentPolicyError(reason, false), "prompt")
+			return
+		}
+	}
 	if err != nil {
 		err = developerUpstreamError(err)
 		s.releaseDeveloperAPIRequest(billingCtx, billing, user.ID)
@@ -312,6 +333,31 @@ func (s *Server) reserveDeveloperAPIRequest(ctx context.Context, open developerA
 	return billing, nil
 }
 
+// finishDeveloperAPIContentPolicy decides, in one transaction, whether a failed
+// image request was a content policy rejection and settles or releases its
+// reservation accordingly. When it was not a violation nothing is written and
+// the caller releases the request as an ordinary failure.
+func (s *Server) finishDeveloperAPIContentPolicy(parent context.Context, billing *developerAPIBilling, userID uuid.UUID, event contentpolicy.Event) (contentpolicy.Decision, error) {
+	ctx, cancel := detachedOpenAIImagePersistenceContext(parent)
+	defer cancel()
+	var decision contentpolicy.Decision
+	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		decision, err = contentpolicy.Decide(ctx, tx, event, time.Now().UTC())
+		if err != nil || !decision.Violation {
+			return err
+		}
+		if decision.Charge {
+			return settleDeveloperAPIRequestTx(ctx, tx, billing, userID)
+		}
+		return releaseDeveloperAPIRequestTx(ctx, tx, billing, userID)
+	})
+	if err != nil {
+		return contentpolicy.Decision{}, err
+	}
+	return decision, nil
+}
+
 // releaseDeveloperAPIRequest returns a failed request's credits and Key quota.
 // Upstream or platform failures and timeouts are released. A caller leaving is
 // not a failure by itself: an image or non-streamed answer that is produced is
@@ -322,34 +368,42 @@ func (s *Server) releaseDeveloperAPIRequest(parent context.Context, billing *dev
 	ctx, cancel := detachedOpenAIImagePersistenceContext(parent)
 	defer cancel()
 	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if billing.Reserved {
-			if _, err := wallet.ReleaseFeatureCredits(ctx, tx, userID, billing.PriceCents, billing.SourceType, billing.BillingID, nil); err != nil {
-				return err
-			}
-		}
-		if billing.UsageEventID != nil {
-			if err := store.DeleteAPIKeyUsageEvent(ctx, tx, *billing.UsageEventID); err != nil {
-				return err
-			}
-		}
-		return store.MarkDeveloperAPIRequest(ctx, tx, billing.BillingID, store.DeveloperAPIRequestFailed)
+		return releaseDeveloperAPIRequestTx(ctx, tx, billing, userID)
 	})
 	if err != nil {
 		log.Printf("developer API release deferred to reclaim billing_id=%s: %v", billing.BillingID, err)
 	}
 }
 
+func releaseDeveloperAPIRequestTx(ctx context.Context, tx pgx.Tx, billing *developerAPIBilling, userID uuid.UUID) error {
+	if billing.Reserved {
+		if _, err := wallet.ReleaseFeatureCredits(ctx, tx, userID, billing.PriceCents, billing.SourceType, billing.BillingID, nil); err != nil {
+			return err
+		}
+	}
+	if billing.UsageEventID != nil {
+		if err := store.DeleteAPIKeyUsageEvent(ctx, tx, *billing.UsageEventID); err != nil {
+			return err
+		}
+	}
+	return store.MarkDeveloperAPIRequest(ctx, tx, billing.BillingID, store.DeveloperAPIRequestFailed)
+}
+
 func (s *Server) settleDeveloperAPIRequest(parent context.Context, billing *developerAPIBilling, userID uuid.UUID) error {
 	ctx, cancel := detachedOpenAIImagePersistenceContext(parent)
 	defer cancel()
 	return s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if billing.Reserved {
-			if _, err := wallet.SettleFeatureCredits(ctx, tx, userID, billing.PriceCents, billing.SourceType, billing.BillingID, nil); err != nil {
-				return err
-			}
-		}
-		return store.MarkDeveloperAPIRequest(ctx, tx, billing.BillingID, store.DeveloperAPIRequestSucceeded)
+		return settleDeveloperAPIRequestTx(ctx, tx, billing, userID)
 	})
+}
+
+func settleDeveloperAPIRequestTx(ctx context.Context, tx pgx.Tx, billing *developerAPIBilling, userID uuid.UUID) error {
+	if billing.Reserved {
+		if _, err := wallet.SettleFeatureCredits(ctx, tx, userID, billing.PriceCents, billing.SourceType, billing.BillingID, nil); err != nil {
+			return err
+		}
+	}
+	return store.MarkDeveloperAPIRequest(ctx, tx, billing.BillingID, store.DeveloperAPIRequestSucceeded)
 }
 
 func (s *Server) recordOpenAIImageProfitLogged(parent context.Context, record directImageProfit, billing *developerAPIBilling, status, errorCode string) {
@@ -367,7 +421,7 @@ func (s *Server) recordOpenAIImageProfit(ctx context.Context, record directImage
 	}
 	revenue := billing.PriceCents
 	cost := record.UpstreamCost * int64(record.Request.N)
-	if status != "succeeded" {
+	if status != "succeeded" && errorCode != openAIContentPolicyCode {
 		revenue = 0
 		cost = 0
 	}

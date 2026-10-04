@@ -34,3 +34,17 @@ test("falls back to a user-readable error code message", () => {
     "生成服务当前繁忙或额度不足，请稍后重试",
   );
 });
+
+test("tells the user a content policy rejection is not refunded", () => {
+  const message = taskFailureMessage({
+    errorCode: "content_policy",
+    errorMessage: "非常抱歉，该提示可能违反了我们的内容政策。",
+  });
+  assert.match(message, /^非常抱歉，该提示可能违反了我们的内容政策。/);
+  assert.match(message, /本次积分不退回/);
+});
+
+test("tells the user a waived content policy rejection was refunded", () => {
+  const message = taskFailureMessage({ errorCode: "content_policy_waived", errorMessage: "违反了防护限制" });
+  assert.match(message, /积分已退回/);
+});

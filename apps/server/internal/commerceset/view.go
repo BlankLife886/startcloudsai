@@ -24,6 +24,10 @@ type ShotView struct {
 	Status      string `json:"status"`
 	ImageURL    string `json:"imageUrl,omitempty"`
 	OriginalURL string `json:"originalUrl,omitempty"`
+	// FileKey is the stored original, so the image viewer can edit it.
+	FileKey string `json:"fileKey,omitempty"`
+	// Edited means the latest image was edited by the user in the viewer.
+	Edited bool `json:"edited,omitempty"`
 	// PriceCents is what the latest attempt cost, the estimate for a redo.
 	PriceCents int64    `json:"priceCents,omitempty"`
 	Reviewed   bool     `json:"reviewed"`
@@ -61,6 +65,25 @@ type View struct {
 	BudgetCents      int64  `json:"budgetCents"`
 	AutoApprovable   bool   `json:"autoApprovable"`
 	ConfirmationNote string `json:"confirmationNote,omitempty"`
+}
+
+// AttemptOutput is the image an attempt produced: its own adopted file, or
+// its task's first output once the task succeeded.
+func AttemptOutput(attempt *store.CommerceSetAttempt, tasks map[uuid.UUID]*store.Task) (key, thumb string) {
+	if attempt == nil {
+		return "", ""
+	}
+	if attempt.FileKey != "" {
+		return attempt.FileKey, attempt.ThumbKey
+	}
+	task := tasks[attempt.TaskID]
+	if task == nil || task.Status != "succeeded" || len(task.OutputKeys) == 0 {
+		return "", ""
+	}
+	if len(task.ThumbnailKeys) > 0 {
+		thumb = task.ThumbnailKeys[0]
+	}
+	return task.OutputKeys[0], thumb
 }
 
 // fileURL is the app's authenticated file route.
@@ -114,18 +137,25 @@ func (s Service) BuildView(ctx context.Context, set *store.CommerceSet) (*View, 
 		if attempt == nil {
 			ready = false
 		} else {
-			item.TaskID = attempt.TaskID.String()
 			item.Status = "queued"
 			item.PriceCents = attempt.PriceCents
-			if task := tasks[attempt.TaskID]; task != nil {
-				item.Status = task.Status
-				if task.Status == "succeeded" && len(task.OutputKeys) > 0 {
-					view.Downloadable++
-					item.OriginalURL = fileURL(task.OutputKeys[0])
-					item.ImageURL = item.OriginalURL
-					if len(task.ThumbnailKeys) > 0 {
-						item.ImageURL = fileURL(task.ThumbnailKeys[0])
-					}
+			if attempt.FileKey != "" {
+				item.Status = "succeeded"
+				item.Edited = true
+				item.PriceCents = previousPrice(shot)
+			} else {
+				item.TaskID = attempt.TaskID.String()
+				if task := tasks[attempt.TaskID]; task != nil {
+					item.Status = task.Status
+				}
+			}
+			if key, thumb := AttemptOutput(attempt, tasks); key != "" {
+				view.Downloadable++
+				item.FileKey = key
+				item.OriginalURL = fileURL(key)
+				item.ImageURL = item.OriginalURL
+				if thumb != "" {
+					item.ImageURL = fileURL(thumb)
 				}
 			}
 			if terminal(item.Status) {
@@ -141,12 +171,35 @@ func (s Service) BuildView(ctx context.Context, set *store.CommerceSet) (*View, 
 			} else {
 				ready = false
 			}
-			item.CanRedo = terminal(item.Status) && len(shot.Attempts) < maxAttemptsPerShot
+			item.CanRedo = terminal(item.Status) && generatedAttempts(shot) < maxAttemptsPerShot
 		}
 		view.Shots = append(view.Shots, item)
 	}
 	view.Ready = ready
 	return view, nil
+}
+
+// generatedAttempts counts the images the model made for a shot; edits the
+// user adopted do not use up redos.
+func generatedAttempts(shot store.CommerceSetShot) int {
+	count := 0
+	for _, attempt := range shot.Attempts {
+		if attempt.FileKey == "" {
+			count++
+		}
+	}
+	return count
+}
+
+// previousPrice is what the last generated attempt cost: the estimate for
+// redoing a shot whose latest image was an edit.
+func previousPrice(shot store.CommerceSetShot) int64 {
+	for index := len(shot.Attempts) - 1; index >= 0; index-- {
+		if shot.Attempts[index].FileKey == "" {
+			return shot.Attempts[index].PriceCents
+		}
+	}
+	return 0
 }
 
 // ViewByID loads a user's set and builds its view; nil when not theirs.

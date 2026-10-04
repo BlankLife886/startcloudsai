@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/contentpolicy"
 	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -337,7 +338,44 @@ func FailTxAttempt(ctx context.Context, q store.Q, id uuid.UUID, expectedAttempt
 	if err != nil || !changed {
 		return changed, err
 	}
-	if err := release(ctx, q, run, productReason(run, "%s失败，费用已退回")); err != nil {
+	// 内容违规是上游处理过请求后驳回的：超出每日免扣次数时按本次实际模式的费用结算，
+	// 只退回多预留的部分。
+	mode, modelKey := "chat", "_chatModelConfigId"
+	if isImageRun(run) {
+		mode, modelKey = "image", "_imageModelConfigId"
+	}
+	price := min(ResolvedCost(run, mode), max(run.ReservedCents, 0))
+	billingID := sourceID(run, run.BillingGeneration)
+	decision, err := contentpolicy.Decide(ctx, q, contentpolicy.Event{
+		UserID: run.UserID, SourceType: contentpolicy.SourceAssistantRun, SourceID: billingID,
+		Feature: "assistant-" + mode, ModelID: paramString(run.Params, modelKey), Prompt: run.Prompt,
+		ErrorCode: code, Message: message, AmountCents: price,
+	}, time.Now().UTC())
+	if err != nil {
+		return false, err
+	}
+	if decision.Code != code {
+		code = decision.Code
+		if _, err := q.Exec(ctx, `UPDATE assistant_runs SET error_code=$2 WHERE id=$1`, id, code); err != nil {
+			return false, err
+		}
+	}
+	revenue := int64(0)
+	if decision.Charge && run.ReservedCents > 0 {
+		revenue = price
+		if revenue > 0 {
+			if _, err := wallet.SettleFeatureCredits(ctx, q, run.UserID, revenue, SourceType, billingID,
+				strPtr(productReason(run, "%s内容违规被驳回，按预留积分结算"))); err != nil {
+				return false, err
+			}
+		}
+		if remainder := run.ReservedCents - revenue; remainder > 0 {
+			if _, err := wallet.ReleaseFeatureCredits(ctx, q, run.UserID, remainder, SourceType, billingID,
+				strPtr(productReason(run, "%s退回多预留费用"))); err != nil {
+				return false, err
+			}
+		}
+	} else if err := release(ctx, q, run, productReason(run, "%s失败，费用已退回")); err != nil {
 		return false, err
 	}
 	unitCostKey := "_chatUpstreamUnitCostCents"
@@ -352,8 +390,8 @@ func FailTxAttempt(ctx context.Context, q store.Q, id uuid.UUID, expectedAttempt
 			SourceType: SourceType, SourceID: run.ID.String(), BillingGeneration: run.BillingGeneration,
 			UserID: run.UserID, EventStatus: "failed", Workspace: paramString(run.Params, "workspace"),
 			ProviderID: paramString(run.Params, providerKey), ModelID: paramString(run.Params, modelKey), Units: units,
-			UpstreamCostCents: paramInt64(run.Params, unitCostKey) * int64(units),
-			Metadata:          map[string]any{"mode": run.Mode, "errorCode": code}, CreatedAt: time.Now().UTC(),
+			RevenueCents: revenue, UpstreamCostCents: paramInt64(run.Params, unitCostKey) * int64(units),
+			Metadata: map[string]any{"mode": run.Mode, "errorCode": code}, CreatedAt: time.Now().UTC(),
 		}); err != nil {
 			return false, err
 		}

@@ -21,6 +21,9 @@ const (
 const (
 	CommerceApprovedByUser   = "user"
 	CommerceApprovedByBudget = "budget"
+	// CommerceEditedByUser marks an image the user edited in the assistant's
+	// image viewer and put in place of the shot; it has no task.
+	CommerceEditedByUser = "edit"
 )
 
 // CommerceSetReview is the vision check of one finished image.
@@ -41,6 +44,10 @@ type CommerceSetAttempt struct {
 	Note       string             `json:"note,omitempty"`
 	CreatedAt  time.Time          `json:"createdAt"`
 	Review     *CommerceSetReview `json:"review,omitempty"`
+	// FileKey/ThumbKey hold an edited image adopted into the set; TaskID is
+	// then empty.
+	FileKey  string `json:"fileKey,omitempty"`
+	ThumbKey string `json:"thumbKey,omitempty"`
 }
 
 // CommerceSetShot is one planned image and its attempts.

@@ -53,7 +53,10 @@ func Capture(ctx context.Context, q store.Q, policy store.SubscriptionPolicy, re
 	if policy.CanvasProjectBonus < 0 || policy.CanvasProjectBonus > store.MaxCanvasProjectBonus {
 		return nil, fmt.Errorf("invalid subscription canvas project bonus")
 	}
-	return &store.BillingContract{ID: uuid.New(), PriceBookID: id, CapturedAt: at, PlanRevision: revision, ConcurrencyBonus: &bonus, CanvasProjectBonus: policy.CanvasProjectBonus, LockModelPrices: policy.ModelPricesLocked(), AllowTopupPriceLock: policy.AllowTopupPriceLock}, nil
+	if policy.AssistantConversationBonus < 0 || policy.AssistantConversationBonus > store.MaxAssistantConversationBonus {
+		return nil, fmt.Errorf("invalid subscription assistant conversation bonus")
+	}
+	return &store.BillingContract{ID: uuid.New(), PriceBookID: id, CapturedAt: at, PlanRevision: revision, ConcurrencyBonus: &bonus, CanvasProjectBonus: policy.CanvasProjectBonus, AssistantConversationBonus: policy.AssistantConversationBonus, LockModelPrices: policy.ModelPricesLocked(), AllowTopupPriceLock: policy.AllowTopupPriceLock}, nil
 }
 
 type Request struct {

@@ -134,6 +134,11 @@ export async function clearNotifications() {
   return apiDelete('/me/notifications', { fallbackMessage: '清空通知失败' })
 }
 
+/** 删除一条通知（个人通知删除，全站通知仅对自己隐藏）。 */
+export async function dismissNotification(id) {
+  return apiDelete(`/me/notifications/${encodeURIComponent(id)}`, { fallbackMessage: '删除通知失败' })
+}
+
 /** 我的画廊投稿及审核状态。 */
 export async function listMyGallerySubmissions({ limit = 20, cursor = '', signal } = {}) {
   const data = await apiGet('/me/gallery/submissions', {

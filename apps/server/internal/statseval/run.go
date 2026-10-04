@@ -39,7 +39,7 @@ func NewAgent(client *sub2api.Client, registry *assistanttools.Registry, userID 
 		}
 		started := time.Now()
 		messages := []sub2api.Message{
-			{Role: "system", Content: assistantv2.SystemPrompt(timezone, now(), "", false)},
+			{Role: "system", Content: assistantv2.SystemPrompt(timezone, now())},
 			{Role: "user", Content: prompt},
 		}
 		for step := 0; ; step++ {

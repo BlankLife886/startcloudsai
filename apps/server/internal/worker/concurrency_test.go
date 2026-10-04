@@ -1179,7 +1179,8 @@ func TestTextReviewWithFailureTextClosesTaskImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if task.Status != "failed" || task.ErrorCode == nil || *task.ErrorCode != "upstream_error" {
+	if task.Status != "failed" || task.ErrorCode == nil || *task.ErrorCode != "content_policy_waived" {
+		// 这个任务没有费用，违规只记录不扣费。
 		t.Fatalf("stale text_review remained active: %#v", task)
 	}
 	if task.Attempt != 0 {

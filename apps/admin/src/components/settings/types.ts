@@ -79,6 +79,10 @@ export interface AdminSettings {
   imageFetchConcurrency?: number
   canvasBatchMaxCount?: number
   canvasProjectMaxCount?: number
+  assistantConversationMaxCount?: number
+  assistantConversationDailyCreateLimit?: number
+  assistantConversationMaxMessages?: number
+  assistantConversationArchiveDays?: number
   canvasProjectMaxKb?: number
   platformLoggingEnabled?: boolean
   platformLogSecurityEnabled?: boolean

@@ -79,3 +79,24 @@ func ListAnnouncements(ctx context.Context, q Q, activeAt *time.Time) ([]*Announ
 	}
 	return out, rows.Err()
 }
+
+// ListAnnouncementHistory 用户端公告记录：已上线（启用且已到开始时间）的公告，含已过期的，按上线时间倒序。
+func ListAnnouncementHistory(ctx context.Context, q Q, now time.Time, limit int) ([]*Announcement, error) {
+	rows, err := q.Query(ctx, `SELECT `+announcementCols+` FROM announcements
+		WHERE active = true AND (starts_at IS NULL OR starts_at <= $1)
+		ORDER BY COALESCE(starts_at, created_at) DESC, created_at DESC, id DESC
+		LIMIT $2`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Announcement
+	for rows.Next() {
+		a, err := scanAnnouncement(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}

@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const assistantConversationCols = `id, user_id, title, workspace, project_id, created_at, updated_at`
+const assistantConversationCols = `id, user_id, title, workspace, project_id, created_at, updated_at, pinned_at, archived_at`
 const assistantMessageCols = `id, conversation_id, role, content, kind, status, metadata, created_at, updated_at`
 const assistantRunCols = `id, user_id, conversation_id, user_message_id, assistant_message_id,
 	idempotency_key, request_fingerprint, mode, resolved_mode,
@@ -21,7 +21,8 @@ const assistantRunCols = `id, user_id, conversation_id, user_message_id, assista
 
 func scanAssistantConversation(row pgx.Row) (*AssistantConversation, error) {
 	var item AssistantConversation
-	if err := row.Scan(&item.ID, &item.UserID, &item.Title, &item.Workspace, &item.ProjectID, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.UserID, &item.Title, &item.Workspace, &item.ProjectID, &item.CreatedAt, &item.UpdatedAt,
+		&item.PinnedAt, &item.ArchivedAt); err != nil {
 		return nil, err
 	}
 	return &item, nil
@@ -74,7 +75,7 @@ func ListAssistantConversations(ctx context.Context, q Q, userID uuid.UUID, limi
 
 func ListAssistantConversationsByWorkspace(ctx context.Context, q Q, userID uuid.UUID, workspace string, limit int) ([]*AssistantConversation, error) {
 	rows, err := q.Query(ctx, `SELECT `+assistantConversationCols+`
-		FROM assistant_conversations WHERE user_id = $1 AND workspace = $2
+		FROM assistant_conversations WHERE user_id = $1 AND workspace = $2 AND archived_at IS NULL
 		ORDER BY updated_at DESC, id DESC LIMIT $3`, userID, workspace, limit)
 	if err != nil {
 		return nil, err
@@ -401,6 +402,23 @@ func GetAssistantMessage(ctx context.Context, q Q, id uuid.UUID) (*AssistantMess
 	return nilOnNoRows(item, err)
 }
 
+// LockAssistantMessage reads a message and holds its row until the
+// transaction ends, so two submissions cannot both act on it.
+func LockAssistantMessage(ctx context.Context, q Q, id uuid.UUID) (*AssistantMessage, error) {
+	item, err := scanAssistantMessage(q.QueryRow(ctx, `SELECT `+assistantMessageCols+` FROM assistant_messages WHERE id = $1 FOR UPDATE`, id))
+	return nilOnNoRows(item, err)
+}
+
+// MarkAssistantProposalAutoExecuted records on the proposal itself that
+// auto-approval has spent on it. It lives on the proposal message so it
+// survives deleting the turn that executed it.
+func MarkAssistantProposalAutoExecuted(ctx context.Context, q Q, id uuid.UUID, at time.Time) error {
+	_, err := q.Exec(ctx, `UPDATE assistant_messages
+		SET metadata = jsonb_set(metadata, '{proposal,autoExecutedAt}', to_jsonb($2::text))
+		WHERE id = $1 AND metadata ? 'proposal'`, id, at.UTC().Format(time.RFC3339))
+	return err
+}
+
 func UpdateAssistantMessage(ctx context.Context, q Q, id uuid.UUID, content, kind, status string, metadata map[string]any) error {
 	if metadata == nil {
 		metadata = map[string]any{}
@@ -607,6 +625,12 @@ func GetUserAssistantRunByIdempotencyKey(ctx context.Context, q Q, userID uuid.U
 func GetUserAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (*AssistantRun, error) {
 	item, err := scanAssistantRun(q.QueryRow(ctx, `SELECT `+assistantRunCols+` FROM assistant_runs WHERE id = $1 AND user_id = $2`, id, userID))
 	return nilOnNoRows(item, err)
+}
+
+// GetAssistantRunByAssistantMessage finds the run that wrote a reply.
+func GetAssistantRunByAssistantMessage(ctx context.Context, q Q, messageID uuid.UUID) (*AssistantRun, error) {
+	return nilOnNoRows(scanAssistantRun(q.QueryRow(ctx, `SELECT `+assistantRunCols+` FROM assistant_runs
+		WHERE assistant_message_id = $1 ORDER BY created_at DESC LIMIT 1`, messageID)))
 }
 
 func GetAssistantRun(ctx context.Context, q Q, id uuid.UUID) (*AssistantRun, error) {

@@ -15,8 +15,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantmodel"
 	"github.com/BlankLife886/startcloudsai/server/internal/commerceset"
-	"github.com/BlankLife886/startcloudsai/server/internal/decision"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
@@ -146,14 +146,45 @@ func (s *Server) redoAssistantCommerceSet(c *gin.Context) {
 	s.respondCommerceSet(c, user.ID, id)
 }
 
+// adoptAssistantCommerceShot puts an image the user edited in the
+// assistant's image viewer in place of one shot of the set.
+func (s *Server) adoptAssistantCommerceShot(c *gin.Context) {
+	user, id, valid := s.commerceSetRequest(c)
+	if !valid {
+		return
+	}
+	var body struct {
+		ShotID  string `json:"shotId"`
+		FileKey string `json:"fileKey"`
+		Note    string `json:"note"`
+	}
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	key := strings.TrimSpace(body.FileKey)
+	if !isOwnedAssistantOutputImageKey(user.ID, key) {
+		fail(c, apperr.E("validation_error", "只能用你在助手里生成的图片替换", 422))
+		return
+	}
+	thumb := strings.TrimSuffix(key, path.Ext(key)) + "-thumb"
+	if err := s.commerceSets().Adopt(c.Request.Context(), user.ID, id, commerceset.AdoptInput{
+		ShotID: body.ShotID, FileKey: key, ThumbKey: thumb, Note: body.Note,
+	}); err != nil {
+		fail(c, commerceSetError(err))
+		return
+	}
+	s.respondCommerceSet(c, user.ID, id)
+}
+
 // commerceChecker builds the quality check: the assistant page's default
 // chat model looks at the finished image next to the product photos.
 func (s *Server) commerceChecker(ctx context.Context) (commerceset.Checker, error) {
-	selection, err := decision.ResolveModelWith(ctx, s.St.Pool, s.Cfg.AppSecret, decision.Override{})
+	selection, err := assistantmodel.Resolve(ctx, s.St.Pool, s.Cfg.AppSecret, "")
 	if err != nil {
 		return nil, err
 	}
-	client, err := decision.NewChatClient(selection)
+	client, err := assistantmodel.NewChatClient(selection)
 	if err != nil {
 		return nil, err
 	}
@@ -247,15 +278,15 @@ func (s *Server) archiveAssistantCommerceSet(c *gin.Context) {
 		if len(shot.Attempts) == 0 {
 			continue
 		}
-		task := tasks[shot.Attempts[len(shot.Attempts)-1].TaskID]
-		if task == nil || task.Status != "succeeded" || len(task.OutputKeys) == 0 {
+		key, _ := commerceset.AttemptOutput(&shot.Attempts[len(shot.Attempts)-1], tasks)
+		if key == "" {
 			continue
 		}
-		ext := path.Ext(task.OutputKeys[0])
+		ext := path.Ext(key)
 		if ext == "" {
 			ext = ".png"
 		}
-		entries = append(entries, entry{name: fmt.Sprintf("%02d-%s%s", index+1, strings.ReplaceAll(shot.Label, "/", "-"), ext), key: task.OutputKeys[0]})
+		entries = append(entries, entry{name: fmt.Sprintf("%02d-%s%s", index+1, strings.ReplaceAll(shot.Label, "/", "-"), ext), key: key})
 	}
 	if len(entries) == 0 {
 		fail(c, apperr.E("validation_error", "这套图还没有出完的图片", 422))

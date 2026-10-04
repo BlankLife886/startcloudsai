@@ -15,6 +15,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/announcementstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantreview"
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
@@ -94,13 +95,16 @@ type Server struct {
 	LanjingPay         *lanjingpay.Client
 	Logs               *platformlog.Recorder
 	AnnouncementStream *announcementstream.Source
-	limiterClosers     []func() error
-	c2aCallbackRoutes  func(context.Context, uuid.UUID) ([]store.AsyncPendingRoute, error)
-	enqueueImagePoll   func(context.Context, string, string, string, int, time.Duration) error
-	pageControls       pageControlCache
-	paymentChannel     paymentChannelCache
-	backgroundCancel   context.CancelFunc
-	backgroundWG       sync.WaitGroup
+	// AssistantProber runs the agent's first move for admin evaluations; the
+	// server's main wires in the worker's implementation.
+	AssistantProber   assistantreview.Prober
+	limiterClosers    []func() error
+	c2aCallbackRoutes func(context.Context, uuid.UUID) ([]store.AsyncPendingRoute, error)
+	enqueueImagePoll  func(context.Context, string, string, string, int, time.Duration) error
+	pageControls      pageControlCache
+	paymentChannel    paymentChannelCache
+	backgroundCancel  context.CancelFunc
+	backgroundWG      sync.WaitGroup
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) (*Server, error) {
@@ -270,6 +274,11 @@ func (s *Server) Router() *gin.Engine {
 	// api.POST("/assistant/images", s.assistantImages)
 	api.GET("/assistant/conversations", s.assistantConversations)
 	api.POST("/assistant/conversations", s.createAssistantConversation)
+	api.GET("/assistant/conversation-quota", s.assistantConversationQuotaEndpoint)
+	api.GET("/assistant/conversation-archive", s.archivedAssistantConversations)
+	api.POST("/assistant/conversations/:id/archive", s.archiveAssistantConversation)
+	api.POST("/assistant/conversations/:id/restore", s.restoreAssistantConversation)
+	api.PUT("/assistant/conversations/:id/pin", s.pinAssistantConversation)
 	api.GET("/assistant/conversations/:id", s.assistantConversation)
 	api.PATCH("/assistant/conversations/:id", s.patchAssistantConversation)
 	api.DELETE("/assistant/conversations/:id", s.deleteAssistantConversation)
@@ -287,6 +296,7 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/assistant/commerce-sets/:id/generate", s.generateAssistantCommerceSet)
 	api.POST("/assistant/commerce-sets/:id/redo", s.redoAssistantCommerceSet)
 	api.POST("/assistant/commerce-sets/:id/review", s.reviewAssistantCommerceSet)
+	api.POST("/assistant/commerce-sets/:id/adopt", s.adoptAssistantCommerceShot)
 	api.GET("/assistant/commerce-sets/:id/archive", s.archiveAssistantCommerceSet)
 	api.POST("/assistant/asset-actions/execute", s.executeAssistantAssetAction)
 	api.POST("/assistant/asset-actions/undo", s.undoAssistantAssetAction)
@@ -467,6 +477,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/changelog", s.metaChangelog)
 	api.GET("/announcements", s.metaAnnouncements)
 	api.GET("/announcements/events", s.announcementEvents)
+	api.GET("/announcements/history", s.metaAnnouncementHistory)
 	api.GET("/home-banners", s.homeBanners)
 	api.GET("/health", s.health)
 
@@ -499,6 +510,12 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/badge-counts", s.adminOnly(s.adminBadgeCounts))
 	admin.GET("/statistics", s.adminOnly(s.adminStats))
 	admin.GET("/profitability", s.adminOnly(s.adminProfitability))
+	admin.GET("/content-policy/config", s.adminOnly(s.adminContentPolicyConfig))
+	admin.PUT("/content-policy/config", s.adminOnly(s.adminContentPolicyConfig))
+	admin.POST("/content-policy/test", s.adminOnly(s.adminTestContentPolicy))
+	admin.GET("/content-policy/violations", s.adminOnly(s.adminContentPolicyViolations))
+	admin.GET("/content-policy/summary", s.adminOnly(s.adminContentPolicySummary))
+	admin.POST("/content-policy/violations/:id/refund", s.adminOnly(s.adminRefundContentPolicyViolation))
 	admin.GET("/developer-api/calls", s.adminOnly(s.adminDeveloperAPICalls))
 	admin.GET("/developer-api/summary", s.adminOnly(s.adminDeveloperAPISummary))
 	admin.GET("/developer-api/models", s.adminOnly(s.adminDeveloperAPIModels))
@@ -666,10 +683,12 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/providers/sub2api/tests", s.adminOnly(s.adminTestSub2API))
 	admin.POST("/providers/crun/tests", s.adminOnly(s.adminTestCRUN))
 	admin.POST("/providers/lanjing-pay/tests", s.adminOnly(s.adminTestLanjingPay))
-	admin.GET("/assistant/decision", s.adminOnly(s.adminGetAssistantDecision))
-	admin.PUT("/assistant/decision", s.adminOnly(s.adminPutAssistantDecision))
-	admin.GET("/assistant/decision/stats", s.adminOnly(s.adminAssistantDecisionStats))
-	admin.POST("/assistant/decision/evals", s.adminOnly(s.adminRunAssistantDecisionEval))
+	admin.GET("/assistant/quality", s.adminOnly(s.adminAssistantQuality))
+	admin.GET("/assistant/quality/cases", s.adminOnly(s.adminAssistantQualityCases))
+	admin.PATCH("/assistant/quality/cases/:id", s.adminOnly(s.adminPatchAssistantQualityCase))
+	admin.DELETE("/assistant/quality/cases/:id", s.adminOnly(s.adminDeleteAssistantQualityCase))
+	admin.POST("/assistant/quality/evals", s.adminOnly(s.adminRunAssistantQualityEval))
+	admin.POST("/assistant/quality/compare", s.adminOnly(s.adminCompareAssistantVersion))
 	admin.GET("/assistant/stats-evals/cases", s.adminOnly(s.adminAssistantStatsEvalCases))
 	admin.POST("/assistant/stats-evals", s.adminOnly(s.adminRunAssistantStatsEval))
 	admin.GET("/model-config", s.adminOnly(s.adminGetModelConfig))

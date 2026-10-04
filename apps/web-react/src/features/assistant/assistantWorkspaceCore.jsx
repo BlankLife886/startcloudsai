@@ -145,7 +145,8 @@ const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
 const QUEUE_WAIT_STAGES = new Set(["waiting-agent-pool", "waiting-execution-pool"]);
 const MESSAGE_BATCH_SIZE = 24;
 const LOAD_EARLIER_COOLDOWN_MS = 200;
-const MAX_ASSISTANT_MESSAGE_CHARACTERS = 12000;
+// 单条消息字数上限以后台“任务运行设置”为准（runtime-config 下发）；这里只是配置没取到时的兜底，和服务端默认值一致。
+const MAX_ASSISTANT_MESSAGE_CHARACTERS = 60000;
 const SIDEBAR_MOTION_MS = 280;
 
 function assistantCharacterCount(value) {
@@ -214,7 +215,9 @@ function proposalImagePlanItems(proposal = {}) {
 
 function proposalReferenceImages(proposal = {}, sourceReferences = []) {
   const items = proposalImagePlanItems(proposal);
-  const inheritedReferences = proposal.referenceImagesEdited === true ? [] : sourceReferences;
+  // referencesResolved: the server already picked the final references (e.g. only
+  // the second image of a set), so the source message's images must not be merged back.
+  const inheritedReferences = proposal.referenceImagesEdited === true || proposal.referencesResolved === true ? [] : sourceReferences;
   return uniqueReferenceImages([
     ...inheritedReferences,
     ...(Array.isArray(proposal.referenceImages) ? proposal.referenceImages : []),

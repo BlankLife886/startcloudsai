@@ -1080,6 +1080,11 @@ func unionCursorPage(branches []string, alias, cols, where string, args []any, c
 
 // ListTasks 任务分页（limit+1 行）。userID 为 nil 时查全站（后台）。
 func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status string, userIDs []uuid.UUID, limit int, cursor *Cursor, excludeSource, source string) ([]*Task, error) {
+	return ListTasksByKind(ctx, q, userID, taskType, status, "", userIDs, limit, cursor, excludeSource, source)
+}
+
+// ListTasksByKind 与 ListTasks 相同，另按 params._kind 精确过滤（如各 AI 电商模块只读自己的历史）。
+func ListTasksByKind(ctx context.Context, q Q, userID *uuid.UUID, taskType, status, kind string, userIDs []uuid.UUID, limit int, cursor *Cursor, excludeSource, source string) ([]*Task, error) {
 	from := "tasks"
 	table := "tasks"
 	if userID != nil {
@@ -1100,6 +1105,10 @@ func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status str
 	if status != "" {
 		args = append(args, status)
 		where += fmt.Sprintf(` AND status = $%d`, len(args))
+	}
+	if kind != "" {
+		args = append(args, kind)
+		where += fmt.Sprintf(` AND params->>'_kind' = $%d`, len(args))
 	}
 	where, args = appendTaskOriginFilter(where, args, source, excludeSource)
 	if userIDs != nil {

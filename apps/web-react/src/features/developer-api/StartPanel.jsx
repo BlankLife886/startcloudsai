@@ -67,7 +67,7 @@ export function StartPanel({models,ready,summary,freshSecret,protocol,onProtocol
     <header><div className="dap-code-tabs" role="tablist" aria-label="语言">{CODE_LANGUAGES.map(([value,label])=><button key={value} type="button" role="tab" aria-selected={language===value} className={language===value?'active':''} onClick={()=>onLanguage(value)}>{label}</button>)}</div><button type="button" className="dap-code-copy" onClick={()=>copy(code,'代码已复制')}><Copy size={14}/>复制代码</button></header>
     {install&&<div className="dap-code-install"><span>先安装</span><code><i>$</i> {install}</code><button type="button" aria-label="复制安装命令" title="复制安装命令" onClick={()=>copy(install,'安装命令已复制')}><Copy size={13}/></button></div>}
     <pre tabIndex={0} aria-label="示例代码">{code.split('\n').map((line,index)=>{const tags=lineTags(line,{base,apiKey,protocol});return <span key={index} className={`dap-line${tags.length?` is-${tags[0]}`:''}`}><span className="dap-line-no" aria-hidden="true">{index+1}</span><span className="dap-line-text">{line||' '}</span>{tags.map(tag=><i key={tag} className={`dap-tag is-${tag}`} aria-hidden="true">{TAGS[tag]}</i>)}</span>})}</pre>
-    <footer><Check size={13}/>{language==='curl'?PROTOCOLS[protocol].curlResult:PROTOCOLS[protocol].result}{freshSecret?' 代码里已是真实密钥，不要提交到代码仓库或公开分享。':' 失败或超时不扣费，网关不会自动重试。'}</footer>
+    <footer><Check size={13}/>{language==='curl'?PROTOCOLS[protocol].curlResult:PROTOCOLS[protocol].result}{freshSecret?' 代码里已是真实密钥，不要提交到代码仓库或公开分享。':' 失败或超时不扣费（内容违规被驳回除外），网关不会自动重试。'}</footer>
    </section>
   </div>
  </>;

@@ -8,20 +8,21 @@ import (
 )
 
 type BillingContract struct {
-	ConcurrencyBonus     *int      `json:"concurrencyBonus,omitempty"`
-	CanvasProjectBonus   int       `json:"canvasProjectBonus,omitempty"`
-	ID                   uuid.UUID `json:"id"`
-	PriceBookID          string    `json:"priceBookId"`
-	CapturedAt           time.Time `json:"capturedAt"`
-	PlanRevision         int       `json:"planRevision"`
-	TaskConcurrency      int       `json:"taskConcurrency,omitempty"`
-	AssistantConcurrency int       `json:"assistantConcurrency,omitempty"`
-	LockModelPrices      bool      `json:"lockModelPrices"`
-	AllowTopupPriceLock  bool      `json:"allowTopupPriceLock"`
+	ConcurrencyBonus           *int      `json:"concurrencyBonus,omitempty"`
+	CanvasProjectBonus         int       `json:"canvasProjectBonus,omitempty"`
+	AssistantConversationBonus int       `json:"assistantConversationBonus,omitempty"`
+	ID                         uuid.UUID `json:"id"`
+	PriceBookID                string    `json:"priceBookId"`
+	CapturedAt                 time.Time `json:"capturedAt"`
+	PlanRevision               int       `json:"planRevision"`
+	TaskConcurrency            int       `json:"taskConcurrency,omitempty"`
+	AssistantConcurrency       int       `json:"assistantConcurrency,omitempty"`
+	LockModelPrices            bool      `json:"lockModelPrices"`
+	AllowTopupPriceLock        bool      `json:"allowTopupPriceLock"`
 }
 
 func (c *BillingContract) CoversEntitlements(old *BillingContract) bool {
-	return old == nil || c != nil && c.ExtraConcurrency() >= old.ExtraConcurrency() && c.CanvasProjectBonus >= old.CanvasProjectBonus && (!old.LockModelPrices || c.LockModelPrices) && (!old.AllowTopupPriceLock || c.AllowTopupPriceLock)
+	return old == nil || c != nil && c.ExtraConcurrency() >= old.ExtraConcurrency() && c.CanvasProjectBonus >= old.CanvasProjectBonus && c.AssistantConversationBonus >= old.AssistantConversationBonus && (!old.LockModelPrices || c.LockModelPrices) && (!old.AllowTopupPriceLock || c.AllowTopupPriceLock)
 }
 
 func (c BillingContract) ExtraConcurrency() int {

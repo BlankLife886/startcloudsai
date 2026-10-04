@@ -475,7 +475,8 @@ func (s *Server) adminListPlans(c *gin.Context, _ *store.User) {
 		items = append(items, adminPlanDict(p, usageByPlan[p.ID]))
 	}
 	ok(c, gin.H{"items": items, "baseConcurrency": base,
-		"baseCanvasProjects": settings.ResolveCanvasProjectMaxCount(c.Request.Context(), s.St.Pool)})
+		"baseCanvasProjects":         settings.ResolveCanvasProjectMaxCount(c.Request.Context(), s.St.Pool),
+		"baseAssistantConversations": settings.ResolveAssistantConversationPolicy(c.Request.Context(), s.St.Pool).MaxCount})
 }
 
 func (s *Server) adminPlanVersions(c *gin.Context, _ *store.User) {
@@ -2214,6 +2215,10 @@ var settingsCamel = map[string]string{
 	"canvas_batch_max_count":                      "canvasBatchMaxCount",
 	"canvas_project_max_count":                    "canvasProjectMaxCount",
 	"canvas_project_max_kb":                       "canvasProjectMaxKb",
+	"assistant_conversation_max_count":            "assistantConversationMaxCount",
+	"assistant_conversation_daily_create_limit":   "assistantConversationDailyCreateLimit",
+	"assistant_conversation_max_messages":         "assistantConversationMaxMessages",
+	"assistant_conversation_archive_days":         "assistantConversationArchiveDays",
 	"cross_provider_same_model_balancing_enabled": "crossProviderSameModelBalancingEnabled",
 	"admin_image_analysis_provider_id":            "adminImageAnalysisProviderId",
 	"admin_image_analysis_model_id":               "adminImageAnalysisModelId",
@@ -2544,6 +2549,30 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > settings.CanvasProjectMaxCountLimit {
 				fail(c, apperr.E("validation_error", fmt.Sprintf("canvasProjectMaxCount: 须在 1-%d 之间", settings.CanvasProjectMaxCountLimit), 422))
+				return
+			}
+		case "assistant_conversation_max_count":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > settings.AssistantConversationMaxCountLimit {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("assistantConversationMaxCount: 须在 1-%d 之间", settings.AssistantConversationMaxCountLimit), 422))
+				return
+			}
+		case "assistant_conversation_daily_create_limit":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > settings.AssistantConversationDailyMaxLimit {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("assistantConversationDailyCreateLimit: 须在 0-%d 之间（0 表示不限）", settings.AssistantConversationDailyMaxLimit), 422))
+				return
+			}
+		case "assistant_conversation_max_messages":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > settings.AssistantConversationMaxMessagesLimit {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("assistantConversationMaxMessages: 须在 0-%d 之间（0 表示不限）", settings.AssistantConversationMaxMessagesLimit), 422))
+				return
+			}
+		case "assistant_conversation_archive_days":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > settings.AssistantConversationArchiveDaysLimit {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("assistantConversationArchiveDays: 须在 1-%d 天之间", settings.AssistantConversationArchiveDaysLimit), 422))
 				return
 			}
 		case "canvas_project_max_kb":

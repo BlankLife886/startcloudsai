@@ -367,6 +367,14 @@ func (s *Server) createTask(c *gin.Context) {
 		delete(body.Params, "maskBaseKey")
 		delete(body.Params, "maskRect")
 	}
+	seriesAnchor, err := resolveSeriesAnchor(c.Request.Context(), s.St.Pool, user.ID, body.Type, body.Params)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if seriesAnchor != "" {
+		trustedParams[store.SeriesAnchorTaskParam] = seriesAnchor
+	}
 
 	task, created, err := taskflow.CreateTask(c.Request.Context(), s.St, user.ID, taskflow.CreateInput{
 		Type:                   body.Type,
@@ -496,6 +504,12 @@ func (s *Server) listTasks(c *gin.Context) {
 	status := c.Query("status")
 	excludeSource := strings.TrimSpace(c.Query("excludeSource"))
 	source := strings.TrimSpace(c.Query("source"))
+	// 可选：按任务细分类型（params._kind）过滤，例如 ui-design-ecommerce-listing-generation
+	kind := strings.TrimSpace(c.Query("kind"))
+	if len(kind) > 80 || strings.ContainsAny(kind, " \t\n'\"") {
+		fail(c, apperr.E("validation_error", "无效的任务细分类型", 422))
+		return
+	}
 	if taskType == store.PromptTaskTypeCanvas || taskType == store.CanvasTaskSource {
 		source = store.CanvasTaskSource
 		taskType = ""
@@ -513,7 +527,7 @@ func (s *Server) listTasks(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	rows, err := store.ListTasks(c.Request.Context(), s.St.Pool, &user.ID, taskType, status, nil, limit, cursor, excludeSource, source)
+	rows, err := store.ListTasksByKind(c.Request.Context(), s.St.Pool, &user.ID, taskType, status, kind, nil, limit, cursor, excludeSource, source)
 	if err != nil {
 		fail(c, err)
 		return

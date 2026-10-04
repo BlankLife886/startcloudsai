@@ -1,6 +1,10 @@
 import { tryonShotBlueprints } from "./tryonShots.js";
 import tryonMenuCover from "@react/legacy-static/assets/ecommerce/tryon-preview.webp";
 import listingMenuCover from "@react/legacy-static/assets/ecommerce/listing-preview.webp";
+import {
+  LISTING_DEFAULT_TYPE_IDS,
+  LISTING_IMAGE_TYPES,
+} from "@react/features/ecommerce/listing/listingCatalog.js";
 import detailMenuCover from "@react/legacy-static/assets/ecommerce/detail-preview.webp";
 import {
   HANDHELD_USE_SHOT_SHARPNESS_OVERRIDE,
@@ -391,164 +395,8 @@ export function normalizeDetailCustomDirection(label, index = 0) {
 // 兼容旧调用：详情页模块目录即出图方向目录
 export const ECOMMERCE_DETAIL_MODULES = DETAIL_DIRECTIONS;
 
-// 商品套图出图类型：对齐主流电商 AI 作图工具（seeany 等）的 18 种类型，
-// 用户按需勾选，默认勾选前 6 种；每种类型对应一张图的输出职责。
-export const LISTING_IMAGE_TYPES = [
-  {
-    id: "white",
-    label: "产品白底图",
-    hint: "上架合规主图",
-    icon: "bi-square",
-    defaultSelected: true,
-    direction:
-      "使用纯白或平台合规的干净背景，商品完整入镜、正面主视角、占画面约 85%，不添加装饰、人物、道具和无关文字。",
-  },
-  {
-    id: "hero",
-    label: "首屏视觉图",
-    hint: "传递核心价值",
-    icon: "bi-image",
-    defaultSelected: true,
-    direction:
-      "商品占据明确视觉中心，构图干净有呼吸感，预留克制的标题安全区，用一句核心价值主张建立第一印象。",
-  },
-  {
-    id: "endorsement",
-    label: "产品代言互动",
-    hint: "真人与商品互动",
-    icon: "bi-person-heart",
-    defaultSelected: true,
-    direction:
-      "由与目标市场匹配的真人模特自然使用或展示商品，人物只是配角，商品仍是唯一焦点；不得出现可识别的名人或受保护形象。",
-  },
-  {
-    id: "selling",
-    label: "核心卖点图",
-    hint: "突出差异优势",
-    icon: "bi-stars",
-    defaultSelected: true,
-    direction:
-      "围绕一个最重要卖点组织视觉，用标注、局部放大或图标辅助说明；只呈现可由商品图或用户描述确认的信息，不虚构参数。",
-  },
-  {
-    id: "scene",
-    label: "产品场景展示图",
-    hint: "真实使用环境",
-    icon: "bi-house-heart",
-    defaultSelected: true,
-    direction:
-      "把商品自然放入目标用户的真实使用环境，比例、接触关系、光线和阴影可信，场景服务于商品而不抢戏。",
-  },
-  {
-    id: "spec",
-    label: "规格参数图",
-    hint: "尺寸与参数",
-    icon: "bi-rulers",
-    defaultSelected: true,
-    direction:
-      "清晰呈现用户已经提供的尺寸、容量、重量或规格信息，用标注线与信息区排版；没有可靠参数时保留信息区，不得虚构数值。",
-  },
-  {
-    id: "amazon",
-    label: "亚马逊主图",
-    hint: "纯白底 · 85% 占比",
-    icon: "bi-amazon",
-    direction:
-      "严格遵守亚马逊主图规范：纯白背景 RGB(255,255,255)，商品占画面 85% 以上，无文字、无 Logo 水印、无道具、无边框、无多角度拼图。",
-  },
-  {
-    id: "painpoint",
-    label: "客户痛点展示",
-    hint: "问题与解决",
-    icon: "bi-lightning-charge",
-    direction:
-      "先呈现目标用户遇到的一个真实痛点，再展示商品如何解决，情绪表达克制可信；不夸大效果，不贬低具体竞品。",
-  },
-  {
-    id: "wear",
-    label: "试穿试戴场景",
-    hint: "上身 / 佩戴效果",
-    icon: "bi-person-standing",
-    direction:
-      "由真人模特按正确方式穿着或佩戴商品，展示上身效果与尺度关系；保持商品款式、颜色、材质不变，模特身份不得指向真实名人。",
-  },
-  {
-    id: "craft",
-    label: "细节工艺图",
-    hint: "材质与做工",
-    icon: "bi-search",
-    direction:
-      "聚焦一处真实材质、接缝、接口或工艺细节做特写，纹理、Logo 和包装文字准确；只放大已有细节，不补造结构。",
-  },
-  {
-    id: "compare",
-    label: "使用对比图",
-    hint: "使用前后 / 方案差异",
-    icon: "bi-layout-split",
-    direction:
-      "以左右或上下分屏呈现有真实依据的使用前后或方案差异，对比维度明确；不伪造实验数据、检测结果和效果。",
-  },
-  {
-    id: "package",
-    label: "包装展示图",
-    hint: "包装与配件清单",
-    icon: "bi-box2-heart",
-    direction:
-      "展示参考图中可以确认的商品、外包装和随附配件，陈列整齐；无法从参考图确认的物品不得补造。",
-  },
-  {
-    id: "shipping",
-    label: "运输安装",
-    hint: "物流 / 安装步骤",
-    icon: "bi-truck",
-    direction:
-      "用步骤式版式说明用户提供的安装、组装或收货流程，图示简洁清晰；不承诺未提供的物流时效或服务。",
-  },
-  {
-    id: "design",
-    label: "产品设计图",
-    hint: "结构 / 设计语言",
-    icon: "bi-vector-pen",
-    direction:
-      "以爆炸图、线稿叠加或分层视角展示商品的设计语言与结构关系，只展示参考图中可见的部件，不虚构内部构造。",
-  },
-  {
-    id: "review",
-    label: "真实好评口碑图",
-    hint: "评价与口碑",
-    icon: "bi-chat-square-quote",
-    direction:
-      "以评价卡片、星级与引用排版组织用户明确提供的口碑内容；没有提供时保留评价区版式并使用占位文字，不得编造评价、销量或用户身份。",
-  },
-  {
-    id: "cert",
-    label: "权威资质认证图",
-    hint: "认证与检测",
-    icon: "bi-patch-check",
-    direction:
-      "仅展示用户明确提供的认证、专利或检测信息，用徽章式版式呈现；不得虚构任何认证标志、机构名称或证书编号。",
-  },
-  {
-    id: "ugc",
-    label: "通用买家秀",
-    hint: "生活化真实感",
-    icon: "bi-camera",
-    direction:
-      "模拟真实买家手机随拍的生活化质感：自然光、略随意的构图、真实环境细节，商品身份仍必须准确，不做过度修饰。",
-  },
-  {
-    id: "poster",
-    label: "活动海报",
-    hint: "促销 / 节日氛围",
-    icon: "bi-megaphone",
-    direction:
-      "围绕活动主题建立视觉层级，保留标题与利益点安全区；不虚构折扣、价格和日期，营销氛围服从商品主体。",
-  },
-];
-
-export const LISTING_DEFAULT_TYPE_IDS = LISTING_IMAGE_TYPES.filter(
-  (item) => item.defaultSelected,
-).map((item) => item.id);
+// 商品套图出图类型与默认选择统一由 listing 目录维护（主图 / 详情页 / 信任背书 / 营销素材）
+export { LISTING_IMAGE_TYPES, LISTING_DEFAULT_TYPE_IDS };
 
 export function listingImageTypeById(id) {
   return LISTING_IMAGE_TYPES.find((item) => item.id === String(id || "")) || null;
@@ -560,34 +408,6 @@ export function listingShotBlueprintsFromTypes(selectedIds = []) {
   return LISTING_IMAGE_TYPES.filter((item) => selected.has(item.id)).map(
     (item) => ({ id: item.id, label: item.label, direction: item.direction }),
   );
-}
-
-// 把智能策划返回的方案套回类型 blueprint：策划文案作为本张的标题与补充方向。
-export function listingShotBlueprintsFromPlan(plan, selectedIds = []) {
-  const base = listingShotBlueprintsFromTypes(selectedIds);
-  const items = Array.isArray(plan?.items) ? plan.items : [];
-  if (!items.length) return base;
-  return base.map((shot) => {
-    const planned = items.find((item) => String(item?.id || "") === shot.id);
-    if (!planned) return shot;
-    const headline = String(planned.headline || "").trim();
-    const subline = String(planned.subline || "").trim();
-    const direction = String(planned.direction || "").trim();
-    return {
-      ...shot,
-      headline,
-      subline,
-      direction: [
-        shot.direction,
-        direction ? `策划方向：${direction}` : "",
-        headline
-          ? `画面标题文案：「${headline}」${subline ? `；副文案：「${subline}」` : ""}。文案必须准确清晰，无法可靠生成时留白。`
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" "),
-    };
-  });
 }
 
 // 详情页出图方向：按目录顺序返回已勾选的内置方向，再追加自定义方向（保持用户添加顺序）
@@ -1227,6 +1047,8 @@ export function buildEcommerceGenerationPlan({
   identityLock = "",
   hasPersonIdentity,
   finalConstraints = "",
+  // 整套锚定：第 1 张先出，其余几张会额外拿到第 1 张成片作为整套参考
+  anchoredSeries = false,
 } = {}) {
   const mode = ecommerceModeById(modeId);
   const consistency = ecommerceConsistencyProfile(mode.id, referenceCount, {
@@ -1247,7 +1069,9 @@ export function buildEcommerceGenerationPlan({
   );
   const seriesLock =
     shots.length > 1
-      ? consistency.seriesLock
+      ? anchoredSeries
+        ? ANCHORED_SERIES_LOCK
+        : consistency.seriesLock
       : "准确执行本张图片职责，原始身份参考和其中可见细节优先级最高。";
 
   return shots.map((shot, index) => ({
@@ -1279,6 +1103,9 @@ export function buildEcommerceGenerationPlan({
     aplusSpec: shot.aplusSpec || null,
   }));
 }
+
+const ANCHORED_SERIES_LOCK =
+  "系列连续性锁：第 1 张为整套定调图；其余每张必须继承相同的原始身份参考、布景语言、主光方向、色温、镜头质感、品牌色和版式节奏。若本张额外收到整套参考，按其末尾说明使用；原始身份参考始终拥有更高优先级。";
 
 export const ECOMMERCE_REVISION_DIRECTIONS = [
   {

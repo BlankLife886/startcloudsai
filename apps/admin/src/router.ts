@@ -55,14 +55,17 @@ const feedbackView = memoizeRouteLoader(
   () => import("@/views/FeedbackView.vue"),
 );
 const tasksView = memoizeRouteLoader(() => import("@/views/TasksView.vue"));
+const contentPolicyView = memoizeRouteLoader(
+  () => import("@/views/ContentPolicyView.vue"),
+);
 const developerAPIView = memoizeRouteLoader(
   () => import("@/views/DeveloperAPIView.vue"),
 );
 const agentQualityView = memoizeRouteLoader(
   () => import("@/views/AgentQualityView.vue"),
 );
-const assistantDecisionView = memoizeRouteLoader(
-  () => import("@/views/AssistantDecisionView.vue"),
+const assistantQualityView = memoizeRouteLoader(
+  () => import("@/views/AssistantQualityView.vue"),
 );
 const modelConfigView = memoizeRouteLoader(
   () => import("@/views/ModelConfigView.vue"),
@@ -112,9 +115,10 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/growth-groups", growthGroupsView],
   ["/feedback", feedbackView],
   ["/tasks", tasksView],
+  ["/content-policy", contentPolicyView],
   ["/developer-api", developerAPIView],
   ["/agent-quality", agentQualityView],
-  ["/assistant-decision", assistantDecisionView],
+  ["/assistant-quality", assistantQualityView],
   ["/model-config", modelConfigView],
   ["/canvas-templates", canvasTemplatesView],
   ["/prompt-library", promptLibraryView],
@@ -222,6 +226,11 @@ const router = createRouter({
           meta: { title: "任务与调度" },
         },
         {
+          path: "content-policy",
+          component: contentPolicyView,
+          meta: { title: "内容违规" },
+        },
+        {
           path: "developer-api",
           component: developerAPIView,
           meta: { title: "API 调用" },
@@ -232,9 +241,14 @@ const router = createRouter({
           meta: { title: "Agent 质量" },
         },
         {
+          path: "assistant-quality",
+          component: assistantQualityView,
+          meta: { title: "AI 助手质量" },
+        },
+        {
+          // 旧页面“AI 助手判断”已改成质量页，书签和旧链接跳到新页面。
           path: "assistant-decision",
-          component: assistantDecisionView,
-          meta: { title: "AI 助手判断" },
+          redirect: "/assistant-quality",
         },
         {
           path: "model-config",

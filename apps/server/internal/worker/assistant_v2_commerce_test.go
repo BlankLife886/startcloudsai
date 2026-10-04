@@ -19,10 +19,10 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
-// A create turn that asks for e-commerce images with a product photo stays in
-// v2: the commerce tools are offered, the plan is stored, and the card data
-// goes into the original message. Nothing is generated without approval.
-func TestAssistantV2PlansACommerceSetInsteadOfHandingOver(t *testing.T) {
+// With a product photo attached, the set tools are offered next to the image
+// proposal tool and the model picks the set: the plan is stored and the card
+// data goes into the message. Nothing is generated without approval.
+func TestAssistantV2PlansACommerceSetWhenAskedForOne(t *testing.T) {
 	ctx := context.Background()
 	fixture := newV2Fixture(t, "帮我做一套保温杯的天猫主图")
 	if _, err := fixture.st.Pool.Exec(ctx, `UPDATE assistant_runs SET params = params || '{"referenceImages":[{"fileKey":"uploads/cup.png"}]}'::jsonb WHERE id = $1`, fixture.run.ID); err != nil {
@@ -93,7 +93,7 @@ func TestAssistantV2PlansACommerceSetInsteadOfHandingOver(t *testing.T) {
 	}
 
 	worker := &Worker{St: fixture.st, Storage: objectStorage}
-	if err := worker.runAssistantV2(ctx, run, client, rulesOnlySetup(run.Prompt)); err != nil {
+	if err := worker.runAssistantV2(ctx, run, client); err != nil {
 		t.Fatalf("run v2: %v", err)
 	}
 	if !strings.Contains(strings.Join(exposed, ","), "commerce_set_plan") || !strings.Contains(strings.Join(exposed, ","), "commerce_set_generate") {
@@ -118,9 +118,5 @@ func TestAssistantV2PlansACommerceSetInsteadOfHandingOver(t *testing.T) {
 	raw, _ := json.Marshal(views)
 	if len(views) != 1 || !strings.Contains(string(raw), `"view":"commerce_set"`) || !strings.Contains(string(raw), `"quotedCents":10`) {
 		t.Fatalf("dataViews = %s", raw)
-	}
-	decided, _ := message.Metadata["_decision"].(map[string]any)
-	if decided["intent"] != assistantV2IntentCreate {
-		t.Fatalf("decision = %#v (the turn should be a create turn kept in v2)", decided)
 	}
 }

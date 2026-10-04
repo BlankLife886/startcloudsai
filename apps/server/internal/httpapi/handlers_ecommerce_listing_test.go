@@ -112,3 +112,105 @@ func TestBuildEcommerceListingPlanPromptIncludesTypesAndNote(t *testing.T) {
 		t.Fatalf("expected Chinese headline hint:\n%s", zh)
 	}
 }
+
+func TestNormalizeEcommerceListingSmartBuildsOrderedSlots(t *testing.T) {
+	candidates := []ecommerceListingPlanTypeIn{
+		{ID: "white", Label: "产品白底图", Role: "main"},
+		{ID: "hero", Label: "首屏视觉图", Role: "detail"},
+		{ID: "spec", Label: "规格参数图"},
+	}
+	slots, normalized, err := normalizeEcommerceListingSmart(&ecommerceListingSmartIn{MainCount: 2, DetailCount: 3}, candidates)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	var ids []string
+	for _, slot := range slots {
+		ids = append(ids, slot.ID+":"+slot.Role)
+	}
+	if got := strings.Join(ids, ","); got != "main-1:main,main-2:main,detail-1:detail,detail-2:detail,detail-3:detail" {
+		t.Fatalf("slots = %s", got)
+	}
+	if normalized[2].Role != "detail" {
+		t.Fatalf("blank role should default to detail, got %q", normalized[2].Role)
+	}
+	for _, bad := range []ecommerceListingSmartIn{{}, {MainCount: 7}, {DetailCount: 16}, {MainCount: 6, DetailCount: 13}, {MainCount: -1, DetailCount: 2}} {
+		if _, _, err := normalizeEcommerceListingSmart(&bad, candidates); err == nil {
+			t.Fatalf("expected error for %+v", bad)
+		}
+	}
+	if _, _, err := normalizeEcommerceListingSmart(&ecommerceListingSmartIn{MainCount: 1}, []ecommerceListingPlanTypeIn{{ID: "hero"}}); err == nil {
+		t.Fatal("expected error when no main candidate exists")
+	}
+}
+
+func TestDecodeEcommerceListingSmartPlanFillsInvalidTypes(t *testing.T) {
+	candidates := []ecommerceListingPlanTypeIn{
+		{ID: "white", Role: "main"},
+		{ID: "scene-hero", Role: "main"},
+		{ID: "hero", Role: "detail"},
+		{ID: "selling", Role: "detail"},
+	}
+	slots, _, err := normalizeEcommerceListingSmart(&ecommerceListingSmartIn{MainCount: 2, DetailCount: 2}, candidates)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	raw := `{"summary":"晨光厨房","items":[
+		{"id":"main-1","type":"white","headline":"","direction":"纯白背景正面"},
+		{"id":"main-2","type":"hero","headline":"选错角色"},
+		{"id":"detail-1","type":"selling","headline":"6 小时保温"}
+	]}`
+	plan, err := decodeEcommerceListingSmartPlan(raw, slots, candidates)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := make([]string, 0, len(plan.Items))
+	for _, item := range plan.Items {
+		got = append(got, item.ID+"="+item.Type)
+	}
+	// main-2 选了详情页类型 → 补未用过的主图类型；detail-2 缺失 → 补未用过的详情页类型
+	if joined := strings.Join(got, ","); joined != "main-1=white,main-2=scene-hero,detail-1=selling,detail-2=hero" {
+		t.Fatalf("items = %s", joined)
+	}
+	if plan.Items[0].Role != "main" || plan.Items[3].Role != "detail" {
+		t.Fatalf("roles not preserved: %+v", plan.Items)
+	}
+	if _, err := decodeEcommerceListingSmartPlan(`{"items":[]}`, slots, candidates); err == nil {
+		t.Fatal("expected error for empty smart plan")
+	}
+}
+
+func TestBuildEcommerceListingSmartPromptListsCandidatesByRole(t *testing.T) {
+	candidates := []ecommerceListingPlanTypeIn{
+		{ID: "white", Label: "产品白底图", Role: "main"},
+		{ID: "faq", Label: "高频问题 FAQ 图", Role: "detail"},
+	}
+	slots, candidates, err := normalizeEcommerceListingSmart(&ecommerceListingSmartIn{MainCount: 1, DetailCount: 1}, candidates)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	prompt := buildEcommerceListingSmartPrompt(ecommerceListingPlanIn{Style: "高级质感风", Language: "英语"}, slots, candidates)
+	mainAt, detailAt := strings.Index(prompt, "type=white"), strings.Index(prompt, "type=faq")
+	if mainAt < 0 || detailAt < 0 || mainAt > strings.Index(prompt, "详情页可选类型") || detailAt < strings.Index(prompt, "详情页可选类型") {
+		t.Fatalf("candidates not grouped by role:\n%s", prompt)
+	}
+	for _, want := range []string{"主图 1 张", "详情页 1 张", "视觉风格：高级质感风", "使用「英语」书写"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestListingPlanWithoutCopyKeepsDirectionOnlyPlans(t *testing.T) {
+	for _, language := range []string{"无需文案", "无文字"} {
+		if hint := listingHeadlineLanguageHint(language); !strings.Contains(hint, "空字符串") {
+			t.Fatalf("%s hint = %q", language, hint)
+		}
+	}
+	plan, err := decodeEcommerceListingPlan(`{"items":[{"id":"hero","headline":"","direction":"商品居中，晨光斜射"}]}`, []ecommerceListingPlanTypeIn{{ID: "hero"}})
+	if err != nil {
+		t.Fatalf("direction-only plan should be accepted: %v", err)
+	}
+	if plan.Items[0].Direction != "商品居中，晨光斜射" {
+		t.Fatalf("direction = %q", plan.Items[0].Direction)
+	}
+}

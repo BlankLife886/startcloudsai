@@ -494,9 +494,9 @@ async function pollWaitingTasks() {
  * 当前用户任务列表（cursor 分页）。
  * @returns {Promise<{items: object[], nextCursor: string|null}>}
  */
-export async function listTasks({ type = '', status = '', limit = 20, cursor = '', excludeSource = '', source = '', signal } = {}) {
+export async function listTasks({ type = '', status = '', kind = '', limit = 20, cursor = '', excludeSource = '', source = '', signal } = {}) {
   const data = await apiGet('/tasks', {
-    query: { type, status, limit, cursor, excludeSource, source },
+    query: { type, status, kind, limit, cursor, excludeSource, source },
     signal,
     fallbackMessage: '任务列表读取失败',
   })

@@ -121,7 +121,14 @@ function Filmstrip({ groups, selectedId, onSelect }) {
   return <aside className="clock-filmstrip" style={{ "--film-slots": Math.min(5, Math.max(2, groups.length)) }}><div className="clock-filmstrip__window"><div className="clock-filmstrip__track" tabIndex={0}><div className="clock-filmstrip__rail">{groups.map((group, index) => <button key={group.id} type="button" className={group.id === selectedId ? "active" : ""} role="option" aria-label={`查看历史图片 ${index + 1}`} aria-selected={group.id === selectedId} onClick={() => onSelect(group.id)}><AuthenticatedImage src={group.entries[0]?.previewUrl || group.cover} alt="" maxDimension={180} loading="eager" /></button>)}</div></div></div></aside>;
 }
 
+// 登录态确定后再挂载工作台：设置按账号存储，新标签页里登录态尚未恢复时
+// 读到的是游客设置，随后自动保存会把它写进账号设置，覆盖用户上次的选择。
 export function GameArtStudioView() {
+  const auth = useAuth();
+  return <GameArtStudioWorkspace key={auth.loading ? "loading" : auth.user?.id || "guest"} />;
+}
+
+function GameArtStudioWorkspace() {
   const auth = useAuth();
   const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();

@@ -39,11 +39,14 @@
 }
 
 /* 多角度缩略图条 */
+/* 多角度：单行紧凑排布（标签在左、缩略图在右），少占左侧栏高度 */
 .workbench-angles {
   display: grid;
   grid-column: 1 / -1;
-  gap: 6px;
-  padding: 8px 8px 6px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
   background: color-mix(in srgb, var(--commerce-panel-solid) 46%, transparent);
   border: 1px solid color-mix(in srgb, #fff 46%, var(--commerce-settings-line));
   border-radius: 14px;
@@ -66,7 +69,6 @@
 }
 
 .workbench-angles__label small {
-  margin-left: auto;
   font-size: 10px;
   font-weight: 600;
   opacity: 0.8;
@@ -75,13 +77,15 @@
 .workbench-angles__list {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
+  padding-top: 4px;
 }
 
 .workbench-angles__item {
   position: relative;
-  width: 44px;
-  height: 44px;
+  width: 34px;
+  height: 34px;
 }
 
 .workbench-angles__shot {
@@ -127,8 +131,8 @@
 
 .workbench-angles__add {
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: 34px;
+  height: 34px;
   place-items: center;
   color: var(--commerce-muted);
   background: color-mix(in srgb, var(--commerce-settings-control) 72%, transparent);
@@ -984,11 +988,13 @@ html.color-scheme-dark .workbench-plan.is-planned {
 }
 
 /* 流程连线：不依赖 GSAP，用 CSS 让运行态流动 */
-.commerce-workbench .handheld-guides.is-running .handheld-guides__line {
+.commerce-workbench .handheld-guides.is-running .handheld-guides__line,
+.accessory-studio .handheld-guides.is-running .handheld-guides__line {
   animation: workbench-dash 0.9s linear infinite;
 }
 
-.commerce-workbench .handheld-guides.is-running .handheld-guides__flow {
+.commerce-workbench .handheld-guides.is-running .handheld-guides__flow,
+.accessory-studio .handheld-guides.is-running .handheld-guides__flow {
   opacity: 1;
   animation: workbench-flow 0.72s linear infinite;
 }
@@ -1071,4 +1077,319 @@ html.color-scheme-dark .workbench-plan.is-planned {
     left: 8px;
     bottom: 48px;
   }
+}
+
+/* AI 商拍：镜头多选（3 列两行，给细节补充留出高度） */
+.workbench-shots__chips {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.workbench-shots__chips button {
+  min-height: 30px;
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-shots__chips button.is-locked:not(.is-active) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.workbench-shots__chips button.is-locked.is-active {
+  cursor: default;
+}
+
+/* 整套定调首张：序号加一圈强调色 */
+.workbench-plan li.is-anchor b {
+  box-shadow: 0 0 0 2px var(--commerce-accent-line);
+}
+
+/* AI 商拍：商品不变项摘要（右侧参考栏） */
+.workbench-factlock {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 9px 10px;
+  color: var(--commerce-ink);
+  text-align: left;
+  background: color-mix(in srgb, var(--commerce-panel-solid) 46%, transparent);
+  border: 1px solid color-mix(in srgb, #fff 46%, var(--commerce-settings-line));
+  border-radius: 14px;
+  box-shadow: 0 10px 28px rgb(48 36 96 / 8%);
+  -webkit-backdrop-filter: blur(22px) saturate(1.35);
+  backdrop-filter: blur(22px) saturate(1.35);
+  transition: border-color 0.16s ease, transform 0.16s ease;
+}
+
+.workbench-factlock:hover:not(:disabled) {
+  border-color: var(--commerce-accent-line);
+  transform: translateY(-1px);
+}
+
+.workbench-factlock__head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.workbench-factlock__head i {
+  color: var(--commerce-accent);
+  font-size: 13px;
+}
+
+.workbench-factlock__head strong {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.workbench-factlock__head em {
+  margin-left: auto;
+  color: var(--commerce-accent-ink);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.workbench-factlock > small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--commerce-muted);
+  font-size: 10px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.workbench-factlock.is-empty .workbench-factlock__head i,
+.workbench-factlock.is-empty .workbench-factlock__head em {
+  color: #c2410c;
+}
+
+html.color-scheme-dark .workbench-factlock {
+  background: color-mix(in srgb, var(--commerce-panel-solid) 60%, transparent);
+  border-color: var(--commerce-settings-line);
+  box-shadow: 0 14px 36px rgb(0 0 0 / 28%);
+}
+
+html.color-scheme-dark .workbench-factlock.is-empty .workbench-factlock__head i,
+html.color-scheme-dark .workbench-factlock.is-empty .workbench-factlock__head em {
+  color: #fdba74;
+}
+
+/* 整套锚定：后续几张等待首张定调 */
+.workbench-thumb-waiting {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 2px;
+  color: var(--commerce-muted);
+}
+
+.workbench-thumb-waiting i {
+  font-size: 14px;
+}
+
+.workbench-thumb-waiting small {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.workbench-plan li.is-waiting b {
+  color: var(--commerce-muted);
+  background: transparent;
+  border: 1px dashed var(--commerce-accent-line);
+}
+
+.workbench-plan li span small.workbench-plan__wait {
+  margin-left: 5px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* 成片出现：图片加载完成后淡入去模糊 */
+.commerce-workbench .handheld-frame__shot .authenticated-image.is-loaded .authenticated-image-media {
+  animation: handheld-reveal 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.commerce-workbench .handheld-frame__thumb .authenticated-image.is-loaded .authenticated-image-media {
+  animation: handheld-reveal 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .commerce-workbench .handheld-frame__shot .authenticated-image.is-loaded .authenticated-image-media,
+  .commerce-workbench .handheld-frame__thumb .authenticated-image.is-loaded .authenticated-image-media {
+    animation: none;
+  }
+}
+
+html.settings-no-animations .commerce-workbench .handheld-frame__shot .authenticated-image.is-loaded .authenticated-image-media,
+html.settings-no-animations .commerce-workbench .handheld-frame__thumb .authenticated-image.is-loaded .authenticated-image-media {
+  animation: none;
+}
+
+/* AI 商拍：拍摄方向 4 个选项排成一行 */
+.commerce-workbench.is-shoot .workbench-picks .handheld-picks {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.commerce-workbench.is-shoot .workbench-picks .handheld-picks button {
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 左侧控制栏随视口高度连续收放：间距和商品卡高度都受高度约束，
+   宽屏矮窗口（如 1920×870）也不会把细节补充挤出画布 */
+@media (min-width: 1025px) {
+  .commerce-workbench .workbench-board,
+  .commerce-workbench .workbench-brief {
+    gap: clamp(16px, min(5cqi, 10vh - 60px), 100px);
+  }
+
+  .commerce-workbench .workbench-refs .handheld-ref-card {
+    max-height: max(120px, calc(100vh - 550px));
+  }
+
+  /* 上传后多出一行“多角度”：商品卡相应让出高度 */
+  .commerce-workbench .workbench-refs:has(.workbench-angles) .handheld-ref-card {
+    max-height: max(110px, calc(100vh - 630px));
+  }
+}
+
+/* ---------- 视觉打磨：通用工作台（商拍 / 营销 / 背景 / 背景复刻 / 扩图 / 增强 / 复刻 / 详情页） ---------- */
+
+/* 右栏（参考图 + 本次出图）放宽，避免文字挤成两行 */
+.workbench-output.handheld-out {
+  --handheld-references-track: clamp(168px, 12.5%, 212px);
+}
+
+/* 结果区左右固定留出导线通道：无论画幅宽窄，左右卡片到画框都有一段带箭头的连线 */
+@media (min-width: 1025px) {
+  .workbench-output > .handheld-shots {
+    box-sizing: border-box;
+    padding-inline: clamp(36px, 3.2%, 56px);
+  }
+}
+
+/* 出图组合：按选项个数等分整行（不再按 5 列排，3 个选项也撑满），标题单行、张数在下 */
+.commerce-workbench .handheld-brief--canvas .handheld-packs,
+.accessory-studio .handheld-brief--canvas .handheld-packs {
+  grid-template-columns: none;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 6px;
+}
+
+.commerce-workbench .handheld-brief--canvas .handheld-packs > button,
+.accessory-studio .handheld-brief--canvas .handheld-packs > button {
+  min-height: 54px;
+  padding: 8px 6px;
+}
+
+.commerce-workbench .handheld-brief--canvas .handheld-packs strong,
+.accessory-studio .handheld-brief--canvas .handheld-packs strong {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.3;
+  text-wrap: balance;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* 交互动画：导线出现时淡入、成图出现时柔和放大淡入、选项按下有回弹 */
+.workbench-guides {
+  animation: workbench-guides-in 360ms ease-out both;
+}
+
+@keyframes workbench-guides-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.workbench-output .handheld-frame.has-image .handheld-frame__shot img,
+.listing-tile.is-done .listing-tile__shot img {
+  animation: workbench-result-in 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes workbench-result-in {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+    transform: scale(1.02);
+  }
+}
+
+.workbench-output .handheld-channels > button,
+.workbench-output .handheld-packs > button,
+.workbench-output .handheld-picks > button {
+  transition:
+    background 180ms ease,
+    color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.workbench-output .handheld-channels > button:active:not(:disabled),
+.workbench-output .handheld-packs > button:active:not(:disabled),
+.workbench-output .handheld-picks > button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.workbench-output .handheld-frame {
+  transition:
+    box-shadow 220ms ease,
+    border-color 220ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workbench-guides,
+  .workbench-output .handheld-frame.has-image .handheld-frame__shot img,
+  .listing-tile.is-done .listing-tile__shot img,
+  .accessory-studio .handheld-guides.is-running .handheld-guides__line,
+  .accessory-studio .handheld-guides.is-running .handheld-guides__flow {
+    animation: none;
+  }
+
+  .workbench-output .handheld-channels > button:active:not(:disabled),
+  .workbench-output .handheld-packs > button:active:not(:disabled),
+  .workbench-output .handheld-picks > button:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* 选项胶囊：未选中的也画出边框，避免一行里“有框的大、没框的像纯文字”，整排大小一致 */
+.workbench-output .handheld-picks > button:not(.is-active) {
+  background: color-mix(in srgb, var(--commerce-panel-solid) 70%, transparent);
+  border-color: color-mix(in srgb, var(--commerce-ink) 11%, transparent);
+}
+
+.workbench-output .handheld-picks > button:not(.is-active):hover:not(:disabled) {
+  border-color: var(--commerce-accent-line);
+}
+
+html.color-scheme-dark .workbench-output .handheld-picks > button:not(.is-active) {
+  background: rgb(255 255 255 / 5%);
+  border-color: rgb(255 255 255 / 12%);
+}
+
+/* 暗色：选中的出图组合保持品牌紫高亮；空画框用深色玻璃底，不再是一整块亮灰 */
+html.color-scheme-dark .workbench-output .handheld-brief--canvas .handheld-packs > button.is-active {
+  color: #fff;
+  background: color-mix(in srgb, var(--commerce-accent) 86%, #2a1f8a);
+  border-color: transparent;
+  box-shadow: 0 8px 18px rgb(0 0 0 / 32%);
+}
+
+html.color-scheme-dark .workbench-output .handheld-frame:not(.has-image) {
+  background: color-mix(in srgb, #161222 84%, transparent);
+  border-color: rgb(255 255 255 / 12%);
 }

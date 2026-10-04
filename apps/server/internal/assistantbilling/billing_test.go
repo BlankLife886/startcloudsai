@@ -409,3 +409,60 @@ func ledgerReasons(entries []*store.LedgerEntry) []string {
 	}
 	return out
 }
+
+func TestAssistantContentPolicyFailureSettlesInsteadOfRefunding(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user := billingUser(t, st, 100)
+	run := billingRun(t, st, user.ID, 20, map[string]any{
+		"count": int64(1), "_chatCostCents": int64(8), "_imageCostCents": int64(20),
+	})
+	if _, err := st.Pool.Exec(ctx, `UPDATE assistant_runs SET mode='image' WHERE id=$1`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := store.ClaimAssistantRun(ctx, st.Pool, run.ID); err != nil || !claimed {
+		t.Fatalf("claim = %v err=%v", claimed, err)
+	}
+	message := "抱歉，我不能帮助移除真实人物照片中的衣物或生成裸露版本。"
+	if changed, err := assistantbilling.Fail(ctx, st, run.ID, "upstream_rejected", message); err != nil || !changed {
+		t.Fatalf("fail = %v err=%v", changed, err)
+	}
+	if state := walletState(t, st, user.ID); state.BalanceCents != 80 || state.FrozenCents != 0 {
+		t.Fatalf("content policy wallet = %#v", state)
+	}
+	stored, err := store.GetAssistantRun(ctx, st.Pool, run.ID)
+	if err != nil || stored == nil || pointerString(stored.ErrorCode) != "content_policy" {
+		t.Fatalf("content policy run = %#v err=%v", stored, err)
+	}
+
+	// 重试重新预留一次，不影响已经结算的上一轮。
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		locked, err := store.GetAssistantRunForUpdate(ctx, tx, run.ID)
+		if err != nil {
+			return err
+		}
+		_, err = assistantbilling.Requeue(ctx, tx, locked)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if state := walletState(t, st, user.ID); state.BalanceCents != 60 || state.FrozenCents != 20 {
+		t.Fatalf("retry after content policy wallet = %#v", state)
+	}
+}
+
+func TestAssistantOrdinaryUpstreamRejectionStillRefunds(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user := billingUser(t, st, 100)
+	run := billingRun(t, st, user.ID, 20, map[string]any{"_chatCostCents": int64(20)})
+	if claimed, err := store.ClaimAssistantRun(ctx, st.Pool, run.ID); err != nil || !claimed {
+		t.Fatalf("claim = %v err=%v", claimed, err)
+	}
+	if changed, err := assistantbilling.Fail(ctx, st, run.ID, "upstream_rejected", "Unsupported parameter: client_task_id"); err != nil || !changed {
+		t.Fatalf("fail = %v err=%v", changed, err)
+	}
+	if state := walletState(t, st, user.ID); state.BalanceCents != 100 || state.FrozenCents != 0 {
+		t.Fatalf("ordinary rejection wallet = %#v", state)
+	}
+}

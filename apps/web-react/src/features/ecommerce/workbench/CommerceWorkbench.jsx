@@ -404,6 +404,82 @@ export function TypePicker({ picker, running }) {
   );
 }
 
+// AI 商拍：镜头多选。按目录顺序出图，第 1 个选中的镜头是整套定调首张
+function ShotPicker({ picker, running }) {
+  const selected = new Set(picker.values || []);
+  const max = Math.max(1, Number(picker.max) || 4);
+  const first = picker.options.find((item) => item.id === (picker.values || [])[0]);
+  return (
+    <div className="workbench-types workbench-shots" aria-label={picker.label}>
+      <div className="workbench-types__head">
+        <span className="handheld-brief__kicker">{picker.label}</span>
+        <span className="handheld-brief__meta">
+          {selected.size}/{max} 张
+          {first && selected.size > 1 ? ` · ${first.label}定调` : ""}
+        </span>
+      </div>
+      <div
+        className="handheld-picks workbench-shots__chips"
+        role="group"
+        aria-label={picker.label}
+        data-click-guard="repeat"
+      >
+        {picker.options.map((item) => {
+          const active = selected.has(item.id);
+          const locked = active ? selected.size <= 1 : selected.size >= max;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              role="checkbox"
+              aria-checked={active}
+              title={
+                locked
+                  ? active
+                    ? "至少保留 1 个镜头"
+                    : `最多 ${max} 个镜头`
+                  : item.hint || undefined
+              }
+              className={`${active ? "is-active" : ""}${locked ? " is-locked" : ""}`}
+              disabled={running}
+              onClick={() => {
+                if (!locked) picker.onToggle?.(item.id);
+              }}
+            >
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// AI 商拍：商品事实硬锁摘要，点击打开顶部“商业目标”里的完整设置
+function FactLock({ lock, running }) {
+  const items = lock.items || [];
+  return (
+    <button
+      type="button"
+      className={`workbench-factlock${items.length ? "" : " is-empty"}`}
+      disabled={running}
+      onClick={lock.onEdit}
+      aria-label={
+        items.length
+          ? `商品不变项 ${items.length} 项：${items.join("、")}，点击编辑`
+          : "未设置商品不变项，点击设置"
+      }
+    >
+      <span className="workbench-factlock__head">
+        <i className={`bi ${items.length ? "bi-shield-lock" : "bi-shield-exclamation"}`} aria-hidden="true" />
+        <strong>商品不变</strong>
+        <em>{items.length ? `${items.length} 项` : "去设置"}</em>
+      </span>
+      <small>{items.length ? items.join(" · ") : "未设置，生成时可能改动商品细节"}</small>
+    </button>
+  );
+}
+
 export function CommerceWorkbench({
   spec,
   previews = [],
@@ -423,6 +499,12 @@ export function CommerceWorkbench({
   picks = [],
   // 商品套图：出图类型多选
   typePicker = null,
+  // AI 商拍：镜头多选 { label, options, values, max, onToggle }
+  shotPicker = null,
+  // AI 商拍：商品不变项摘要 { items, onEdit }
+  factLock = null,
+  // 整套锚定：首张先出，其余参照首张成片
+  seriesAnchored = false,
   // 单图模块：出图数量（备选方案数）
   variants = null,
   // 细节补充（自由描述）
@@ -442,6 +524,7 @@ export function CommerceWorkbench({
   failMessage = "",
   notice = "",
   elapsedSeconds = 0,
+  runStartedAt = "",
   generationStageLabel = "正在生成",
   generateDisabled = false,
   generateHint = "",
@@ -477,15 +560,17 @@ export function CommerceWorkbench({
     promptType: "",
   });
 
+  // 计时从本轮任务的创建时间算起：刷新 / 切回页面后接着读秒，不从 0 重来
+  const runStartedMs = Date.parse(runStartedAt || "");
   useEffect(() => {
     if (!running) return undefined;
-    setRunSeconds(0);
-    const started = Date.now();
-    const timer = window.setInterval(() => {
-      setRunSeconds(Math.floor((Date.now() - started) / 1000));
-    }, 250);
+    const started = Number.isFinite(runStartedMs) ? runStartedMs : Date.now();
+    const tick = () =>
+      setRunSeconds(Math.max(0, Math.floor((Date.now() - started) / 1000)));
+    tick();
+    const timer = window.setInterval(tick, 250);
     return () => window.clearInterval(timer);
-  }, [running]);
+  }, [running, runStartedMs]);
 
   const waitSeconds = running ? runSeconds : elapsedSeconds;
   const posterRatio = String(aspectRatio || "1:1");
@@ -505,9 +590,18 @@ export function CommerceWorkbench({
   const hasPacks = packs.length > 0;
   const hasPicks = picks.some((group) => group.options?.length);
   const hasTypes = Boolean(typePicker?.options?.length);
+  const hasShotPicker = Boolean(shotPicker?.options?.length);
+  const hasFactLock = Boolean(factLock);
   const hasVariants = Boolean(variants);
   const hasNote = Boolean(note);
-  const hasBrief = Boolean(channels) || hasPacks || hasPicks || hasTypes || hasVariants || hasNote;
+  const hasBrief =
+    Boolean(channels) ||
+    hasPacks ||
+    hasPicks ||
+    hasTypes ||
+    hasShotPicker ||
+    hasVariants ||
+    hasNote;
   const historyGroups = groupHistory(history);
   const activeGroup =
     historyGroups.find((group) =>
@@ -536,6 +630,8 @@ export function CommerceWorkbench({
     packValue,
     picks.map((group) => group.value).join("|"),
     (typePicker?.values || []).join("|"),
+    (shotPicker?.values || []).join("|"),
+    hasFactLock ? (factLock.items || []).length : "",
     variants?.value || "",
     hasNote ? String(note.value || "").length > 0 : "",
     displayUrl,
@@ -687,9 +783,10 @@ export function CommerceWorkbench({
                   </div>
                 </div>
               ) : null}
-              {hasPacks || hasPicks || hasVariants || hasTypes || hasNote ? (
+              {hasPacks || hasPicks || hasVariants || hasTypes || hasShotPicker || hasNote ? (
                 <div className="handheld-pack workbench-pack">
                   {hasTypes ? <TypePicker picker={typePicker} running={running} /> : null}
+                  {hasShotPicker ? <ShotPicker picker={shotPicker} running={running} /> : null}
                   {hasVariants ? (
                     <div className="workbench-variants" aria-label="出图数量">
                       <span className="workbench-picks__label">出图数量</span>
@@ -855,6 +952,7 @@ export function CommerceWorkbench({
                 </div>
               ) : displayUrl ? (
                 <button
+                  key={displayUrl}
                   type="button"
                   className="handheld-frame__shot"
                   aria-label={`查看${spec?.resultLabel || "生成结果"}`}
@@ -1095,18 +1193,21 @@ export function CommerceWorkbench({
                     (item.url && item.url === displayUrl) ||
                     (!item.url && item === displayShot);
                   const thumbPending = !item.url && !item.failed && (item.running || running);
+                  const thumbWaiting = thumbPending && Boolean(item.waiting);
                   const thumbFailed = Boolean(item.failed) && !item.running;
                   return (
                     <button
                       key={item.id || `thumb-${index}`}
                       type="button"
                       role="listitem"
-                      className={`handheld-frame__thumb${thumbActive ? " is-active" : ""}${thumbPending ? " is-pending" : ""}${thumbFailed ? " is-failed" : ""}`}
+                      className={`handheld-frame__thumb${thumbActive ? " is-active" : ""}${thumbPending ? " is-pending" : ""}${thumbWaiting ? " is-waiting" : ""}${thumbFailed ? " is-failed" : ""}`}
                       disabled={thumbPending || (!item.url && !thumbFailed)}
                       aria-label={
                         thumbFailed
                           ? `重试 ${item.label || `第 ${index + 1} 张`}`
-                          : item.label || `第 ${index + 1} 张`
+                          : thumbWaiting
+                            ? `${item.label || `第 ${index + 1} 张`}，等待首张定调`
+                            : item.label || `第 ${index + 1} 张`
                       }
                       aria-pressed={thumbActive}
                       title={item.label || undefined}
@@ -1121,6 +1222,11 @@ export function CommerceWorkbench({
                         <span className="handheld-frame__thumb-failed">
                           <RegenerateIcon />
                           <small>重试</small>
+                        </span>
+                      ) : thumbWaiting ? (
+                        <span className="handheld-frame__thumb-pending workbench-thumb-waiting">
+                          <i className="bi bi-hourglass-split" aria-hidden="true" />
+                          <small>等首张</small>
                         </span>
                       ) : thumbPending ? (
                         <span className="handheld-frame__thumb-pending">
@@ -1192,18 +1298,28 @@ export function CommerceWorkbench({
               <ol>
                 {plan.map((item, index) => {
                   const shot = shots[index];
+                  const anchorShot = seriesAnchored && plan.length > 1 && index === 0;
                   const state = shot?.url
                     ? "is-done"
                     : shot?.failed
                       ? "is-failed"
-                      : shot?.running || (running && index === 0)
-                        ? "is-running"
-                        : "";
+                      : shot?.waiting
+                        ? "is-waiting"
+                        : shot?.running || (running && index === 0)
+                          ? "is-running"
+                          : "";
                   return (
-                    <li key={item.id || index} className={state}>
+                    <li
+                      key={item.id || index}
+                      className={`${state}${anchorShot ? " is-anchor" : ""}`}
+                      title={anchorShot ? "首张定调：其余几张参照它的成片" : undefined}
+                    >
                       <b>{String(index + 1).padStart(2, "0")}</b>
                       <span>
                         {item.label}
+                        {state === "is-waiting" ? (
+                          <small className="workbench-plan__wait">等首张出图</small>
+                        ) : null}
                         {item.headline ? (
                           <em className="workbench-plan__copy">
                             {item.headline}
@@ -1216,10 +1332,15 @@ export function CommerceWorkbench({
                 })}
               </ol>
               <small>
-                {plan.length > 1 ? "首张锁定系列视觉，其余并行" : "单张直出"}
+                {plan.length > 1
+                  ? seriesAnchored
+                    ? "首张先出定调，其余参照首张成片生成"
+                    : "整套并行生成，按统一风格描述出图"
+                  : "单张直出"}
               </small>
             </div>
           ) : null}
+          {hasFactLock ? <FactLock lock={factLock} running={running} /> : null}
         </div>
 
         <WorkbenchHistory

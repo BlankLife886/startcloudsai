@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { PackageCheck } from "lucide-react";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { useDownloadAction } from "../hooks/useDownloadAction.js";
+import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
@@ -112,6 +113,14 @@ const UPLOADS_KEY = "ui-design-workshop-uploads-v1";
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "waiting_provider"]);
 const IMAGE_NAME_PATTERN = /\.(png|jpe?g|webp)$/i;
 const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+function storedSettingsModelId() {
+  try {
+    return String(JSON.parse(getScopedLocalItem(SETTINGS_KEY) || "null")?.modelId || "");
+  } catch {
+    return "";
+  }
+}
 
 function isImageFile(file) {
   if (!file) return false;
@@ -995,7 +1004,13 @@ function VersionDrawer({
   );
 }
 
+// 设置按账号存储；登录态确定后再挂载，避免新标签页先读游客设置再覆盖账号设置。
 export function DesignWorkshopView() {
+  const auth = useAuth();
+  return <DesignWorkshopWorkspace key={auth.loading ? "loading" : auth.user?.id || "guest"} />;
+}
+
+function DesignWorkshopWorkspace() {
   const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const rootRef = useRef(null);
@@ -1587,7 +1602,10 @@ export function DesignWorkshopView() {
         const nextAvailableModels = availableCatalogModels(nextModels);
         setModels(nextModels);
         setModelId(
-          nextAvailableModels.find((item) => item.default)?.id ||
+          (saved?.modelId && nextAvailableModels.some((item) => item.id === saved.modelId)
+            ? saved.modelId
+            : "") ||
+            nextAvailableModels.find((item) => item.default)?.id ||
             nextAvailableModels[0]?.id ||
             "",
         );
@@ -1643,6 +1661,8 @@ export function DesignWorkshopView() {
         brandColor,
         colorScheme,
         ...spec,
+        // 模型目录加载前 modelId 为空，保留已存的选择而不是覆盖掉。
+        modelId: modelId || storedSettingsModelId(),
         designSpecVersion: 2,
       }),
     );
@@ -1651,6 +1671,7 @@ export function DesignWorkshopView() {
     brief,
     colorScheme,
     customPageType,
+    modelId,
     pageTypeId,
     selectedDeviceIds,
     spec,

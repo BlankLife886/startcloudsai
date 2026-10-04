@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
 import { RegenerateIcon } from "../../components/common/RegenerateIcon.jsx";
 import { CommerceSelect } from "./CommerceSelect.jsx";
@@ -7,7 +7,9 @@ import {
   HandheldGeneratingStage,
   HandheldRefCard,
 } from "./HandheldStudio.jsx";
+import { WorkbenchGuides } from "./workbench/CommerceWorkbench.jsx";
 import "./HandheldStudio.css";
+import "./workbench/CommerceWorkbench.css";
 import "./AccessoryStudio.css";
 
 function formatSeconds(seconds) {
@@ -43,7 +45,7 @@ function groupAccessoryHistory(history) {
   return groups;
 }
 
-const ACCESSORY_RATIO_CHANNELS = [
+export const ACCESSORY_RATIO_CHANNELS = [
   { id: "1:1", label: "方图", ratio: "1:1", hint: "货架主图" },
   { id: "3:4", label: "详情", ratio: "3:4", hint: "详情页配图" },
   { id: "4:5", label: "竖图", ratio: "4:5", hint: "通用竖构图" },
@@ -68,6 +70,9 @@ export function AccessoryStudio({
   failMessage = "",
   notice = "",
   elapsedSeconds = 0,
+  runStartedAt = "",
+  // 画幅选项（已按当前模型能力过滤）
+  ratioChannels = ACCESSORY_RATIO_CHANNELS,
   generationStageLabel = "正在生成",
   generateDisabled,
   generateHint = "",
@@ -89,20 +94,23 @@ export function AccessoryStudio({
   onDownloadPack,
   cancelling,
 }) {
+  const rootRef = useRef(null);
   const [runSeconds, setRunSeconds] = useState(0);
   const product = references[0] || null;
   const model = references[1] || null;
   const scene = references[2] || null;
 
+  // 计时从本轮任务的创建时间算起：刷新 / 切回页面后接着读秒，不从 0 重来
+  const runStartedMs = Date.parse(runStartedAt || "");
   useEffect(() => {
     if (!running) return undefined;
-    setRunSeconds(0);
-    const started = Date.now();
-    const timer = window.setInterval(() => {
-      setRunSeconds(Math.floor((Date.now() - started) / 1000));
-    }, 250);
+    const started = Number.isFinite(runStartedMs) ? runStartedMs : Date.now();
+    const tick = () =>
+      setRunSeconds(Math.max(0, Math.floor((Date.now() - started) / 1000)));
+    tick();
+    const timer = window.setInterval(tick, 250);
     return () => window.clearInterval(timer);
-  }, [running]);
+  }, [running, runStartedMs]);
 
   const waitSeconds = running ? runSeconds : elapsedSeconds;
   const posterRatio = String(aspectRatio || "4:5");
@@ -113,8 +121,9 @@ export function AccessoryStudio({
   const selectedPack =
     packOptions.find((item) => item.id === pack) || packOptions[0];
   const selectedChannel =
-    ACCESSORY_RATIO_CHANNELS.find((item) => item.id === posterRatio) ||
-    ACCESSORY_RATIO_CHANNELS[2];
+    ratioChannels.find((item) => item.id === posterRatio) ||
+    ratioChannels.find((item) => item.id === "4:5") ||
+    ratioChannels[0];
   const planned = accessoryShotBlueprints(selectedPack?.id || pack);
   const activeGroup =
     historyGroups.find((group) =>
@@ -176,9 +185,23 @@ export function AccessoryStudio({
   return (
     <div className="accessory-studio" aria-label="饰品商业出图工作台">
       <section
-        className={`accessory-output handheld-out${running ? " is-running" : ""}`}
+        ref={rootRef}
+        className={`accessory-output workbench-output handheld-out${running ? " is-running" : ""}`}
         aria-label="饰品生成结果"
       >
+        <WorkbenchGuides
+          rootRef={rootRef}
+          revision={[
+            product?.url || "",
+            scene?.url || "",
+            model?.url || "",
+            posterRatio,
+            pack,
+            packThumbs.length,
+            running,
+          ].join("::")}
+          running={running}
+        />
         {notice || sceneIgnoredWithoutModel ? (
           <p className="handheld-pane__notice" role="status">
             {sceneIgnoredWithoutModel
@@ -193,7 +216,7 @@ export function AccessoryStudio({
         >
           <div className="handheld-board__refs">
             <HandheldRefCard
-              className="handheld-product handheld-product--canvas"
+              className="workbench-slot workbench-slot--left handheld-product handheld-product--canvas"
               tag="饰品"
               image={product?.url || ""}
               emptyIcon="bi-gem"
@@ -214,7 +237,7 @@ export function AccessoryStudio({
               onDrop={dropRole("product")}
             />
             <HandheldRefCard
-              className="handheld-scene handheld-scene--canvas"
+              className="workbench-slot workbench-slot--left handheld-scene handheld-scene--canvas"
               tag="场景"
               image={scene?.url || ""}
               emptyIcon="bi-image"
@@ -250,7 +273,7 @@ export function AccessoryStudio({
                 role="radiogroup"
                 aria-label="选择投放比例"
               >
-                {ACCESSORY_RATIO_CHANNELS.map((item) => {
+                {ratioChannels.map((item) => {
                   const active = posterRatio === item.id;
                   return (
                     <button
@@ -312,7 +335,7 @@ export function AccessoryStudio({
         <div className="handheld-ref-stack">
           <div className="handheld-crop handheld-crop--canvas">
             <HandheldRefCard
-              className="handheld-model"
+              className="workbench-slot workbench-slot--right handheld-model"
               tag="模特"
               overlay={cropOverlay}
               image={model?.url || ""}
@@ -385,8 +408,26 @@ export function AccessoryStudio({
                   />
                 </button>
               ) : (
-                <div className="handheld-frame__status">
-                  <strong>还没有结果</strong>
+                <div className="handheld-frame__status workbench-empty">
+                  <strong>还没有饰品佩戴图</strong>
+                  <ol className="workbench-empty__steps">
+                    {[
+                      ["上传饰品图（白底或随手拍都行）", Boolean(product?.url)],
+                      ["选择模特，可选场景与佩戴方式", Boolean(model?.url)],
+                      ["选择投放比例与出图任务，点生成", false],
+                    ].map(([step, done], index) => (
+                      <li key={step} className={done ? "is-done" : ""}>
+                        <b>
+                          {done ? (
+                            <i className="bi bi-check-lg" aria-hidden="true" />
+                          ) : (
+                            String(index + 1).padStart(2, "0")
+                          )}
+                        </b>
+                        <span>{step}</span>
+                      </li>
+                    ))}
+                  </ol>
                   <span>
                     {references.some((item) => item?.url)
                       ? generateHint || "配置完成后点生成"

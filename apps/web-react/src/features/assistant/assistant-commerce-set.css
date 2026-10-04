@@ -1,14 +1,143 @@
 /* 电商套图卡片：沿用数据卡片的外框与原界面变量。 */
+.assistant-workspace .assistant-commerce {
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+}
+
+.assistant-commerce-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.assistant-commerce-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.assistant-commerce-title > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.assistant-commerce-title strong {
+  overflow: hidden;
+  color: var(--assistant-text);
+  font-size: 15px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-commerce-title span {
+  color: var(--assistant-muted);
+  font-size: 12px;
+}
+
+.assistant-commerce-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--assistant-accent-soft);
+  color: var(--assistant-accent-ink);
+  font-size: 16px;
+}
+
+.assistant-commerce-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12px;
+}
+
+.assistant-commerce-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--assistant-panel-hover);
+  color: var(--assistant-text-soft);
+  font-weight: 600;
+}
+
+.assistant-commerce-state.is-ready {
+  background: color-mix(in srgb, var(--assistant-success) 14%, transparent);
+  color: var(--assistant-success);
+}
+
+.assistant-commerce-state.is-running {
+  color: var(--assistant-accent-ink);
+}
+
+.assistant-commerce-spent {
+  color: var(--assistant-muted);
+}
+
+.assistant-commerce-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: assistant-commerce-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes assistant-commerce-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.assistant-commerce-bar {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--assistant-panel-hover);
+}
+
+.assistant-commerce-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--assistant-accent);
+  transition: width 400ms ease;
+}
+
 .assistant-workspace .assistant-commerce-summary {
+  display: flex;
+  gap: 10px;
   margin: 0;
   color: var(--assistant-text-soft);
   font-size: 13px;
+  line-height: 1.6;
+}
+
+.assistant-commerce-summary span {
+  flex: none;
+  height: fit-content;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: var(--assistant-panel-hover);
+  color: var(--assistant-muted);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .assistant-commerce-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 12px;
+  --shot-height: 190px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -16,20 +145,39 @@
 
 .assistant-commerce-shot {
   display: grid;
-  gap: 6px;
+  flex: none;
+  gap: 10px;
   align-content: start;
+  width: calc(var(--shot-height) * var(--shot-ratio, 1));
   min-width: 0;
 }
 
+/* 一行里的格子同样高，宽度按各自比例；图片铺满格子，不留边 */
 .assistant-commerce-shot-frame {
+  position: relative;
+  aspect-ratio: var(--shot-ratio, 1);
   overflow: hidden;
   border: 1px solid var(--assistant-border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--assistant-panel-hover);
+}
+
+.assistant-commerce-shot-frame:hover {
+  border-color: var(--assistant-border-strong, var(--assistant-border));
 }
 
 .assistant-commerce-shot.is-flagged .assistant-commerce-shot-frame {
   border-color: var(--assistant-danger);
+}
+
+.assistant-workspace .assistant-commerce-shot-open {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
 }
 
 .assistant-commerce-shot-frame img {
@@ -43,46 +191,155 @@
   display: grid;
   place-items: center;
   align-content: center;
-  gap: 6px;
+  gap: 8px;
   height: 100%;
-  padding: 8px;
+  padding: 10px;
   color: var(--assistant-muted);
   font-size: 12px;
   text-align: center;
 }
 
 .assistant-commerce-shot-placeholder .bi {
-  font-size: 20px;
+  font-size: 22px;
 }
 
-.assistant-commerce-shot-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
-  min-width: 0;
+.assistant-commerce-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.assistant-commerce-badge.is-compact {
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: var(--assistant-success);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
   font-size: 12px;
 }
 
-.assistant-commerce-shot-meta strong {
+.assistant-commerce-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   overflow: hidden;
-  color: var(--assistant-text);
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.assistant-commerce-badge.is-danger {
+  background: var(--assistant-danger);
+}
+
+.assistant-commerce-badge.is-busy,
+.assistant-commerce-badge.is-muted {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+/* 悬停时出现的操作；触屏上一直显示 */
+.assistant-commerce-shot-tools {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.assistant-commerce-shot-frame:hover .assistant-commerce-shot-tools,
+.assistant-commerce-shot-frame:focus-within .assistant-commerce-shot-tools,
+.assistant-commerce-shot.is-flagged .assistant-commerce-shot-tools {
+  opacity: 1;
+  transform: none;
+}
+
+@media (hover: none) {
+  .assistant-commerce-shot-tools {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  color: #1a1a1a;
+  cursor: pointer;
+  font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button.is-icon {
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button:hover {
+  background: #fff;
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.assistant-commerce-shot-meta {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 2px;
+  font-size: 12px;
+}
+
+.assistant-commerce-shot-meta strong,
+.assistant-commerce-shot-meta span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.assistant-commerce-status {
-  flex: none;
+.assistant-commerce-shot-meta strong {
+  color: var(--assistant-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.assistant-commerce-shot-meta strong em {
+  margin-right: 6px;
   color: var(--assistant-muted);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
 }
 
-.assistant-commerce-status.is-succeeded {
-  color: var(--assistant-text-soft);
-}
-
-.assistant-commerce-status.is-failed,
-.assistant-commerce-shot.is-flagged .assistant-commerce-status {
-  color: var(--assistant-danger);
+.assistant-commerce-shot-meta span {
+  color: var(--assistant-muted);
 }
 
 .assistant-workspace .assistant-commerce-issues {
@@ -96,42 +353,53 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 14px;
+  gap: 10px 12px;
+  padding-top: 2px;
 }
 
-.assistant-workspace .assistant-commerce-primary {
+.assistant-workspace .assistant-commerce-primary,
+.assistant-workspace .assistant-commerce-secondary {
   display: inline-flex;
   align-items: center;
-  padding: 7px 14px;
-  border: 0;
+  gap: 6px;
+  height: 34px;
+  padding: 0 16px;
   border-radius: 999px;
-  background: var(--assistant-accent);
-  color: #fff;
   font-size: 13px;
   font-weight: 600;
   text-decoration: none;
   cursor: pointer;
 }
 
-.assistant-workspace .assistant-commerce-primary:disabled {
+.assistant-workspace .assistant-commerce-primary {
+  border: 0;
+  background: var(--assistant-accent);
+  color: #fff;
+}
+
+.assistant-workspace .assistant-commerce-secondary {
+  border: 1px solid var(--assistant-border-strong, var(--assistant-border));
+  background: transparent;
+  color: var(--assistant-text);
+}
+
+.assistant-workspace .assistant-commerce-secondary:hover:not(:disabled) {
+  background: var(--assistant-panel-hover);
+}
+
+.assistant-workspace .assistant-commerce-secondary.is-done {
+  border-color: transparent;
+  color: var(--assistant-success);
+}
+
+.assistant-workspace .assistant-commerce-primary:disabled,
+.assistant-workspace .assistant-commerce-secondary:disabled {
   opacity: 0.6;
   cursor: default;
 }
 
-.assistant-workspace .assistant-commerce-link {
-  justify-self: start;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--assistant-accent-ink);
-  font-size: 12px;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.assistant-workspace .assistant-commerce-link:disabled {
-  opacity: 0.5;
-  cursor: default;
+.assistant-commerce-actions .assistant-data-note {
+  flex-basis: 100%;
 }
 
 .assistant-workspace .assistant-commerce-error {
@@ -141,8 +409,8 @@
 }
 
 .assistant-commerce-spinner {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border: 2px solid var(--assistant-border);
   border-top-color: var(--assistant-accent);
   border-radius: 50%;
@@ -155,8 +423,20 @@
   }
 }
 
+@media (max-width: 560px) {
+  .assistant-commerce-grid {
+    --shot-height: 140px;
+    gap: 10px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .assistant-commerce-spinner {
+  .assistant-commerce-spinner,
+  .assistant-commerce-dot {
     animation: none;
+  }
+
+  .assistant-commerce-shot-tools {
+    transition: none;
   }
 }

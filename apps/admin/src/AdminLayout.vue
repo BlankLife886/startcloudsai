@@ -41,6 +41,7 @@ import {
   User,
   UserFilled,
   Wallet,
+  Warning,
 } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
 import { useAuthStore } from "@/stores/auth";
@@ -94,10 +95,11 @@ const NAV_GROUPS = [
     items: [
       { path: "/users", label: "用户管理", icon: User },
       { path: "/tasks", label: "任务与调度", icon: Monitor },
+      { path: "/content-policy", label: "内容违规", icon: Warning },
       { path: "/model-config", label: "模型配置", icon: MagicStick },
       { path: "/developer-api", label: "API 调用", icon: Connection },
       { path: "/agent-quality", label: "Agent 质量", icon: DataAnalysis },
-      { path: "/assistant-decision", label: "AI 助手判断", icon: ChatDotRound },
+      { path: "/assistant-quality", label: "AI 助手质量", icon: ChatDotRound },
       { path: "/canvas-templates", label: "画布模板", icon: Files },
     ],
   },
@@ -559,9 +561,9 @@ async function submitPassword() {
             '/gallery',
             '/tasks',
             '/developer-api',
+            '/content-policy',
             '/finance-center',
             '/agent-quality',
-            '/assistant-decision',
             '/orders',
             '/subscription-changes',
             '/home-banners',

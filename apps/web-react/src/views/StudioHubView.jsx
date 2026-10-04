@@ -1637,7 +1637,7 @@ export function StudioHubView() {
         summary:
           selectedTool.id === "assistant"
             ? "确认后将进入一个全新的对话并立即执行；按实际路由结算，多余预留积分自动退回。"
-            : "确认后将进入文生图工作台并立即执行；失败或取消时由服务端退回未结算积分。",
+            : "确认后将进入文生图工作台并立即执行；失败或取消时由服务端退回未结算积分，内容违规被驳回不退回。",
         creditAvailable: auth.isAuthenticated
           ? Number(
               wallet?.normalBalanceCents ??

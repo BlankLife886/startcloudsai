@@ -67,6 +67,9 @@ test.describe('original assistant UI on the v2 engine', () => {
       }, 201)
     })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('.agent-mode-button')).toContainText('Agent 模式')
+    await page.locator('.agent-mode-button').click()
+    await page.getByRole('button', { name: '问答模式' }).click()
     await expect(page.locator('.agent-mode-button')).toContainText('问答模式')
     await page.getByLabel('消息输入').fill('物联网设备怎么配网')
     await page.getByRole('button', { name: '发送' }).click()
@@ -174,7 +177,7 @@ test.describe('original assistant UI on the v2 engine', () => {
       shots: [shot('white', '产品白底图'), shot('selling', '核心卖点图', { headline: '一杯暖一天', role: 'detail', aspectRatio: '3:4' })] }
     const finished = { ...base, status: 'generating', approvedCents: 20, done: 2, ready: false, needsReview: true,
       shots: [
-        shot('white', '产品白底图', { attempts: 1, status: 'succeeded', imageUrl: '/api/v1/files/out/white.png', canRedo: true, priceCents: 10 }),
+        shot('white', '产品白底图', { attempts: 1, status: 'succeeded', imageUrl: '/api/v1/files/out/white.png', fileKey: 'tasks/assistant-user/assistant/set/white.png', canRedo: true, priceCents: 10 }),
         shot('selling', '核心卖点图', { attempts: 1, status: 'succeeded', imageUrl: '/api/v1/files/out/selling.png', canRedo: true, priceCents: 10 }),
       ] }
     const checked = { ...finished, status: 'done', needsReview: false, ready: true, downloadable: 2, spentCents: 20,
@@ -183,6 +186,8 @@ test.describe('original assistant UI on the v2 engine', () => {
         { ...finished.shots[1], reviewed: true, pass: false, issues: ['标题有错别字'] },
       ] }
     let generateBody = null
+    let adoptBody = null
+    let editRunBody = null
     let current = planned
     await mockAssistant(page)
     await page.route('**/api/v1/files/out/**', (route) => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>' }))
@@ -193,6 +198,11 @@ test.describe('original assistant UI on the v2 engine', () => {
         current = finished
         return fulfillJson(route, { ...finished, needsReview: false, done: 0, shots: finished.shots.map((item) => ({ ...item, status: 'running', imageUrl: '' })) })
       }
+      if (url.pathname.endsWith('/adopt')) {
+        adoptBody = route.request().postDataJSON()
+        current = { ...checked, shots: [{ ...checked.shots[0], attempts: 2, edited: true, imageUrl: '/api/v1/files/out/edited.png' }, checked.shots[1]] }
+        return fulfillJson(route, current)
+      }
       if (url.pathname.endsWith('/review')) {
         current = checked
         return fulfillJson(route, { set: checked, reviewed: 2, failed: ['selling'], autoRedo: [] })
@@ -202,6 +212,17 @@ test.describe('original assistant UI on the v2 engine', () => {
     await page.route('**/api/v1/assistant/runs', async (route) => {
       if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
       const body = route.request().postDataJSON()
+      if (body.mode === 'image') {
+        editRunBody = body
+        return fulfillJson(route, {
+          run: { id: 'run-5', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: 'succeeded' },
+          userMessage: message(body.clientUserMessageId, 'user', body.userMessageContent),
+          assistantMessage: message(body.clientAssistantMessageId, 'assistant', '', {
+            kind: 'image', runId: 'run-5',
+            images: [{ id: 'edited-image', fileKey: 'tasks/assistant-user/assistant/run-5/1.png', dataUrl: '/api/v1/files/out/edited.png' }],
+          }),
+        }, 201)
+      }
       return fulfillJson(route, {
         run: { id: 'run-4', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: 'succeeded' },
         userMessage: message(body.clientUserMessageId, 'user', body.prompt),
@@ -226,8 +247,28 @@ test.describe('original assistant UI on the v2 engine', () => {
     await expect(card.getByRole('link', { name: '下载全部' })).toBeVisible({ timeout: 15_000 })
     await expect(card).toContainText('标题有错别字')
     await expect(card).toContainText('待修正')
-    await expect(card.getByRole('button', { name: '重做（10 积分）' })).toHaveCount(2)
-    await expect(card.getByRole('link', { name: '在电商工作台继续调整' })).toHaveAttribute('href', '/ecommerce-design')
+    await expect(card.getByRole('button', { name: '重做 · 10 积分' })).toHaveCount(2)
+    await expect(card.getByRole('link', { name: '在电商工作台继续调整' })).toHaveCount(0)
+    await expect(card.getByRole('button', { name: '下次按这个风格做' })).toBeVisible()
+
+    // Clicking a shot opens the image editor; a described edit runs as an
+    // image edit of that shot and the result replaces it in the set.
+    await card.getByRole('button', { name: '查看并编辑「产品白底图」' }).click()
+    const viewer = page.getByRole('dialog', { name: '图片查看与编辑' })
+    await expect(viewer).toBeVisible()
+    await expect(viewer.getByRole('heading')).toHaveText('保温杯 · 产品白底图')
+    for (const name of ['标注', '评论', '去背景', '擦除', '调整尺寸']) {
+      await expect(viewer.getByRole('toolbar', { name: '编辑工具' }).getByRole('button', { name })).toBeVisible()
+    }
+    await viewer.getByLabel('描述修改').fill('把背景换成浅灰色')
+    await viewer.getByRole('button', { name: '生成修改' }).click()
+    await expect.poll(() => editRunBody).not.toBeNull()
+    expect(editRunBody).toMatchObject({ mode: 'image', count: 1, userMessageContent: '把背景换成浅灰色' })
+    expect(editRunBody.referenceImages[0]).toMatchObject({ fileKey: 'tasks/assistant-user/assistant/set/white.png' })
+    await expect.poll(() => adoptBody).toEqual({ shotId: 'white', fileKey: 'tasks/assistant-user/assistant/run-5/1.png', note: '把背景换成浅灰色' })
+    await expect(viewer.getByRole('button', { name: '查看修改 1' })).toBeVisible()
+    await viewer.getByRole('button', { name: '关闭预览' }).click()
+    await expect(card).toContainText('已修改')
   })
 
   test('finds images, then confirms and undoes a library change from the card', async ({ page }) => {
@@ -349,7 +390,7 @@ test.describe('original assistant UI on the v2 engine', () => {
     await expect(panel).not.toContainText('品牌色')
 
     await panel.getByRole('button', { name: '添加记忆' }).click()
-    await panel.getByLabel('记忆类型').selectOption('habit')
+    await panel.getByRole('radiogroup', { name: '记忆类型' }).getByRole('radio', { name: '习惯' }).click()
     await panel.getByLabel('记忆名称').fill('常用平台')
     await panel.getByLabel('记忆内容').fill('天猫，主图 1:1')
     await panel.getByRole('button', { name: '保存' }).click()
@@ -363,9 +404,18 @@ test.describe('original assistant UI on the v2 engine', () => {
     await form.getByRole('button', { name: '保存' }).click()
     await expect(panel).toContainText('喜欢冷色调')
 
+    // Search narrows the list.
+    await panel.getByLabel('搜索记忆').fill('天猫')
+    await expect(panel.locator('.assistant-memory-item')).toHaveCount(1)
+    await panel.getByLabel('搜索记忆').fill('')
+
+    // Deleting is immediate and can be undone from the bar that appears.
     await panel.locator('.assistant-memory-item', { hasText: '常用平台' }).getByRole('button', { name: '删除' }).click()
-    await panel.getByRole('button', { name: '确认删除' }).click()
-    await expect(panel).not.toContainText('常用平台')
+    await expect(panel.locator('.assistant-memory-item', { hasText: '常用平台' })).toHaveCount(0)
+    await panel.getByRole('status').getByRole('button', { name: '撤销' }).click()
+    await expect(panel.locator('.assistant-memory-item', { hasText: '常用平台' })).toHaveCount(1)
+    await panel.locator('.assistant-memory-item', { hasText: '常用平台' }).getByRole('button', { name: '删除' }).click()
+    await expect(panel.locator('.assistant-memory-item', { hasText: '常用平台' })).toHaveCount(0)
 
     await panel.getByRole('switch', { name: '使用记忆' }).click()
     await expect(panel).toContainText('已关闭')

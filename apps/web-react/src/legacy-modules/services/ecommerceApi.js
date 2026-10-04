@@ -100,20 +100,3 @@ export async function getAplusCatalog({ signal } = {}) {
   })
 }
 
-export async function listCommerceAssetReviews({ status = '', limit = 100, signal } = {}) {
-  const data = await apiGet('/commerce/reviews', {
-    query: { status, limit },
-    signal,
-    fallbackMessage: '商拍质检记录读取失败',
-  })
-  return Array.isArray(data?.items) ? data.items : []
-}
-
-export async function saveCommerceAssetReview(taskId, payload, { signal } = {}) {
-  return apiRequest(`/commerce/reviews/${encodeURIComponent(taskId)}`, {
-    method: 'PUT',
-    body: payload,
-    signal,
-    fallbackMessage: '商拍质检记录保存失败',
-  })
-}

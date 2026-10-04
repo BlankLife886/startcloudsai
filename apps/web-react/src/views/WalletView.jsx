@@ -222,7 +222,7 @@ function presentationFor(entry) {
       badge: statusLabel || "处理中",
       amount: amount.text.startsWith("-") ? amount.text : `-${formatPoints(Math.abs(delta) || cost)}`,
       amountTone: "spend",
-      description: `提交时预扣 ${formatPoints(Math.abs(delta) || cost)}。成功后从预扣结算，失败会退回。`,
+      description: `提交时预扣 ${formatPoints(Math.abs(delta) || cost)}。成功后从预扣结算，失败会退回，内容违规被驳回不退回。`,
       meta,
       model,
       remainingText,

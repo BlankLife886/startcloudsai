@@ -100,7 +100,7 @@ function CostConfirmDialog({ cost, light, onCancel, onConfirm }) {
             <i className="bi bi-x-lg" />
           </button>
         </header>
-        <p className="ai-cost-confirm-summary">提交后先冻结预计费用，任务完成后按实际生成结果结算。</p>
+        <p className="ai-cost-confirm-summary">提交后先冻结预计费用，任务完成后按实际生成结果结算；生成失败自动退回，内容违规被驳回不退回。</p>
         <div className="ai-cost-confirm-card">
           <div className="ai-cost-confirm-total">
             <div className="ai-cost-confirm-total__copy"><span>本次预计</span><small>{cost.unit} 积分 / 张 × 1 张</small></div>

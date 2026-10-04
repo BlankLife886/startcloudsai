@@ -725,6 +725,8 @@ let timelineRequest = 0
 /** 任务失败码 → 中文名（抽屉概览用，未知码原样显示） */
 const TASK_ERROR_LABELS: Record<string, string> = {
   upstream_error: '上游服务商报错',
+  content_policy: '内容违规被驳回（已扣积分）',
+  content_policy_waived: '内容违规被驳回（免扣，已退回）',
   upstream_unreachable: '无法连接上游服务商',
   upstream_timeout: '上游服务商响应超时',
   upstream_unavailable: '上游服务商暂不可用',

@@ -434,7 +434,7 @@ export function ModelSheetStudioView() {
         if (["character", "object"].includes(configValue.skill)) { pendingOverridesRef.current.add("subjectType"); setSubjectType(configValue.skill); }
         if (ASPECT_OPTIONS.includes(configValue.ratio)) { pendingOverridesRef.current.add("aspectRatio"); setAspectRatio(configValue.ratio); }
         if ([1, 2, 3, 4].includes(Number(configValue.count))) { pendingOverridesRef.current.add("boardCount"); setBoardCount(Number(configValue.count)); }
-        if (configValue.model && available.some((item) => item.id === configValue.model)) setModelId(configValue.model);
+        if (configValue.model && available.some((item) => item.id === configValue.model)) { pendingOverridesRef.current.add("modelId"); setModelId(configValue.model); }
         const launchReferences = (configValue.referenceImages || [])
           .filter((item) => item.dataUrl)
           .slice(0, MAX_REFERENCES)
@@ -491,6 +491,7 @@ export function ModelSheetStudioView() {
     setBackground(BACKGROUND_OPTIONS.some((item) => item.id === saved.background) ? saved.background : initialSettings.background);
     setSelectedViews(Array.isArray(saved.selectedViews) && saved.selectedViews.length ? saved.selectedViews : initialSettings.selectedViews);
     setCustomViews(Array.isArray(saved.customViews) ? saved.customViews.slice(0, 8) : []);
+    if (saved.modelId && !pendingOverridesRef.current.has("modelId")) setModelId(String(saved.modelId));
     hydratedScopeRef.current = scope;
     setStorageScope(scope);
   }, [auth.isAuthenticated, auth.loading, auth.user?.id, initialSettings]);
@@ -508,12 +509,12 @@ export function ModelSheetStudioView() {
   useEffect(() => {
     if (!storageScope) return undefined;
     const timer = window.setTimeout(() => setScopedLocalItem(SETTINGS_KEY, JSON.stringify({
-      prompt, subjectType, fidelity, aspectRatio, detail, outputMode, boardCount, background, selectedViews, customViews,
+      prompt, subjectType, fidelity, aspectRatio, detail, outputMode, boardCount, background, selectedViews, customViews, modelId,
       referenceItems: referenceItems.filter((item) => item.type === "url").map(({ id, type, url }) => ({ id, type, url })),
       activeSubjectId,
     })), 400);
     return () => window.clearTimeout(timer);
-  }, [activeSubjectId, aspectRatio, background, boardCount, customViews, detail, fidelity, outputMode, prompt, referenceItems, selectedViews, storageScope, subjectType]);
+  }, [activeSubjectId, aspectRatio, background, boardCount, customViews, detail, fidelity, modelId, outputMode, prompt, referenceItems, selectedViews, storageScope, subjectType]);
   useEffect(() => {
     if (!storageScope) return;
     setScopedLocalItem(LABELS_KEY, JSON.stringify(outputLabels));

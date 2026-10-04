@@ -267,3 +267,41 @@ func TestFailedImageWithoutAutoApprovalWaitsForTheUser(t *testing.T) {
 		t.Fatalf("view = %+v", view)
 	}
 }
+
+// An image edited in the viewer replaces the shot: shown, downloadable and
+// checked, without costing points or using up the shot's redos.
+func TestAdoptEditedImageReplacesTheShot(t *testing.T) {
+	f := setup(t)
+	set := f.plan(ShotRequest{Type: "white"})
+	result, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByUser, ExpectedTotalCents: &set.QuotedCents})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Pool.Exec(f.ctx, `UPDATE tasks SET status = 'succeeded', output_keys = '["out/first.png"]' WHERE id = $1`, result.TaskIDs[0]); err != nil {
+		t.Fatal(err)
+	}
+	shotID := set.Shots[0].ID
+	edited := AdoptInput{ShotID: shotID, FileKey: "tasks/u/assistant/run/1.png", ThumbKey: "tasks/u/assistant/run/1-thumb", Note: "改成 8 折"}
+	if err := f.service.Adopt(f.ctx, f.user.ID, set.ID, edited); err != nil {
+		t.Fatal(err)
+	}
+	// Adopting the same image twice adds nothing.
+	if err := f.service.Adopt(f.ctx, f.user.ID, set.ID, edited); err != nil {
+		t.Fatal(err)
+	}
+	view, err := f.service.ViewByID(f.ctx, f.user.ID, set.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shot := view.Shots[0]
+	if shot.Attempts != 2 || !shot.Edited || shot.Status != "succeeded" || shot.FileKey != edited.FileKey ||
+		shot.ImageURL != "/api/v1/files/tasks/u/assistant/run/1-thumb" || !shot.Pass || !shot.CanRedo || shot.PriceCents != 10 {
+		t.Fatalf("shot = %+v", shot)
+	}
+	if view.SpentCents != 10 || view.Downloadable != 1 {
+		t.Fatalf("view = %+v", view)
+	}
+	if err := f.service.Adopt(f.ctx, f.user.ID, set.ID, AdoptInput{ShotID: "missing", FileKey: edited.FileKey}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing shot err = %v", err)
+	}
+}

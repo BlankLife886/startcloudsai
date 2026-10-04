@@ -147,6 +147,10 @@ export const router = createBrowserRouter([
         lazy: lazyView(() => import("./views/UpdatesView.jsx"), "UpdatesView"),
       },
       {
+        path: "/announcements",
+        lazy: lazyView(() => import("./views/AnnouncementsView.jsx"), "AnnouncementsView"),
+      },
+      {
         path: "/app-space",
         lazy: lazyView(
           () => import("./views/AppSpaceView.jsx"),

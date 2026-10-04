@@ -97,6 +97,10 @@ const form = reactive({
   canvasBatchMaxCount: 100,
   canvasProjectMaxCount: 30,
   canvasProjectMaxKb: 3072,
+  assistantConversationMaxCount: 40,
+  assistantConversationDailyCreateLimit: 100,
+  assistantConversationMaxMessages: 0,
+  assistantConversationArchiveDays: 7,
   globalMaxConcurrentTasks: 2000,
   globalMaxConcurrentChats: 32,
   globalMaxActiveTasks: 12000,
@@ -159,6 +163,10 @@ const settingsSignature = () =>
     canvasBatchMaxCount: form.canvasBatchMaxCount,
     canvasProjectMaxCount: form.canvasProjectMaxCount,
     canvasProjectMaxKb: form.canvasProjectMaxKb,
+    assistantConversationMaxCount: form.assistantConversationMaxCount,
+    assistantConversationDailyCreateLimit: form.assistantConversationDailyCreateLimit,
+    assistantConversationMaxMessages: form.assistantConversationMaxMessages,
+    assistantConversationArchiveDays: form.assistantConversationArchiveDays,
     globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
     globalMaxConcurrentChats: form.globalMaxConcurrentChats,
     globalMaxActiveTasks: form.globalMaxActiveTasks,
@@ -506,6 +514,10 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.canvasBatchMaxCount = settings.canvasBatchMaxCount ?? 100;
   form.canvasProjectMaxCount = settings.canvasProjectMaxCount ?? 30;
   form.canvasProjectMaxKb = settings.canvasProjectMaxKb ?? 3072;
+  form.assistantConversationMaxCount = settings.assistantConversationMaxCount ?? 40;
+  form.assistantConversationDailyCreateLimit = settings.assistantConversationDailyCreateLimit ?? 100;
+  form.assistantConversationMaxMessages = settings.assistantConversationMaxMessages ?? 0;
+  form.assistantConversationArchiveDays = settings.assistantConversationArchiveDays ?? 7;
   form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks != null && settings.globalMaxConcurrentTasks > 0
     ? settings.globalMaxConcurrentTasks : settings.effectiveGlobalConcurrency ?? 2000;
   form.globalMaxConcurrentChats = settings.globalMaxConcurrentChats ?? 32;
@@ -660,6 +672,10 @@ async function commitSave() {
           canvasBatchMaxCount: form.canvasBatchMaxCount,
           canvasProjectMaxCount: form.canvasProjectMaxCount,
           canvasProjectMaxKb: form.canvasProjectMaxKb,
+          assistantConversationMaxCount: form.assistantConversationMaxCount,
+          assistantConversationDailyCreateLimit: form.assistantConversationDailyCreateLimit,
+          assistantConversationMaxMessages: form.assistantConversationMaxMessages,
+          assistantConversationArchiveDays: form.assistantConversationArchiveDays,
           globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
           globalMaxConcurrentChats: form.globalMaxConcurrentChats,
           globalMaxActiveTasks: form.globalMaxActiveTasks,
@@ -1399,6 +1415,39 @@ onMounted(() => {
               <small>新建和保存时校验，最大 9216 KB（9 MB）；图片单独上传不计入，一般 1–3 MB 足够。画布每次保存都会上传整个项目，过大会拖慢自动保存。当前 ≈ {{ canvasProjectMaxKbLabel }}</small>
             </span>
             <el-input-number v-model="form.canvasProjectMaxKb" :min="1" :max="9216" :step="512" :precision="0" />
+          </label>
+        </div>
+      </div>
+      <div class="settings-card">
+        <header class="card-head"><strong>AI 助手对话</strong><small>控制每个用户能保留多少对话、每天能新建多少，以及归档对话多久后删除</small></header>
+        <div class="field-grid is-stack">
+          <label class="field-row">
+            <span>
+              <strong>每用户保留对话数（基础，个）</strong>
+              <small>订阅可在套餐里追加；超出时自动归档最久没用的对话，置顶和正在运行的不会被归档</small>
+            </span>
+            <el-input-number v-model="form.assistantConversationMaxCount" :min="1" :max="10000" :precision="0" />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>每用户每天新建对话数（个）</strong>
+              <small>按北京时间自然日计算，删除对话不退回次数；0 表示不限</small>
+            </span>
+            <el-input-number v-model="form.assistantConversationDailyCreateLimit" :min="0" :max="100000" :precision="0" />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>单个对话消息数上限（条）</strong>
+              <small>达到后提示用户开启新对话；0 表示不限（发给模型的上下文仍按模型窗口自动压缩）</small>
+            </span>
+            <el-input-number v-model="form.assistantConversationMaxMessages" :min="0" :max="100000" :precision="0" />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>归档对话保留天数（天）</strong>
+              <small>用户手动归档或超出上限自动归档的对话，到期后连同其中生成的图片一起删除</small>
+            </span>
+            <el-input-number v-model="form.assistantConversationArchiveDays" :min="1" :max="365" :precision="0" />
           </label>
         </div>
       </div>

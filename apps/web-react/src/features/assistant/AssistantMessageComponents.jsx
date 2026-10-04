@@ -67,6 +67,7 @@ import {
 import { AssistantPreviewImage, ModelMenuPrice } from "./AssistantWorkspaceUi.jsx";
 import { AssistantDataViews } from "./AssistantDataViews.jsx";
 import { AssistantProactiveNote } from "./AssistantMemoryViews.jsx";
+import { ASSISTANT_CORRECTIONS, assistantCorrectionActions } from "./domain/assistantCorrections.js";
 
 
 function GeneratedImageGrid({ message, imageModels, loadedImages, failedImages, imageRetryVersions, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference }) {
@@ -1442,7 +1443,21 @@ function ConversationMinimap({ items, activeSetterRef, onScrollToMessage }) {
   );
 }
 
-function AssistantMessageRow({ message, turnId, showDate, expanded, copied, generating, feedbackBusy, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, attachedReferences, autoApprove = false, autoApproveBudgetCents = 0, autoApproved = false, searchHit = false, searchCurrent = false, searchQuery = "", toolActionBusyId = "", maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onToolAction, onToggleStatus, onCopy, onFeedback, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal }) {
+function AssistantMessageCorrections({ message, isLastAssistant, generating, proposalExecuted, autoApproved, onCorrection }) {
+  const actions = onCorrection ? assistantCorrectionActions(message, { isLastAssistant, generating, proposalExecuted, autoApproved }) : [];
+  if (!actions.length) return null;
+  return (
+    <div className="message-corrections" role="group" aria-label="这一轮不是想要的">
+      <span>不是想要的？</span>
+      {actions.map((action) => {
+        const item = ASSISTANT_CORRECTIONS[action];
+        return <button key={action} type="button" onClick={() => onCorrection(action)}><i className={`bi ${item.icon}`} aria-hidden="true" />{item.label}</button>;
+      })}
+    </div>
+  );
+}
+
+function AssistantMessageRow({ message, turnId, showDate, expanded, copied, generating, feedbackBusy, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, attachedReferences, autoApprove = false, autoApproveBudgetCents = 0, autoApproved = false, searchHit = false, searchCurrent = false, searchQuery = "", toolActionBusyId = "", maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onToolAction, onToggleStatus, onCopy, onFeedback, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal, onCorrection }) {
   const status = message.role === "assistant" ? messageStatus(message) : null;
   const contextUsage = normalizeAssistantContext(message.context);
   const usage = normalizeAssistantUsage(message);
@@ -1474,7 +1489,7 @@ function AssistantMessageRow({ message, turnId, showDate, expanded, copied, gene
             {message.images?.length > 0 && <GeneratedImageGrid message={message} imageModels={imageModels} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} onOpenImage={onOpenImage} onImageLoad={onImageLoad} onImageError={onImageError} onImageRetry={onImageRetry} onUseReference={onUseReference} />}
           </>}
         </div>}
-        {message.role === "assistant" && !message.pending && <><p className="message-meta">以上内容由 AI 生成{usage?.durationMs ? <b className="message-meta-duration">{formatDurationMs(usage.durationMs)}</b> : null}</p><div className="message-actions">{sourceProposal && <button className="source-proposal-button" type="button" title="回到生成这组图片的方案" onClick={onReopenProposal}><i className="bi bi-sliders" /><span>编辑方案</span></button>}<button className="regenerate-button" type="button" title="重新生成" disabled={generating || !isLastAssistant} onClick={() => onRetry(message)}><RegenerateIcon /><span>重新生成</span></button><button className={`copy-message-button${copied ? " is-copied" : ""}`} type="button" title={copied ? "已复制" : "复制回复"} aria-label={copied ? "已复制" : "复制回复"} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button><AssistantMessageFeedbackActions message={message} busy={feedbackBusy} onFeedback={onFeedback} /><button type="button" title="引用" aria-label="引用" onClick={() => onQuote(message)}><i className="bi bi-quote" /></button><button type="button" title="更多操作" aria-label="更多操作" onClick={(event) => { event.stopPropagation(); onToggleMore(message.id); }}><i className="bi bi-three-dots" /></button>{moreOpen && <div className="message-more-menu" onClick={(event) => event.stopPropagation()}>{message.kind !== "image" && <button type="button" onClick={() => onDownloadMarkdown(message)}><i className="bi bi-filetype-md" /><span>下载 Markdown</span></button>}<button className="is-danger" type="button" onClick={() => onDelete(message.id)}><i className="bi bi-trash3" /><span>删除</span></button></div>}</div></>}
+        {message.role === "assistant" && !message.pending && <><p className="message-meta">以上内容由 AI 生成{usage?.durationMs ? <b className="message-meta-duration">{formatDurationMs(usage.durationMs)}</b> : null}</p><div className="message-actions">{sourceProposal && <button className="source-proposal-button" type="button" title="回到生成这组图片的方案" onClick={onReopenProposal}><i className="bi bi-sliders" /><span>编辑方案</span></button>}<button className="regenerate-button" type="button" title="重新生成" disabled={generating || !isLastAssistant} onClick={() => onRetry(message)}><RegenerateIcon /><span>重新生成</span></button><button className={`copy-message-button${copied ? " is-copied" : ""}`} type="button" title={copied ? "已复制" : "复制回复"} aria-label={copied ? "已复制" : "复制回复"} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button><AssistantMessageFeedbackActions message={message} busy={feedbackBusy} onFeedback={onFeedback} /><button type="button" title="引用" aria-label="引用" onClick={() => onQuote(message)}><i className="bi bi-quote" /></button><button type="button" title="更多操作" aria-label="更多操作" onClick={(event) => { event.stopPropagation(); onToggleMore(message.id); }}><i className="bi bi-three-dots" /></button>{moreOpen && <div className="message-more-menu" onClick={(event) => event.stopPropagation()}>{message.kind !== "image" && <button type="button" onClick={() => onDownloadMarkdown(message)}><i className="bi bi-filetype-md" /><span>下载 Markdown</span></button>}<button className="is-danger" type="button" onClick={() => onDelete(message.id)}><i className="bi bi-trash3" /><span>删除</span></button></div>}</div><AssistantMessageCorrections message={message} isLastAssistant={isLastAssistant} generating={generating} proposalExecuted={proposalExecuted} autoApproved={autoApproved} onCorrection={onCorrection} /></>}
       </article>}
     </div>
   );
