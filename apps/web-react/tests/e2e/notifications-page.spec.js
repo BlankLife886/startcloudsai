@@ -76,10 +76,25 @@ test('notification inbox groups messages, keeps 公告-titled personal notices, 
   await expect.poll(() => calls.patch.at(-1)).toEqual(['n-assistant'])
 })
 
-test('notification inbox links to the separate announcement page', async ({ page }) => {
+test('announcements have their own nav entry, separate from the notification bell', async ({ page }) => {
   await mockInbox(page)
+  const live = { id: 'a-live', title: '十月上新', body: '新模型已上线。', active: true, placement: 'card', frequency: 'session_once', createdAt: minutesAgo(10) }
+  await page.route('**/api/v1/announcements', (route) => fulfillJson(route, { items: [live] }))
   await page.goto('/notifications')
-  await page.getByRole('link', { name: /平台公告/ }).click()
+
+  // 铃铛只算通知未读，公告未读挂在独立的公告入口上
+  await expect(page.locator('.nav-notify__badge')).toHaveText('3')
+  await expect(page.locator('.nav-announce__badge')).toHaveText('1')
+  await expect(page.locator('.nt-side').getByRole('link', { name: /平台公告/ })).toHaveCount(0)
+
+  // 弹窗看过并关掉后，公告入口不再提示未读
+  await page.locator('.client-announcement-modal__backdrop').click({ position: { x: 8, y: 8 } })
+  await expect(page.locator('.nav-announce__badge')).toHaveCount(0)
+
+  await page.locator('.nav-notify__btn').hover()
+  await expect(page.locator('.nav-notify__foot').getByRole('link', { name: /公告/ })).toHaveCount(0)
+
+  await page.locator('.nav-announce').click()
   await expect(page).toHaveURL(/\/announcements$/)
   await expect(page.locator('.nt-head h1')).toContainText('公告')
 })
@@ -117,15 +132,55 @@ test('announcement page is public and keeps ended announcements', async ({ page 
   await page.screenshot({ path: test.info().outputPath('announcements-desktop.png'), fullPage: true })
 
   await page.locator('.ann-card').click()
-  await expect(page).toHaveURL(/\/announcements\?id=a-live$/)
-  const drawer = page.locator('.ann-drawer')
-  await expect(drawer).toContainText('所有模型按原价减 2 积分')
-  await expect(drawer.getByRole('link', { name: /去创作/ })).toHaveAttribute('href', '/studio')
-  await page.screenshot({ path: test.info().outputPath('announcements-drawer.png') })
-  await page.keyboard.press('Escape')
-  await expect(drawer).toHaveCount(0)
+  await expect(page).toHaveURL(/\/announcements\/a-live$/)
+  const article = page.locator('.ann-article')
+  await expect(article).toContainText('所有模型按原价减 2 积分')
+  await expect(article.getByRole('link', { name: /去创作/ })).toHaveAttribute('href', '/studio')
+  await page.screenshot({ path: test.info().outputPath('announcements-detail.png') })
+  await page.locator('.ann-detail__back').click()
+  await expect(page).toHaveURL(/\/announcements$/)
   await expect(page.locator('.nt-head h1')).toContainText('1')
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.screenshot({ path: test.info().outputPath('announcements-mobile.png'), fullPage: true })
+})
+
+test('a newly arrived notification rings the bell and shows a toast once', async ({ page }) => {
+  const rows = notifications().slice(0, 1)
+  await mockInbox(page, rows)
+  await page.goto('/announcements')
+  await expect(page.locator('.nav-notify__badge')).toHaveText('1')
+  // 首次加载的已有通知不提醒
+  await expect(page.locator('.notify-toast')).toHaveCount(0)
+
+  rows.unshift({ id: 'n-new', kind: 'order', sourceType: 'order', title: '订单已支付', body: '会员已开通。', readAt: null, createdAt: new Date().toISOString() })
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('starclouds:notifications-updated', { detail: { unreadCount: 2, source: 'sse' } })))
+
+  const toast = page.locator('.notify-toast')
+  await expect(toast).toContainText('订单已支付')
+  await expect(page.locator('.nav-notify')).toHaveClass(/is-ringing/)
+  await expect(page.locator('.nav-notify__badge')).toHaveText('2')
+  await page.screenshot({ path: test.info().outputPath('notification-toast.png') })
+
+  await toast.getByRole('button', { name: '关闭提醒' }).click()
+  await expect(toast).toHaveCount(0)
+
+  // 同一条不会重复提醒
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('starclouds:notifications-updated', { detail: { unreadCount: 3, source: 'sse' } })))
+  await page.waitForTimeout(300)
+  await expect(toast).toHaveCount(0)
+
+  // 提示音开关同步到账号的提醒设置
+  const savedPrefs = []
+  await page.route('**/api/v1/me/notification-preferences', async (route) => {
+    if (route.request().method() === 'PUT') savedPrefs.push(route.request().postDataJSON())
+    return fulfillJson(route, route.request().postDataJSON() || {})
+  })
+  await page.locator('.nav-notify__btn').hover()
+  const sound = page.locator('button.nav-notify__sound')
+  await expect(sound).toHaveAttribute('aria-pressed', 'true')
+  await sound.click()
+  await expect(sound).toHaveAttribute('aria-pressed', 'false')
+  await expect.poll(() => savedPrefs.at(-1)?.sound).toBe(false)
+  await expect(page.getByRole('link', { name: '提醒设置' })).toHaveAttribute('href', '/account#notification-preferences')
 })

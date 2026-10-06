@@ -120,3 +120,15 @@ func TestAssistantV2PlansACommerceSetWhenAskedForOne(t *testing.T) {
 		t.Fatalf("dataViews = %s", raw)
 	}
 }
+
+// The note about the conversation's set names its shots and says to act with
+// the tools instead of sending the user to the card.
+func TestAssistantV2OpenSetNoteNamesTheShots(t *testing.T) {
+	set := &store.CommerceSet{Status: store.CommerceSetDone, Shots: []store.CommerceSetShot{{ID: "hero", Label: "首屏视觉图"}, {ID: "scene", Label: "场景图"}}}
+	note := assistantV2OpenSetNote(set)
+	for _, want := range []string{"已经出好图", "共 2 张（hero=首屏视觉图、scene=场景图）", "不传 setId 时就是这一套", "commerce_set_edit"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("note misses %q: %s", want, note)
+		}
+	}
+}

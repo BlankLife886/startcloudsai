@@ -21,7 +21,7 @@ type Checker func(ctx context.Context, prompt string, outputKey string, referenc
 
 // ReviewPrompt asks a vision model whether an image does its job. The
 // first attached image is the generated one; the rest are the product.
-func ReviewPrompt(shot store.CommerceSetShot, language string) string {
+func ReviewPrompt(shot store.CommerceSetShot, language, edit string) string {
 	copyLine := "这张图不要求文字。"
 	if shot.Headline != "" {
 		copyLine = "这张图应带标题「" + shot.Headline + "」"
@@ -37,8 +37,18 @@ func ReviewPrompt(shot store.CommerceSetShot, language string) string {
 1. 商品与参考图是同一件：造型、比例、颜色、Logo、包装文字、关键部件一致，没有被换成相似商品、没有多出或缺少部件。
 2. 完成了本张职责（例如白底图是干净白底、场景图有对应场景、卖点图有信息区）。
 3. 没有明显瑕疵：畸形的手或人体、重复商品、残缺边缘、水印、无关品牌。
-只有明显影响交付的问题才算不通过，审美偏好不算。
+` + editReviewLine(edit) + `只有明显影响交付的问题才算不通过，审美偏好不算。
 只返回 JSON，不要解释：{"pass":true,"issues":[]}，issues 用简短中文写每个问题（最多 3 条）。`
+}
+
+// editReviewLine tells the checker which differences from the product photos
+// the user asked for, so an edit (e.g. removing the logo) is not failed for
+// no longer matching them.
+func editReviewLine(edit string) string {
+	if edit == "" {
+		return ""
+	}
+	return "这张是在上一版成片上按用户要求修改的，要求是：「" + edit + "」。和参考图不一致的地方如果正是这次要求改的，不算问题；要检查这处修改确实做到了。\n"
 }
 
 func decodeReview(raw string) (store.CommerceSetReview, error) {
@@ -244,13 +254,21 @@ const reviewConcurrency = 4
 func (s Service) reviewOne(ctx context.Context, set *store.CommerceSet, brief Brief, shot store.CommerceSetShot, task *store.Task, check Checker) store.CommerceSetReview {
 	review := store.CommerceSetReview{CheckedAt: s.now(), Skipped: true}
 	if task.Status != "succeeded" {
-		// A failed task needs a redo just like a failed check.
-		return store.CommerceSetReview{CheckedAt: review.CheckedAt, Issues: []string{"生成失败"}}
+		// A failed or stopped task needs a redo just like a failed check.
+		issue := "生成失败"
+		if task.Status == "canceled" || task.Status == "cancelled" {
+			issue = "已停止"
+		}
+		return store.CommerceSetReview{CheckedAt: review.CheckedAt, Issues: []string{issue}}
 	}
 	if len(task.OutputKeys) == 0 || check == nil {
 		return review
 	}
-	reply, err := check(ctx, ReviewPrompt(shot, brief.Language), task.OutputKeys[0], set.InputKeys)
+	edit := ""
+	if attempt := latest(shot); attempt != nil {
+		edit = attempt.EditNote
+	}
+	reply, err := check(ctx, ReviewPrompt(shot, brief.Language, edit), task.OutputKeys[0], set.InputKeys)
 	if err == nil {
 		var decoded store.CommerceSetReview
 		if decoded, err = decodeReview(reply); err == nil {

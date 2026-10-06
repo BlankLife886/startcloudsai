@@ -62,7 +62,12 @@ func (s *Server) adminAssistantQuality(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"groups": groups, "days": days, "corrections": corrections})
+	negative, err := store.AssistantNegativeFeedbackList(ctx, s.St.Pool, since, 100)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"groups": groups, "days": days, "corrections": corrections, "negative": negative})
 }
 
 // adminAssistantQualityCases lists the built-in cases and the ones users' corrections produced.

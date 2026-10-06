@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -24,6 +25,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantreview"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
+	"github.com/BlankLife886/startcloudsai/server/internal/commerceset"
 	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
 	"github.com/BlankLife886/startcloudsai/server/internal/executionconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
@@ -71,16 +73,19 @@ type importAssistantConversationsIn struct {
 }
 
 type assistantRunIn struct {
-	ConversationID           string           `json:"conversationId"`
-	IdempotencyKey           string           `json:"idempotencyKey"`
-	Prompt                   string           `json:"prompt"`
-	UserMessageContent       string           `json:"userMessageContent"`
-	Mode                     string           `json:"mode"`
-	ClientUserMessageID      string           `json:"clientUserMessageId"`
-	ClientAssistantMessageID string           `json:"clientAssistantMessageId"`
-	SourceUserMessageID      string           `json:"sourceUserMessageId"`
-	ReferenceImages          []map[string]any `json:"referenceImages"`
-	ReferenceMode            string           `json:"referenceMode"`
+	ConversationID           string `json:"conversationId"`
+	IdempotencyKey           string `json:"idempotencyKey"`
+	Prompt                   string `json:"prompt"`
+	UserMessageContent       string `json:"userMessageContent"`
+	Mode                     string `json:"mode"`
+	ClientUserMessageID      string `json:"clientUserMessageId"`
+	ClientAssistantMessageID string `json:"clientAssistantMessageId"`
+	SourceUserMessageID      string `json:"sourceUserMessageId"`
+	// KeepPreviousVersion is set by regenerate: the replaced reply stays on
+	// the new one as an earlier version the user can switch back to.
+	KeepPreviousVersion bool             `json:"keepPreviousVersion"`
+	ReferenceImages     []map[string]any `json:"referenceImages"`
+	ReferenceMode       string           `json:"referenceMode"`
 	// ReferencesInferred 表示参考图是界面按上下文自动带上的，不是用户亲手附的。
 	ReferencesInferred bool                        `json:"referencesInferred"`
 	ImagePlanItems     []assistantRunImagePlanItem `json:"imagePlanItems"`
@@ -576,6 +581,41 @@ func (s *Server) deleteAssistantMessage(c *gin.Context) {
 
 type assistantMessageFeedbackIn struct {
 	Rating string `json:"rating"`
+	// Reasons and Note explain a thumbs-down; they feed the quality loop.
+	Reasons []string `json:"reasons"`
+	Note    string   `json:"note"`
+}
+
+// assistantFeedbackReasons are the reasons the page offers after a thumbs-down.
+var assistantFeedbackReasons = map[string]bool{
+	"off_topic": true, "wrong": true, "too_long": true, "ignored": true, "bad_image": true, "other": true,
+}
+
+const assistantFeedbackNoteMaxRunes = 200
+
+func normalizeAssistantFeedbackReasons(body *assistantMessageFeedbackIn) error {
+	seen := map[string]bool{}
+	reasons := make([]string, 0, len(body.Reasons))
+	for _, reason := range body.Reasons {
+		reason = strings.TrimSpace(reason)
+		if reason == "" || seen[reason] {
+			continue
+		}
+		if !assistantFeedbackReasons[reason] {
+			return apperr.E("validation_error", "reasons: 不支持的原因 "+reason, 422)
+		}
+		seen[reason] = true
+		reasons = append(reasons, reason)
+	}
+	body.Reasons = reasons
+	body.Note = strings.TrimSpace(body.Note)
+	if utf8.RuneCountInString(body.Note) > assistantFeedbackNoteMaxRunes {
+		return apperr.E("validation_error", "note: 最多 200 字", 422)
+	}
+	if body.Rating != "negative" && (len(reasons) > 0 || body.Note != "") {
+		return apperr.E("validation_error", "只有点踩时可以填写原因", 422)
+	}
+	return nil
 }
 
 func (s *Server) setAssistantMessageFeedback(c *gin.Context) {
@@ -599,6 +639,10 @@ func (s *Server) setAssistantMessageFeedback(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "rating: 仅支持 positive 或 negative", 422))
 		return
 	}
+	if err := normalizeAssistantFeedbackReasons(&body); err != nil {
+		fail(c, err)
+		return
+	}
 	message, err := store.SetUserAssistantMessageFeedback(
 		c.Request.Context(),
 		s.St.Pool,
@@ -614,8 +658,28 @@ func (s *Server) setAssistantMessageFeedback(c *gin.Context) {
 		fail(c, apperr.E("not_found", "助手回复不存在", 404))
 		return
 	}
+	// 点踩原因单独存：再点一次踩（不带原因）不会清掉已经填过的原因；取消点踩时一起清掉。
+	if len(body.Reasons) > 0 || body.Note != "" || body.Rating != "negative" {
+		updated, reasonErr := store.SetAssistantMessageFeedbackReasons(c.Request.Context(), s.St.Pool, messageID, body.Reasons, body.Note)
+		if reasonErr != nil {
+			fail(c, reasonErr)
+			return
+		}
+		if updated != nil {
+			message = updated
+		}
+	}
 	if body.Rating == "negative" {
 		s.recordAssistantTurnEventLater(c.Request.Context(), messageID, assistantreview.EventNegativeFeedback)
+		if len(body.Reasons) > 0 || body.Note != "" {
+			detail := strings.Join(body.Reasons, ",")
+			if body.Note != "" {
+				detail = strings.TrimPrefix(detail+"："+body.Note, "：")
+			}
+			if err := store.SetAssistantTurnEventDetail(c.Request.Context(), s.St.Pool, messageID, assistantreview.EventNegativeFeedback, detail); err != nil {
+				log.Printf("assistant feedback reason for %s failed: %v", messageID, err)
+			}
+		}
 	} else if err := store.DeleteAssistantTurnEvent(c.Request.Context(), s.St.Pool, messageID, assistantreview.EventNegativeFeedback); err != nil {
 		log.Printf("assistant turn event cleanup for %s failed: %v", messageID, err)
 	}
@@ -1113,6 +1177,10 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		} else {
 			chatSelection = selectedModel
 		}
+	}
+	if requestedMode == "agent" && chatSelection != nil && chatSelection.Model.ToolCallingDisabled {
+		fail(c, apperr.E("assistant_model_no_tools", "「"+chatSelection.Model.Name+"」不支持 Agent 模式（不能调用工具），请换一个模型，或切到问答模式", 422))
+		return
 	}
 	if body.Mode != "image" {
 		upstreamModel := body.Model
@@ -1671,6 +1739,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if globalActive >= assistantGlobalActiveLimit {
 			return apperr.E("assistant_system_capacity", "当前助手任务较多，请稍后再试；你的输入不会丢失", 429)
 		}
+		var previousVersions []any
 		if body.SourceUserMessageID != "" {
 			// Editing history deletes later messages and their runs. Queueing must
 			// not bypass the settlement required before those runs can be removed.
@@ -1687,7 +1756,20 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			if getErr != nil || source == nil || source.ConversationID != conversationID || source.Role != "user" {
 				return apperr.E("not_found", "原问题不存在", 404)
 			}
-			if err := store.DeleteAssistantMessagesAfter(c.Request.Context(), tx, conversationID, sourceID); err != nil {
+			var keepKeys []string
+			if body.KeepPreviousVersion {
+				previous, prevErr := store.GetAssistantReplyAfter(c.Request.Context(), tx, conversationID, sourceID)
+				if prevErr != nil {
+					return prevErr
+				}
+				previousVersions, keepKeys = assistantRegenerateVersions(previous)
+			}
+			if err := store.DeleteAssistantMessagesAfterKeeping(c.Request.Context(), tx, conversationID, sourceID, keepKeys); err != nil {
+				return err
+			}
+			// The replies after this message are gone; so is what they did to
+			// the conversation's e-commerce sets.
+			if err := (commerceset.Service{St: s.St}).Rewind(c.Request.Context(), tx, user.ID, conversationID, source.CreatedAt); err != nil {
 				return err
 			}
 			if err := store.UpdateAssistantUserMessage(c.Request.Context(), tx, sourceID, body.Prompt, userMetadata); err != nil {
@@ -1723,6 +1805,9 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 				continue
 			}
 			assistantMetadata[key] = value
+		}
+		if len(previousVersions) > 0 {
+			assistantMetadata["previousVersions"] = previousVersions
 		}
 		assistantAgentTrace := executionMode == "agent"
 		assistantMetadata["runId"] = runID.String()
@@ -2991,4 +3076,47 @@ func assistantResolvedMode(run *store.AssistantRun) string {
 		return "chat"
 	}
 	return run.Mode
+}
+
+// assistantMaxPreviousVersions is how many earlier replies regenerate keeps;
+// the oldest goes (with its images) once there are more.
+const assistantMaxPreviousVersions = 4
+
+// assistantRegenerateVersions turns the reply about to be replaced into the
+// earlier-version list of the new reply, and returns the generated files
+// those versions still show so they are not cleaned up.
+func assistantRegenerateVersions(previous *store.AssistantMessage) ([]any, []string) {
+	if previous == nil || previous.Status != "complete" {
+		return nil, nil
+	}
+	versions, _ := previous.Metadata["previousVersions"].([]any)
+	snapshot := make(map[string]any, len(previous.Metadata))
+	for key, value := range previous.Metadata {
+		switch key {
+		case "previousVersions", "pending", "pendingTool", "routing", "feedback", "feedbackReasons", "feedbackNote":
+			continue
+		}
+		snapshot[key] = value
+	}
+	versions = append(append([]any{}, versions...), map[string]any{
+		"id": previous.ID.String(), "content": previous.Content, "kind": previous.Kind,
+		"createdAt": previous.CreatedAt, "metadata": snapshot,
+	})
+	if len(versions) > assistantMaxPreviousVersions {
+		versions = versions[len(versions)-assistantMaxPreviousVersions:]
+	}
+	var keys []string
+	for _, raw := range versions {
+		version, _ := raw.(map[string]any)
+		metadata, _ := version["metadata"].(map[string]any)
+		images, _ := metadata["images"].([]any)
+		for _, rawImage := range images {
+			if image, ok := rawImage.(map[string]any); ok {
+				if key, _ := image["fileKey"].(string); strings.TrimSpace(key) != "" {
+					keys = append(keys, key)
+				}
+			}
+		}
+	}
+	return versions, keys
 }

@@ -73,7 +73,9 @@ func announceSet(ctx context.Context, st *store.Store, service commerceset.Servi
 		}
 		attempts := 0
 		for _, shot := range set.Shots {
-			attempts += len(shot.Attempts)
+			// Discarded attempts still count: the number only grows, so a
+			// rewound set is announced again when its next round finishes.
+			attempts += len(shot.Attempts) + len(shot.Discarded)
 		}
 		if attempts == 0 || attempts <= announcedAttempts {
 			return nil

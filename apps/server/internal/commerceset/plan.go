@@ -42,6 +42,12 @@ type Brief struct {
 	Shots         []ShotRequest `json:"shots,omitempty"`
 	MainRatio     string        `json:"mainRatio,omitempty"`
 	DetailRatio   string        `json:"detailRatio,omitempty"`
+	// CompetitorRefID names a competitor analysis to follow (照着竞品做).
+	CompetitorRefID string `json:"competitorRefId,omitempty"`
+	// Reference and ReferenceSequence are filled by the service from that
+	// analysis and kept with the set, so redos and edits keep the style.
+	Reference         string `json:"reference,omitempty"`
+	ReferenceSequence string `json:"referenceSequence,omitempty"`
 }
 
 // Shot is one planned image.
@@ -182,6 +188,10 @@ func CopyPrompt(brief Brief, shots []Shot) string {
 	if brief.Note != "" {
 		noteLine = "用户补充要求：" + brief.Note + "\n"
 	}
+	if brief.Reference != "" {
+		noteLine += brief.Reference + "\n" + brief.ReferenceSequence +
+			"按竞品的打法策划：每张的 direction 照对应竞品图的构图与版式来写，headline 照它的文案写法写，但内容只能来自本商品，不得出现竞品的品牌、商品名和原文文案。\n"
+	}
 	return fmt.Sprintf(`你是电商详情页视觉策划。请只根据商品参考图中真实可见的信息和下面的商品资料，为每一种出图类型策划一张图的文案与构图方向。
 目标平台：%s
 目标市场：%s
@@ -273,6 +283,9 @@ func basePrompt(brief Brief, summary string) string {
 	lines = append(lines, "适配平台："+brief.Platform+"。", "目标市场："+brief.Market+"。", "页面文案语言："+brief.Language+"。")
 	if style := stylePrompt(brief.Style); style != "" {
 		lines = append(lines, "整套视觉风格："+style)
+	}
+	if brief.Reference != "" {
+		lines = append(lines, brief.Reference)
 	}
 	if noCopy {
 		lines = append(lines, "整套图不出现任何标题、文案、标签或水印，只用画面表达。")

@@ -42,7 +42,7 @@ func (s *Server) publishAnnouncementUpdate(ctx context.Context) {
 	}
 }
 
-func (s *Server) adminPushAnnouncement(c *gin.Context, _ *store.User) {
+func (s *Server) adminPushAnnouncement(c *gin.Context, admin *store.User) {
 	id, err := parseUUIDParam(c, "id")
 	if err != nil {
 		fail(c, err)
@@ -64,6 +64,9 @@ func (s *Server) adminPushAnnouncement(c *gin.Context, _ *store.User) {
 	if err != nil {
 		fail(c, err)
 		return
+	}
+	if eerr := store.InsertAnnouncementEvent(ctx, s.St.Pool, announcement.ID, announcement.Title, "pushed", nil, actorIDOf(admin), actorNameOf(admin)); eerr != nil {
+		log.Printf("announcement push event not recorded: %v", eerr)
 	}
 	s.publishAnnouncementUpdate(ctx)
 	ok(c, announcementDict(announcement))

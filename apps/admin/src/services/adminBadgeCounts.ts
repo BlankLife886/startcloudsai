@@ -27,12 +27,22 @@ function normalizeBadgeCounts(data: Partial<AdminBadgeCounts>): AdminBadgeCounts
   };
 }
 
-/** 侧栏和仪表盘共享请求、缓存与失败退避，连续切页不会重复访问接口。 */
-export function loadAdminBadgeCounts() {
+/** 让缓存立即过期（审核等写操作之后调用），下一次读取会重新请求。 */
+export function invalidateAdminBadgeCounts() {
+  expiresAt = 0;
+  retryAfter = 0;
+}
+
+/**
+ * 侧栏徽标与通知铃共享请求、缓存与失败退避，连续切页不会重复访问接口。
+ * force 跳过缓存（打开通知面板、定时刷新时用），但仍复用进行中的请求。
+ */
+export function loadAdminBadgeCounts(options: { force?: boolean } = {}) {
   const now = Date.now();
-  if (cached && now < expiresAt) return Promise.resolve(cached);
+  if (!options.force && cached && now < expiresAt) return Promise.resolve(cached);
   if (inFlight) return inFlight;
-  if (lastError && now < retryAfter) return Promise.reject(lastError);
+  if (!options.force && lastError && now < retryAfter)
+    return Promise.reject(lastError);
 
   inFlight = request<Partial<AdminBadgeCounts>>(
     "/api/v1/admin/badge-counts",

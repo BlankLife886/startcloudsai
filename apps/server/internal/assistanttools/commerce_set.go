@@ -17,6 +17,7 @@ const (
 	ToolCommerceSetPlan     = "commerce_set_plan"
 	ToolCommerceSetGenerate = "commerce_set_generate"
 	ToolCommerceSetRedo     = "commerce_set_redo"
+	ToolCommerceSetEdit     = "commerce_set_edit"
 	ToolCommerceSetStatus   = "commerce_set_status"
 
 	PermissionCommerceSets Permission = "commerce.sets"
@@ -32,6 +33,24 @@ type CommerceSetContext struct {
 	RunID          *uuid.UUID
 	InputKeys      []string
 	Copy           commerceset.CopyWriter
+	// OpenSetID is the conversation's set, used when a call names none.
+	OpenSetID *uuid.UUID
+	// AsOf is when the user sent this turn's message. Edits start from the
+	// images the set had then, so resending an earlier message edits what the
+	// user saw at that point, not a version a later (replaced) reply made.
+	AsOf time.Time
+	// Attachments are the turn's images in upload order (numbered from 1 for
+	// the model). Vision reads images; with it, planning copy looks only at
+	// the user's own product photos and competitor screenshots can be analysed.
+	Attachments []Attachment
+	Vision      func(ctx context.Context, prompt string, images []string) (string, error)
+}
+
+// Attachment is one image the user sent this turn: its stored key (empty for
+// inline images) and a data URL the vision model can read.
+type Attachment struct {
+	Key     string
+	DataURL string
 }
 
 func commerceTypeCatalogText() string {
@@ -67,11 +86,17 @@ func ratioEnum() []any {
 }
 
 func setIDSchema() map[string]any {
-	return map[string]any{"type": "string", "description": "commerce_set_plan 返回的套图 id"}
+	return map[string]any{"type": "string", "description": "套图 id（commerce_set_plan 返回的）；留空表示本对话里的那套图"}
 }
 
-func parseSetID(raw string) (uuid.UUID, error) {
-	id, err := uuid.Parse(strings.TrimSpace(raw))
+// parseSetID reads a set id; an empty one means the conversation's set, so
+// a follow-up turn works even when the model lost track of the id.
+func parseSetID(raw string, turn CommerceSetContext) (uuid.UUID, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" && turn.OpenSetID != nil {
+		return *turn.OpenSetID, nil
+	}
+	id, err := uuid.Parse(raw)
 	if err != nil {
 		return uuid.Nil, errors.New("套图 id 无效")
 	}
@@ -140,6 +165,7 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 		Version:     "1",
 		Description: "策划并生成电商商品套图（主图 + 详情页）",
 		Tools: []Definition{
+			competitorAnalyzeDefinition(service, turn),
 			{
 				Name: ToolCommerceSetPlan,
 				Description: "根据用户上传的商品图策划一套电商图：选出图类型和张数、策划每张的标题文案与构图，并报价（预计积分）。只出方案，不花积分。" +
@@ -168,6 +194,7 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 						},
 						"mainRatio":   map[string]any{"type": "string", "enum": ratioEnum(), "description": "主图画幅，默认 1:1"},
 						"detailRatio": map[string]any{"type": "string", "enum": ratioEnum(), "description": "详情页画幅，默认 3:4"},
+						"competitorRefId": map[string]any{"type": "string", "description": "照着竞品做时传 competitor_analyze 返回的 competitorRefId；此时 shots 留空即沿用竞品的图片顺序"},
 					},
 					"additionalProperties": false,
 				},
@@ -181,10 +208,14 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 					if err := json.Unmarshal(invocation.Arguments, &brief); err != nil {
 						return Result{}, errors.New("套图参数格式不正确")
 					}
-					set, err := service.Plan(ctx, commerceset.PlanInput{
+					in := commerceset.PlanInput{
 						UserID: invocation.UserID, ConversationID: turn.ConversationID, RunID: turn.RunID,
 						InputKeys: turn.InputKeys, Brief: brief, Copy: turn.Copy,
-					})
+					}
+					if err := planCompetitor(ctx, service, invocation.UserID, turn, &in); err != nil {
+						return commerceToolError(err)
+					}
+					set, err := service.Plan(ctx, in)
 					if err != nil {
 						return commerceToolError(err)
 					}
@@ -202,7 +233,6 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 				InputSchema: map[string]any{
 					"type":                 "object",
 					"properties":           map[string]any{"setId": setIDSchema()},
-					"required":             []any{"setId"},
 					"additionalProperties": false,
 				},
 				Permissions:    []Permission{PermissionCommerceSets},
@@ -217,7 +247,7 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 					if err := json.Unmarshal(invocation.Arguments, &input); err != nil {
 						return Result{}, errors.New("参数格式不正确")
 					}
-					setID, err := parseSetID(input.SetID)
+					setID, err := parseSetID(input.SetID, turn)
 					if err != nil {
 						return commerceToolError(commerceset.ErrInvalid)
 					}
@@ -234,7 +264,7 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 						"shotIds": map[string]any{"type": "array", "minItems": 1, "maxItems": 18, "items": map[string]any{"type": "string"}},
 						"note":    map[string]any{"type": "string", "maxLength": 200},
 					},
-					"required":             []any{"setId", "shotIds"},
+					"required":             []any{"shotIds"},
 					"additionalProperties": false,
 				},
 				Permissions:    []Permission{PermissionCommerceSets},
@@ -251,11 +281,50 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 					if err := json.Unmarshal(invocation.Arguments, &input); err != nil {
 						return Result{}, errors.New("参数格式不正确")
 					}
-					setID, err := parseSetID(input.SetID)
+					setID, err := parseSetID(input.SetID, turn)
 					if err != nil {
 						return commerceToolError(commerceset.ErrInvalid)
 					}
 					return spend(ctx, invocation, setID, commerceset.GenerateInput{ShotIDs: input.ShotIDs, Note: commerceset.RedoNote(nil, input.Note)})
+				},
+			},
+			{
+				Name: ToolCommerceSetEdit,
+				Description: "在已经出好的套图成片上统一改同一处（如“瓶子去掉 logo”“瓶盖换成金色”“背景里的植物去掉”）：每张以当前成片为底图只改这一处，构图、文案、光线都保持不变。" +
+					"花积分，规则同 commerce_set_generate：只在自动授权预算内执行，否则请用户在卡片上确认。shotIds 留空表示整套每一张都改。" +
+					"用户要的是保留现有效果只改一处时用它；要整张重新设计才用 commerce_set_redo。",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"setId":       setIDSchema(),
+						"instruction": map[string]any{"type": "string", "minLength": 1, "maxLength": 500, "description": "要改的那一处，写清楚改成什么，例如“去掉瓶身和标签上的所有 Logo 与品牌字样，标签留白，其余不变”"},
+						"shotIds":     map[string]any{"type": "array", "maxItems": 18, "items": map[string]any{"type": "string"}},
+					},
+					"required":             []any{"instruction"},
+					"additionalProperties": false,
+				},
+				Permissions:    []Permission{PermissionCommerceSets},
+				Risk:           RiskWrite,
+				Level:          LevelSpend,
+				Timeout:        60 * time.Second,
+				MaxResultBytes: 64 << 10,
+				Execute: func(ctx context.Context, invocation Invocation) (Result, error) {
+					var input struct {
+						SetID       string   `json:"setId"`
+						Instruction string   `json:"instruction"`
+						ShotIDs     []string `json:"shotIds"`
+					}
+					if err := json.Unmarshal(invocation.Arguments, &input); err != nil {
+						return Result{}, errors.New("参数格式不正确")
+					}
+					setID, err := parseSetID(input.SetID, turn)
+					if err != nil {
+						return commerceToolError(commerceset.ErrInvalid)
+					}
+					if strings.TrimSpace(input.Instruction) == "" {
+						return Result{}, errors.New("请写明要改什么")
+					}
+					return spend(ctx, invocation, setID, commerceset.GenerateInput{ShotIDs: input.ShotIDs, Edit: input.Instruction, EditAsOf: turn.AsOf})
 				},
 			},
 			{
@@ -264,7 +333,6 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 				InputSchema: map[string]any{
 					"type":                 "object",
 					"properties":           map[string]any{"setId": setIDSchema()},
-					"required":             []any{"setId"},
 					"additionalProperties": false,
 				},
 				Permissions:    []Permission{PermissionCommerceSets},
@@ -279,7 +347,7 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 					if err := json.Unmarshal(invocation.Arguments, &input); err != nil {
 						return Result{}, errors.New("参数格式不正确")
 					}
-					setID, err := parseSetID(input.SetID)
+					setID, err := parseSetID(input.SetID, turn)
 					if err != nil {
 						return commerceToolError(commerceset.ErrInvalid)
 					}

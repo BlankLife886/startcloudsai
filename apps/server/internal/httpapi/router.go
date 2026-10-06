@@ -20,6 +20,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
+	"github.com/BlankLife886/startcloudsai/server/internal/notifystream"
 	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
@@ -95,6 +96,8 @@ type Server struct {
 	LanjingPay         *lanjingpay.Client
 	Logs               *platformlog.Recorder
 	AnnouncementStream *announcementstream.Source
+	// NotificationHub signals SSE connections the moment a user gets a new notification.
+	NotificationHub *notifystream.Hub
 	// AssistantProber runs the agent's first move for admin evaluations; the
 	// server's main wires in the worker's implementation.
 	AssistantProber   assistantreview.Prober
@@ -178,6 +181,8 @@ func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c
 			bus = redisBus
 		}
 		s.AnnouncementStream = announcementstream.New(s.announcementSnapshot, bus, announcementstream.Options{})
+		s.NotificationHub = notifystream.New()
+		s.NotificationHub.Start(st.Pool)
 	}
 	s.startBackgroundSecurityJobs()
 	return s, nil
@@ -187,6 +192,7 @@ func (s *Server) Close() {
 	if s.AnnouncementStream != nil {
 		_ = s.AnnouncementStream.Close()
 	}
+	s.NotificationHub.Close()
 	if s.backgroundCancel != nil {
 		s.backgroundCancel()
 		s.backgroundWG.Wait()
@@ -292,6 +298,8 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/assistant/files/:id", s.assistantFile)
 	api.DELETE("/assistant/files/:id", s.deleteAssistantFile)
 	api.GET("/assistant/runs", s.assistantRuns)
+	api.GET("/assistant/saved-images", s.listAssistantSavedImages)
+	api.POST("/assistant/stats-query", s.rerunAssistantStats)
 	api.GET("/assistant/commerce-sets/:id", s.getAssistantCommerceSet)
 	api.POST("/assistant/commerce-sets/:id/generate", s.generateAssistantCommerceSet)
 	api.POST("/assistant/commerce-sets/:id/redo", s.redoAssistantCommerceSet)
@@ -351,6 +359,8 @@ func (s *Server) Router() *gin.Engine {
 	api.PATCH("/me/notifications", s.markNotificationsRead)
 	api.DELETE("/me/notifications", s.clearNotifications)
 	api.DELETE("/me/notifications/:id", s.dismissNotification)
+	api.GET("/me/notification-preferences", s.myNotificationPreferences)
+	api.PUT("/me/notification-preferences", s.saveMyNotificationPreferences)
 	api.GET("/me/tasks/events", s.userTaskStream)
 	api.GET("/me/gallery/submissions", s.mySubmissions)
 	api.DELETE("/me/gallery/submissions/:id", s.deleteSubmission)
@@ -665,6 +675,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.PUT("/home-banners/:id", s.adminOnly(s.adminSaveHomeBanner))
 	admin.DELETE("/home-banners/:id", s.adminOnly(s.adminDeleteHomeBanner))
 	admin.GET("/announcements", s.adminOnly(s.adminAnnouncements))
+	admin.GET("/announcements/events", s.adminOnly(s.adminAnnouncementEvents))
 	admin.POST("/announcements", s.adminOnly(s.adminCreateAnnouncement))
 	admin.POST("/announcements/images", s.adminOnly(s.adminUploadAnnouncementImage))
 	admin.POST("/announcements/:id/push", s.adminOnly(s.adminPushAnnouncement))

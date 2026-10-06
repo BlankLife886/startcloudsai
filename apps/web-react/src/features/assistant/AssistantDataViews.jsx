@@ -1,9 +1,12 @@
 // 统计与明细结果卡片：v2 引擎的数据工具返回结构化结果，这里按原界面风格渲染。
-import { useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { AssistantAssetActionView, AssistantAssetsView } from './AssistantAssetViews.jsx'
 import { AssistantMemoryChangeView } from './AssistantMemoryViews.jsx'
-import { AssistantCommerceSet, CommerceSetOwnersContext, CommerceSetReference } from './AssistantCommerceSet.jsx'
+import { AssistantCompetitorStyle } from './AssistantCompetitorStyle.jsx'
+import { AssistantCommerceSet, CommerceSetEarlierRound, CommerceSetOwnersContext, commerceSetSnapshotImages } from './AssistantCommerceSet.jsx'
+import { rerunAssistantStats } from './services/assistantApi.js'
+import { statsCsv, statsCsvFilename } from './domain/assistantStatsCsv.js'
 import './assistant-data-views.css'
 
 const TIME_DIMENSIONS = new Set(['day', 'week', 'month'])
@@ -200,7 +203,74 @@ function shortDate(value) {
   return match ? `${Number(match[2])}月${Number(match[3])}日` : String(value || '')
 }
 
-function StatsView({ data }) {
+// 卡片上能直接换的时间段；模型查的是自定义日期时，这一排都不选中。
+const STATS_RANGE_PRESETS = [
+  { id: 'last_7_days', label: '近 7 天' },
+  { id: 'last_30_days', label: '近 30 天' },
+  { id: 'this_month', label: '本月' },
+  { id: 'last_month', label: '上月' },
+  { id: 'this_year', label: '今年' },
+]
+
+function downloadText(text, filename, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+// 换时间段、对比上一期、导出 CSV。换过之后只改这张卡片，不改消息本身。
+function StatsToolbar({ data, busy, onQuery }) {
+  const query = data?.query
+  const preset = query?.timeRange?.preset || ''
+  const comparing = Boolean(data?.previousTotals)
+  return (
+    <div className="assistant-stats-tools">
+      {query ? (
+        <div className="assistant-stats-ranges" role="group" aria-label="时间段">
+          {STATS_RANGE_PRESETS.map((item) => (
+            <button key={item.id} type="button" aria-pressed={preset === item.id} className={preset === item.id ? 'is-active' : ''} disabled={busy}
+              onClick={() => preset !== item.id && onQuery({ ...query, timeRange: { preset: item.id } })}>{item.label}</button>
+          ))}
+        </div>
+      ) : null}
+      {query ? (
+        <button type="button" className={`assistant-stats-compare${comparing ? ' is-active' : ''}`} aria-pressed={comparing} disabled={busy}
+          onClick={() => onQuery({ ...query, compareToPrevious: !comparing })}>
+          <i className={`bi ${comparing ? 'bi-check2-square' : 'bi-square'}`} aria-hidden="true" />对比上一期
+        </button>
+      ) : null}
+      <button type="button" className="assistant-stats-export" title="导出为 CSV，可用 Excel 打开" onClick={() => downloadText(statsCsv(data), statsCsvFilename(data), 'text/csv;charset=utf-8')}>
+        <i className="bi bi-download" aria-hidden="true" />导出 CSV
+      </button>
+    </div>
+  )
+}
+
+function StatsView({ data: initialData }) {
+  const [data, setData] = useState(initialData)
+  const [busy, setBusy] = useState(false)
+  const [queryError, setQueryError] = useState('')
+  const queryControllerRef = useRef(null)
+  const runQuery = async (query) => {
+    queryControllerRef.current?.abort()
+    const controller = new AbortController()
+    queryControllerRef.current = controller
+    setBusy(true)
+    setQueryError('')
+    try {
+      const next = await rerunAssistantStats(query, { signal: controller.signal })
+      if (!controller.signal.aborted && next) setData(next)
+    } catch (caught) {
+      if (!controller.signal.aborted) setQueryError(caught?.message || '统计查询失败')
+    } finally {
+      if (!controller.signal.aborted) setBusy(false)
+    }
+  }
   const [showTable, setShowTable] = useState(false)
   const metrics = Array.isArray(data?.metrics) ? data.metrics : []
   const dimensions = Array.isArray(data?.dimensions) ? data.dimensions : []
@@ -245,12 +315,16 @@ function StatsView({ data }) {
         ) : null}
       </header>
       {rangeText ? <p className="assistant-stats-range">{rangeText}</p> : null}
+      <StatsToolbar data={data} busy={busy} onQuery={(query) => void runQuery(query)} />
+      {queryError ? <p className="assistant-data-note is-error" role="alert">{queryError}</p> : null}
+      <div className={busy ? 'assistant-stats-body is-busy' : 'assistant-stats-body'} aria-busy={busy}>
       {chart}
       {dimensions.length > 1 && <p className="assistant-data-note">分组较多，已用表格展示。</p>}
       {(showTable || dimensions.length > 1) && dimensions.length > 0 ? (
         <StatsTable metrics={metrics} dimensions={dimensions} rows={rows} totals={totals} showPrevious={false} />
       ) : null}
       {data?.truncated && <p className="assistant-data-note">结果较多，只展示了前 500 组。</p>}
+      </div>
     </section>
   )
 }
@@ -365,7 +439,7 @@ function OrdersView({ data }) {
             <li key={order.orderNo} className={tone}>
               <i className="assistant-data-dot" aria-hidden="true" />
               <div>
-                <strong>{order.planName || order.planKind || '订单'}</strong>
+                <strong><Link className="assistant-data-order-link" to={`/orders?q=${encodeURIComponent(order.orderNo)}`} title={`查看订单 ${order.orderNo}`}>{order.planName || order.planKind || '订单'}</Link></strong>
                 <small title={statusText}>{[shortStatus, shortDateTime(order.createdAt)].filter(Boolean).join(' · ')}</small>
               </div>
               <b>¥{formatMetricValue(order.amountYuan)}<small>{points ? `+${formatMetricValue(points)} 积分` : ''}</small></b>
@@ -429,18 +503,89 @@ function latestCommerceSetViews(views) {
   return views.filter((view, index) => view?.view !== 'commerce_set' || !view.data?.id || lastIndex.get(view.data.id) === index)
 }
 
-export function AssistantDataViews({ views, messageId = '' }) {
-  if (!Array.isArray(views) || !views.length) return null
-  return latestCommerceSetViews(views).map((view, index) => <AssistantDataView key={`${view?.tool || 'view'}-${index}`} view={view} messageId={messageId} />)
+// 回复里的卡片要“替用户说一句话”时用它（选择卡提交选项）：send(消息 id, 文字)。
+// lastAssistantId 用来判断卡片是否还能操作——后面已经有新回复的卡片只显示结果。
+export const AssistantReplyActionsContext = createContext(null)
+
+function choicesMessage(groups, picked) {
+  const parts = groups.map((group) => {
+    const values = picked[group.id] || []
+    return values.length ? `${group.label} ${values.join('、')}` : ''
+  }).filter(Boolean)
+  return `就按这些来：${parts.join('，')}`
 }
 
-export function AssistantDataView({ view, messageId = '' }) {
+// 出图前的选择卡：每组点一个（可多选的组点几个都行），点完一键发出去。
+function ChoicesView({ data, messageId }) {
+  const actions = useContext(AssistantReplyActionsContext)
+  const groups = Array.isArray(data?.groups) ? data.groups : []
+  const [picked, setPicked] = useState({})
+  const [sent, setSent] = useState('')
+  if (!groups.length) return null
+  const active = Boolean(actions?.send) && actions.lastAssistantId === messageId && !actions.busy && !sent
+  const complete = groups.every((group) => (picked[group.id] || []).length > 0)
+  const toggle = (group, option) => setPicked((current) => {
+    const values = current[group.id] || []
+    if (group.multiple) {
+      return { ...current, [group.id]: values.includes(option) ? values.filter((item) => item !== option) : [...values, option] }
+    }
+    return { ...current, [group.id]: values[0] === option ? [] : [option] }
+  })
+  const submit = (text) => {
+    setSent(text)
+    actions.send(messageId, text)
+  }
+  return (
+    <section className={`assistant-data assistant-choices${active ? '' : ' is-closed'}`} aria-label="选择卡">
+      <header className="assistant-choices-head">
+        <strong>{data.title || '先确认几项'}</strong>
+        <span>{sent ? '已发送你的选择' : active ? '选好后点下面的按钮，我再开始' : '这一轮已经结束'}</span>
+      </header>
+      {groups.map((group) => (
+        <div key={group.id} className="assistant-choices-group" role="group" aria-label={group.label}>
+          <span className="assistant-choices-label">{group.label}{group.multiple ? <small>可多选</small> : null}</span>
+          <div className="assistant-choices-options">
+            {group.options.map((option) => {
+              const on = (picked[group.id] || []).includes(option)
+              return (
+                <button key={option} type="button" aria-pressed={on} className={on ? 'is-active' : ''} disabled={!active} onClick={() => toggle(group, option)}>
+                  {on ? <i className="bi bi-check2" aria-hidden="true" /> : null}{option}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+      {active ? (
+        <footer className="assistant-choices-foot">
+          <button type="button" className="assistant-choices-skip" onClick={() => submit('这几项你来定，按最合适的来')}>你来定</button>
+          <button type="button" className="assistant-choices-submit" disabled={!complete} onClick={() => submit(choicesMessage(groups, picked))}>
+            {data.submitLabel || '就按这个来'}
+          </button>
+        </footer>
+      ) : null}
+    </section>
+  )
+}
+
+export function AssistantDataViews({ views, messageId = '' }) {
+  if (!Array.isArray(views) || !views.length) return null
+  // 同一轮已经出了套图方案时，拆解卡片不再显示“按这个风格出方案”。
+  const planned = views.some((view) => view?.view === 'commerce_set')
+  return latestCommerceSetViews(views).map((view, index) => <AssistantDataView key={`${view?.tool || 'view'}-${index}`} view={view} messageId={messageId} planned={planned} />)
+}
+
+export function AssistantDataView({ view, messageId = '', planned = false }) {
   const owners = useContext(CommerceSetOwnersContext)
+  const replyActions = useContext(AssistantReplyActionsContext)
   if (view?.view === 'commerce_set' && messageId && owners) {
     const owner = owners.get(view.data?.id)
-    if (owner && owner !== messageId) return <CommerceSetReference set={view.data} ownerMessageId={owner} />
+    if (owner && owner.messageId !== messageId) return <CommerceSetEarlierRound set={view.data} owner={owner} />
+    // 后面还有一轮在处理：这里只是较早的一轮，留它自己那一轮的成片，不显示实时卡片。
+    if (owner?.waiting && commerceSetSnapshotImages(view.data).length) return <CommerceSetEarlierRound set={view.data} owner={owner} waiting />
   }
   if (view?.view === 'stats') return <StatsView data={view.data} />
+  if (view?.view === 'choices') return <ChoicesView data={view.data} messageId={messageId} />
   if (view?.view === 'records') return <RecordsView data={view.data} />
   if (view?.view === 'account') return <AccountView data={view.data} />
   if (view?.view === 'orders') return <OrdersView data={view.data} />
@@ -449,5 +594,6 @@ export function AssistantDataView({ view, messageId = '' }) {
   if (view?.view === 'assets') return <AssistantAssetsView data={view.data} />
   if (view?.view === 'asset_action') return <AssistantAssetActionView data={view.data} />
   if (view?.view === 'memory_change') return <AssistantMemoryChangeView data={view.data} />
+  if (view?.view === 'competitor_style') return <AssistantCompetitorStyle data={view.data} messageId={messageId} actions={planned ? null : replyActions} />
   return null
 }

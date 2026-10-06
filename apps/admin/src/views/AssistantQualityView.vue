@@ -48,6 +48,20 @@ interface CorrectionSummary {
   examples: CorrectionExample[];
 }
 
+interface NegativeFeedback {
+  messageId: string;
+  conversationId: string;
+  userEmail: string;
+  mode: string;
+  model: string;
+  prompt: string;
+  reply: string;
+  kind: string;
+  reasons: string[];
+  note: string;
+  createdAt: string;
+}
+
 interface CaseMessage {
   role: string;
   content: string;
@@ -173,6 +187,15 @@ const EVENT_HINTS: Record<string, string> = {
   correction_search_web: "没有联网，但用户需要最新信息",
   corrected_in_text: "用户下一句话表示助手理解错了（例如“不对”“我只是问问”）",
 };
+// 和用户端点踩弹层的选项一致
+const FEEDBACK_REASON_LABELS: Record<string, string> = {
+  off_topic: "答非所问",
+  wrong: "内容有误",
+  ignored: "没按我的要求",
+  too_long: "太啰嗦",
+  bad_image: "图片不满意",
+  other: "其他",
+};
 const VERDICT_LABELS: Record<string, string> = {
   better: "改好了",
   likely_better: "可能改好了",
@@ -185,7 +208,7 @@ const STATS_CATEGORIES = ["总量", "时间", "对比", "分组", "明细", "API
 const STATS_CASE_TOTAL = 64;
 const UNUSABLE_LABELS: Record<string, string> = { disabled: "未启用", maintenance: "维护中", provider: "服务商未启用" };
 
-const tab = ref<"metrics" | "corrections" | "compare" | "evals">("metrics");
+const tab = ref<"metrics" | "negative" | "corrections" | "compare" | "evals">("metrics");
 const loading = ref(false);
 const days = ref(7);
 
@@ -193,6 +216,7 @@ const days = ref(7);
 const groups = ref<QualityGroup[]>([]);
 const trend = ref<QualityDay[]>([]);
 const corrections = ref<CorrectionSummary[]>([]);
+const negative = ref<NegativeFeedback[]>([]);
 
 // 用例
 const builtinCases = ref<AgentCase[]>([]);
@@ -249,12 +273,13 @@ function formatTime(value: string) {
 }
 
 async function loadMetrics() {
-  const data = await request<{ groups: QualityGroup[]; days: QualityDay[]; corrections: CorrectionSummary[] }>("/api/v1/admin/assistant/quality", {
+  const data = await request<{ groups: QualityGroup[]; days: QualityDay[]; corrections: CorrectionSummary[]; negative?: NegativeFeedback[] }>("/api/v1/admin/assistant/quality", {
     query: { days: days.value },
   });
   groups.value = data.groups;
   trend.value = data.days;
   corrections.value = data.corrections;
+  negative.value = data.negative || [];
 }
 
 async function loadCases() {
@@ -368,6 +393,7 @@ onMounted(load);
       <template #header>
         <nav class="aq-tabs" role="tablist" aria-label="AI 助手质量">
           <button type="button" role="tab" :aria-selected="tab === 'metrics'" :class="{ active: tab === 'metrics' }" @click="tab = 'metrics'">指标</button>
+          <button type="button" role="tab" :aria-selected="tab === 'negative'" :class="{ active: tab === 'negative' }" @click="tab = 'negative'">点踩<em class="tnum">{{ negative.length }}</em></button>
           <button type="button" role="tab" :aria-selected="tab === 'corrections'" :class="{ active: tab === 'corrections' }" @click="tab = 'corrections'">用户纠正<em class="tnum">{{ totals.corrected }}</em></button>
           <button type="button" role="tab" :aria-selected="tab === 'compare'" :class="{ active: tab === 'compare' }" @click="tab = 'compare'">版本对比</button>
           <button type="button" role="tab" :aria-selected="tab === 'evals'" :class="{ active: tab === 'evals' }" @click="tab = 'evals'">回归评测</button>
@@ -432,6 +458,43 @@ onMounted(load);
             </el-table-column>
           </el-table>
         </div>
+      </section>
+
+      <!-- 点踩 -->
+      <section v-else-if="tab === 'negative'" class="aq-pane" aria-label="点踩">
+        <p class="aq-intro">
+          用户点踩的回复，最新的在前（最多 100 条）。原因是用户在点踩后弹出的选项里选的，没选就只有点踩；用户取消点踩后会从这里消失。
+        </p>
+        <el-table :data="negative" size="small" empty-text="这段时间没有点踩">
+          <el-table-column type="expand">
+            <template #default="{ row }">
+              <div class="aq-case aq-context">
+                <small><b>用户：</b>{{ row.prompt || '—' }}</small>
+                <small><b>助手：</b>{{ row.reply || '（没有文字）' }}</small>
+                <small class="tnum">会话 {{ row.conversationId }} · 回复 {{ row.messageId }}</small>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="时间" width="160">
+            <template #default="{ row }"><span class="tnum">{{ formatTime(row.createdAt) }}</span></template>
+          </el-table-column>
+          <el-table-column label="用户这一句" min-width="240">
+            <template #default="{ row }"><span class="aq-prompt">{{ row.prompt || '—' }}</span></template>
+          </el-table-column>
+          <el-table-column label="原因" min-width="180">
+            <template #default="{ row }">
+              <div class="aq-case">
+                <span v-if="row.reasons.length">{{ row.reasons.map((reason: string) => FEEDBACK_REASON_LABELS[reason] || reason).join('、') }}</span>
+                <span v-else class="aq-muted">未填写</span>
+                <small v-if="row.note">{{ row.note }}</small>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="模式 · 模型" width="150">
+            <template #default="{ row }"><div class="aq-case"><span>{{ MODE_LABELS[row.mode] || row.mode || '—' }}</span><small>{{ row.model || '—' }}</small></div></template>
+          </el-table-column>
+          <el-table-column label="用户" min-width="160" prop="userEmail" />
+        </el-table>
       </section>
 
       <!-- 用户纠正 -->

@@ -40,6 +40,13 @@ func RecordAssistantTurnEvent(ctx context.Context, q Q, event AssistantTurnEvent
 	return err
 }
 
+// SetAssistantTurnEventDetail fills in what the user said about an event,
+// e.g. the reasons for a thumbs-down, after the event was recorded.
+func SetAssistantTurnEventDetail(ctx context.Context, q Q, messageID uuid.UUID, event, got string) error {
+	_, err := q.Exec(ctx, `UPDATE assistant_turn_events SET got = $3 WHERE assistant_message_id = $1 AND event = $2`, messageID, event, got)
+	return err
+}
+
 // DeleteAssistantTurnEvent removes an event, e.g. a thumbs-down taken back.
 func DeleteAssistantTurnEvent(ctx context.Context, q Q, messageID uuid.UUID, event string) error {
 	_, err := q.Exec(ctx, `DELETE FROM assistant_turn_events WHERE assistant_message_id = $1 AND event = $2`, messageID, event)
@@ -210,6 +217,52 @@ func AssistantCorrectionSummaries(ctx context.Context, q Q, since time.Time, per
 		summaries[position].Examples = append(summaries[position].Examples, example)
 	}
 	return summaries, rows.Err()
+}
+
+// AssistantNegativeFeedback is one thumbs-down: what the user asked, what
+// the assistant replied, and the reasons the user picked.
+type AssistantNegativeFeedback struct {
+	MessageID      uuid.UUID `json:"messageId"`
+	ConversationID uuid.UUID `json:"conversationId"`
+	UserEmail      string    `json:"userEmail"`
+	Mode           string    `json:"mode"`
+	Model          string    `json:"model"`
+	Prompt         string    `json:"prompt"`
+	Reply          string    `json:"reply"`
+	Kind           string    `json:"kind"`
+	Reasons        []string  `json:"reasons"`
+	Note           string    `json:"note"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+// AssistantNegativeFeedbackList returns the latest thumbs-downs since a time,
+// newest first. Withdrawn ones are gone: un-voting deletes the event.
+func AssistantNegativeFeedbackList(ctx context.Context, q Q, since time.Time, limit int) ([]AssistantNegativeFeedback, error) {
+	rows, err := q.Query(ctx, `
+		SELECT m.id, m.conversation_id, COALESCE(u.email::text, ''), e.mode, e.model,
+			COALESCE(left(r.prompt, 500), ''), left(m.content, 1200), m.kind,
+			COALESCE(ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(m.metadata->'feedbackReasons') = 'array' THEN m.metadata->'feedbackReasons' ELSE '[]'::jsonb END)), '{}'),
+			COALESCE(m.metadata->>'feedbackNote', ''), e.created_at
+		FROM assistant_turn_events e
+		JOIN assistant_messages m ON m.id = e.assistant_message_id
+		LEFT JOIN assistant_runs r ON r.id = e.run_id
+		LEFT JOIN users u ON u.id = e.user_id
+		WHERE e.event = 'negative_feedback' AND e.created_at >= $1
+		ORDER BY e.created_at DESC LIMIT $2`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AssistantNegativeFeedback{}
+	for rows.Next() {
+		var item AssistantNegativeFeedback
+		if err := rows.Scan(&item.MessageID, &item.ConversationID, &item.UserEmail, &item.Mode, &item.Model,
+			&item.Prompt, &item.Reply, &item.Kind, &item.Reasons, &item.Note, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 // AssistantSampledTurn is a real turn replayed by the version comparison.

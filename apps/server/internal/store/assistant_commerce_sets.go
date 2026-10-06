@@ -48,6 +48,10 @@ type CommerceSetAttempt struct {
 	// then empty.
 	FileKey  string `json:"fileKey,omitempty"`
 	ThumbKey string `json:"thumbKey,omitempty"`
+	// BaseKey/EditNote mark an attempt that edited an earlier image of the
+	// shot (BaseKey) instead of generating afresh; EditNote is what to change.
+	BaseKey  string `json:"baseKey,omitempty"`
+	EditNote string `json:"editNote,omitempty"`
 }
 
 // CommerceSetShot is one planned image and its attempts.
@@ -61,6 +65,10 @@ type CommerceSetShot struct {
 	Subline     string               `json:"subline,omitempty"`
 	Direction   string               `json:"direction,omitempty"`
 	Attempts    []CommerceSetAttempt `json:"attempts,omitempty"`
+	// Discarded holds attempts made by replies the user replaced (resending
+	// an earlier message rewinds the set). They are kept for the points
+	// they cost but are no longer the shot's images.
+	Discarded []CommerceSetAttempt `json:"discarded,omitempty"`
 }
 
 // CommerceSet is one e-commerce image set planned in the assistant.
@@ -127,6 +135,27 @@ func LockUserCommerceSet(ctx context.Context, tx pgx.Tx, userID, id uuid.UUID) (
 	return nilOnNoRows(set, err)
 }
 
+// LockConversationCommerceSets reads the user's sets in a conversation FOR
+// UPDATE inside tx, oldest first.
+func LockConversationCommerceSets(ctx context.Context, tx pgx.Tx, userID, conversationID uuid.UUID) ([]*CommerceSet, error) {
+	rows, err := tx.Query(ctx, `SELECT `+commerceSetCols+`
+		FROM assistant_commerce_sets WHERE user_id = $1 AND conversation_id = $2
+		ORDER BY created_at FOR UPDATE`, userID, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sets := []*CommerceSet{}
+	for rows.Next() {
+		set, err := scanCommerceSet(rows)
+		if err != nil {
+			return nil, err
+		}
+		sets = append(sets, set)
+	}
+	return sets, rows.Err()
+}
+
 // SaveCommerceSet writes back the mutable fields.
 func SaveCommerceSet(ctx context.Context, q Q, set *CommerceSet) error {
 	shots, err := json.Marshal(set.Shots)
@@ -139,13 +168,14 @@ func SaveCommerceSet(ctx context.Context, q Q, set *CommerceSet) error {
 	return err
 }
 
-// LatestOpenCommerceSet returns the conversation's most recent set that is
-// still being planned or generated, so follow-up turns ("开始生成吧") can act
-// on it. Sets older than a day are left to the card.
-func LatestOpenCommerceSet(ctx context.Context, q Q, userID, conversationID uuid.UUID, now time.Time) (*CommerceSet, error) {
+// LatestCommerceSet returns the conversation's most recent set that is not
+// canceled, so follow-up turns can act on it: "开始生成吧" on a planned set,
+// "瓶子去掉 logo 再做一遍" on a finished one. Sets untouched for a day are left
+// to the card.
+func LatestCommerceSet(ctx context.Context, q Q, userID, conversationID uuid.UUID, now time.Time) (*CommerceSet, error) {
 	set, err := scanCommerceSet(q.QueryRow(ctx, `SELECT `+commerceSetCols+`
 		FROM assistant_commerce_sets
-		WHERE user_id = $1 AND conversation_id = $2 AND status IN ('planned', 'generating') AND created_at > $3
+		WHERE user_id = $1 AND conversation_id = $2 AND status IN ('planned', 'generating', 'done') AND updated_at > $3
 		ORDER BY created_at DESC LIMIT 1`, userID, conversationID, now.Add(-24*time.Hour)))
 	return nilOnNoRows(set, err)
 }

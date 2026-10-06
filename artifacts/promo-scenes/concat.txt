@@ -1,0 +1,8 @@
+file '/Users/ycc/Documents/TestCode/startcloudsai/artifacts/promo-scenes/scene-01.mp4'
+file '/Users/ycc/Documents/TestCode/startcloudsai/artifacts/promo-scenes/scene-02.mp4'
+file '/Users/ycc/Documents/TestCode/startcloudsai/artifacts/promo-scenes/scene-03.mp4'
+file '/Users/ycc/Documents/TestCode/startcloudsai/artifacts/promo-scenes/scene-04.mp4'
+file '/Users/ycc/Documents/TestCode/startcloudsai/artifacts/promo-scenes/scene-05.mp4'
+file '/Users/ycc/Documents/TestCode/startcloudsai/artifacts/promo-scenes/scene-06.mp4'
+file '/Users/ycc/Documents/TestCode/startcloudsai/artifacts/promo-scenes/scene-07.mp4'
+file '/Users/ycc/Documents/TestCode/startcloudsai/artifacts/promo-scenes/scene-08.mp4'

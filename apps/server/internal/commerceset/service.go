@@ -69,6 +69,9 @@ type PlanInput struct {
 	InputKeys      []string
 	Brief          Brief
 	Copy           CopyWriter
+	// Competitor is the analysis the set follows; its screenshots are never
+	// product references.
+	Competitor *store.CompetitorRef
 }
 
 // imageModel picks the e-commerce workbench's default image model.
@@ -88,6 +91,22 @@ func imageModel(ctx context.Context, q store.Q) (string, error) {
 // stores it. Planning copy is best effort: when the model fails, shots keep
 // their catalog directions and the set can still be generated.
 func (s Service) Plan(ctx context.Context, in PlanInput) (*store.CommerceSet, error) {
+	in.Brief.Reference, in.Brief.ReferenceSequence, in.Brief.CompetitorRefID = "", "", ""
+	if in.Competitor != nil {
+		style, err := DecodeCompetitorStyle(in.Competitor.Style)
+		if err != nil {
+			return nil, err
+		}
+		in.InputKeys = WithoutKeys(in.InputKeys, in.Competitor.ImageKeys)
+		if len(in.InputKeys) == 0 {
+			return nil, invalid("竞品截图只用来参考风格，还需要上传你自己的商品图")
+		}
+		in.Brief.CompetitorRefID = in.Competitor.ID.String()
+		in.Brief.Reference, in.Brief.ReferenceSequence = CompetitorStyleText(style), CompetitorSequenceText(style)
+		if len(in.Brief.Shots) == 0 {
+			in.Brief.Shots = ShotsFromCompetitor(style)
+		}
+	}
 	if len(in.InputKeys) == 0 {
 		return nil, invalid("需要先上传至少 1 张商品图")
 	}
@@ -132,7 +151,7 @@ func (s Service) Plan(ctx context.Context, in PlanInput) (*store.CommerceSet, er
 			Label: shot.Label, AspectRatio: shot.AspectRatio, Headline: shot.Headline, Subline: shot.Subline, Direction: shot.Direction})
 	}
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		inputs, err := s.taskInputs(ctx, tx, set, nil, "")
+		inputs, err := s.taskInputs(ctx, tx, set, nil, "", nil)
 		if err != nil {
 			return err
 		}
@@ -168,7 +187,7 @@ func (s Service) model(ctx context.Context, q store.Q, modelID string) (*modelco
 
 // taskInputs builds and quotes the task for each selected shot (nil = all).
 // The parameters mirror what the workbench submits for 商品套图.
-func (s Service) taskInputs(ctx context.Context, tx pgx.Tx, set *store.CommerceSet, indexes []int, note string) ([]taskInput, error) {
+func (s Service) taskInputs(ctx context.Context, tx pgx.Tx, set *store.CommerceSet, indexes []int, note string, edits map[int]editSpec) ([]taskInput, error) {
 	var brief Brief
 	if err := json.Unmarshal(set.Brief, &brief); err != nil {
 		return nil, err
@@ -194,6 +213,10 @@ func (s Service) taskInputs(ctx context.Context, tx pgx.Tx, set *store.CommerceS
 	for _, index := range indexes {
 		shot := shots[index]
 		prompt := prompts[index]
+		inputKeys := set.InputKeys
+		if edit, ok := edits[index]; ok {
+			prompt, inputKeys = EditPrompt(shot, edit.note), []string{edit.base}
+		}
 		if note != "" {
 			prompt += "\n" + note
 		}
@@ -211,7 +234,7 @@ func (s Service) taskInputs(ctx context.Context, tx pgx.Tx, set *store.CommerceS
 		}
 		// Underscore params from callers are dropped as untrusted; the set
 		// link is written by the server, so it goes in TrustedParams.
-		create := taskflow.CreateInput{Type: TaskType, Prompt: prompt, Params: params, InputKeys: set.InputKeys, Count: 1,
+		create := taskflow.CreateInput{Type: TaskType, Prompt: prompt, Params: params, InputKeys: inputKeys, Count: 1,
 			TrustedParams: map[string]any{SetParam: set.ID.String()}}
 		quote, err := taskflow.QuoteTaskPrice(ctx, tx, create, set.UserID)
 		if err != nil {
@@ -233,6 +256,12 @@ type GenerateInput struct {
 	ExpectedTotalCents *int64
 	// Note is appended to every prompt (redo instructions).
 	Note string
+	// Edit, when set, changes the shots' current images instead of
+	// generating them again: each is edited with this instruction and keeps
+	// its composition, copy and lighting. Empty ShotIDs means every shot.
+	Edit string
+	// EditAsOf picks each shot's image as of that time (zero = latest).
+	EditAsOf time.Time
 }
 
 // GenerateResult reports what was started.
@@ -291,12 +320,17 @@ func (s Service) generateLocked(ctx context.Context, tx pgx.Tx, set *store.Comme
 	if set.Status == store.CommerceSetCanceled {
 		return result, invalid("这套图已取消")
 	}
+	in.Edit = truncate(strings.TrimSpace(in.Edit), 500)
 	indexes := []int{}
 	byID := map[string]int{}
 	for index, shot := range set.Shots {
 		byID[shot.ID] = index
 	}
-	if len(in.ShotIDs) == 0 {
+	if len(in.ShotIDs) == 0 && in.Edit != "" {
+		for index := range set.Shots {
+			indexes = append(indexes, index)
+		}
+	} else if len(in.ShotIDs) == 0 {
 		for index, shot := range set.Shots {
 			if len(shot.Attempts) == 0 {
 				indexes = append(indexes, index)
@@ -306,6 +340,10 @@ func (s Service) generateLocked(ctx context.Context, tx pgx.Tx, set *store.Comme
 			return result, invalid("这套图已经全部生成过了")
 		}
 	} else {
+		tasks, err := s.allTasks(ctx, set)
+		if err != nil {
+			return result, err
+		}
 		seen := map[int]bool{}
 		for _, id := range in.ShotIDs {
 			index, ok := byID[strings.TrimSpace(id)]
@@ -316,13 +354,17 @@ func (s Service) generateLocked(ctx context.Context, tx pgx.Tx, set *store.Comme
 				continue
 			}
 			seen[index] = true
-			if generatedAttempts(set.Shots[index]) >= maxAttemptsPerShot {
+			if in.Edit == "" && generatedAttempts(set.Shots[index], tasks) >= maxAttemptsPerShot {
 				return result, invalid("「%s」已经重做过 %d 次，可以点开图片继续修改", set.Shots[index].Label, maxAttemptsPerShot-1)
 			}
 			indexes = append(indexes, index)
 		}
 	}
-	inputs, err := s.taskInputs(ctx, tx, set, indexes, in.Note)
+	edits, err := s.editSpecs(ctx, set, indexes, in.Edit, in.EditAsOf)
+	if err != nil {
+		return result, err
+	}
+	inputs, err := s.taskInputs(ctx, tx, set, indexes, in.Note, edits)
 	if err != nil {
 		return result, err
 	}
@@ -348,17 +390,151 @@ func (s Service) generateLocked(ctx context.Context, tx pgx.Tx, set *store.Comme
 	createdAt := s.now()
 	for _, input := range inputs {
 		shot := &set.Shots[input.shotIndex]
-		key := fmt.Sprintf("acs:%s:%s:%d", set.ID, shot.ID, len(shot.Attempts)+1)
+		// Discarded attempts used their numbers too; reusing one would hand
+		// back the old task through the idempotency key.
+		key := fmt.Sprintf("acs:%s:%s:%d", set.ID, shot.ID, len(shot.Attempts)+len(shot.Discarded)+1)
 		input.create.IdempotencyKey = &key
 		task, _, err := taskflow.CreateTaskInTx(ctx, tx, set.UserID, input.create, nil)
 		if err != nil {
 			return result, err
 		}
-		shot.Attempts = append(shot.Attempts, store.CommerceSetAttempt{TaskID: task.ID, Via: in.Via,
-			PriceCents: input.price, Note: in.Note, CreatedAt: createdAt})
+		attempt := store.CommerceSetAttempt{TaskID: task.ID, Via: in.Via, PriceCents: input.price, Note: in.Note, CreatedAt: createdAt}
+		if edit, ok := edits[input.shotIndex]; ok {
+			attempt.BaseKey, attempt.EditNote = edit.base, edit.note
+		}
+		shot.Attempts = append(shot.Attempts, attempt)
 		result.TaskIDs = append(result.TaskIDs, task.ID)
 	}
 	set.ApprovedCents += result.TotalCents
 	set.Status = store.CommerceSetGenerating
 	return result, store.SaveCommerceSet(ctx, tx, set)
+}
+
+// editSpec is the image a shot's next attempt edits and what to change.
+type editSpec struct {
+	base string
+	note string
+}
+
+// editSpecs decides which shots are edited rather than generated afresh.
+// With an edit instruction every chosen shot edits its current image. Without
+// one, a shot whose latest attempt was an edit is redone as the same edit of
+// the same image, so a redo never throws the user's change away.
+func (s Service) editSpecs(ctx context.Context, set *store.CommerceSet, indexes []int, instruction string, asOf time.Time) (map[int]editSpec, error) {
+	edits := map[int]editSpec{}
+	if instruction == "" {
+		for _, index := range indexes {
+			if attempt := latest(set.Shots[index]); attempt != nil && attempt.BaseKey != "" {
+				edits[index] = editSpec{base: attempt.BaseKey, note: attempt.EditNote}
+			}
+		}
+		return edits, nil
+	}
+	tasks, err := s.allTasks(ctx, set)
+	if err != nil {
+		return nil, err
+	}
+	for _, index := range indexes {
+		shot := set.Shots[index]
+		key, _ := AttemptOutput(attemptAsOf(shot, asOf), tasks)
+		if key == "" {
+			return nil, invalid("「%s」还没有出好的图，不能在上面修改", shot.Label)
+		}
+		edits[index] = editSpec{base: key, note: instruction}
+	}
+	return edits, nil
+}
+
+// attemptAsOf is the shot's latest attempt made no later than asOf; a zero
+// asOf means the latest one.
+func attemptAsOf(shot store.CommerceSetShot, asOf time.Time) *store.CommerceSetAttempt {
+	if asOf.IsZero() {
+		return latest(shot)
+	}
+	for index := len(shot.Attempts) - 1; index >= 0; index-- {
+		if !shot.Attempts[index].CreatedAt.After(asOf) {
+			return &shot.Attempts[index]
+		}
+	}
+	return nil
+}
+
+// EditPrompt asks for one change to a finished shot (image 1) and nothing
+// else, so the edited set keeps the look the user already approved.
+func EditPrompt(shot Shot, instruction string) string {
+	lines := []string{
+		"以图1为底图做局部修改，这是一张已经完成的电商图「" + shot.Label + "」。",
+		"只做这一处修改：" + instruction,
+		"除此之外必须与图1保持一致：构图、机位、商品的位置大小和角度、背景、光线、色调、道具、画面上的标题和文案文字及其排版、画幅比例都不变；不要重新设计画面，不要增删元素，不要改动文字内容。",
+	}
+	return strings.Join(lines, "\n")
+}
+
+// Rewind puts a conversation's sets back to how they were at a moment: the
+// user resent an earlier message, so the replies after it are gone and so is
+// what they did to the sets. Attempts made later are moved to Discarded
+// (their points stay counted); sets planned later are canceled.
+func (s Service) Rewind(ctx context.Context, tx pgx.Tx, userID, conversationID uuid.UUID, at time.Time) error {
+	sets, err := store.LockConversationCommerceSets(ctx, tx, userID, conversationID)
+	if err != nil {
+		return err
+	}
+	for _, set := range sets {
+		if set.Status == store.CommerceSetCanceled {
+			continue
+		}
+		if set.CreatedAt.After(at) {
+			set.Status = store.CommerceSetCanceled
+			if err := store.SaveCommerceSet(ctx, tx, set); err != nil {
+				return err
+			}
+			continue
+		}
+		changed := false
+		for index := range set.Shots {
+			shot := &set.Shots[index]
+			kept := shot.Attempts[:0:0]
+			for _, attempt := range shot.Attempts {
+				if attempt.CreatedAt.After(at) {
+					shot.Discarded = append(shot.Discarded, attempt)
+					changed = true
+					continue
+				}
+				kept = append(kept, attempt)
+			}
+			shot.Attempts = kept
+		}
+		if !changed {
+			continue
+		}
+		set.Status = rewoundStatus(set)
+		if err := store.SaveCommerceSet(ctx, tx, set); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rewoundStatus is a set's status from its remaining attempts.
+func rewoundStatus(set *store.CommerceSet) string {
+	started, checked := false, true
+	for _, shot := range set.Shots {
+		attempt := latest(shot)
+		if attempt == nil {
+			checked = false
+			continue
+		}
+		started = true
+		if attempt.Review == nil {
+			checked = false
+		}
+	}
+	switch {
+	case !started:
+		return store.CommerceSetPlanned
+	case checked:
+		return store.CommerceSetDone
+	default:
+		return store.CommerceSetGenerating
+	}
 }

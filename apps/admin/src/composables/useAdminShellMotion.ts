@@ -57,8 +57,8 @@ export function useAdminShellMotion(opts: {
     aside.style.willChange = 'width'
     sidebarTween = gsap.to(aside, {
       width,
-      duration: 0.32,
-      ease: 'power2.inOut',
+      duration: 0.24,
+      ease: 'power3.out',
       onComplete: () => {
         aside.style.willChange = ''
         sidebarTween = undefined
@@ -123,7 +123,7 @@ export function useAdminShellMotion(opts: {
 
     const interactive = (target: EventTarget | null) => {
       if (!(target instanceof Element)) return null
-      return target.closest<HTMLElement>('.nav-item, .sidebar-toggle')
+      return target.closest<HTMLElement>('.nav--rail .nav-item, .sidebar-toggle')
     }
 
     const onOver = (event: PointerEvent) => {
@@ -208,7 +208,7 @@ export function useAdminShellMotion(opts: {
         defaults: { ease: 'power2.out', force3D: true },
       })
 
-      tl.from('.logo, .page-title', { autoAlpha: 0, y: -6, duration: 0.28 }, 0)
+      tl.from('.logo, .nav-search, .page-title', { autoAlpha: 0, y: -6, duration: 0.28 }, 0)
         .from(
           '.topbar-actions > *',
           {
@@ -219,17 +219,6 @@ export function useAdminShellMotion(opts: {
             clearProps: 'transform',
           },
           0.04,
-        )
-        .from(
-          '.nav-item',
-          {
-            autoAlpha: 0,
-            x: -6,
-            duration: 0.26,
-            stagger: 0.018,
-            clearProps: 'transform',
-          },
-          0.06,
         )
         .from('.aside-footer', { autoAlpha: 0, y: 6, duration: 0.24 }, 0.12)
     }, root)

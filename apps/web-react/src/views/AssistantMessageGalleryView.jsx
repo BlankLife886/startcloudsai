@@ -1,6 +1,7 @@
 import "./assistant-workspace-entry.css";
 import { useRef, useState } from "react";
 import { AssistantFollowUpQueue, AssistantMessageRow, ConversationMinimap } from "../features/assistant/AssistantMessageComponents.jsx";
+import { AssistantReplyActionsContext } from "../features/assistant/AssistantDataViews.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { CommerceSetOwnersContext, commerceSetOwners } from "../features/assistant/AssistantCommerceSet.jsx";
 import { imageEditSources } from "../features/assistant/domain/assistantImageCompare.js";
@@ -136,10 +137,11 @@ const SECTIONS = [
           ],
         } }),
       ] },
-      { label: "16 出图进度（生成中）", messages: [
+      { label: "16 出图进度（生成中）· 扩展 2：每张标出第几张和是否完成，右侧显示已完成 2/4", messages: [
         msg("img-live", "assistant", "", {
           kind: "image", pending: true, status: "running", statusStage: "generating-image", startedAt: now - 14_000, createdAt: new Date(now - 14_000).toISOString(),
-          prompt: "一张极简品牌主视觉", model: "image-pro", ratio: "1:1", resolution: "2K", quality: "medium", count: 2,
+          prompt: "一张极简品牌主视觉", model: "image-pro", ratio: "1:1", resolution: "2K", quality: "medium", count: 4,
+          images: [{ id: "live-1", index: 0, dataUrl: img("ecom-thumb-listing.webp") }, { id: "live-3", index: 2, dataUrl: img("ecom-thumb-shoot.webp") }],
         }),
       ] },
     ],
@@ -147,10 +149,11 @@ const SECTIONS = [
   {
     title: "五、数据视图（dataViews）",
     samples: [
-      { label: "17 统计 stats", messages: [msg("dv-stats", "assistant", "本月共消耗 240 积分，主要用在 AI 电商。", { kind: "agent", dataViews: [{
+      { label: "17 统计 stats · 扩展 14：换时间段、对比上一期、导出 CSV（预览页未登录，切换会提示查询失败）", messages: [msg("dv-stats", "assistant", "本月共消耗 240 积分，主要用在 AI 电商。", { kind: "agent", dataViews: [{
         tool: "my_stats_query", view: "stats", data: {
           range: { from: "2026-10-01", to: "2026-10-31", label: "本月" }, previousRange: { from: "2026-09-01", to: "2026-09-30", label: "上一个月" },
           metrics: [{ id: "spend_points", label: "消耗积分", unit: "积分" }], dimensions: [{ id: "workspace", label: "功能" }],
+          query: { metrics: ["spend_points"], dimensions: ["workspace"], timeRange: { preset: "this_month" }, compareToPrevious: true },
           rows: [
             { keys: { workspace: "ecommerce_design" }, labels: { workspace: "AI 电商" }, values: { spend_points: 180 } },
             { keys: { workspace: "assistant" }, labels: { workspace: "AI 助手" }, values: { spend_points: 60 } },
@@ -248,6 +251,98 @@ const SECTIONS = [
     ],
   },
   {
+    title: "回复补充（扩展 2 · 3 · 4 · 5 · 10 · 13 · 15 · 17）",
+    samples: [
+      { label: "扩展 4 · 按原因区分的错误卡（积分不足 / 未通过审核 / 服务繁忙），带可直接操作的按钮", last: "err-balance", messages: [
+        msg("err-balance", "assistant", "", { kind: "image", status: "failed", error: "积分不足，本次需要 40 积分，当前可用 30 积分" }),
+        msg("err-moderation", "assistant", "", { kind: "image", status: "failed", error: "提示词包含敏感内容，未通过审核" }),
+        msg("err-busy", "assistant", "", { kind: "chat", status: "failed", error: "当前助手任务较多，请稍后再试；你的输入不会丢失" }),
+      ] },
+      { label: "扩展 2 · 出完后有几张没出来：缺的位置显示占位，可一键补生成", last: "img-missing", messages: [
+        msg("img-missing", "assistant", "已生成 2/3 张图片，其余图片经自动重试后仍未完成", { kind: "image", count: 3, model: "image-pro", ratio: "1:1",
+          images: [{ id: "m-1", index: 0, dataUrl: img("ecom-thumb-listing.webp"), fileKey: "tasks/demo/1.png" }, { id: "m-3", index: 2, dataUrl: img("ecom-thumb-shoot.webp"), fileKey: "tasks/demo/3.png" }] }),
+      ] },
+      { label: "扩展 13 · 出图前的选择卡（Agent 模式，模型缺关键信息时才问）", last: "choices", messages: [
+        msg("choices-user", "user", "帮我做一张保温杯海报"),
+        msg("choices", "assistant", "先确认几项，避免做出来不合用。", { kind: "agent", dataViews: [{ tool: "ask_choices", view: "choices", data: {
+          title: "出图前确认几项",
+          groups: [
+            { id: "ratio", label: "尺寸", options: ["1:1", "3:4", "9:16", "16:9"] },
+            { id: "style", label: "风格", options: ["简约白底", "生活场景", "高级质感", "节日氛围"], multiple: true },
+            { id: "platform", label: "平台", options: ["天猫", "京东", "抖音", "小红书"] },
+          ],
+          submitLabel: "按这个出图",
+        } }] }),
+      ] },
+      { label: "扩展 15 · 重新生成后可以切回之前的版本（操作栏里的 ‹ 3/3 ›）", messages: [
+        msg("versions", "assistant", "第三版：保温杯适合通勤上班族、学生和户外运动人群，其中通勤人群最在意容量和防漏。", { kind: "chat", previousVersions: [
+          { id: "v1", content: "第一版：保温杯适合大多数人。", kind: "chat", metadata: {} },
+          { id: "v2", content: "第二版：保温杯适合通勤上班族和学生。", kind: "chat", metadata: {} },
+        ] }),
+      ] },
+      { label: "扩展 17 · 点踩后问哪里不满意（只在刚点踩时出现）", askReasons: "dislike", messages: [
+        msg("dislike", "assistant", "保温杯一般能保温 6 小时。", { kind: "chat", feedback: "negative" }),
+      ] },
+      { label: "扩展 10 · 视频结果卡（只做了卡片，助手目前还不能出视频）", messages: [
+        msg("video", "assistant", "10 秒产品展示视频已生成。", { kind: "agent", videos: [
+          { url: "/sucai/demo-video.mp4", posterUrl: img("canvas-hero.webp"), durationSeconds: 10, title: "保温杯 360° 展示", width: 1920, height: 1080, model: "Video Pro" },
+        ] }),
+      ] },
+    ],
+  },
+  {
+    title: "正文增强与追问（扩展 6–9）",
+    samples: [
+      { label: "扩展 6 · Mermaid 流程图（可看源码、复制）+ 表格（点表头排序、复制后可直接粘贴到 Excel）", messages: [msg("md-extra", "assistant", [
+        "出图流程如下：",
+        "",
+        "```mermaid",
+        "flowchart LR",
+        "  A[上传商品图] --> B[AI 抠图]",
+        "  B --> C{需要场景?}",
+        "  C -- 是 --> D[生成场景图]",
+        "  C -- 否 --> E[白底主图]",
+        "  D --> F[质量检查]",
+        "  E --> F",
+        "  F --> G[打包下载]",
+        "```",
+        "",
+        "各平台主图要求：",
+        "",
+        "| 平台 | 主图比例 | 最小尺寸 | 建议价格带 |",
+        "| --- | --- | --- | --- |",
+        "| 天猫 | 1:1 | 800×800 | ¥129 |",
+        "| 京东 | 1:1 | 800×800 | ¥99 |",
+        "| 抖音 | 3:4 | 600×800 | ¥59 |",
+        "| 小红书 | 3:4 | 1080×1440 | ¥1,280 |",
+      ].join("\n"), { kind: "chat" })] },
+      { label: "扩展 7 · 正文引用角标：[n] 对应下面「来源」的第 n 条，悬停看标题，点开原文", messages: [msg("md-cite", "assistant",
+        "天猫主图的首图要求白底、1:1[1]，尺寸不少于 800×800，且不能出现水印和外链二维码[2]。今年大促更看重首屏的场景化表达[3][1]。",
+        { kind: "agent", webSearches: [{ query: "天猫 主图 规范 2026", sources: [
+          { url: "https://www.tmall.com/rules/main-image", title: "天猫主图发布规范" },
+          { url: "https://developer.taobao.com/docs/image", title: "淘宝开放平台 · 图片要求" },
+          { url: "https://www.example.com/blog/double11", title: "双十一视觉趋势解读" },
+        ] }] })] },
+      { label: "扩展 8 · 追问建议：只在最后一条回复下显示，点一下直接发送；问答模式只推荐提问（第一条也是输入框里按 Tab 采纳的那条）", last: "md-follow", messages: [
+        msg("md-follow-user", "user", "保温杯适合什么人群？"),
+        msg("md-follow", "assistant", "保温杯适合通勤上班族、学生和户外运动人群。", { kind: "chat", requestedMode: "chat",
+          nextPrompt: "不同人群各自最在意什么卖点？", followUps: ["不同人群各自最在意什么卖点？", "主图文案该怎么写？", "竞品一般怎么定价？"] }),
+      ] },
+      { label: "扩展 9 · 长回复自动目录：超过 1200 字且有 3 个以上标题时出现，点一节跳过去", messages: [msg("md-toc", "assistant", [
+        "## 一、市场概况",
+        "保温杯市场近三年保持稳定增长，线上渠道占比持续提升。".repeat(9),
+        "### 目标人群",
+        "通勤上班族、学生和户外运动人群是三大核心人群，各自关注点不同。".repeat(9),
+        "### 价格带分布",
+        "主流价格带集中在 59～129 元，高端线以 300 元以上的钛杯为主。".repeat(9),
+        "## 二、竞品分析",
+        "头部品牌以材质和保温时长为主要卖点，新锐品牌更强调颜值和场景。".repeat(9),
+        "## 三、视觉建议",
+        "主图建议白底突出产品，详情页用场景图讲清楚使用情境。".repeat(9),
+      ].join("\n\n"), { kind: "chat" })] },
+    ],
+  },
+  {
     title: "七、产出与工具卡片",
     samples: [
       { label: "28 生成的文件 artifacts", messages: [msg("art", "assistant", "已生成说明文档和分层文件。", { kind: "agent", artifacts: [
@@ -299,6 +394,8 @@ const SECTIONS = [
 const allMessages = SECTIONS.flatMap((section) => section.samples.flatMap((sample) => sample.messages));
 const lastUserId = [...allMessages].reverse().find((item) => item.role === "user")?.id;
 const lastAssistantId = "foot";
+// 选择卡在预览页里点“按这个出图”只显示已发送，不真的发消息。
+const GALLERY_REPLY_ACTIONS = { lastAssistantId: "choices", busy: false, send: () => undefined };
 
 const minimapItems = allMessages.filter((item) => item.role === "user").map((item) => ({ id: item.id, preview: item.content, time: "10:20" }));
 const followUps = [{ id: "q1", prompt: "再帮我出一版 3:4 的" }, { id: "q2", prompt: "顺便统计一下本周花费", pending: true }];
@@ -326,6 +423,7 @@ export function AssistantMessageGalleryView() {
   return (
     <div className={`assistant-workspace assistant-gallery${isDark ? " is-dark" : ""}`} style={{ "--assistant-sidebar-occupied": "0px", display: "block", height: "100vh", overflowY: "auto" }} onClick={() => setMoreOpen("")}>
       <CommerceSetOwnersContext.Provider value={commerceOwners}>
+      <AssistantReplyActionsContext.Provider value={GALLERY_REPLY_ACTIONS}>
       <main className="assistant-main" style={{ height: "auto", overflow: "visible" }}>
         <div className="assistant-messages" style={{ height: "auto", overflow: "visible" }}>
           <section className="message-thread">
@@ -361,7 +459,7 @@ export function AssistantMessageGalleryView() {
                           copied={copied === message.id}
                           generating={false}
                           feedbackBusy={false}
-                          isLastAssistant={message.id === lastAssistantId || message.id === "p-card"}
+                          isLastAssistant={message.id === lastAssistantId || message.id === "p-card" || message.id === sample.last}
                           isLastUser={message.id === lastUserId || message.id === sample.editingId}
                           editing={message.id === sample.editingId}
                           editingDraft={editingDraft}
@@ -398,6 +496,12 @@ export function AssistantMessageGalleryView() {
                           onProposalApprove={noop}
                           onReopenProposal={noop}
                           onCorrection={noop}
+                          onFollowUp={noop}
+                          onEditPrompt={noop}
+                          onGenerateMissing={noop}
+                          askFeedbackReasons={message.id === sample.askReasons}
+                          onFeedbackReasons={async () => true}
+                          onDismissFeedbackReasons={noop}
                         />
                       ))}
                     </div>
@@ -419,6 +523,7 @@ export function AssistantMessageGalleryView() {
           </section>
         </div>
       </main>
+      </AssistantReplyActionsContext.Provider>
       </CommerceSetOwnersContext.Provider>
       <AssistantAutoApproveDialog open={autoApproveOpen} light={!isDark} budgetCents={60} onCancel={() => setAutoApproveOpen(false)} onConfirm={() => setAutoApproveOpen(false)} />
       <ConversationMinimap items={minimapItems} activeSetterRef={minimapSetter} onScrollToMessage={scrollTo} />

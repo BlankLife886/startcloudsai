@@ -162,6 +162,10 @@ func (w *Worker) assistantAgentPlatformFor(
 	if commerce.enabled {
 		extra = append(extra, w.assistantV2CommerceManifest(run, client, references, commerce))
 	}
+	// 问答模式只回答，不出图，也就不需要出图前的选择卡。
+	if !chatOnly {
+		extra = append(extra, assistanttools.NewAskChoicesManifest())
+	}
 	if recall.Enabled {
 		conversationID := run.ConversationID
 		extra = append(extra, assistanttools.NewMemoryManifest(w.St, assistanttools.MemoryContext{
@@ -192,16 +196,20 @@ func (w *Worker) assistantAgentPlatformFor(
 			instructions.WriteString("\n出图方案要遵循记忆里的品牌和风格偏好（写进提示词）；用户本轮另有要求时以本轮为准。")
 		}
 		instructions.WriteString(assistantproactive.HabitNote(w.assistantV2Habits(ctx, run, recall)))
+		instructions.WriteString(assistantv2.CompetitorLinkPrompt)
 	}
-	instructions.WriteString(assistantNextPromptInstruction)
+	instructions.WriteString(assistantFollowUpsInstructionFor(chatOnly))
 	if commerce.enabled {
 		instructions.WriteString(assistantv2.CommercePrompt)
 		if commerce.open != nil {
-			fmt.Fprintf(&instructions, "\n本对话已有一套电商图：setId=%s，状态 %s。用户的话是在说这套图时，直接对它操作。", commerce.open.ID, commerce.open.Status)
+			instructions.WriteString(assistantV2OpenSetNote(commerce.open))
 		}
 		if commerce.product != nil {
 			fmt.Fprintf(&instructions, "\n本轮没有上传商品图，用的是记忆里的商品“%s”的 %d 张图；策划时参考这条记忆的内容。", commerce.product.Title, len(commerce.inputKeys))
+		} else if count := len(commerce.attachments(references)); count > 0 {
+			fmt.Fprintf(&instructions, "\n本轮用户附了 %d 张图，按上传顺序编号 1-%d（与你看到的图片顺序一致）。", count, count)
 		}
+		instructions.WriteString(w.assistantV2CompetitorNote(ctx, run))
 	}
 	return &assistantAgentPlatform{
 		registry: registry, tools: tools, permissions: permissions,
@@ -320,6 +328,11 @@ type assistantV2Commerce struct {
 	open      *store.CommerceSet
 	// product is the remembered product whose photos stand in for uploads.
 	product *assistantmemory.Memory
+	// asOf is when the user first sent this turn's message (a resend keeps it).
+	asOf time.Time
+	// items are the turn's image items in upload order (or the remembered
+	// product's photos standing in for them).
+	items []map[string]any
 }
 
 // assistantV2Recall loads what the assistant remembers about the user. A
@@ -340,11 +353,14 @@ func (w *Worker) assistantV2CommerceTurn(ctx context.Context, run *store.Assista
 		return assistantV2Commerce{}
 	}
 	keys := assistantV2ReferenceKeys(run.Params)
-	open, err := store.LatestOpenCommerceSet(ctx, w.St.Pool, run.UserID, run.ConversationID, time.Now())
+	open, err := store.LatestCommerceSet(ctx, w.St.Pool, run.UserID, run.ConversationID, time.Now())
 	if err != nil {
 		log.Printf("assistant v2 open commerce set lookup failed for run %s: %v", run.ID, err)
 	}
-	turn := assistantV2Commerce{inputKeys: keys, open: open}
+	turn := assistantV2Commerce{inputKeys: keys, open: open, items: assistantV2ReferenceItems(run.Params)}
+	if message, err := store.GetAssistantMessage(ctx, w.St.Pool, run.UserMessageID); err == nil && message != nil {
+		turn.asOf = message.CreatedAt
+	}
 	// The set tools are offered whenever a set could be made or is open; the
 	// model decides whether the user wants one. The only text match left picks
 	// which remembered product's photos to load when nothing was uploaded.
@@ -356,8 +372,20 @@ func (w *Worker) assistantV2CommerceTurn(ctx context.Context, run *store.Assista
 	case assistantv2.CommerceSetRequested(run.Prompt) && assistantmemory.ProductFor(memories, run.Prompt) != nil:
 		turn.product = assistantmemory.ProductFor(memories, run.Prompt)
 		turn.enabled, turn.inputKeys = true, turn.product.ImageKeys
+		turn.items = nil
+		for _, key := range turn.product.ImageKeys {
+			turn.items = append(turn.items, map[string]any{"fileKey": key})
+		}
 	}
 	return turn
+}
+
+func assistantV2ReferenceItems(params map[string]any) []map[string]any {
+	if typed, ok := params["referenceImages"].([]map[string]any); ok {
+		return typed
+	}
+	items, _ := params["referenceImages"].([]any)
+	return assistantMapItems(items)
 }
 
 // assistantV2ReferenceKeys lists the stored images attached to the turn;
@@ -392,14 +420,85 @@ func (w *Worker) assistantV2CommerceManifest(run *store.AssistantRun, client *su
 		service.Enqueue = w.Queue.EnqueueRunTask
 	}
 	var copyWriter commerceset.CopyWriter
+	var vision func(ctx context.Context, prompt string, images []string) (string, error)
 	if len(references) > 0 {
 		planner := client.WithoutReasoning()
-		copyWriter = func(ctx context.Context, prompt string) (string, error) {
-			return planner.ChatTextWithImages(ctx, []sub2api.Message{{Role: "user", Content: prompt}}, references, nil)
+		vision = func(ctx context.Context, prompt string, images []string) (string, error) {
+			return planner.ChatTextWithImages(ctx, []sub2api.Message{{Role: "user", Content: prompt}}, images, nil)
 		}
+		copyWriter = func(ctx context.Context, prompt string) (string, error) { return vision(ctx, prompt, references) }
 	}
 	conversationID, runID := run.ConversationID, run.ID
 	return assistanttools.NewCommerceSetManifest(service, assistanttools.CommerceSetContext{
-		ConversationID: &conversationID, RunID: &runID, InputKeys: turn.inputKeys, Copy: copyWriter,
+		ConversationID: &conversationID, RunID: &runID, InputKeys: turn.inputKeys, Copy: copyWriter, AsOf: turn.asOf,
+		OpenSetID: openSetID(turn.open), Attachments: turn.attachments(references), Vision: vision,
 	})
+}
+
+// attachments pairs the turn's loaded images with their stored keys, in
+// upload order. loadAssistantReferenceItems keeps an item when it has a key,
+// an inline data URL or a remote URL, so the same walk lines them up.
+func (turn assistantV2Commerce) attachments(references []string) []assistanttools.Attachment {
+	out := make([]assistanttools.Attachment, 0, len(references))
+	for _, item := range turn.items {
+		if len(out) == len(references) {
+			break
+		}
+		key := assistantMapString(item, "fileKey")
+		value := assistantMapString(item, "dataUrl")
+		if key == "" && strings.HasPrefix(value, "/api/v1/files/") {
+			key = strings.TrimPrefix(value, "/api/v1/files/")
+		}
+		if key == "" && !strings.HasPrefix(value, "data:image/") && !strings.HasPrefix(value, "https://") && !strings.HasPrefix(value, "http://") {
+			continue
+		}
+		out = append(out, assistanttools.Attachment{Key: strings.TrimSpace(key), DataURL: references[len(out)]})
+	}
+	return out
+}
+
+// assistantV2CompetitorNote reminds the model of the conversation's latest
+// competitor analysis, so a later turn (the user sends their own product
+// photos after the screenshots) can still plan with it.
+func (w *Worker) assistantV2CompetitorNote(ctx context.Context, run *store.AssistantRun) string {
+	ref, err := store.LatestCompetitorRef(ctx, w.St.Pool, run.UserID, run.ConversationID)
+	if err != nil || ref == nil {
+		return ""
+	}
+	style, err := commerceset.DecodeCompetitorStyle(ref.Style)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("\n\n【本对话的竞品分析】competitorRefId=%s，%d 张图，视觉主线：%s。用户要照这个竞品出图时，commerce_set_plan 传这个 competitorRefId；这份分析里的截图不是用户的商品图。",
+		ref.ID, len(style.Slots), style.Summary)
+}
+
+func openSetID(set *store.CommerceSet) *uuid.UUID {
+	if set == nil {
+		return nil
+	}
+	id := set.ID
+	return &id
+}
+
+var assistantV2SetStatusText = map[string]string{
+	store.CommerceSetPlanned: "方案已出、还没生成", store.CommerceSetGenerating: "正在生成", store.CommerceSetDone: "已经出好图",
+}
+
+// assistantV2OpenSetNote tells the model which set the conversation is about
+// and how to act on it. The set tools default to this set, so the model does
+// not need to carry the id.
+func assistantV2OpenSetNote(set *store.CommerceSet) string {
+	shots := make([]string, 0, len(set.Shots))
+	for _, shot := range set.Shots {
+		shots = append(shots, shot.ID+"="+shot.Label)
+	}
+	status := assistantV2SetStatusText[set.Status]
+	if status == "" {
+		status = set.Status
+	}
+	return fmt.Sprintf("\n\n【本对话的电商套图】setId=%s，%s，共 %d 张（%s）。套图工具不传 setId 时就是这一套。"+
+		"用户的话是在说这套图时，直接调用工具操作它，不要另起 propose_image_action，也不要只回复文字让用户自己去点："+
+		"在现有成片上统一改某一处、保持原来效果（如“去掉 logo 再做相同的几张”）用 commerce_set_edit（整套就不传 shotIds）；要重新设计某几张用 commerce_set_redo。",
+		set.ID, status, len(set.Shots), strings.Join(shots, "、"))
 }

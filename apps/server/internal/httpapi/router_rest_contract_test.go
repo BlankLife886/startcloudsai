@@ -55,6 +55,7 @@ func TestRouterExposesOnlyVersionedRESTContract(t *testing.T) {
 		"DELETE /api/v1/admin/canvas-workflow-templates/:id",
 		"POST /api/v1/admin/announcements/images",
 		"POST /api/v1/admin/announcements/:id/push",
+		"GET /api/v1/admin/announcements/events",
 		"GET /api/v1/announcements/events",
 		"GET /api/v1/announcements/history",
 		"POST /api/v1/admin/home-banners/images",

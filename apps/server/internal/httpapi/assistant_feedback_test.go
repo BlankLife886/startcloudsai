@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -88,6 +89,32 @@ func TestAssistantMessageFeedbackPersistsAndChecksOwnership(t *testing.T) {
 		t.Fatalf("invalid feedback: status %d body %s", invalid.Code, invalid.Body.String())
 	}
 
+	// 点踩后补充原因；不支持的原因、超长说明、点赞带原因都拒绝；再点一次踩不清掉原因。
+	withReasons := env.do(t, http.MethodPut, path, map[string]any{
+		"rating": "negative", "reasons": []string{"wrong", "too_long", "wrong"}, "note": "数字算错了",
+	}, token)
+	if withReasons.Code != http.StatusOK {
+		t.Fatalf("negative with reasons: status %d body %s", withReasons.Code, withReasons.Body.String())
+	}
+	reasonData, _ := decode(t, withReasons)
+	if reasons, _ := reasonData["feedbackReasons"].([]any); len(reasons) != 2 || reasons[0] != "wrong" || reasonData["feedbackNote"] != "数字算错了" {
+		t.Fatalf("reasons response = %#v / %#v", reasonData["feedbackReasons"], reasonData["feedbackNote"])
+	}
+	for name, body := range map[string]map[string]any{
+		"unknown reason":     {"rating": "negative", "reasons": []string{"ugly"}},
+		"note too long":      {"rating": "negative", "note": strings.Repeat("长", 201)},
+		"reason on positive": {"rating": "positive", "reasons": []string{"wrong"}},
+	} {
+		if rejected := env.do(t, http.MethodPut, path, body, token); rejected.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: status %d body %s", name, rejected.Code, rejected.Body.String())
+		}
+	}
+	again := env.do(t, http.MethodPut, path, map[string]any{"rating": "negative"}, token)
+	againData, _ := decode(t, again)
+	if againData["feedbackNote"] != "数字算错了" {
+		t.Fatalf("a plain thumbs-down dropped the reasons: %#v", againData)
+	}
+
 	cleared := env.do(t, http.MethodPut, path, map[string]any{"rating": ""}, token)
 	if cleared.Code != http.StatusOK {
 		t.Fatalf("clear feedback: status %d body %s", cleared.Code, cleared.Body.String())
@@ -95,5 +122,8 @@ func TestAssistantMessageFeedbackPersistsAndChecksOwnership(t *testing.T) {
 	clearedData, _ := decode(t, cleared)
 	if _, exists := clearedData["feedback"]; exists {
 		t.Fatalf("cleared response still has feedback: %#v", clearedData)
+	}
+	if _, exists := clearedData["feedbackReasons"]; exists {
+		t.Fatalf("cleared response still has reasons: %#v", clearedData)
 	}
 }

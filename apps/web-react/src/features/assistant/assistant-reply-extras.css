@@ -1,0 +1,389 @@
+/* 回复下方的补充卡片：点踩原因、错误卡、批量出图进度、方案费用、选择卡、视频卡、版本切换。 */
+
+/* ---------- 点踩原因 ---------- */
+.assistant-workspace .assistant-feedback-reasons {
+  display: grid;
+  gap: 10px;
+  max-width: 460px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 14px;
+  background: var(--assistant-card);
+  animation: assistant-reply-extra-in 180ms ease-out;
+}
+
+@keyframes assistant-reply-extra-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.assistant-workspace .assistant-feedback-reasons header { display: flex; align-items: center; justify-content: space-between; }
+.assistant-workspace .assistant-feedback-reasons strong { color: var(--assistant-text); font-size: 13px; font-weight: 600; }
+
+.assistant-workspace .assistant-feedback-skip {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin: -4px -6px -4px 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--assistant-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.assistant-workspace .assistant-feedback-skip:hover { background: var(--assistant-panel-hover); color: var(--assistant-text); }
+
+.assistant-workspace .assistant-feedback-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.assistant-workspace .assistant-feedback-chips button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--assistant-text-soft);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+.assistant-workspace .assistant-feedback-chips button:hover { background: var(--assistant-panel-hover); color: var(--assistant-text); }
+.assistant-workspace .assistant-feedback-chips button.is-active {
+  border-color: color-mix(in srgb, var(--assistant-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--assistant-accent) 12%, transparent);
+  color: var(--assistant-accent-ink);
+  font-weight: 600;
+}
+
+.assistant-workspace .assistant-feedback-reasons textarea {
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 10px;
+  resize: vertical;
+  border: 1px solid var(--assistant-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--assistant-text);
+  font: inherit;
+  font-size: 13px;
+}
+.assistant-workspace .assistant-feedback-reasons textarea:focus { border-color: color-mix(in srgb, var(--assistant-accent) 60%, transparent); outline: none; }
+
+.assistant-workspace .assistant-feedback-reasons footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.assistant-workspace .assistant-feedback-reasons footer small { color: var(--assistant-muted); font-size: 12px; }
+
+.assistant-workspace .assistant-feedback-submit,
+.assistant-workspace .assistant-reply-primary {
+  height: 30px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--assistant-text);
+  color: var(--assistant-bg, #fff);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 150ms ease;
+}
+.assistant-workspace .assistant-feedback-submit:disabled,
+.assistant-workspace .assistant-reply-primary:disabled { cursor: not-allowed; opacity: 0.35; }
+.assistant-workspace .assistant-feedback-submit:hover:not(:disabled),
+.assistant-workspace .assistant-reply-primary:hover:not(:disabled) { opacity: 0.86; }
+
+.assistant-workspace .assistant-feedback-thanks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  color: var(--assistant-success, #2f9e74);
+  font-size: 13px;
+  animation: assistant-reply-extra-in 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-workspace .assistant-feedback-reasons,
+  .assistant-workspace .assistant-feedback-thanks { animation: none; }
+}
+
+/* ---------- 错误卡 ---------- */
+.assistant-workspace .assistant-error-card {
+  --error-tone: var(--assistant-danger);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  max-width: 520px;
+  margin: 4px 0 2px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--error-tone) 22%, var(--assistant-border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--error-tone) 5%, var(--assistant-card));
+}
+
+.assistant-workspace .assistant-error-card.is-balance { --error-tone: #d98a1c; }
+.assistant-workspace .assistant-error-card.is-timeout,
+.assistant-workspace .assistant-error-card.is-busy,
+.assistant-workspace .assistant-error-card.is-network,
+.assistant-workspace .assistant-error-card.is-model { --error-tone: var(--assistant-muted); }
+
+.assistant-workspace .assistant-error-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--error-tone) 14%, transparent);
+  color: var(--error-tone);
+  font-size: 15px;
+}
+
+.assistant-workspace .assistant-error-text { display: grid; gap: 2px; min-width: 0; }
+.assistant-workspace .assistant-error-text strong { color: var(--assistant-text); font-size: 14px; font-weight: 600; line-height: 1.5; }
+.assistant-workspace .assistant-error-text p { margin: 0; color: var(--assistant-text-soft); font-size: 13px; line-height: 1.55; }
+.assistant-workspace .assistant-error-text small {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--assistant-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-workspace .assistant-error-card footer { display: flex; flex-wrap: wrap; grid-column: 2; gap: 6px; margin-top: 8px; }
+
+.assistant-workspace .assistant-error-card footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 999px;
+  background: var(--assistant-card);
+  color: var(--assistant-text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 150ms ease, opacity 150ms ease;
+}
+.assistant-workspace .assistant-error-card footer button:hover { background: var(--assistant-panel-hover); }
+.assistant-workspace .assistant-error-card footer button.is-primary {
+  border-color: transparent;
+  background: var(--assistant-text);
+  color: var(--assistant-bg, #fff);
+  font-weight: 600;
+}
+.assistant-workspace .assistant-error-card footer button.is-primary:hover { opacity: 0.86; }
+
+/* ---------- 方案卡费用 ---------- */
+.assistant-workspace .agent-proposal-cost {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin-right: auto;
+  color: var(--assistant-text-soft);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.assistant-workspace .agent-proposal-cost b { color: var(--assistant-text); font-size: 14px; font-weight: 650; }
+.assistant-workspace .agent-proposal-cost small { color: var(--assistant-muted); font-size: 12px; }
+.assistant-workspace .agent-proposal-cost.is-short small { color: #c77a12; font-weight: 600; }
+.assistant-workspace.is-dark .agent-proposal-cost.is-short small { color: #f0b35a; }
+.assistant-workspace .agent-proposal-cost + .is-secondary { margin-left: 0; }
+
+/* ---------- 图片上的“已存入素材库” ---------- */
+.assistant-workspace .generated-image-saved {
+  position: absolute;
+  z-index: 2;
+  bottom: 6px;
+  left: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: rgb(20 18 28 / 68%);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: auto;
+  backdrop-filter: blur(4px);
+}
+.assistant-workspace .generated-image-saved i { color: #8ee0b5; font-size: 10px; }
+
+/* ---------- 多张出图：逐张进度、缺图补生成 ---------- */
+.assistant-workspace .image-dream-slot-label {
+  position: absolute;
+  z-index: 2;
+  bottom: 6px;
+  left: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: calc(100% - 12px);
+  overflow: hidden;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: rgb(20 18 28 / 55%);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 200ms ease;
+}
+.assistant-workspace .image-dream-slot-label.is-done { background: rgb(20 18 28 / 70%); }
+.assistant-workspace .image-dream-slot-label i { color: #8ee0b5; font-size: 11px; }
+
+.assistant-workspace .image-generation-progress {
+  margin-left: auto;
+  color: var(--assistant-text-soft);
+  font-size: 12px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.assistant-workspace .generated-images figure.is-missing {
+  border: 1px dashed var(--assistant-border-strong, var(--assistant-border));
+  background: var(--assistant-panel-hover);
+}
+.assistant-workspace .generated-image-failed.is-missing { padding: 8px; text-align: center; }
+
+.assistant-workspace .generated-images-missing {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 2px;
+  color: var(--assistant-muted);
+  font-size: 12.5px;
+}
+
+.assistant-workspace .generated-images-missing button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 999px;
+  background: var(--assistant-card);
+  color: var(--assistant-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+.assistant-workspace .generated-images-missing button:hover { background: var(--assistant-panel-hover); }
+
+/* ---------- 回复版本切换 ---------- */
+.assistant-workspace .message-version-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-right: 4px;
+  color: var(--assistant-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.assistant-workspace .message-version-switch > span { min-width: 30px; text-align: center; }
+.assistant-workspace .message-actions .message-version-switch button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 11px;
+}
+.assistant-workspace .message-actions .message-version-switch button:disabled { cursor: default; opacity: 0.35; }
+
+/* ---------- 视频结果 ---------- */
+.assistant-workspace .assistant-video-results { display: grid; gap: 12px; margin-top: 12px; }
+
+.assistant-workspace .assistant-video-card {
+  width: min(480px, 100%);
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--assistant-border);
+  border-radius: 14px;
+  background: var(--assistant-card);
+}
+
+.assistant-workspace .assistant-video-frame {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #0d0d0f;
+}
+.assistant-workspace .assistant-video-frame video { display: block; width: 100%; height: 100%; object-fit: contain; }
+
+.assistant-workspace .assistant-video-play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: linear-gradient(180deg, transparent 55%, rgb(0 0 0 / 35%));
+  cursor: pointer;
+}
+.assistant-workspace .assistant-video-play i {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  padding-left: 4px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 30%);
+  color: #111;
+  font-size: 26px;
+  transition: transform 160ms ease;
+}
+.assistant-workspace .assistant-video-play:hover i { transform: scale(1.06); }
+
+.assistant-workspace .assistant-video-duration {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 62%);
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.assistant-workspace .assistant-video-card figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 10px 14px;
+}
+.assistant-workspace .assistant-video-card figcaption div { display: grid; gap: 2px; min-width: 0; }
+.assistant-workspace .assistant-video-card figcaption strong { overflow: hidden; color: var(--assistant-text); font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-workspace .assistant-video-card figcaption small { color: var(--assistant-muted); font-size: 12px; }
+
+.assistant-workspace .assistant-video-download {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: var(--assistant-text-soft);
+  text-decoration: none;
+  transition: background 150ms ease, color 150ms ease;
+}
+.assistant-workspace .assistant-video-download:hover { background: var(--assistant-panel-hover); color: var(--assistant-text); }

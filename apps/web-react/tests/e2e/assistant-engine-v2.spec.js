@@ -110,6 +110,93 @@ test.describe('original assistant UI on the v2 engine', () => {
     expect(page.context().pages().length).toBe(pagesBefore)
   })
 
+  test('keeps a daily statistics chart and its long table inside the card', async ({ page }) => {
+    const days = Array.from({ length: 31 }, (_, index) => `2026-10-${String(index + 1).padStart(2, '0')}`)
+    const daily = {
+      tool: 'my_stats_query',
+      view: 'stats',
+      data: {
+        range: { from: '2026-10-01', to: '2026-10-31', label: '本月' },
+        metrics: [{ id: 'images', label: '生成图片数', unit: '张' }],
+        dimensions: [{ id: 'day', label: '日期' }],
+        rows: days.map((day, index) => ({ keys: { day }, labels: { day }, values: { images: [86, 3, 50, 1][index] || 0 } })),
+        totals: { images: 140 },
+      },
+    }
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      const body = route.request().postDataJSON()
+      return fulfillJson(route, {
+        run: { id: 'run-daily', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: 'succeeded' },
+        userMessage: message(body.clientUserMessageId, 'user', body.prompt),
+        assistantMessage: message(body.clientAssistantMessageId, 'assistant', '本月累计生成 **140 张**。', { kind: 'agent', engine: 'v2', dataViews: [daily] }),
+      }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('这个月每天生成了多少张图')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    const card = page.locator('.message--assistant').getByRole('region', { name: '统计结果' })
+    await expect(card.getByRole('img', { name: '生成图片数趋势' })).toBeVisible()
+    await card.getByRole('button', { name: '查看表格' }).click()
+    await expect(card.getByRole('table')).toContainText('2026-10-31')
+    // 按钮、图表、表格都不超出卡片右边框
+    const overflow = await card.evaluate((node) => {
+      const right = node.getBoundingClientRect().right - parseFloat(getComputedStyle(node).borderRightWidth)
+      return ['.assistant-data-toggle', '.assistant-data-chart svg', '.assistant-data-table-wrap']
+        .map((selector) => Math.round(node.querySelector(selector).getBoundingClientRect().right - right))
+    })
+    expect(Math.max(...overflow)).toBeLessThanOrEqual(0)
+    // 31 行的表格限高滚动，不把卡片拉得很长
+    const wrap = card.locator('.assistant-data-table-wrap')
+    expect(await wrap.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true)
+  })
+
+  test('switches the time range of a statistics card, compares and exports it', async ({ page }) => {
+    const query = { metrics: ['spend_points'], dimensions: ['workspace'], timeRange: { preset: 'this_month' }, compareToPrevious: true }
+    const lastMonth = {
+      ...statsView.data, query: { ...query, timeRange: { preset: 'last_month' } },
+      range: { from: '2026-09-01', to: '2026-09-30', label: '上月' },
+      totals: { spend_points: 90 }, previousTotals: { spend_points: 60 },
+      rows: [{ keys: { workspace: 'assistant' }, labels: { workspace: 'AI 助手' }, values: { spend_points: 90 } }],
+    }
+    let statsBody = null
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/stats-query', async (route) => {
+      statsBody = route.request().postDataJSON()
+      await fulfillJson(route, statsBody.compareToPrevious ? lastMonth : { ...lastMonth, previousTotals: undefined, previousRange: undefined, query: { ...lastMonth.query, compareToPrevious: false } })
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      const body = route.request().postDataJSON()
+      return fulfillJson(route, {
+        run: { id: 'run-stats', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: 'succeeded' },
+        userMessage: message(body.clientUserMessageId, 'user', body.prompt),
+        assistantMessage: message(body.clientAssistantMessageId, 'assistant', '本月共消耗 240 积分。', {
+          kind: 'agent', engine: 'v2', dataViews: [{ ...statsView, data: { ...statsView.data, query } }],
+        }),
+      }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('这个月积分都花在哪了')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    const card = page.getByRole('region', { name: '统计结果' })
+    await expect(card.getByRole('button', { name: '本月' })).toHaveAttribute('aria-pressed', 'true')
+    await card.getByRole('button', { name: '上月' }).click()
+    await expect(card).toContainText('90 积分')
+    expect(statsBody).toMatchObject({ metrics: ['spend_points'], dimensions: ['workspace'], timeRange: { preset: 'last_month' }, compareToPrevious: true })
+    await expect(card.getByRole('button', { name: '上月' })).toHaveAttribute('aria-pressed', 'true')
+    await card.getByRole('button', { name: '对比上一期' }).click()
+    await expect.poll(() => statsBody?.compareToPrevious).toBe(false)
+    await expect(card.getByRole('button', { name: '对比上一期' })).toHaveAttribute('aria-pressed', 'false')
+
+    const download = page.waitForEvent('download')
+    await card.getByRole('button', { name: '导出 CSV' }).click()
+    expect((await download).suggestedFilename()).toBe('我的统计_2026-09-01_2026-09-30.csv')
+  })
+
   test('renders account, order and charge explanations as cards', async ({ page }) => {
     const views = [
       {
@@ -269,6 +356,180 @@ test.describe('original assistant UI on the v2 engine', () => {
     await expect(viewer.getByRole('button', { name: '查看修改 1' })).toBeVisible()
     await viewer.getByRole('button', { name: '关闭预览' }).click()
     await expect(card).toContainText('已修改')
+  })
+
+  test('keeps the images of an earlier round after the set was changed', async ({ page }) => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAMAAAAECAIAAADETxJQAAAAEElEQVR4nGP43+AAQQx4WQCsOxT19tJRYAAAAABJRU5ErkJggg==', 'base64')
+    const version = (n) => ({ id: 'set-3', productName: '按压泵瓶', platform: '亚马逊', quotedCents: 20, approvedCents: 20 * n, spentCents: 20 * n, total: 2, done: 2,
+      ready: true, downloadable: 2, needsReview: false, status: 'done',
+      shots: ['hero', 'scene'].map((id) => ({ id, label: id === 'hero' ? '首屏视觉图' : '场景图', role: 'detail', aspectRatio: '16:9', attempts: n, status: 'succeeded',
+        imageUrl: `/api/v1/files/out/${id}-v${n}.png`, originalUrl: `/api/v1/files/out/${id}-v${n}.png`, reviewed: true, pass: true, canRedo: true, priceCents: 10 })) })
+    await mockAssistant(page)
+    await page.route('**/api/v1/files/out/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }))
+    await page.route('**/api/v1/assistant/commerce-sets/set-3**', (route) => fulfillJson(route, version(2)))
+    let round = 0
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      const body = route.request().postDataJSON()
+      round += 1
+      return fulfillJson(route, {
+        run: { id: `run-r${round}`, conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: 'succeeded' },
+        userMessage: message(body.clientUserMessageId, 'user', body.prompt),
+        assistantMessage: message(body.clientAssistantMessageId, 'assistant', round === 1 ? '这套图做好了。' : '已去掉 Logo。', {
+          kind: 'agent', engine: 'v2', dataViews: [{ tool: 'commerce_set_status', view: 'commerce_set', data: version(round) }],
+        }),
+      }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('做一套亚马逊图')
+    await page.getByRole('button', { name: '发送' }).click()
+    await expect(page.locator('.message--assistant').first().getByRole('region', { name: '电商套图' })).toBeVisible()
+    await page.getByLabel('消息输入').fill('瓶子去掉 logo 再做这两张')
+    await expect(async () => {
+      await page.getByRole('button', { name: '发送' }).click()
+      await expect(page.locator('.message--assistant')).toHaveCount(2, { timeout: 1_500 })
+    }).toPass({ timeout: 10_000 })
+
+    // 上一轮的图还在（只读），最新的卡片是新版本。
+    const earlier = page.locator('.message--assistant').first().getByRole('region', { name: '这一轮的成片' })
+    await expect(earlier).toContainText('已被下方新版本替换')
+    await expect(earlier.locator('img')).toHaveCount(2)
+    await expect(earlier.locator('img').first()).toHaveAttribute('src', '/api/v1/files/out/hero-v1.png')
+    const latest = page.locator('.message--assistant').last().getByRole('region', { name: '电商套图' })
+    await expect(latest.locator('img').first()).toHaveAttribute('src', '/api/v1/files/out/hero-v2.png')
+    await expect(page.getByRole('region', { name: '电商套图' })).toHaveCount(1)
+  })
+
+  test('shows only its own round in an earlier reply while a later turn is still running', async ({ page }) => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAMAAAAECAIAAADETxJQAAAAEElEQVR4nGP43+AAQQx4WQCsOxT19tJRYAAAAABJRU5ErkJggg==', 'base64')
+    const version = (n) => ({ id: 'set-4', productName: '按压泵瓶', platform: '亚马逊', quotedCents: 20, approvedCents: 20 * n, spentCents: 20 * n, total: 2, done: 2,
+      ready: true, downloadable: 2, needsReview: false, status: 'done',
+      shots: ['hero', 'scene'].map((id) => ({ id, label: id === 'hero' ? '首屏视觉图' : '场景图', role: 'detail', aspectRatio: '16:9', attempts: n, status: 'succeeded',
+        imageUrl: `/api/v1/files/out/${id}-v${n}.png`, originalUrl: `/api/v1/files/out/${id}-v${n}.png`, reviewed: true, pass: true, canRedo: true, priceCents: 10 })) })
+    await mockAssistant(page)
+    await page.route('**/api/v1/files/out/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }))
+    // 套图的实时状态已经是后来的第 3 版
+    await page.route('**/api/v1/assistant/commerce-sets/set-4**', (route) => fulfillJson(route, version(3)))
+    let round = 0
+    let pendingBody = null
+    await page.route('**/api/v1/assistant/runs/run-w2**', (route) => (route.request().url().includes('/events')
+      ? route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': keep-alive\n\n' })
+      : fulfillJson(route, {
+        run: { id: 'run-w2', conversationId: pendingBody?.conversationId, assistantMessageId: pendingBody?.clientAssistantMessageId, userMessageId: pendingBody?.clientUserMessageId, status: 'running' },
+        assistantMessage: message(pendingBody?.clientAssistantMessageId, 'assistant', '', { status: 'running', pending: true }),
+      })))
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      const body = route.request().postDataJSON()
+      round += 1
+      const running = round > 1
+      if (running) pendingBody = body
+      return fulfillJson(route, {
+        run: { id: `run-w${round}`, conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: running ? 'running' : 'succeeded' },
+        userMessage: message(body.clientUserMessageId, 'user', body.prompt),
+        assistantMessage: running
+          ? message(body.clientAssistantMessageId, 'assistant', '', { status: 'running', pending: true })
+          : message(body.clientAssistantMessageId, 'assistant', '这套图做好了。', { kind: 'agent', engine: 'v2', dataViews: [{ tool: 'commerce_set_status', view: 'commerce_set', data: version(1) }] }),
+      }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('做一套亚马逊图')
+    await page.getByRole('button', { name: '发送' }).click()
+    await expect(page.locator('.message--assistant').first().getByRole('region', { name: '电商套图' })).toBeVisible()
+    await page.getByLabel('消息输入').fill('瓶子去掉 logo 再做这两张')
+    await expect(async () => {
+      await page.getByRole('button', { name: '发送' }).click()
+      await expect(page.locator('.message--assistant')).toHaveCount(2, { timeout: 1_500 })
+    }).toPass({ timeout: 10_000 })
+
+    // 上面那一轮只显示它自己出的第 1 版，不显示套图后来的状态。
+    const earlier = page.locator('.message--assistant').first().getByRole('region', { name: '这一轮的成片' })
+    await expect(earlier).toContainText('下方正在处理新的要求')
+    await expect(earlier.locator('img').first()).toHaveAttribute('src', '/api/v1/files/out/hero-v1.png')
+    await expect(page.getByRole('region', { name: '电商套图' })).toHaveCount(0)
+  })
+
+  test('previews the detail pages of a set in a phone frame and downloads the long image', async ({ page }) => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAMAAAAECAIAAADETxJQAAAAEElEQVR4nGP43+AAQQx4WQCsOxT19tJRYAAAAABJRU5ErkJggg==', 'base64')
+    const shot = (id, label, role, headline = '') => ({ id, label, role, headline, aspectRatio: role === 'main' ? '1:1' : '3:4', attempts: 1, status: 'succeeded',
+      imageUrl: `/api/v1/files/out/${id}.png`, originalUrl: `/api/v1/files/out/${id}.png`, reviewed: true, pass: true, canRedo: true, priceCents: 10 })
+    const set = { id: 'set-2', productName: '保温杯', platform: '天猫', modelId: 'img', quotedCents: 40, approvedCents: 40, spentCents: 40, total: 4, done: 4,
+      ready: true, downloadable: 4, needsReview: false, status: 'done', workbenchLink: '/ecommerce-design',
+      shots: [shot('white', '产品白底图', 'main'), shot('hero', '首屏视觉图', 'detail', '一杯暖一天'), shot('hand', '手持场景', 'detail'), shot('spec', '规格参数', 'detail')] }
+    await mockAssistant(page)
+    await page.route('**/api/v1/files/out/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }))
+    await page.route('**/api/v1/assistant/commerce-sets/set-2**', (route) => fulfillJson(route, set))
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      const body = route.request().postDataJSON()
+      return fulfillJson(route, {
+        run: { id: 'run-6', conversationId: body.conversationId, assistantMessageId: body.clientAssistantMessageId, userMessageId: body.clientUserMessageId, status: 'succeeded' },
+        userMessage: message(body.clientUserMessageId, 'user', body.prompt),
+        assistantMessage: message(body.clientAssistantMessageId, 'assistant', '这套图做好了。', {
+          kind: 'agent', engine: 'v2', dataViews: [{ tool: 'commerce_set_status', view: 'commerce_set', data: set }],
+        }),
+      }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('看看保温杯套图')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    const card = page.locator('.message--assistant').getByRole('region', { name: '电商套图' })
+    await card.getByRole('button', { name: '预览详情页' }).click()
+    const preview = page.getByRole('dialog', { name: '详情页预览' })
+    await expect(preview).toContainText('天猫 · 3 屏 · 750 宽长图')
+    // 只有详情页进手机框，主图不进。
+    await expect(preview.locator('.adp-screen img')).toHaveCount(3)
+    await expect(preview.getByRole('button', { name: /产品白底图/ })).toHaveCount(0)
+    await preview.getByRole('button', { name: /^\d+\s*规格参数/ }).click()
+    await expect(preview.getByRole('button', { name: /^\d+\s*规格参数/ })).toHaveAttribute('aria-current', 'true')
+
+    // 拖动「规格参数」到第一位：手机里的顺序跟着变，关掉再打开还是这个顺序。
+    const rows = preview.locator('.adp-row-main')
+    const from = await rows.nth(2).boundingBox()
+    const to = await rows.nth(0).boundingBox()
+    await page.mouse.move(from.x + 40, from.y + from.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(from.x + 40, from.y + from.height / 2 - 10, { steps: 3 })
+    await page.mouse.move(to.x + 40, to.y + 4, { steps: 8 })
+    await page.mouse.up()
+    await expect(rows.nth(0)).toContainText('规格参数')
+    await expect(preview.locator('.adp-screen img').first()).toHaveAttribute('src', '/api/v1/files/out/spec.png')
+    await preview.getByRole('button', { name: '关闭预览' }).click()
+    await expect(preview).toHaveCount(0)
+    await card.getByRole('button', { name: '预览详情页' }).click()
+    await expect(rows.nth(0)).toContainText('规格参数')
+    // 键盘也能调：Alt + ↓ 把它挪回第二位，再一键恢复原顺序。
+    await rows.nth(0).focus()
+    await page.keyboard.press('Alt+ArrowDown')
+    await expect(rows.nth(1)).toContainText('规格参数')
+    await preview.getByRole('button', { name: '恢复原顺序' }).click()
+    await expect(rows.nth(2)).toContainText('规格参数')
+    await expect(preview.getByRole('button', { name: '恢复原顺序' })).toHaveCount(0)
+
+    // 移除一屏：手机和长图里都没有它，下方可以一键恢复，且回到原来的位置。
+    await rows.nth(1).hover()
+    await preview.getByRole('button', { name: '移除「手持场景」' }).click()
+    await expect(preview.locator('.adp-screen img')).toHaveCount(2)
+    await expect(preview).toContainText('天猫 · 2 屏')
+    await expect(preview).toContainText('已移除 1 屏')
+    await preview.getByRole('button', { name: '恢复「手持场景」' }).click()
+    await expect(rows.nth(1)).toContainText('手持场景')
+    await expect(preview.locator('.adp-screen img')).toHaveCount(3)
+    // 键盘 Delete 也能移除；只剩一屏时不能再移除。
+    await rows.nth(0).focus()
+    await page.keyboard.press('Delete')
+    await page.keyboard.press('Delete')
+    await expect(rows).toHaveCount(1)
+    await expect(preview.getByRole('button', { name: /^移除「/ })).toHaveCount(0)
+    await preview.getByRole('button', { name: '恢复默认（顺序和全部屏）' }).click()
+    await expect(rows).toHaveCount(3)
+
+    const download = page.waitForEvent('download')
+    await preview.getByRole('button', { name: '下载长图' }).click()
+    expect((await download).suggestedFilename()).toBe('保温杯-详情页.jpg')
+    await page.keyboard.press('Escape')
+    await expect(preview).toHaveCount(0)
   })
 
   test('finds images, then confirms and undoes a library change from the card', async ({ page }) => {

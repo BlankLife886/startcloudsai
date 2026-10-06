@@ -919,11 +919,16 @@ func appendTaskOriginFilter(sql string, args []any, source, excludeSource string
 	return sql, args
 }
 
+// 用户历史里，AI 助手镜像的生图和 AI 助手套图（commerceset.SetParam）派生出的电商任务
+// 都按来源归为 AI 助手；套图任务另标 _source，前端据此仍按真实任务订阅进度。
 const userHistoryTaskSourceSQL = `
 		SELECT id, user_id,
-			CASE WHEN COALESCE(idempotency_key, '') LIKE 'assistant-gallery:%'
+			CASE WHEN COALESCE(idempotency_key, '') LIKE 'assistant-gallery:%' OR params ? '_assistantCommerceSetId'
 				THEN 'assistant'::text ELSE type END AS type,
-			model, status, prompt, params, count, input_keys,
+			model, status, prompt,
+			CASE WHEN params ? '_assistantCommerceSetId'
+				THEN params || jsonb_build_object('_source', 'assistant_commerce_set') ELSE params END AS params,
+			count, input_keys,
 			output_keys, thumbnail_keys, cost_cents, work_units, idempotency_key, error_code,
 			error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at,
 			deleted_at, deletion_actor, deleted_output_count

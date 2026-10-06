@@ -113,14 +113,18 @@ export async function deleteAssistantMessage(id) {
   })
 }
 
-export async function setAssistantMessageFeedback(id, rating = '') {
+// reasons / note 只在点踩时带：为什么不满意，进质量闭环。
+export async function setAssistantMessageFeedback(id, rating = '', { reasons, note } = {}) {
   const normalizedRating = String(rating || '').trim().toLowerCase()
   if (!['', 'positive', 'negative'].includes(normalizedRating)) {
     throw new Error('不支持的回复评价')
   }
+  const body = { rating: normalizedRating }
+  if (Array.isArray(reasons) && reasons.length) body.reasons = reasons
+  if (String(note || '').trim()) body.note = String(note).trim()
   return apiRequest(`/assistant/messages/${encodeURIComponent(id)}/feedback`, {
     method: 'PUT',
-    body: { rating: normalizedRating },
+    body,
     fallbackMessage: '回复评价提交失败',
   })
 }
@@ -262,6 +266,15 @@ export async function cancelAssistantRun(id, { acknowledgeUpstream = false, sign
   )
 }
 
+// 停止套图里正在生成的一张：已提交上游时服务端要求 acknowledgeUpstream 确认（积分不退）。
+export async function cancelAssistantCommerceShot(taskId, { acknowledgeUpstream = false } = {}) {
+  return apiPatch(
+    `/tasks/${encodeURIComponent(taskId)}`,
+    { status: 'canceled', acknowledgeUpstream },
+    { fallbackMessage: '停止失败' },
+  )
+}
+
 export async function editQueuedAssistantRun(id, prompt) {
   return apiPatch(
     `/assistant/runs/${encodeURIComponent(id)}`,
@@ -374,12 +387,40 @@ export function assistantCommerceSetArchiveUrl(id) {
 }
 
 // 资产整理：助手只出方案，用户在卡片上确认后执行，并可撤销。
-export function executeAssistantAssetAction(action) {
-  return apiPost('/assistant/asset-actions/execute', { action })
+// 资产库有变化（存入、撤销、从查看器收藏）时广播，图片上的“已存入素材库”标记据此重新核对。
+export const ASSISTANT_ASSETS_CHANGED_EVENT = 'assistant:assets-changed'
+
+export function announceAssetsChanged() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(ASSISTANT_ASSETS_CHANGED_EVENT))
 }
 
-export function undoAssistantAssetAction(undo) {
-  return apiPost('/assistant/asset-actions/undo', { undo })
+export async function executeAssistantAssetAction(action) {
+  const result = await apiPost('/assistant/asset-actions/execute', { action })
+  announceAssetsChanged()
+  return result
+}
+
+export async function undoAssistantAssetAction(undo) {
+  const result = await apiPost('/assistant/asset-actions/undo', { undo })
+  announceAssetsChanged()
+  return result
+}
+
+// 统计卡片换时间段 / 对比时按同样的口径重新查（用户范围由会话决定）。
+export function rerunAssistantStats(query, { signal } = {}) {
+  let timezone = ''
+  try {
+    timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+  } catch {
+    timezone = ''
+  }
+  return apiPost('/assistant/stats-query', { ...query, ...(timezone ? { timezone } : {}) }, { signal, fallbackMessage: '统计查询失败' })
+}
+
+// 哪些生成的图已经存进资产库：{ items: [{ sourceKey, assetId, groupName }] }
+export function listAssistantSavedImages(keys, { signal } = {}) {
+  const query = encodeURIComponent(keys.join(','))
+  return apiGet(`/assistant/saved-images?keys=${query}`, { signal, fallbackMessage: '素材库状态读取失败' })
 }
 
 // 记忆：助手记住的品牌、商品、偏好与满意方案；回复里的记忆卡片用同一组接口撤销。

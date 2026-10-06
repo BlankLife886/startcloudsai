@@ -81,11 +81,6 @@ export function displayNotificationTitle(title, body) {
   return rawTitle;
 }
 
-// 只按 kind 判断：标题里带「公告」二字的个人通知（例如作品入选公告）不能被误藏。
-export function isAnnouncementNotification(item) {
-  return String(item?.kind || "").toLowerCase().includes("announce");
-}
-
 /** 通知分类：图标、标签、色调与筛选范围。 */
 export function notificationKind(item) {
   if (String(item?.sourceType || "").startsWith("subscription_"))
@@ -109,6 +104,26 @@ export function notificationKind(item) {
   return { icon: "bi-bell", label: "通知", tone: "default", scope: "other" };
 }
 
+// 旧任务通知没有 targetPath：按标题里的产品名回到对应创作页（与后端 taskNotifyName / taskNotifyPath 对应）
+const TASK_TITLE_ROUTES = [
+  ["画布去背", "/canvas"],
+  ["无限画布", "/canvas"],
+  ["文生图", "/text-to-image"],
+  ["插画染色", "/ai-illustration-coloring"],
+  ["UI 设计稿", "/design-workshop"],
+  ["AI 电商", "/ecommerce-design"],
+  ["模型设计", "/model-sheet"],
+  ["游戏设计", "/game-art"],
+  ["拼图", "/tools/puzzle"],
+  ["背景移除", "/tools/background-remove"],
+  ["AI 助手", "/assistant"],
+];
+
+function taskRouteFromTitle(title) {
+  const text = String(title || "").trim();
+  return TASK_TITLE_ROUTES.find(([name]) => text.startsWith(name))?.[1] || null;
+}
+
 /** 点击通知后要去的页面；没有对应页面返回 null。 */
 export function notificationHref(item) {
   const target = String(item?.targetPath || "");
@@ -116,7 +131,7 @@ export function notificationHref(item) {
   const kind = String(item?.kind || "").toLowerCase();
   if (kind === "trial_access") return null;
   if (kind === "order") return "/orders";
-  if (kind.includes("task")) return "/history";
+  if (kind.includes("task")) return taskRouteFromTitle(item?.title) || "/history";
   if (kind.includes("wallet") || kind.includes("redeem")) return "/wallet";
   if (kind.includes("gallery")) return "/submissions";
   return null;

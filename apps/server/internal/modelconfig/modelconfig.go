@@ -183,6 +183,10 @@ type Model struct {
 	MaxOutputTokens              int                  `json:"maxOutputTokens,omitempty"`
 	SupportedReasoningEfforts    []string             `json:"supportedReasoningEfforts"`
 	ReasoningEnabled             *bool                `json:"reasoningEnabled,omitempty"`
+	// ToolCallingDisabled marks a chat model whose upstream ignores function
+	// tools (some web-session proxies answer in text instead). It can answer
+	// questions but cannot drive Agent mode.
+	ToolCallingDisabled bool `json:"toolCallingDisabled,omitempty"`
 	ReasoningPricing             *ReasoningPricing    `json:"reasoningPricing,omitempty"`
 	Public                       bool                 `json:"public"`
 	Default                      bool                 `json:"default"`

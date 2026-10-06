@@ -72,6 +72,9 @@ type Result struct {
 	Totals         map[Metric]float64 `json:"totals"`
 	PreviousTotals map[Metric]float64 `json:"previousTotals,omitempty"`
 	Truncated      bool               `json:"truncated,omitempty"`
+	// Query is the request that produced this result (without the timezone),
+	// so a card can re-run it with another time range.
+	Query *Request `json:"query,omitempty"`
 }
 
 // TxRunner is the subset of *store.Store needed to run a query.

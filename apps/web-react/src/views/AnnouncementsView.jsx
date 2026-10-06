@@ -1,10 +1,10 @@
-import { Link, useLocation, useNavigate } from "react-router";
-import { useAuth } from "../auth/AuthContext.jsx";
+import { Navigate, useLocation } from "react-router";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { useAnnouncementHistory } from "../features/announcements/useAnnouncementHistory.js";
 import { useReadAnnouncements } from "../features/announcements/announcementRead.js";
 import {
   AnnouncementCenter,
+  announcementDetailPath,
   unreadAnnouncementCount,
 } from "../features/announcements/AnnouncementCenter.jsx";
 import "../features/inbox/inbox.css";
@@ -12,21 +12,19 @@ import "../features/inbox/inbox.css";
 /** 平台公告：公开页面，未登录也能看；往期公告保留可回看。 */
 export function AnnouncementsView() {
   const isDark = useIsDark();
-  const auth = useAuth();
   const location = useLocation();
-  const navigate = useNavigate();
   const { items, loading, refreshing, error, refresh } = useAnnouncementHistory();
   const { isRead, markRead } = useReadAnnouncements();
   const unread = unreadAnnouncementCount(items, isRead);
-  const openId = new URLSearchParams(location.search).get("id");
+  const query = new URLSearchParams(location.search);
+  const legacyId = query.get("id");
 
-  const setOpenId = (id) => {
-    const query = new URLSearchParams(location.search);
-    if (id) query.set("id", id);
-    else query.delete("id");
+  // 旧链接 /announcements?id=xxx 改到独立详情页
+  if (legacyId) {
+    query.delete("id");
     const search = query.toString();
-    navigate(`${location.pathname}${search ? `?${search}` : ""}${location.hash}`, { replace: true });
-  };
+    return <Navigate replace to={announcementDetailPath({ id: legacyId }, search ? `?${search}` : "")} />;
+  }
 
   return (
     <div className={`nt-page ${isDark ? "is-dark" : "is-light"}`}>
@@ -43,11 +41,6 @@ export function AnnouncementsView() {
             <p>活动、上新与维护公告都在这里，结束的公告也可以随时回看。</p>
           </div>
           <div className="nt-head__actions">
-            {auth.isAuthenticated ? (
-              <Link className="nt-btn" to="/notifications">
-                <i className="bi bi-bell" /> 我的通知
-              </Link>
-            ) : null}
             <button
               type="button"
               className={`nt-btn${unread > 0 ? " is-primary" : ""}`}
@@ -86,7 +79,7 @@ export function AnnouncementsView() {
               </button>
             </div>
           ) : items.length ? (
-            <AnnouncementCenter items={items} isDark={isDark} openId={openId} onOpenChange={setOpenId} />
+            <AnnouncementCenter items={items} />
           ) : (
             <div className="nt-empty">
               <i className="bi bi-megaphone" />

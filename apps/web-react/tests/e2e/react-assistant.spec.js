@@ -1377,6 +1377,241 @@ test.describe('React assistant workspace contract', () => {
     await expect(page.locator('.composer-next-hint')).toHaveCount(0)
   })
 
+  test('renders flowcharts, sortable tables, citations, an outline and follow-ups in a reply', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    const filler = '这一段是为了让回复足够长，长回复才会自动生成目录。'.repeat(14)
+    const content = [
+      '## 一、流程', filler,
+      '```mermaid\nflowchart LR\n  A[上传商品图] --> B[生成主图]\n```',
+      '## 二、平台对比', filler,
+      '| 平台 | 价格 |\n| --- | --- |\n| 天猫 | ¥129 |\n| 京东 | ¥99 |\n| 抖音 | ¥59 |\n| 小红书 | ¥1,280 |',
+      '主图要白底[1]，抖音偏好竖版[2]，编号超出来源数量的[9]保持原样。',
+      '## 三、结论', filler,
+    ].join('\n\n')
+    const conversations = [{
+      id: 'markdown-extras-conversation',
+      title: '正文增强',
+      messages: [
+        message('md-user', 'user', '对比一下各平台主图'),
+        message('md-assistant', 'assistant', content, {
+          requestedMode: 'chat',
+          webSearches: [{ query: '主图 规范', sources: [{ url: 'https://a.example/rules', title: '来源 A' }, { url: 'https://b.example/douyin', title: '来源 B' }] }],
+          nextPrompt: '抖音为什么偏好竖版？',
+          followUps: ['抖音为什么偏好竖版？', '主图文案怎么写？'],
+        }),
+      ],
+    }]
+    let runBody = null
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      runBody = route.request().postDataJSON()
+      return fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    const reply = page.locator('[data-message-id="md-assistant"]')
+
+    // 流程图画成 SVG，也能切回源码。
+    const diagram = reply.locator('.assistant-diagram')
+    await expect(diagram.locator('svg')).toBeVisible({ timeout: 15_000 })
+    // 下载成 PNG；点开大图可以放大，Esc 关闭。
+    const download = page.waitForEvent('download')
+    await diagram.getByRole('button', { name: '下载流程图图片（PNG）' }).click()
+    expect((await download).suggestedFilename()).toBe('流程图.png')
+    await diagram.locator('.assistant-diagram-canvas').click()
+    const viewer = page.getByRole('dialog', { name: '流程图大图' })
+    await expect(viewer.locator('svg')).toBeVisible()
+    const fitted = await viewer.locator('.assistant-diagram-viewer-scale').textContent()
+    await viewer.getByRole('button', { name: '放大' }).click()
+    await expect(viewer.locator('.assistant-diagram-viewer-scale')).not.toHaveText(fitted)
+    await page.keyboard.press('Escape')
+    await expect(viewer).toHaveCount(0)
+    await diagram.getByRole('button', { name: '源码', exact: true }).click()
+    await expect(diagram.locator('.assistant-diagram-code')).toContainText('flowchart LR')
+
+    // 表格：点表头升序 → 降序 → 原顺序，按数字比而不是按字符。
+    const table = reply.locator('.assistant-table')
+    const firstCell = table.locator('tbody tr').first().locator('td').first()
+    await table.getByRole('button', { name: '价格' }).click()
+    await expect(firstCell).toHaveText('抖音')
+    await table.getByRole('button', { name: '价格' }).click()
+    await expect(firstCell).toHaveText('小红书')
+    await table.getByRole('button', { name: '价格' }).click()
+    await expect(firstCell).toHaveText('天猫')
+    await table.getByRole('button', { name: '复制' }).click()
+    await expect(table.getByRole('button', { name: '已复制' })).toBeVisible()
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('平台\t价格\n天猫\t¥129\n京东\t¥99\n抖音\t¥59\n小红书\t¥1,280')
+
+    // 引用角标：[1][2] 链到对应来源，[9] 没有对应来源，原样保留。
+    const cites = reply.locator('.assistant-markdown a.assistant-cite')
+    await expect(cites).toHaveCount(2)
+    await expect(cites.first()).toHaveAttribute('href', 'https://a.example/rules')
+    await expect(cites.nth(1)).toHaveAttribute('aria-label', '来源 2：来源 B')
+    await expect(reply.locator('.assistant-markdown')).toContainText('[9]')
+
+    // 目录：点一节滚到对应标题。
+    const outline = reply.getByRole('navigation', { name: '回复目录' })
+    await expect(outline).toContainText('3 节')
+    await outline.getByRole('button', { name: '三、结论' }).click()
+    await expect(reply.locator('.assistant-markdown > h2').nth(2)).toBeInViewport()
+    // 开头的目录滚出视野后，吸顶的目录按钮显示读到哪一节，点开能跳回前面。
+    await expect(outline).not.toBeInViewport()
+    const dock = reply.locator('.assistant-outline-float-toggle')
+    await expect(dock).toBeInViewport()
+    await expect(dock).toContainText('三、结论')
+    await dock.click()
+    await reply.locator('.assistant-outline-menu').getByRole('button', { name: '一、流程' }).click()
+    await expect(reply.locator('.assistant-markdown > h2').first()).toBeInViewport()
+    await expect(reply.locator('.assistant-outline-menu')).toHaveCount(0)
+
+    // 追问：问答模式标成“接着问”，点一下直接按问答模式发出去。
+    const followUps = reply.getByRole('group', { name: '追问建议' })
+    await expect(followUps).toContainText('接着问')
+    await followUps.getByRole('button', { name: '抖音为什么偏好竖版？' }).click()
+    await expect.poll(() => runBody?.prompt).toBe('抖音为什么偏好竖版？')
+    expect(runBody.mode).toBe('chat')
+    await expect(page.getByRole('group', { name: '追问建议' })).toHaveCount(0)
+  })
+
+  test('asks why after a thumbs-down and sends the reasons', async ({ page }) => {
+    const reply = message('fb-assistant', 'assistant', '保温杯一般能保温 6 小时。')
+    const bodies = []
+    await mockAssistant(page, { conversations: [{ id: 'fb-conversation', title: '点踩', messages: [message('fb-user', 'user', '保温杯能保温多久'), reply] }] })
+    await page.route('**/api/v1/assistant/messages/fb-assistant/feedback', async (route) => {
+      const body = route.request().postDataJSON()
+      bodies.push(body)
+      await fulfillJson(route, { ...reply, feedback: body.rating, ...(body.reasons ? { feedbackReasons: body.reasons, feedbackNote: body.note || '' } : {}) })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByRole('button', { name: '踩', exact: true }).click()
+    const panel = page.getByRole('region', { name: '点踩原因' })
+    await expect(panel).toBeVisible()
+    await expect(panel.getByRole('button', { name: '图片不满意' })).toHaveCount(0)
+    await panel.getByRole('button', { name: '内容有误' }).click()
+    await panel.getByLabel('补充说明').fill('6 小时不对')
+    await panel.getByRole('button', { name: '提交' }).click()
+    await expect(page.getByText('谢谢，已记下，会用来改进回答')).toBeVisible()
+    expect(bodies.at(-1)).toEqual({ rating: 'negative', reasons: ['wrong'], note: '6 小时不对' })
+    await expect(page.getByText('谢谢，已记下，会用来改进回答')).toHaveCount(0, { timeout: 5_000 })
+  })
+
+  test('explains a failure by its cause with the next step to take', async ({ page }) => {
+    await mockAssistant(page, { conversations: [{ id: 'err-conversation', title: '失败', messages: [
+      message('err-user', 'user', '画一张海报'),
+      message('err-assistant', 'assistant', '', { kind: 'image', status: 'failed', error: '积分不足，本次需要 40 积分，当前可用 30 积分' }),
+    ] }] })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    const card = page.locator('.assistant-error-card')
+    await expect(card).toContainText('积分不足')
+    await expect(card).toContainText('当前可用 30 积分')
+    await expect(card.getByRole('button', { name: '重试' })).toBeVisible()
+    await card.getByRole('button', { name: '去充值' }).click()
+    await expect(page).toHaveURL(/\/wallet/)
+  })
+
+  test('shows which images of a batch are missing and generates only those', async ({ page }) => {
+    let runBody = null
+    await mockAssistant(page, { conversations: [{ id: 'missing-conversation', title: '缺图', messages: [
+      message('missing-user', 'user', '画三张猫'),
+      message('missing-assistant', 'assistant', '已生成 2/3 张图片，其余图片经自动重试后仍未完成', {
+        kind: 'image', count: 3, model: 'image-basic', ratio: '1:1', requestedMode: 'image',
+        images: [
+          { id: 'cat-1', index: 0, dataUrl: '/sucai/home-intro-03.png', fileKey: 'tasks/assistant-user/cat-1.png' },
+          { id: 'cat-3', index: 2, dataUrl: '/sucai/home-intro-03.png', fileKey: 'tasks/assistant-user/cat-3.png' },
+        ],
+      }),
+    ] }] })
+    await page.route('**/api/v1/assistant/saved-images**', (route) => fulfillJson(route, { items: [{ sourceKey: 'tasks/assistant-user/cat-3.png', assetId: 'asset-1', groupName: '猫' }] }))
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      runBody = route.request().postDataJSON()
+      return fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const grid = page.locator('[data-message-id="missing-assistant"] .generated-images')
+    await expect(grid.locator('figure').nth(1)).toHaveClass(/is-missing/)
+    await expect(grid.locator('figure').nth(1)).toContainText('第 2 张没有生成出来')
+    // 已存进资产库的那张带标记
+    await expect(grid.locator('figure').nth(2).locator('.generated-image-saved')).toHaveAttribute('title', '已存入素材库「猫」')
+    await expect(grid.locator('figure').nth(0).locator('.generated-image-saved')).toHaveCount(0)
+    await grid.getByRole('button', { name: '补生成 1 张' }).click()
+    await expect.poll(() => runBody).not.toBeNull()
+    expect(runBody).toMatchObject({ mode: 'image', count: 1, prompt: '画三张猫', userMessageContent: '补生成第 2 张', model: 'image-basic' })
+  })
+
+  test('keeps earlier replies after regenerate and switches between them', async ({ page }) => {
+    let runBody = null
+    await mockAssistant(page, { conversations: [{ id: 'versions-conversation', title: '版本', messages: [
+      message('v-user', 'user', '保温杯适合谁'),
+      message('v-assistant', 'assistant', '第三版回答', { requestedMode: 'chat', previousVersions: [
+        { id: 'v-1', content: '第一版回答', kind: 'chat', metadata: {} },
+        { id: 'v-2', content: '第二版回答', kind: 'chat', metadata: {} },
+      ] }),
+    ] }] })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      runBody = route.request().postDataJSON()
+      return fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const reply = page.locator('[data-message-id="v-assistant"]')
+    const versions = reply.getByRole('group', { name: '回复版本' })
+    await expect(versions).toContainText('3/3')
+    await versions.getByRole('button', { name: '上一版' }).click()
+    await expect(versions).toContainText('2/3')
+    await expect(reply.locator('.assistant-markdown')).toHaveText('第二版回答')
+    await versions.getByRole('button', { name: '下一版' }).click()
+    await expect(reply.locator('.assistant-markdown')).toHaveText('第三版回答')
+
+    await reply.getByRole('button', { name: '重新生成' }).click()
+    await expect.poll(() => runBody).not.toBeNull()
+    expect(runBody).toMatchObject({ sourceUserMessageId: 'v-user', keepPreviousVersion: true })
+  })
+
+  test('answers a choice card with one tap and shows the cost on a plan', async ({ page }) => {
+    let runBody = null
+    await mockAssistant(page, { conversations: [{ id: 'choices-conversation', title: '选择', messages: [
+      message('plan-user', 'user', '做一组主视觉'),
+      message('plan-card', 'assistant', '已整理方案', { kind: 'proposal', proposal: {
+        action: 'generate', prompt: '极简主视觉', model: 'image-basic', ratio: '1:1', resolution: '1K', quality: 'low', count: 2,
+      } }),
+      message('choices-user', 'user', '帮我做一张保温杯海报'),
+      message('choices-assistant', 'assistant', '先确认几项。', { kind: 'agent', requestedMode: 'agent', dataViews: [{ tool: 'ask_choices', view: 'choices', data: {
+        title: '出图前确认几项', submitLabel: '按这个出图',
+        groups: [
+          { id: 'ratio', label: '尺寸', options: ['1:1', '3:4'] },
+          { id: 'style', label: '风格', options: ['简约白底', '生活场景'], multiple: true },
+        ],
+      } }] }),
+    ] }] })
+    await page.route('**/api/v1/me/wallet', (route) => fulfillJson(route, { normalBalanceCents: 10 }))
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, { runs: [] })
+      runBody = route.request().postDataJSON()
+      return fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    // 方案卡：2 张 × 12 积分，余额 10，提示还差多少并引导充值。
+    const plan = page.locator('[data-message-id="plan-card"]')
+    await expect(plan.locator('.agent-proposal-cost')).toContainText('预计 24 积分')
+    await expect(plan.locator('.agent-proposal-cost')).toContainText('可用 10，还差 14')
+    await expect(plan.getByRole('button', { name: '积分不足，去充值' })).toBeVisible()
+
+    const card = page.getByRole('region', { name: '选择卡' })
+    const submit = card.getByRole('button', { name: '按这个出图' })
+    await expect(submit).toBeDisabled()
+    await card.getByRole('button', { name: '3:4' }).click()
+    await card.getByRole('button', { name: '简约白底' }).click()
+    await card.getByRole('button', { name: '生活场景' }).click()
+    await submit.click()
+    await expect.poll(() => runBody?.prompt).toBe('就按这些来：尺寸 3:4，风格 简约白底、生活场景')
+    expect(runBody.mode).toBe('agent')
+  })
+
   test('compares an edited image with its original in the full-screen viewer', async ({ page }) => {
     const original = { id: 'edit-ref', name: '原图', dataUrl: '/sucai/home-intro-03.png', fileKey: 'uploads/edit-ref.png' }
     const conversations = [{

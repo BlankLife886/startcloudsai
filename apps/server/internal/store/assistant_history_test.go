@@ -135,3 +135,41 @@ func TestAssistantPublishedHistoryIsRemappedWithoutDuplicate(t *testing.T) {
 		t.Fatalf("published assistant history duplicated = %#v", all)
 	}
 }
+
+// Images an assistant commerce set makes are ecommerce tasks underneath, but the
+// user made them in the AI assistant: history files them there, not under AI 电商.
+func TestAssistantCommerceSetTasksAreAssistantHistory(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, err := store.InsertUser(
+		ctx, st.Pool, fmt.Sprintf("assistant-set-%s@test.dev", uuid.NewString()[:8]),
+		"tester", "x", "user", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var setTaskID, workbenchTaskID uuid.UUID
+	if err := st.Pool.QueryRow(ctx, `INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents)
+		VALUES ($1, 'ecommerce_design', 'set shot', jsonb_build_object('_assistantCommerceSetId', $2::text), 'succeeded', 0) RETURNING id`,
+		user.ID, uuid.NewString()).Scan(&setTaskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Pool.QueryRow(ctx, `INSERT INTO tasks (user_id, type, prompt, params, status, cost_cents)
+		VALUES ($1, 'ecommerce_design', 'workbench', '{}'::jsonb, 'succeeded', 0) RETURNING id`, user.ID).Scan(&workbenchTaskID); err != nil {
+		t.Fatal(err)
+	}
+	assistant, err := store.ListTasks(ctx, st.Pool, &user.ID, store.PromptTaskTypeAssistant, "", nil, 10, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assistant) != 1 || assistant[0].ID != setTaskID || assistant[0].Params["_source"] != "assistant_commerce_set" {
+		t.Fatalf("assistant history = %#v", assistant)
+	}
+	ecommerce, err := store.ListTasks(ctx, st.Pool, &user.ID, "ecommerce_design", "", nil, 10, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ecommerce) != 1 || ecommerce[0].ID != workbenchTaskID {
+		t.Fatalf("AI 电商 history = %#v", ecommerce)
+	}
+}

@@ -69,7 +69,7 @@ func ToolsFor(registry *assistanttools.Registry) []string {
 // AgentToolsFor returns the platform tools the worker's agent adds to its
 // own. Task status and files are left out: the agent has its own versions.
 func AgentToolsFor(registry *assistanttools.Registry) []string {
-	return toolsIn(registry, DomainMyData, DomainMyAccount, DomainCommerce, DomainMyAssets, DomainMemory)
+	return toolsIn(registry, DomainMyData, DomainMyAccount, DomainCommerce, DomainMyAssets, DomainMemory, assistanttools.DomainAsk)
 }
 
 func toolsIn(registry *assistanttools.Registry, domains ...string) []string {
@@ -93,8 +93,22 @@ const CommercePrompt = `
 - 方案返回后，用一两句话说明这套图包含什么、预计多少积分（数字取自工具结果的 quotedCents）。
 - 只有方案的 autoApprovable 为 true 时才直接调用 commerce_set_generate；否则告诉用户“确认后开始出图”，由用户在方案卡片上确认，不要自己调用。
 - 生成开始后告诉用户可以在卡片上看每张图的进度，出完会自动检查，不合格的可以一键重做；不要承诺具体完成时间。
-- 用户要求修改已生成的某几张时，用 commerce_set_redo（规则同上）；询问进度时用 commerce_set_status。
-- 只有用户要的是一套电商商品图（主图、卖点图、详情页，或点名淘宝、天猫、亚马逊等平台）时才用 commerce_set_*；单张图、改图、抠图、普通插画和头像用 propose_image_action。`
+- 套图出好后，用户要在现有成片上统一改某一处、其余效果保持（“瓶子去掉 logo 再做这 5 张”“把瓶盖都换成金色”）时，用 commerce_set_edit：每张以当前成片为底图只改这一处。用户对某几张不满意、要重新设计时才用 commerce_set_redo。两者规则同上；询问进度时用 commerce_set_status。
+- 套图卡片上只有这些按钮：确认生成、单张“重做”、下载、预览详情页、存为满意方案。不要让用户去卡片上找别的按钮；需要整套修改时自己调用工具。
+- 只有用户要的是一套电商商品图（主图、卖点图、详情页，或点名淘宝、天猫、亚马逊等平台）时才用 commerce_set_*；单张图、改图、抠图、普通插画和头像用 propose_image_action。
+
+照着竞品做（用户发来竞品的主图或详情页截图，想按它的风格给自己的商品做图）：
+- 先调用 competitor_analyze，images 只填竞品截图的序号。竞品截图通常带有别家的品牌、价格、店铺界面或大段营销文字；用户自己的商品图通常是实拍或白底图。分不清哪些是竞品时，用 ask_choices 问一句，不要猜。
+- 拆解结果会显示成卡片。用一两句话点出它最关键的打法和你打算做得更好的地方，不要把卡片内容再念一遍。
+- 用户已经上传了自己的商品图、并且要做图时，接着调用 commerce_set_plan 并传 competitorRefId（shots 留空就沿用竞品的图片顺序）；没有自己的商品图时，请用户补发，不要拿竞品截图当商品图。
+- 竞品里的买家好评、资质认证、质检报告这类图需要用户的真实资料，方案默认不做；竞品有这类图时，告诉用户提供资料后可以加上。
+- 只借鉴风格和打法，绝不复制竞品的品牌、Logo、商品外观和原文文案；回答里也要让用户知道这一点。`
+
+// CompetitorLinkPrompt covers a competitor link without screenshots: the
+// assistant works from screenshots, so it asks for the right ones.
+const CompetitorLinkPrompt = `
+
+用户只发来竞品商品页链接、想照着做时：说明你是通过截图来分析竞品的（电商平台的商品页大多禁止程序直接读取），请用户截图发过来，并说明截哪些最有用：搜索结果里的主图、商品主图轮播的每一张、详情页从上到下的长截图（整页长图也可以，会自动分屏识别）。不要声称已经打开或看过这个链接。`
 
 // MemoryPrompt tells the model what it remembers and how to keep memory.
 // With memory off it only says so: nothing is recalled and no memory tool is

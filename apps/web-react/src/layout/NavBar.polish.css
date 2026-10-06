@@ -1317,31 +1317,49 @@
   pointer-events: none;
 }
 
-/* 新公告提醒：铃铛没有通知未读时显示小红点；下拉底部「公告」带未读数 */
-.nav-notify__badge.is-dot {
-  top: -1px;
-  right: -1px;
-  min-width: 8px;
-  width: 8px;
-  height: 8px;
-  padding: 0;
+/* 平台公告：与通知铃铛分开的独立入口，未登录也可见，带自己的未读数 */
+.nav-announce {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border: 1px solid rgba(21, 22, 31, 0.1);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--nav-accent, #5b4dff);
+  text-decoration: none;
+  box-sizing: border-box;
 }
-.nav-notify__foot-badge {
-  display: inline-block;
+.nav-announce i {
+  font-size: 1rem;
+  line-height: 1;
+}
+.nav-announce:hover,
+.nav-announce.active {
+  border-color: rgba(91, 77, 255, 0.28);
+  filter: brightness(0.98);
+}
+.nav-announce__badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
   min-width: 16px;
   height: 16px;
-  margin-left: 4px;
   padding: 0 4px;
   border-radius: 999px;
   background: #ef4444;
   color: #fff;
-  font-size: 0.62rem;
   font-style: normal;
+  font-size: 0.62rem;
   font-weight: 800;
   line-height: 16px;
   text-align: center;
-  vertical-align: 1px;
+  box-shadow: 0 0 0 2px #fff;
 }
+
 
 /*
  * 兑换 / 语言 / 公告 / 通知：果冻糖果风格，每个按钮用自己图标的颜色。

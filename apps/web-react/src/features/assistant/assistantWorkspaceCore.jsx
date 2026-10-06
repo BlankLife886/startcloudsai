@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import DOMPurify from "dompurify";
+import { createMermaidPlaceholder, enhanceMarkdownTables, isMermaidCode } from "./assistantMarkdownEnhance.js";
 import { marked } from "marked";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
@@ -503,7 +504,7 @@ function applyThreadSearchMarks(root, query) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
-      if (node.parentElement?.closest("mark, .assistant-code, button, .assistant-code-src")) return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.closest("mark, .assistant-code, .assistant-diagram, button, .assistant-code-src")) return NodeFilter.FILTER_REJECT;
       pattern.lastIndex = 0;
       return pattern.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
     },
@@ -1031,6 +1032,11 @@ function enhanceMarkdownCodeBlocks(root, { streaming = false } = {}) {
     if (pre.closest(".assistant-code")) return;
     const code = pre.querySelector("code");
     if (!code) return;
+    // 流程图：写完之后才画（边写边画会不停报语法错），写的过程中按代码显示。
+    if (!streaming && isMermaidCode(code)) {
+      pre.replaceWith(createMermaidPlaceholder(String(code.textContent || "").replace(/\n$/, "")));
+      return;
+    }
     try {
       const source = String(code.textContent || "").replace(/\n$/, "");
       const highlighted = highlightAssistantCode(source, code.classList, { streaming });
@@ -1079,6 +1085,7 @@ function renderAssistantMarkdownHtml(content, { streaming = false } = {}) {
     link.rel = "noopener noreferrer";
   });
   enhanceMarkdownCodeBlocks(root, { streaming });
+  if (!streaming) enhanceMarkdownTables(root);
   return root.innerHTML;
 }
 

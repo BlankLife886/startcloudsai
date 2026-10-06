@@ -1527,7 +1527,7 @@ func parseOptDatetime(s *string, field string) (*time.Time, error) {
 	return &t, nil
 }
 
-func (s *Server) adminCreateAnnouncement(c *gin.Context, _ *store.User) {
+func (s *Server) adminCreateAnnouncement(c *gin.Context, admin *store.User) {
 	var body announcementIn
 	if err := bindJSON(c, &body); err != nil {
 		fail(c, err)
@@ -1574,7 +1574,10 @@ func (s *Server) adminCreateAnnouncement(c *gin.Context, _ *store.User) {
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		var ierr error
 		announcement, ierr = store.InsertAnnouncement(ctx, tx, body.Title, body.Body, active, startsAt, endsAt, config)
-		return ierr
+		if ierr != nil {
+			return ierr
+		}
+		return store.InsertAnnouncementEvent(ctx, tx, announcement.ID, announcement.Title, "created", nil, actorIDOf(admin), actorNameOf(admin))
 	})
 	if err != nil {
 		fail(c, err)
@@ -1593,7 +1596,7 @@ type announcementPatchIn struct {
 	Config   *announcementConfigIn `json:"config"`
 }
 
-func (s *Server) adminPatchAnnouncement(c *gin.Context, _ *store.User) {
+func (s *Server) adminPatchAnnouncement(c *gin.Context, admin *store.User) {
 	announcementID, err := parseUUIDParam(c, "id")
 	if err != nil {
 		fail(c, err)
@@ -1629,6 +1632,7 @@ func (s *Server) adminPatchAnnouncement(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("not_found", "公告不存在", 404))
 		return
 	}
+	before := *announcement
 	if body.Title.Valid {
 		announcement.Title = body.Title.Value
 	}
@@ -1666,7 +1670,12 @@ func (s *Server) adminPatchAnnouncement(c *gin.Context, _ *store.User) {
 		}
 		announcement.Config = config
 	}
-	if err := store.UpdateAnnouncement(ctx, s.St.Pool, announcement); err != nil {
+	if err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		if uerr := store.UpdateAnnouncement(ctx, tx, announcement); uerr != nil {
+			return uerr
+		}
+		return recordAnnouncementPatch(ctx, tx, &before, announcement, actorIDOf(admin), actorNameOf(admin))
+	}); err != nil {
 		fail(c, err)
 		return
 	}
@@ -1683,7 +1692,7 @@ func (s *Server) adminPatchAnnouncement(c *gin.Context, _ *store.User) {
 	ok(c, announcementDict(announcement))
 }
 
-func (s *Server) adminDeleteAnnouncement(c *gin.Context, _ *store.User) {
+func (s *Server) adminDeleteAnnouncement(c *gin.Context, admin *store.User) {
 	announcementID, err := parseUUIDParam(c, "id")
 	if err != nil {
 		fail(c, err)
@@ -1700,10 +1709,10 @@ func (s *Server) adminDeleteAnnouncement(c *gin.Context, _ *store.User) {
 		return
 	}
 	if err := s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if ierr := store.DeleteNotificationsBySource(ctx, tx, store.AnnouncementNotificationSource, announcementID); ierr != nil {
-			return ierr
+		if derr := store.DeleteAnnouncement(ctx, tx, announcementID); derr != nil {
+			return derr
 		}
-		return store.DeleteAnnouncement(ctx, tx, announcementID)
+		return store.InsertAnnouncementEvent(ctx, tx, announcementID, announcement.Title, "deleted", nil, actorIDOf(admin), actorNameOf(admin))
 	}); err != nil {
 		fail(c, err)
 		return

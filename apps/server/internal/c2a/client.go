@@ -38,8 +38,12 @@ const (
 	asyncPollInterval  = 2 * time.Second
 	// Result images are already generated when this timeout applies. A stalled
 	// media connection must fail quickly so the poll loop can retry another
-	// connection instead of hiding a transient fetch failure for minutes.
+	// connection instead of hiding a transient fetch failure for minutes. It
+	// bounds the wait for the first byte and every gap between bytes; a slow
+	// link that keeps delivering is allowed up to maxImageDownloadTotal, since a
+	// retry restarts the file from zero and could never finish otherwise.
 	maxImageDownloadTimeout              = 20 * time.Second
+	maxImageDownloadTotal                = 3 * time.Minute
 	imagePollStatusTimeout               = 10 * time.Second
 	imageResultDownloadConcurrency int64 = 2
 )
@@ -794,9 +798,11 @@ func (c *Client) downloadImageB64(ctx context.Context, rawURL string) (string, e
 	if sameOrigin {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
-	timeout := imageDownloadTimeout(c.Timeout)
-	dlCtx, cancel := context.WithTimeout(ctx, timeout)
+	stallTimeout := imageDownloadTimeout(c.Timeout)
+	dlCtx, cancel := context.WithTimeoutCause(ctx, maxImageDownloadTotal, context.DeadlineExceeded)
 	defer cancel()
+	stalled := time.AfterFunc(stallTimeout, cancel)
+	defer stalled.Stop()
 	req = req.WithContext(dlCtx)
 	downloadStartedAt := time.Now()
 	resp, err := c.HTTPClient.Do(req)
@@ -814,8 +820,12 @@ func (c *Client) downloadImageB64(ctx context.Context, rawURL string) (string, e
 		}
 		return "", err
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBytes+1))
+	data, err := io.ReadAll(io.LimitReader(&stallReader{r: resp.Body, timer: stalled, stall: stallTimeout}, maxImageBytes+1))
 	if err != nil {
+		if dlCtx.Err() != nil && ctx.Err() == nil {
+			return "", &NetworkError{Message: fmt.Sprintf("下载上游图片超时：%d 秒没有收到数据或总耗时超过 %d 秒",
+				int64(stallTimeout.Seconds()), int64(maxImageDownloadTotal.Seconds())), Err: err}
+		}
 		return "", &NetworkError{Message: fmt.Sprintf("下载上游图片失败：%v", err)}
 	}
 	if len(data) == 0 || int64(len(data)) > maxImageBytes {
@@ -827,6 +837,21 @@ func (c *Client) downloadImageB64(ctx context.Context, rawURL string) (string, e
 	log.Printf("c2a image download host=%s bytes=%d duration_ms=%d",
 		target.Host, len(data), time.Since(downloadStartedAt).Milliseconds())
 	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+// stallReader pushes the stall deadline back whenever bytes arrive.
+type stallReader struct {
+	r     io.Reader
+	timer *time.Timer
+	stall time.Duration
+}
+
+func (s *stallReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.timer.Reset(s.stall)
+	}
+	return n, err
 }
 
 func nonEmptyImageCount(images []string) int {

@@ -3068,6 +3068,8 @@ const unconfirmedSubmitGrace = 90 * time.Second
 
 // abandonUnconfirmedSubmit 在提交未获确认且上游始终查不到任务时提前收尾：优先按重试策略
 // 重新提交（沿用同一 client_task_id，单线路时重试原线路），重试用尽才失败退款。
+// 判定未送达的尝试随即关闭：它若继续挂着 pending，会占住线路，重试排队时所有线路都
+// 显示"有待回收的尝试"，任务只能干等到尝试过期（约 30 分钟），期间一直显示生成中。
 // 返回 true 表示已处理，调用方不应再续租。
 func (w *Worker) abandonUnconfirmedSubmit(ctx context.Context, task *store.Task, attemptID uuid.UUID, unconfirmedFor time.Duration, now time.Time) bool {
 	scheduled, err := store.MarkTaskUpstreamAttemptFailoverScheduled(ctx, w.St.Pool, attemptID, now)
@@ -3079,10 +3081,14 @@ func (w *Worker) abandonUnconfirmedSubmit(ctx context.Context, task *store.Task,
 		return false
 	}
 	current, err := store.GetTask(ctx, w.St.Pool, task.ID)
-	if err != nil || current == nil || current.Status != "running" || !taskUsesAttemptRoute(current, task) {
+	if err != nil || current == nil {
 		return false
 	}
 	detail := fmt.Sprintf("提交请求超时后上游在 %d 秒内始终查不到该任务，判定请求未送达上游", int64(unconfirmedFor.Seconds()))
+	if current.Status != "running" || !taskUsesAttemptRoute(current, task) {
+		// 已换线路或已回到排队的旧尝试（"保留后台回收"的那条）：上游从没收到，没有可回收的结果。
+		return w.closeUndeliveredBackgroundAttempt(ctx, task, current, attemptID, detail, now)
+	}
 	_ = store.RecordTaskUpstreamAttemptPollError(ctx, w.St.Pool, attemptID, detail)
 	w.recordTimeline(ctx, task.ID, "upstream_unconfirmed", "warning", detail, -1,
 		w.upstreamPollMeta(ctx, task, map[string]any{"attemptId": attemptID.String(), "unconfirmedMs": unconfirmedFor.Milliseconds()}))
@@ -3092,11 +3098,37 @@ func (w *Worker) abandonUnconfirmedSubmit(ctx context.Context, task *store.Task,
 		return false
 	}
 	if retried {
+		if _, err := store.FinishTaskUpstreamAttempt(ctx, w.St.Pool, attemptID, store.UpstreamAttemptFailed, detail, now); err != nil {
+			log.Printf("task %s attempt %s close undelivered attempt failed: %v", task.ID, attemptID, err)
+		}
 		log.Printf("task %s attempt %s submit never confirmed after %s; resubmitting", task.ID, attemptID, unconfirmedFor.Round(time.Second))
 		return true
 	}
 	log.Printf("task %s attempt %s submit never confirmed after %s; retries exhausted, closing task", task.ID, attemptID, unconfirmedFor.Round(time.Second))
 	w.failCurrentTaskAndCloseAttempts(ctx, task, "upstream_unreachable", "上游未收到生成请求，任务已终止并退款")
+	return true
+}
+
+// closeUndeliveredBackgroundAttempt 关闭一条不再是当前线路、且上游从未收到的尝试。
+// 任务若正因这些尝试占着线路而排队（upstream_attempts_exhausted），立刻唤醒它重新提交；
+// 重试已用尽或没有线路可用时由 claim 流程失败退款。
+func (w *Worker) closeUndeliveredBackgroundAttempt(ctx context.Context, task, current *store.Task, attemptID uuid.UUID, detail string, now time.Time) bool {
+	finished, err := store.FinishTaskUpstreamAttempt(ctx, w.St.Pool, attemptID, store.UpstreamAttemptFailed, detail, now)
+	if err != nil {
+		log.Printf("task %s attempt %s close undelivered background attempt failed: %v", task.ID, attemptID, err)
+		return false
+	}
+	if !finished {
+		return true
+	}
+	log.Printf("task %s attempt %s never reached upstream; closed background attempt (task status=%s)", task.ID, attemptID, current.Status)
+	w.recordTimeline(ctx, task.ID, "upstream_unconfirmed", "warning", detail, -1,
+		w.upstreamPollMeta(ctx, task, map[string]any{"attemptId": attemptID.String()}))
+	if current.Status == "queued" && w.Queue != nil {
+		if err := w.Queue.EnqueueRunTaskRecoveryIn(ctx, task.ID.String(), 0); err != nil {
+			log.Printf("task %s wake after closing undelivered attempt failed; stale queue reaper will retry: %v", task.ID, err)
+		}
+	}
 	return true
 }
 

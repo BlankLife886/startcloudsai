@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
+import { Link, useLocation } from "react-router";
 import { translateClientText } from "@react/legacy-modules/i18n/clientTranslations.js";
 import { useReadAnnouncements } from "./announcementRead.js";
 import { announcementPublishedAt } from "./useAnnouncementHistory.js";
@@ -105,11 +105,18 @@ function periodText(item) {
   return start ? `${start} 起长期有效` : "";
 }
 
+// 后台「立即推送」过的公告：推送时间晚于发布时间才算更新。
+function updatedAt(item) {
+  const pushed = Date.parse(item?.pushedAt || "");
+  const published = Date.parse(item?.startsAt || "") || Date.parse(item?.createdAt || "");
+  return Number.isFinite(pushed) && (!Number.isFinite(published) || pushed > published) ? item.pushedAt : "";
+}
+
 function DetailBody({ body }) {
   const parts = bodyParts(body);
   if (parts.items) {
     return (
-      <ol className="ann-drawer__list">
+      <ol className="ann-article__list">
         {parts.items.map((line, index) => (
           <li key={`${line}-${index}`}>
             <em>{String(index + 1).padStart(2, "0")}</em>
@@ -121,7 +128,7 @@ function DetailBody({ body }) {
   }
   if (!parts.paragraphs?.length) return null;
   return (
-    <div className="ann-drawer__article">
+    <div className="ann-article__text">
       {parts.paragraphs.map((line, index) => (
         <p key={`${line}-${index}`}>{localizedText(line)}</p>
       ))}
@@ -135,72 +142,62 @@ function StatusChip({ status, item, now }) {
   return <span className="ann-chip is-ongoing">长期有效</span>;
 }
 
-function AnnouncementDrawer({ item, isDark, now, onClose }) {
-  useEffect(() => {
-    const onKey = (event) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    const overflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = overflow;
-    };
-  }, [onClose]);
-
+/** 公告正文：详情页使用。 */
+export function AnnouncementArticle({ item, now }) {
   const photos = photosOf(item);
   const cta = ctaOf(item);
   const status = announcementStatus(item, now);
   const body = String(item.body || "").trim();
 
-  return createPortal(
-    <div className={`ann-drawer-root ${isDark ? "is-dark" : "is-light"}`}>
-      <button type="button" className="ann-drawer__backdrop" aria-label="关闭公告详情" onClick={onClose} />
-      <aside className="ann-drawer" role="dialog" aria-modal="true" aria-label={item.title}>
-        <header className="ann-drawer__head">
-          <StatusChip status={status} item={item} now={now} />
-          <button type="button" className="ann-drawer__close" aria-label="关闭" onClick={onClose}>
-            <i className="bi bi-x-lg" />
-          </button>
-        </header>
-        <div className="ann-drawer__scroll" data-no-translate>
-          <h2>{localizedText(item.title)}</h2>
-          {periodText(item) ? (
-            <p className="ann-drawer__period">
-              <i className="bi bi-clock" /> {periodText(item)}
-            </p>
-          ) : null}
-          {photos.length ? (
-            <div className={`ann-drawer__media${photos.length > 1 ? " is-grid" : ""}`}>
-              {photos.map((image) => (
-                <img key={image.url} src={image.url} alt={image.alt || item.title} />
-              ))}
-            </div>
-          ) : null}
-          {body ? <DetailBody body={body} /> : null}
-        </div>
-        {cta && status !== "ended" ? (
-          <footer className="ann-drawer__foot">
-            <a
-              className="ann-drawer__cta"
-              href={cta.url}
-              target={cta.url.startsWith("http") ? "_blank" : undefined}
-              rel={cta.url.startsWith("http") ? "noreferrer" : undefined}
-            >
-              {cta.text}
-              <i className="bi bi-arrow-up-right" />
-            </a>
-          </footer>
+  return (
+    <article className="ann-article">
+      <header className="ann-article__head" data-no-translate>
+        <StatusChip status={status} item={item} now={now} />
+        <h1>{localizedText(item.title)}</h1>
+        {periodText(item) ? (
+          <p className="ann-article__period">
+            <i className="bi bi-clock" /> {periodText(item)}
+            {updatedAt(item) ? <span className="ann-updated">更新于 {fullStamp(updatedAt(item))}</span> : null}
+          </p>
         ) : null}
-      </aside>
-    </div>,
-    document.body,
+      </header>
+      <div className="ann-article__content" data-no-translate>
+        {photos.length ? (
+          <div className={`ann-article__media${photos.length > 1 ? " is-grid" : ""}`}>
+            {photos.map((image) => (
+              <img key={image.url} src={image.url} alt={image.alt || item.title} />
+            ))}
+          </div>
+        ) : null}
+        {body ? <DetailBody body={body} /> : null}
+      </div>
+      {cta && status !== "ended" ? (
+        <footer className="ann-article__foot">
+          <a
+            className="ann-article__cta"
+            href={cta.url}
+            target={cta.url.startsWith("http") ? "_blank" : undefined}
+            rel={cta.url.startsWith("http") ? "noreferrer" : undefined}
+          >
+            {cta.text}
+            <i className="bi bi-arrow-up-right" />
+          </a>
+        </footer>
+      ) : null}
+    </article>
   );
 }
 
-export function AnnouncementCenter({ items, isDark, openId, onOpenChange }) {
-  const { isRead, markRead } = useReadAnnouncements();
+/** 列表页滚动位置：从详情返回时恢复。 */
+const LIST_SCROLL_KEY = "starclouds-announcement-list-scroll";
+
+export function announcementDetailPath(item, search = "") {
+  return `/announcements/${encodeURIComponent(item.id)}${search}`;
+}
+
+export function AnnouncementCenter({ items }) {
+  const { isRead } = useReadAnnouncements();
+  const location = useLocation();
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -224,13 +221,28 @@ export function AnnouncementCenter({ items, isDark, openId, onOpenChange }) {
     return { featured: featuredItems, months: [...groups.values()] };
   }, [items, now]);
 
-  const openItem = items.find((item) => item.id === openId) || null;
-
   useEffect(() => {
-    if (openItem) markRead(openItem);
-  }, [openItem, markRead]);
+    let saved = null;
+    try {
+      saved = sessionStorage.getItem(LIST_SCROLL_KEY);
+      sessionStorage.removeItem(LIST_SCROLL_KEY);
+    } catch {
+      /* ignore */
+    }
+    if (saved) window.scrollTo({ top: Number(saved) || 0, behavior: "instant" });
+  }, []);
 
-  const open = (item) => onOpenChange(item.id);
+  const linkProps = (item) => ({
+    to: announcementDetailPath(item, location.search),
+    state: { fromList: true },
+    onClick: () => {
+      try {
+        sessionStorage.setItem(LIST_SCROLL_KEY, String(window.scrollY));
+      } catch {
+        /* ignore */
+      }
+    },
+  });
 
   return (
     <div className="ann-center">
@@ -242,7 +254,7 @@ export function AnnouncementCenter({ items, isDark, openId, onOpenChange }) {
               const cover = coverOf(item);
               const snippet = snippetOf(item.body);
               return (
-                <button key={item.id} type="button" className="ann-card" onClick={() => open(item)}>
+                <Link key={item.id} className="ann-card" {...linkProps(item)}>
                   <span className={`ann-card__cover${cover ? "" : " is-empty"}`}>
                     {cover ? <img src={cover} alt="" /> : <i className="bi bi-megaphone" />}
                   </span>
@@ -260,7 +272,7 @@ export function AnnouncementCenter({ items, isDark, openId, onOpenChange }) {
                       </span>
                     </span>
                   </span>
-                </button>
+                </Link>
               );
             })}
           </div>
@@ -275,11 +287,7 @@ export function AnnouncementCenter({ items, isDark, openId, onOpenChange }) {
               const unread = !isRead(item) && status !== "ended";
               return (
                 <li key={item.id}>
-                  <button
-                    type="button"
-                    className={`ann-row${status === "ended" ? " is-ended" : ""}`}
-                    onClick={() => open(item)}
-                  >
+                  <Link className={`ann-row${status === "ended" ? " is-ended" : ""}`} {...linkProps(item)}>
                     <time dateTime={item.startsAt || item.createdAt}>
                       {shortDate(item.startsAt || item.createdAt)}
                     </time>
@@ -287,21 +295,21 @@ export function AnnouncementCenter({ items, isDark, openId, onOpenChange }) {
                       <span className="ann-row__title">
                         {unread ? <i className="ann-dot" aria-label="未读" /> : null}
                         <strong>{localizedText(item.title)}</strong>
+                        {updatedAt(item) ? (
+                          <span className="ann-updated" title={`更新于 ${fullStamp(updatedAt(item))}`}>已更新</span>
+                        ) : null}
                       </span>
                       {snippetOf(item.body) ? <em>{localizedText(snippetOf(item.body))}</em> : null}
                     </span>
                     <StatusChip status={status} item={item} now={now} />
                     <i className="bi bi-chevron-right ann-row__arrow" aria-hidden="true" />
-                  </button>
+                  </Link>
                 </li>
               );
             })}
           </ol>
         </section>
       ))}
-      {openItem ? (
-        <AnnouncementDrawer item={openItem} isDark={isDark} now={now} onClose={() => onOpenChange(null)} />
-      ) : null}
     </div>
   );
 }

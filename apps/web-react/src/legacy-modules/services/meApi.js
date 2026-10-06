@@ -1,7 +1,7 @@
 /**
  * 个人中心相关 API（/api/v1/me/*）。
  */
-import { apiDelete, apiGet, apiPatch, apiPost, buildApiPath, ApiError } from './apiClient.js'
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut, buildApiPath, ApiError } from './apiClient.js'
 
 /** 修改资料：{ username?, avatarUrl?, studioFigureUrl?, bio?, location?, websiteUrl?, requireCostConfirm? } */
 export async function updateProfile(payload = {}) {
@@ -127,6 +127,15 @@ export async function markNotificationsRead(ids = null) {
   return apiPatch('/me/notifications', Array.isArray(ids) && ids.length ? { ids } : {}, {
     fallbackMessage: '标记已读失败',
   })
+}
+
+/** 新通知提醒偏好：提示音、按分类提醒/静默、免打扰时段（跨设备同步）。 */
+export async function getNotificationPreferences({ signal } = {}) {
+  return apiGet('/me/notification-preferences', { signal, fallbackMessage: '提醒设置读取失败' })
+}
+
+export async function saveNotificationPreferences(prefs) {
+  return apiPut('/me/notification-preferences', prefs, { fallbackMessage: '提醒设置保存失败' })
 }
 
 /** 清空当前用户可见通知（个人记录删除，全站公告仅对自己隐藏）。 */

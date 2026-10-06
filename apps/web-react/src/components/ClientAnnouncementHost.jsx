@@ -4,6 +4,7 @@ import { useLocation } from "react-router";
 import { useLocale } from "../i18n/index.js";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
 import { useLiveAnnouncements } from "../features/announcements/useLiveAnnouncements.js";
+import { markAnnouncementsRead } from "../features/announcements/announcementRead.js";
 import {
   ANNOUNCEMENT_STORAGE_PREFIX,
   announcementDismissRecord,
@@ -383,6 +384,8 @@ export function ClientAnnouncementHost() {
   const { isEntryVisible } = usePageControls();
   const { items } = useLiveAnnouncements();
   const [hiddenIds, setHiddenIds] = useState(() => new Set());
+  // 关掉一个弹窗时还在排队的其它弹窗公告：本次打开页面不再接着弹，之后新推送的照常弹
+  const [queuedModalIds, setQueuedModalIds] = useState(() => new Set());
   const [bannerSlot, setBannerSlot] = useState(null);
 
   useLayoutEffect(() => {
@@ -402,14 +405,24 @@ export function ClientAnnouncementHost() {
     [hiddenIds, items],
   );
   const banner = visible.find((item) => item.placement === "banner") || null;
-  const modal = visible.find((item) => item.placement !== "banner") || null;
+  const modals = visible.filter((item) => item.placement !== "banner");
+  const modal = modals.find((item) => !queuedModalIds.has(announcementIdentity(item))) || null;
   const bannerCta = banner ? announcementCta(banner, isEntryVisible) : null;
   const modalCta = modal ? announcementCta(modal, isEntryVisible) : null;
 
   const dismiss = (item) => {
     if (!item?.id) return;
     rememberDismiss(item);
+    // 弹窗/横幅已经看过并关掉，公告入口上不再算未读
+    markAnnouncementsRead(item);
     setHiddenIds((current) => new Set(current).add(announcementIdentity(item)));
+    if (item === modal) {
+      setQueuedModalIds((current) => {
+        const next = new Set(current);
+        for (const other of modals) next.add(announcementIdentity(other));
+        return next;
+      });
+    }
   };
 
   if (!banner && !modal) return null;

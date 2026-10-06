@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { useLocation, useNavigate, useNavigation } from "react-router";
@@ -25,12 +25,20 @@ import {
   COMMERCE_ENTRY_GROUPS,
   ecomToolCover,
 } from "@react/legacy-modules/features/creator-hub/studioTools.js";
-import { displayNotification, isAnnouncementNotification, notificationHref } from "../utils/notificationDisplay.js";
+import { displayNotification, notificationHref } from "../utils/notificationDisplay.js";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
 import { REFERRALS_ENABLED } from "../config/referrals.js";
-import { BellGlyph3D, TicketGlyph3D } from "./NavGlyph3D.jsx";
 import { useLiveAnnouncements } from "../features/announcements/useLiveAnnouncements.js";
 import { useReadAnnouncements } from "../features/announcements/announcementRead.js";
+import {
+  alertableNotifications,
+  deliverNotificationAlert,
+  loadNotificationPreferences,
+  setNotificationSound,
+  useNotificationSound,
+} from "../features/inbox/notificationAlert.js";
+import { NotificationToast } from "./NotificationToast.jsx";
+import { BellGlyph3D, MegaphoneGlyph3D, TicketGlyph3D } from "./NavGlyph3D.jsx";
 import "@react/legacy-styles/generated/components/layout/NavBar.css";
 import "@react/legacy-styles/generated/components/layout/NavNotificationsMenu.css";
 import "./NavBar.account-menu.css";
@@ -451,6 +459,17 @@ export function NavBar() {
   const [notificationLoading, setNotificationLoading] = useState(false);
   const [notificationMarking, setNotificationMarking] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
+  // 新通知提醒：右上角卡片 + 铃铛摇动 + 提示音
+  const [notificationAlert, setNotificationAlert] = useState(null);
+  const [bellRinging, setBellRinging] = useState(false);
+  const knownNotificationIdsRef = useRef(null);
+  const bellRingTimerRef = useRef(0);
+  const pathnameRef = useRef(location.pathname);
+  pathnameRef.current = location.pathname;
+  const notificationSoundOn = useNotificationSound();
+  const closeNotificationAlert = useCallback(() => setNotificationAlert(null), []);
+  // 桌面提醒点击时用最新的导航与已读逻辑
+  const openFromAlertRef = useRef(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const [trialCampaign, setTrialCampaign] = useState(null);
   const [trialDialogOpen, setTrialDialogOpen] = useState(false);
@@ -857,7 +876,23 @@ export function NavBar() {
     }
     const controller = new AbortController();
     setNotificationLoading(true);
+    knownNotificationIdsRef.current = null;
+    void loadNotificationPreferences(auth.user?.id);
     let lastUnread = -1;
+    const announceNew = (incoming) => {
+      // 静默分类只更新红点和列表
+      const fresh = alertableNotifications(incoming);
+      if (!fresh.length) return;
+      window.clearTimeout(bellRingTimerRef.current);
+      setBellRinging(false);
+      window.requestAnimationFrame(() => setBellRinging(true));
+      bellRingTimerRef.current = window.setTimeout(() => setBellRinging(false), 1000);
+      // 通知页本身就列着新通知，不再弹卡片
+      if (pathnameRef.current !== "/notifications") {
+        setNotificationAlert({ key: fresh[0].id, item: fresh[0], count: fresh.length });
+      }
+      void deliverNotificationAlert(fresh, { onOpen: (item) => openFromAlertRef.current?.(item) });
+    };
     const refreshPreview = () =>
       listNotifications({ limit: 8, signal: controller.signal })
         .then((result) => {
@@ -869,11 +904,12 @@ export function NavBar() {
           }
           lastUnread = Math.max(0, Number(result.unread) || 0);
           setNotificationUnread(lastUnread);
-          setNotificationItems(
-            result.items
-              .filter((item) => !isAnnouncementNotification(item))
-              .slice(0, 8),
-          );
+          setNotificationItems(result.items.slice(0, 8));
+          // 首次加载只记下已有通知；之后出现的未读新 id 才提醒
+          const known = knownNotificationIdsRef.current;
+          knownNotificationIdsRef.current = new Set([...(known || []), ...result.items.map((item) => item.id)]);
+          const fresh = known ? result.items.filter((item) => !item.readAt && !known.has(item.id)) : [];
+          if (fresh.length) announceNew(fresh);
         })
         .catch(() => null);
     const onUpdated = (event) => {
@@ -912,6 +948,8 @@ export function NavBar() {
     return () => {
       controller.abort();
       window.clearTimeout(notificationCloseTimerRef.current);
+      window.clearTimeout(bellRingTimerRef.current);
+      setNotificationAlert(null);
       window.clearTimeout(accountCloseTimerRef.current);
       window.clearTimeout(dropdownCloseTimerRef.current);
       window.clearTimeout(dropdownOpenTimerRef.current);
@@ -997,6 +1035,14 @@ export function NavBar() {
     closeAccountMenu();
     setNotificationOpen(false);
   }
+
+  // 提醒卡片或桌面提醒被点开：标已读并跳到对应页面
+  function openFromAlert(item) {
+    setNotificationAlert(null);
+    openNotificationPreview(item);
+    navigate(notificationLinkOf(item));
+  }
+  openFromAlertRef.current = openFromAlert;
 
   function showNotifications() {
     window.clearTimeout(notificationCloseTimerRef.current);
@@ -1237,6 +1283,12 @@ export function NavBar() {
       className={`site-header${isDark || homeOverlay || studioOverlay ? " is-dark" : ""}${homeOverlay ? " is-home-overlay" : ""}${studioOverlay ? " is-studio-overlay" : ""}${isCanvas ? " is-canvas" : ""}${scrolled ? " is-scrolled" : ""}${mobileOpen ? " is-mobile-open" : ""}${isMegaOpen ? " is-mega-open" : ""}`}
     >
       <div id="site-announcement-slot" />
+      <NotificationToast
+        alert={notificationAlert}
+        isDark={isDark}
+        onClose={closeNotificationAlert}
+        onOpen={openFromAlert}
+      />
       <div className="header-shell">
         <div className="header-row">
           <div className="brand-cluster">
@@ -1464,10 +1516,26 @@ export function NavBar() {
               )}
               <ThemeSwitch />
               <LocaleSwitcher />
+              {isEntryVisible("/announcements") && (
+                <Link
+                  to="/announcements"
+                  className={`nav-announce${isActive("/announcements") ? " active" : ""}`}
+                  aria-label={unreadAnnouncements > 0 ? `平台公告，${unreadAnnouncements} 条未读` : "平台公告"}
+                  title="平台公告"
+                  onClick={closeAccountMenu}
+                >
+                  <MegaphoneGlyph3D />
+                  {unreadAnnouncements > 0 && (
+                    <em className="nav-announce__badge">
+                      {unreadAnnouncements > 99 ? "99+" : unreadAnnouncements}
+                    </em>
+                  )}
+                </Link>
+              )}
               {auth.isAuthenticated ? (
                 <>
                   {isEntryVisible("/notifications") && <div
-                    className={`nav-notify${notificationUnread > 0 ? " has-unread" : ""}${notificationOpen ? " open" : ""}`}
+                    className={`nav-notify${notificationUnread > 0 ? " has-unread" : ""}${notificationOpen ? " open" : ""}${bellRinging ? " is-ringing" : ""}`}
                     onMouseEnter={showNotifications}
                     onMouseLeave={scheduleNotificationClose}
                     onFocusCapture={showNotifications}
@@ -1494,9 +1562,6 @@ export function NavBar() {
                           {notificationUnread > 99 ? "99+" : notificationUnread}
                         </em>
                       )}
-                      {notificationUnread <= 0 && unreadAnnouncements > 0 && (
-                        <em className="nav-notify__badge is-dot" aria-label="有新公告" />
-                      )}
                     </Link>
                     {notificationOpen && (
                       <aside
@@ -1513,6 +1578,25 @@ export function NavBar() {
                                 : "消息已全部读完"}
                             </small>
                           </div>
+                          <button
+                            type="button"
+                            className="nav-notify__sound"
+                            aria-pressed={notificationSoundOn}
+                            aria-label={notificationSoundOn ? "关闭新通知提示音" : "开启新通知提示音"}
+                            title={notificationSoundOn ? "提示音已开启" : "提示音已关闭"}
+                            onClick={() => setNotificationSound(!notificationSoundOn)}
+                          >
+                            <i className={`bi ${notificationSoundOn ? "bi-volume-up" : "bi-volume-mute"}`} aria-hidden="true" />
+                          </button>
+                          <Link
+                            to="/account#notification-preferences"
+                            className="nav-notify__sound"
+                            aria-label="提醒设置"
+                            title="提醒设置"
+                            onClick={closeMenu}
+                          >
+                            <i className="bi bi-gear" aria-hidden="true" />
+                          </Link>
                           <button
                             type="button"
                             className="nav-notify__read-all"
@@ -1535,13 +1619,9 @@ export function NavBar() {
                             <i className="bi bi-arrow-repeat spin" />
                             <span>正在读取通知…</span>
                           </div>
-                        ) : notificationItems.filter(
-                            (item) => !isAnnouncementNotification(item),
-                          ).length ? (
+                        ) : notificationItems.length ? (
                           <ol className="nav-notify__list">
-                            {notificationItems
-                              .filter((item) => !isAnnouncementNotification(item))
-                              .map((item) => {
+                            {notificationItems.map((item) => {
                               const { title, body } = displayNotification(item);
                               return (
                                 <li
@@ -1585,12 +1665,6 @@ export function NavBar() {
                         <footer className="nav-notify__foot">
                           <Link to="/notifications" onClick={closeMenu}>
                             查看全部通知 <i className="bi bi-arrow-right" />
-                          </Link>
-                          <Link to="/announcements" onClick={closeMenu}>
-                            公告
-                            {unreadAnnouncements > 0 && (
-                              <em className="nav-notify__foot-badge">{unreadAnnouncements}</em>
-                            )}
                           </Link>
                         </footer>
                       </aside>

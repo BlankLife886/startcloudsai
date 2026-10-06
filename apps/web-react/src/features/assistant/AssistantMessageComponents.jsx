@@ -13,6 +13,14 @@ import notificationService from "@react/legacy-modules/services/notification.js"
 import { formatMessageDate, generatedImageRatioLabel, messageDateTime, messageStatus, uid } from "./domain/assistantMessages.js";
 import { assistantToolStepDetail, normalizeAssistantPlan, normalizeAssistantToolSteps } from "./domain/assistantToolSteps.js";
 import { humanizeAssistantTrace } from "./domain/assistantTraceSteps.js";
+import { assistantErrorKind } from "./domain/assistantErrorKinds.js";
+import { useAssistantWalletBalance } from "./useAssistantWalletBalance.js";
+import { useSavedAssistantImages } from "./assistantSavedImages.js";
+import { imageSlots, missingImageSlots } from "./domain/assistantImageSlots.js";
+import { assistantMessageVersion, assistantMessageVersions } from "./domain/assistantVersions.js";
+import "./assistant-markdown-extras.css";
+import "./assistant-reply-extras.css";
+import { downloadDiagram, linkMarkdownCitations, markdownOutline, markdownTableClipboard, openDiagramViewer, renderMermaidDiagrams, sortMarkdownTable, toggleDiagramSource } from "./assistantMarkdownEnhance.js";
 import { promptNeedsRecentVisual } from "./domain/visualContext.js";
 import { assistantImageBatchLimit } from "./domain/assistantImageLimits.js";
 import {
@@ -71,7 +79,7 @@ import { AssistantProactiveNote } from "./AssistantMemoryViews.jsx";
 import { ASSISTANT_CORRECTIONS, assistantCorrectionActions } from "./domain/assistantCorrections.js";
 
 
-function GeneratedImageGrid({ message, editSources = [], imageModels, loadedImages, failedImages, imageRetryVersions, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference }) {
+function GeneratedImageGrid({ message, editSources = [], imageModels, loadedImages, failedImages, imageRetryVersions, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference, canGenerateMissing = false, onGenerateMissing }) {
   // 改图结果带上自己的原图，全屏查看时可以对比（对话里不显示对比，避免挤占画面）。
   const viewerImages = useMemo(
     () => message.images.map((image, index) => (editSources[index] ? { ...image, editSource: editSources[index] } : image)),
@@ -79,6 +87,10 @@ function GeneratedImageGrid({ message, editSources = [], imageModels, loadedImag
   );
   const meta = { ...imageGenerationMeta(message, imageModels), messageId: message.id, runId: message.runId || "", model: message.model || "", requestRatio: message.requestRatio || message.ratio || "", requestSize: message.requestSize || "", width: message.width, height: message.height, quality: message.quality || "", pending: Boolean(message.pending) };
   const imagePlanItems = Array.isArray(message.imagePlanItems) ? message.imagePlanItems : [];
+  const savedImages = useSavedAssistantImages(message.pending ? [] : message.images.map((image) => image?.fileKey || ""));
+  const missing = missingImageSlots(message);
+  // 有缺图时按“第几张”排好，缺的位置留占位；其余情况照原顺序。
+  const gridSlots = missing.length ? imageSlots(message) : message.images.map((image, index) => ({ index, image }));
   const [downloadBusyKey, setDownloadBusyKey] = useState("");
   const downloadImage = async (image, index, key) => {
     if (downloadBusyKey) return;
@@ -94,8 +106,20 @@ function GeneratedImageGrid({ message, editSources = [], imageModels, loadedImag
     }
   };
   return (
-    <div className={`generated-images${message.images.length === 1 ? " is-single" : ""}${message.images.length > 2 ? " is-many" : ""}`} style={{ "--generated-ratio": imageRatioValue(message), "--image-slot-count": message.images.length }}>
-      {message.images.map((image, index) => {
+    <div className={`generated-images${message.images.length + missing.length === 1 ? " is-single" : ""}${message.images.length + missing.length > 2 ? " is-many" : ""}`} style={{ "--generated-ratio": imageRatioValue(message), "--image-slot-count": message.images.length + missing.length }}>
+      {gridSlots.map((slot) => {
+        if (!slot.image) {
+          return (
+            <figure key={`missing-${slot.index}`} className="is-missing">
+              <div className="generated-image-failed is-missing">
+                <i className="bi bi-image" aria-hidden="true" />
+                <span>第 {slot.index + 1} 张没有生成出来</span>
+              </div>
+            </figure>
+          );
+        }
+        const image = slot.image;
+        const index = message.images.indexOf(image);
         const key = `${message.id}-${index}`;
         const loaded = loadedImages.has(key);
         const failed = failedImages.has(key);
@@ -121,6 +145,11 @@ function GeneratedImageGrid({ message, editSources = [], imageModels, loadedImag
               </button>
             )}
             {loaded && !failed && !deleted && ratioLabel ? <span className="generated-image-ratio">{ratioLabel}</span> : null}
+            {!deleted && savedImages.has(image?.fileKey) ? (
+              <span className="generated-image-saved" title={savedImages.get(image.fileKey).groupName ? `已存入素材库「${savedImages.get(image.fileKey).groupName}」` : "已存入素材库"}>
+                <i className="bi bi-bookmark-check-fill" aria-hidden="true" />已存入
+              </span>
+            ) : null}
             {loaded && !failed && !deleted && (
               <div className="generated-image-actions">
                 <button type="button" title="复制图片" aria-label="复制图片" onClick={() => void copyAssistantImage(image).then(() => notificationService.success("图片已复制")).catch(() => notificationService.error("复制图片失败"))}><i className="bi bi-copy" /></button>
@@ -131,6 +160,14 @@ function GeneratedImageGrid({ message, editSources = [], imageModels, loadedImag
           </figure>
         );
       })}
+      {missing.length ? (
+        <div className="generated-images-missing" role="status">
+          <span>{`${missing.length + message.images.length} 张里有 ${missing.length} 张没生成出来，没扣这 ${missing.length} 张的积分`}</span>
+          {canGenerateMissing && onGenerateMissing ? (
+            <button type="button" onClick={onGenerateMissing}><i className="bi bi-arrow-clockwise" aria-hidden="true" />补生成 {missing.length} 张</button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -143,9 +180,164 @@ function normalizeReasoningText(text) {
     .trim();
 }
 
-function AssistantMarkdown({ content, streaming, highlightQuery = "" }) {
+async function writeClipboard(text, html = "") {
+  try {
+    if (html && typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/plain": new Blob([text], { type: "text/plain" }),
+        "text/html": new Blob([html], { type: "text/html" }),
+      })]);
+      return;
+    }
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.append(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+}
+
+// 按钮短暂显示“已复制”，再换回原样。
+function flashCopied(button, label = "已复制") {
+  if (button.dataset.copiedTimer) return;
+  const html = button.innerHTML;
+  const title = button.title;
+  button.classList.add("is-copied");
+  button.title = label;
+  button.innerHTML = button.querySelector("span")
+    ? `<i class="bi bi-check2" aria-hidden="true"></i><span>${label}</span>`
+    : '<i class="bi bi-check2" aria-hidden="true"></i>';
+  button.dataset.copiedTimer = String(window.setTimeout(() => {
+    if (!button.isConnected) return;
+    button.classList.remove("is-copied");
+    button.title = title;
+    button.innerHTML = html;
+    delete button.dataset.copiedTimer;
+  }, 1600));
+}
+
+// 长回复的目录：开头一份完整目录；往下读、开头的目录滚出视野后，
+// 右上角吸顶一个小“目录”按钮，显示当前读到哪一节，点开随时跳转。
+function AssistantReplyOutline({ outline, rootRef }) {
+  const [open, setOpen] = useState(true);
+  const [floating, setFloating] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const navRef = useRef(null);
+  const floatRef = useRef(null);
+
+  const headings = () => [...(rootRef.current?.querySelectorAll(":scope > h1, :scope > h2, :scope > h3") || [])];
+  const jump = (index) => {
+    headings()[index]?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setActive(index);
+    setMenuOpen(false);
+  };
+
+  useEffect(() => {
+    const nav = navRef.current;
+    const scroller = nav?.closest(".assistant-messages");
+    if (!nav || !scroller) return undefined;
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const top = scroller.getBoundingClientRect().top;
+      const body = rootRef.current?.getBoundingClientRect();
+      // 开头的目录看不见、回复正文还在视野里，才显示吸顶按钮
+      const passed = nav.getBoundingClientRect().bottom < top + 8;
+      setFloating(Boolean(passed && body && body.bottom > top + 96));
+      const line = top + 96;
+      let current = 0;
+      headings().forEach((heading, index) => {
+        if (heading.getBoundingClientRect().top <= line) current = index;
+      });
+      setActive(current);
+    };
+    const onScroll = () => {
+      if (!frame) frame = window.requestAnimationFrame(update);
+    };
+    update();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      scroller.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outline]);
+
+  useEffect(() => {
+    if (!floating) setMenuOpen(false);
+  }, [floating]);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onPointer = (event) => {
+      if (!floatRef.current?.contains(event.target)) setMenuOpen(false);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointer, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
+  const list = (
+    <ol>
+      {outline.map((item) => (
+        <li key={item.index} className={`is-level-${Math.min(3, item.level)}${item.index === active ? " is-active" : ""}`}>
+          <button type="button" aria-current={item.index === active ? "location" : undefined} onClick={() => jump(item.index)}>{item.title}</button>
+        </li>
+      ))}
+    </ol>
+  );
+  const current = outline[active] || outline[0];
+  return (
+    <>
+      <nav ref={navRef} className={`assistant-outline${open ? " is-open" : ""}`} aria-label="回复目录">
+        <button type="button" className="assistant-outline-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+          <i className="bi bi-list-ul" aria-hidden="true" />目录<small>{outline.length} 节</small>
+          <i className="bi bi-chevron-down assistant-outline-chevron" aria-hidden="true" />
+        </button>
+        {open ? list : null}
+      </nav>
+      <div className={`assistant-outline-dock${floating ? " is-visible" : ""}`} aria-hidden={!floating}>
+        <div ref={floatRef} className={`assistant-outline-float${menuOpen ? " is-open" : ""}`}>
+          <button
+            type="button"
+            className="assistant-outline-float-toggle"
+            aria-expanded={menuOpen}
+            aria-label={`回复目录，当前：${current?.title || ""}`}
+            tabIndex={floating ? 0 : -1}
+            onClick={() => setMenuOpen((value) => !value)}
+          >
+            <i className="bi bi-list-ul" aria-hidden="true" />
+            <span>{current?.title || "目录"}</span>
+            <small className="tnum">{active + 1}/{outline.length}</small>
+            <i className="bi bi-chevron-down assistant-outline-chevron" aria-hidden="true" />
+          </button>
+          {menuOpen ? <div className="assistant-outline-menu" role="navigation" aria-label="回复目录">{list}</div> : null}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function AssistantMarkdown({ content, streaming, highlightQuery = "", sources = [] }) {
   const navigate = useNavigate();
   const rootRef = useRef(null);
+  const outline = useMemo(() => (streaming ? [] : markdownOutline(content)), [content, streaming]);
+  const sourcesKey = sources.map((source) => source.url).join("|");
   const targetRef = useRef("");
   const revealedRef = useRef("");
   const polishedRef = useRef(false);
@@ -239,6 +431,15 @@ function AssistantMarkdown({ content, streaming, highlightQuery = "" }) {
     return undefined;
   }, [content, streaming]);
 
+  // 写完之后：引用编号换成角标，流程图画出来。重新渲染正文会清掉角标，所以跟着正文一起重做。
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root || streaming) return;
+    if (sourcesKey && !root.querySelector(".assistant-cite")) linkMarkdownCitations(root, sources);
+    void renderMermaidDiagrams(root);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, streaming, sourcesKey]);
+
   useLayoutEffect(() => {
     const root = rootRef.current;
     if (!root || streaming) return;
@@ -255,23 +456,45 @@ function AssistantMarkdown({ content, streaming, highlightQuery = "" }) {
       navigate(inApp.getAttribute("href"));
       return;
     }
+    const sortButton = event.target.closest("[data-table-sort]");
+    if (sortButton) {
+      sortMarkdownTable(sortButton.closest(".assistant-table"), Number(sortButton.dataset.tableSort));
+      return;
+    }
+    const tableCopy = event.target.closest("[data-table-copy]");
+    if (tableCopy) {
+      const { text, html } = markdownTableClipboard(tableCopy.closest(".assistant-table"));
+      await writeClipboard(text, html);
+      flashCopied(tableCopy);
+      return;
+    }
+    const diagramSource = event.target.closest("[data-diagram-source]");
+    if (diagramSource) {
+      toggleDiagramSource(diagramSource.closest(".assistant-diagram"));
+      return;
+    }
+    const diagramDownload = event.target.closest("[data-diagram-download]");
+    if (diagramDownload) {
+      const done = await downloadDiagram(diagramDownload.closest(".assistant-diagram"));
+      if (done) flashCopied(diagramDownload, "已下载");
+      return;
+    }
+    const diagramZoom = event.target.closest("[data-diagram-zoom], .assistant-diagram[data-rendered] .assistant-diagram-canvas");
+    if (diagramZoom) {
+      openDiagramViewer(diagramZoom.closest(".assistant-diagram"));
+      return;
+    }
+    const diagramCopy = event.target.closest("[data-diagram-copy]");
+    if (diagramCopy) {
+      await writeClipboard(diagramCopy.closest(".assistant-diagram")?.dataset.source || "");
+      flashCopied(diagramCopy);
+      return;
+    }
     const button = event.target.closest("[data-copy-code]");
     const block = button?.closest(".assistant-code");
     const code = block?.dataset.code ?? block?.querySelector(".assistant-code-raw")?.value;
     if (!button || code == null) return;
-    try {
-      await navigator.clipboard.writeText(code);
-    } catch {
-      const area = document.createElement("textarea");
-      area.value = code;
-      area.setAttribute("readonly", "");
-      area.style.position = "fixed";
-      area.style.left = "-9999px";
-      document.body.append(area);
-      area.select();
-      document.execCommand("copy");
-      area.remove();
-    }
+    await writeClipboard(code);
     button.classList.add("is-copied");
     button.setAttribute("aria-label", "已复制");
     button.title = "已复制";
@@ -285,7 +508,12 @@ function AssistantMarkdown({ content, streaming, highlightQuery = "" }) {
     }, 1600);
   };
 
-  return <div ref={rootRef} className={`assistant-markdown${streaming ? " is-streaming" : ""}`} onClick={(event) => void handleClick(event)} />;
+  return (
+    <>
+      {outline.length ? <AssistantReplyOutline outline={outline} rootRef={rootRef} /> : null}
+      <div ref={rootRef} className={`assistant-markdown${streaming ? " is-streaming" : ""}`} onClick={(event) => void handleClick(event)} />
+    </>
+  );
 }
 
 const TOOL_STEP_STATE_LABELS = {
@@ -662,6 +890,8 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
     setPromptExpanded(false);
   }, [message.proposal?.dismissed]);
   const proposal = message.proposal;
+  const navigate = useNavigate();
+  const walletBalance = useAssistantWalletBalance(Boolean(message.proposal) && !message.proposal.dismissed && !autoApproved);
   if (!proposal) return null;
   if (autoApproved) {
     const autoCount = Math.max(1, Number(proposal.count) || 1);
@@ -693,6 +923,9 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
   const individualReferences = !independentPlan && referenceMode === "individual" && referenceImages.length > 0;
   const proposalCount = independentPlan ? planItems.length : individualReferences ? referenceImages.length : frozenProposal ? Math.max(1, Number(proposal.count) || 1) : clampImageCount(proposal.count || 1, selectedModel, 1);
   const busy = Boolean(proposal.submitting);
+  // 按方案的模型单价 × 张数预估；余额读得到才比较，读不到就只显示预估。
+  const costPoints = Math.max(0, Number(selectedModel?.pricePoints || 0)) * proposalCount;
+  const shortPoints = walletBalance !== null && costPoints > 0 ? Math.max(0, costPoints - walletBalance) : 0;
   const toggleMenu = (id) => setOpenMenu((current) => current === id ? "" : id);
   const promptMode = proposal.promptMode === "faithful" ? "faithful" : "enhanced";
   const referenceNumbers = new Map(referenceImages.map((image, index) => [referenceImageIdentity(image), index + 1]));
@@ -1091,11 +1324,23 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
           />
         </div>
         <footer className="agent-proposal-actions">
+          {costPoints > 0 ? (
+            <span className={`agent-proposal-cost${shortPoints > 0 ? " is-short" : ""}`}>
+              预计 <b>{costPoints.toLocaleString("zh-CN")}</b> 积分
+              {walletBalance !== null ? <small>{shortPoints > 0 ? `可用 ${walletBalance.toLocaleString("zh-CN")}，还差 ${shortPoints.toLocaleString("zh-CN")}` : `可用 ${walletBalance.toLocaleString("zh-CN")}`}</small> : null}
+            </span>
+          ) : null}
           <button type="button" className="is-secondary" disabled={busy} onClick={onDismiss}>收起</button>
-          <button type="button" className="is-primary" disabled={busy || generating || !validPlan || (!independentPlan && !String(proposal.prompt || "").trim())} onClick={() => void onApprove?.()}>
-            {busy ? <i className="bi bi-arrow-repeat" aria-hidden="true" /> : null}
-            <span>{busy ? "正在提交" : executed ? "再生成一组" : "开始生成"}</span>
-          </button>
+          {shortPoints > 0 && !busy ? (
+            <button type="button" className="is-primary" onClick={() => navigate("/wallet")}>
+              <i className="bi bi-plus-circle" aria-hidden="true" /><span>积分不足，去充值</span>
+            </button>
+          ) : (
+            <button type="button" className="is-primary" disabled={busy || generating || !validPlan || (!independentPlan && !String(proposal.prompt || "").trim())} onClick={() => void onApprove?.()}>
+              {busy ? <i className="bi bi-arrow-repeat" aria-hidden="true" /> : null}
+              <span>{busy ? "正在提交" : executed ? "再生成一组" : "开始生成"}</span>
+            </button>
+          )}
         </footer>
       </div>
       </div>
@@ -1150,7 +1395,7 @@ const STATUS_SECTION_LABELS = { tools: "过程", trace: "用时" };
 
 // One status line per reply: state on the left, then 思考 / 过程 / 流程 as quiet
 // inline links. Every section opens in the same panel below, one at a time.
-function AssistantMessageStatus({ message, status, contextUsage, expanded }) {
+function AssistantMessageStatus({ message, status, contextUsage, expanded, hideErrorDetail = false }) {
   const pending = Boolean(message.pending);
   const usage = normalizeAssistantUsage(message);
   const elapsedMs = useElapsedMs(usageStartedAtMs(message), pending);
@@ -1235,7 +1480,7 @@ function AssistantMessageStatus({ message, status, contextUsage, expanded }) {
           </span>
         ) : null}
       </div>
-      {failed && status.detail ? <p className="message-status-error">{status.detail}</p> : null}
+      {failed && status.detail && !hideErrorDetail ? <p className="message-status-error">{status.detail}</p> : null}
       <div className="message-status-panel" aria-hidden={!open}>
         <div className="message-status-panel-inner">
           <div key={shown} className="message-status-panel-body">
@@ -1265,6 +1510,9 @@ function ImageGenerationStage({ message, imageModelLabel, imageModels, loadedIma
   }[message.statusStage] || ["处理任务", "正在处理图片任务"];
   const previewMeta = { ...imageGenerationMeta(message, imageModels), messageId: message.id, runId: message.runId || "", model: message.model || "", requestRatio: message.requestRatio || message.ratio || "", requestSize: message.requestSize || "", width: message.width, height: message.height, quality: message.quality || "", pending: Boolean(message.pending) };
   const stageParameters = [message.ratio, message.resolution, message.quality].filter(Boolean);
+  const slots = imageSlots({ ...message, count: Number(message.count || 2) });
+  const planItems = Array.isArray(message.imagePlanItems) ? message.imagePlanItems : [];
+  const doneCount = slots.filter((slot) => slot.image).length;
   return (
     <div className="image-generation-stage">
       <div className="image-generation-summary">
@@ -1273,17 +1521,24 @@ function ImageGenerationStage({ message, imageModelLabel, imageModels, loadedIma
         {stageParameters.map((value) => <Fragment key={value}><i /><span>{value}</span></Fragment>)}
       </div>
       <div className={`image-dream-grid${Number(message.count || 2) === 1 ? " is-single" : ""}${Number(message.count || 2) > 2 ? " is-many" : ""}`} style={{ "--image-skeleton-ratio": imageRatioValue(message), "--image-slot-count": Number(message.count || 2) }}>
-        {Array.from({ length: Number(message.count || 2) }, (_, index) => {
-          const image = message.images?.[index];
-          const loaded = Boolean(image && loadedImages.has(`${message.id}-${index}`));
+        {slots.map(({ index, image }) => {
+          const position = image ? message.images.indexOf(image) : -1;
+          const loaded = Boolean(image && loadedImages.has(`${message.id}-${position}`));
+          const title = planItems[index]?.title;
           return (
             <div key={index} className={`image-dream-slot${image ? " is-ready" : ""}${loaded ? " is-loaded" : ""}`}>
               {image && (
-                <button className="image-dream-preview" type="button" title="查看大图" onClick={() => onOpenImage(image, index, message.images, previewMeta)}>
-                  <AssistantPreviewImage image={image} alt={image.revisedPrompt || "AI 生成图片"} loading="lazy" onLoad={() => onImageLoad(message.id, index)} />
+                <button className="image-dream-preview" type="button" title="查看大图" onClick={() => onOpenImage(image, position, message.images, previewMeta)}>
+                  <AssistantPreviewImage image={image} alt={image.revisedPrompt || "AI 生成图片"} loading="lazy" onLoad={() => onImageLoad(message.id, position)} />
                 </button>
               )}
               {(!image || !loaded) && <i className="dream-slot-spinner" aria-hidden="true" />}
+              {slots.length > 1 ? (
+                <span className={`image-dream-slot-label${image ? " is-done" : ""}`}>
+                  {image ? <i className="bi bi-check-lg" aria-hidden="true" /> : null}
+                  {title ? `${index + 1} · ${title}` : `第 ${index + 1} 张`}
+                </span>
+              ) : null}
             </div>
           );
         })}
@@ -1294,6 +1549,7 @@ function ImageGenerationStage({ message, imageModelLabel, imageModels, loadedIma
           {usageStartedAtMs(message) ? <b className="image-generation-stage-elapsed">{formatElapsedClock(elapsedMs)}</b> : null}
         </span>
         <strong>{stageCopy[1]}</strong>
+        {slots.length > 1 ? <em className="image-generation-progress">已完成 {doneCount}/{slots.length}</em> : null}
       </div>
     </div>
   );
@@ -1396,6 +1652,141 @@ function AssistantMessageFeedbackActions({ message, busy, onFeedback }) {
   );
 }
 
+// 视频结果：回复数据里带 videos 时显示（[{ url, posterUrl, durationSeconds, title, width, height, model }]）。
+// 助手目前还不能出视频，先把卡片做好，有视频产出时直接用。
+function formatVideoDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function AssistantVideoResult({ video }) {
+  const videoRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [duration, setDuration] = useState(Number(video.durationSeconds) || 0);
+  const meta = [video.model, video.width && video.height ? `${video.width}×${video.height}` : "", duration ? formatVideoDuration(duration) : ""].filter(Boolean);
+  const play = () => {
+    const element = videoRef.current;
+    if (!element) return;
+    void element.play().catch(() => undefined);
+  };
+  return (
+    <figure className={`assistant-video-card${playing ? " is-playing" : ""}`}>
+      <div className="assistant-video-frame" style={video.width && video.height ? { aspectRatio: `${video.width} / ${video.height}` } : undefined}>
+        <video ref={videoRef} src={video.url} poster={video.posterUrl || undefined} preload="metadata" playsInline controls={playing}
+          onPlay={() => setPlaying(true)} onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || duration)} />
+        {!playing ? (
+          <button type="button" className="assistant-video-play" aria-label="播放视频" onClick={play}>
+            <i className="bi bi-play-fill" aria-hidden="true" />
+          </button>
+        ) : null}
+        {!playing && duration ? <span className="assistant-video-duration">{formatVideoDuration(duration)}</span> : null}
+      </div>
+      <figcaption>
+        <div>
+          <strong title={video.title || "生成的视频"}>{video.title || "生成的视频"}</strong>
+          {meta.length ? <small>{meta.join(" · ")}</small> : null}
+        </div>
+        <a className="assistant-video-download" href={video.url} download title="下载视频" aria-label="下载视频"><i className="bi bi-download" aria-hidden="true" /></a>
+      </figcaption>
+    </figure>
+  );
+}
+
+function AssistantVideoResults({ videos }) {
+  const list = (Array.isArray(videos) ? videos : []).filter((video) => video?.url);
+  if (!list.length) return null;
+  return <div className="assistant-video-results">{list.map((video, index) => <AssistantVideoResult key={video.id || video.url || index} video={video} />)}</div>;
+}
+
+// 失败的回复：按原因给一张卡片，带上能直接做的下一步（重试、去充值、改一下再发）。
+function AssistantErrorCard({ error, canRetry, onRetry, onEditPrompt }) {
+  const navigate = useNavigate();
+  const buttons = error.actions.map((action) => {
+    if (action === "retry" && canRetry) return { key: action, label: "重试", icon: "bi-arrow-clockwise", run: onRetry };
+    if (action === "recharge") return { key: action, label: "去充值", icon: "bi-plus-circle", run: () => navigate("/wallet") };
+    if (action === "edit" && onEditPrompt) return { key: action, label: "修改后重发", icon: "bi-pencil", run: onEditPrompt };
+    return null;
+  }).filter(Boolean);
+  return (
+    <section className={`assistant-error-card is-${error.kind}`} role="alert">
+      <span className="assistant-error-icon"><i className={`bi ${error.icon}`} aria-hidden="true" /></span>
+      <div className="assistant-error-text">
+        <strong>{error.title}</strong>
+        <p>{error.hint}</p>
+        {error.detail && error.detail !== error.title ? <small title={error.detail}>{error.detail}</small> : null}
+      </div>
+      {buttons.length ? (
+        <footer>
+          {buttons.map((button, index) => (
+            <button key={button.key} type="button" className={index === 0 ? "is-primary" : ""} onClick={button.run}>
+              <i className={`bi ${button.icon}`} aria-hidden="true" />{button.label}
+            </button>
+          ))}
+        </footer>
+      ) : null}
+    </section>
+  );
+}
+
+// 点踩之后问一句哪里不满意：选原因、可补一句话，提交后进质量闭环。
+const FEEDBACK_REASONS = [
+  { id: "off_topic", label: "答非所问" },
+  { id: "wrong", label: "内容有误" },
+  { id: "ignored", label: "没按我的要求" },
+  { id: "too_long", label: "太啰嗦" },
+  { id: "bad_image", label: "图片不满意", images: true },
+  { id: "other", label: "其他" },
+];
+
+function AssistantFeedbackReasons({ message, onSubmit, onDone }) {
+  const [picked, setPicked] = useState(() => new Set());
+  const [note, setNote] = useState("");
+  const [state, setState] = useState("asking");
+  const reasons = FEEDBACK_REASONS.filter((reason) => !reason.images || message.images?.length);
+  const doneRef = useRef(onDone);
+  doneRef.current = onDone;
+  useEffect(() => {
+    if (state !== "sent") return undefined;
+    const timer = window.setTimeout(() => doneRef.current?.(), 2400);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  if (state === "sent") {
+    return <p className="assistant-feedback-thanks" role="status"><i className="bi bi-check2-circle" aria-hidden="true" />谢谢，已记下，会用来改进回答</p>;
+  }
+  const toggle = (id) => setPicked((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const submit = async () => {
+    setState("sending");
+    const ok = await onSubmit([...picked], note.trim());
+    setState(ok ? "sent" : "asking");
+  };
+  return (
+    <section className="assistant-feedback-reasons" aria-label="点踩原因">
+      <header>
+        <strong>哪里不满意？</strong>
+        <button type="button" className="assistant-feedback-skip" aria-label="跳过" title="跳过" onClick={onDone}><i className="bi bi-x-lg" aria-hidden="true" /></button>
+      </header>
+      <div className="assistant-feedback-chips" role="group" aria-label="原因，可多选">
+        {reasons.map((reason) => (
+          <button key={reason.id} type="button" aria-pressed={picked.has(reason.id)} className={picked.has(reason.id) ? "is-active" : ""} onClick={() => toggle(reason.id)}>
+            {picked.has(reason.id) ? <i className="bi bi-check2" aria-hidden="true" /> : null}{reason.label}
+          </button>
+        ))}
+      </div>
+      <textarea rows={2} maxLength={200} aria-label="补充说明" placeholder="还想说点什么（可选）" value={note} onChange={(event) => setNote(event.target.value)} />
+      <footer>
+        <small>只用于改进回答质量</small>
+        <button type="button" className="assistant-feedback-submit" disabled={state === "sending" || (!picked.size && !note.trim())} onClick={() => void submit()}>
+          {state === "sending" ? "提交中…" : "提交"}
+        </button>
+      </footer>
+    </section>
+  );
+}
+
 function closestNavigatorTurn(offsets, target, fallback = "") {
   if (!offsets.length) return fallback;
   let low = 0;
@@ -1480,7 +1871,36 @@ function AssistantMessageCorrections({ message, isLastAssistant, generating, pro
   );
 }
 
-function AssistantMessageRow({ message, editSources = [], turnId, showDate, expanded, copied, generating, feedbackBusy, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, attachedReferences, autoApprove = false, autoApproveBudgetCents = 0, autoApproved = false, searchHit = false, searchCurrent = false, searchQuery = "", toolActionBusyId = "", maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onToolAction, onToggleStatus, onCopy, onFeedback, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal, onCorrection }) {
+// 回复下面的追问建议（最多 3 条）。旧回复只有一条 nextPrompt。
+function assistantFollowUps(message) {
+  const list = Array.isArray(message?.followUps) && message.followUps.length ? message.followUps : message?.nextPrompt ? [message.nextPrompt] : [];
+  return [...new Set(list.map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 3);
+}
+
+function AssistantFollowUps({ items, agent, onPick }) {
+  if (!items.length) return null;
+  return (
+    <div className="assistant-followups" role="group" aria-label="追问建议">
+      <span className="assistant-followups-label">{agent ? "下一步" : "接着问"}</span>
+      {items.map((item) => (
+        <button key={item} type="button" title="点击直接发送" onClick={() => onPick(item)}>
+          <span>{item}</span>
+          <i className="bi bi-arrow-up-right" aria-hidden="true" />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AssistantMessageRow({ message: liveMessage, editSources = [], turnId, showDate, expanded, copied, generating, feedbackBusy, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, attachedReferences, autoApprove = false, autoApproveBudgetCents = 0, autoApproved = false, searchHit = false, searchCurrent = false, searchQuery = "", toolActionBusyId = "", maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onToolAction, onToggleStatus, onCopy, onFeedback, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal, onCorrection, onFollowUp, onEditPrompt, onGenerateMissing, askFeedbackReasons = false, onFeedbackReasons, onDismissFeedbackReasons }) {
+  // 重新生成过的回复可以切回之前的版本看；新版本到来时回到最新一版。
+  const versions = liveMessage.role === "assistant" ? assistantMessageVersions(liveMessage) : [];
+  const [versionIndex, setVersionIndex] = useState(-1);
+  useEffect(() => { setVersionIndex(-1); }, [liveMessage.id, versions.length]);
+  const message = versionIndex >= 0 && versions[versionIndex] ? assistantMessageVersion(liveMessage, versions[versionIndex]) : liveMessage;
+  const versionTotal = versions.length + 1;
+  const versionNumber = versionIndex >= 0 ? versionIndex + 1 : versionTotal;
+  const showVersion = (number) => setVersionIndex(number >= versionTotal ? -1 : number - 1);
   const status = message.role === "assistant" ? messageStatus(message) : null;
   const contextUsage = normalizeAssistantContext(message.context);
   const usage = normalizeAssistantUsage(message);
@@ -1488,6 +1908,7 @@ function AssistantMessageRow({ message, editSources = [], turnId, showDate, expa
   const showImageStage = message.pending && message.kind === "image";
   const userReferenceImages = message.role === "user" ? uniqueReferenceImages(message.referenceImages) : [];
   const userBubbleEmpty = message.role === "user" && !message.content && !message.error;
+  const errorKind = message.role === "assistant" && !message.pending ? assistantErrorKind(message) : null;
   return (
     <div className="message-turn">
       {showDate && formatMessageDate(message.createdAt) ? (
@@ -1496,27 +1917,29 @@ function AssistantMessageRow({ message, editSources = [], turnId, showDate, expa
         </h2>
       ) : null}
       {message.kind === "context-divider" ? <div className="assistant-context-divider"><span /><p><i className="bi bi-eraser" aria-hidden="true" /> 已从这里开始新的上下文</p><span /></div> : <article className={`message message--${message.role}${searchHit ? " is-search-hit" : ""}${searchCurrent ? " is-search-current" : ""}`} data-message-id={message.id} data-turn-id={turnId || undefined}>
-        {status && !showImageStage ? <AssistantMessageStatus message={message} status={status} contextUsage={contextUsage} expanded={expanded} onToggle={onToggleStatus} /> : null}
+        {status && !showImageStage ? <AssistantMessageStatus message={message} status={status} contextUsage={contextUsage} expanded={expanded} onToggle={onToggleStatus} hideErrorDetail={Boolean(errorKind)} /> : null}
         {message.role === "user" && (message.quoted || userReferenceImages.length > 0 || message.attachments?.length > 0) ? <div className="user-message-context">
           {message.quoted && <div className="sent-quote"><i className="bi bi-reply" aria-hidden="true" /><span><b>{message.quoted.kind}</b>{message.quoted.content}</span></div>}
           {userReferenceImages.length > 0 && <div className="sent-reference-images">{userReferenceImages.map((image, index, images) => <button key={image.id || image.fileKey || index} type="button" title="查看参考图" onClick={() => onOpenImage(image, index, images)}><AssistantPreviewImage image={image} alt={image.name || "参考图"} /></button>)}</div>}
           {message.attachments?.length > 0 && <div className="assistant-document-chips">{message.attachments.map((item) => <span key={item.id} className="assistant-document-chip"><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{formatDocumentSize(item.sizeBytes)} · {item.pageCount ? `${item.pageCount} 页` : "文档"}</small></span></span>)}</div>}
         </div> : null}
-        {message.role === "user" && !editing && <div className="user-message-actions" aria-label="用户消息操作"><button type="button" title={copied ? "已复制" : "复制问题"} aria-label={copied ? "已复制" : "复制问题"} className={copied ? "is-copied" : ""} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button>{isLastUser && <button type="button" title="编辑问题" aria-label="编辑问题" disabled={generating} onClick={() => onStartEdit(message)}><i className="bi bi-pencil" /></button>}{isLastUser && <button type="button" title="重试" aria-label="重试" disabled={generating} onClick={() => onRetry(message)}><RegenerateIcon /></button>}</div>}
+        {message.role === "user" && !editing && <div className="user-message-actions" aria-label="用户消息操作"><button type="button" title={copied ? "已复制" : "复制问题"} aria-label={copied ? "已复制" : "复制问题"} className={copied ? "is-copied" : ""} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button>{isLastUser && <button type="button" title="编辑问题" aria-label="编辑问题" disabled={generating} onClick={() => onStartEdit(message)}><i className="bi bi-pencil" /></button>}{isLastUser && <button type="button" title="重试" aria-label="重试" disabled={generating} onClick={() => onRetry(liveMessage)}><RegenerateIcon /></button>}</div>}
         {message.role === "user" && editing ? <div className="user-message-editor"><textarea autoFocus rows={3} aria-label="编辑问题" value={editingDraft} onChange={(event) => onEditDraft(event.target.value)} maxLength={maxMessageCharacters} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmitEdit(message); } }} /><footer><span>{assistantCharacterCount(editingDraft.trim()).toLocaleString("zh-CN")} / {maxMessageCharacters.toLocaleString("zh-CN")}</span><button type="button" onClick={onCancelEdit}>取消</button><button className="is-primary" type="button" disabled={!editingDraft.trim() || assistantCharacterCount(editingDraft.trim()) > maxMessageCharacters || generating} onClick={() => onSubmitEdit(message)}><i className="bi bi-arrow-up" /><span>发送</span></button></footer></div> : userBubbleEmpty ? null : <div className={`message-content${message.error ? " has-error" : ""}`}>
           {showImageStage ? <ImageGenerationStage message={message} imageModelLabel={imageModelLabel} imageModels={imageModels} loadedImages={loadedImages} onOpenImage={onOpenImage} onImageLoad={onImageLoad} /> : <>
             {message.role === "assistant" && <AssistantPlan steps={message.plan} />}
             {message.role === "assistant" && message.kind === "proposal" && message.proposal && <AgentProposal message={message} imageModels={imageModels} generating={generating} executed={proposalExecuted} attachedReferences={attachedReferences} autoApprove={autoApprove} autoApproveBudgetCents={autoApproveBudgetCents} autoApproved={autoApproved} maxMessageCharacters={maxMessageCharacters} onChange={onProposalChange} onDismiss={onProposalDismiss} onRestore={onProposalRestore} onApprove={onProposalApprove} onOpenImage={onOpenImage} />}
-            {message.role === "assistant" && message.kind !== "proposal" && message.content && message.content !== message.error ? <AssistantMarkdown content={message.content} streaming={message.pending} highlightQuery={searchHit ? searchQuery : ""} /> : message.role !== "assistant" && message.content && message.content !== message.error ? <p>{searchHit ? highlightSearchNodes(message.content, searchQuery) : message.content}</p> : null}
+            {message.role === "assistant" && message.kind !== "proposal" && message.content && message.content !== message.error ? <AssistantMarkdown content={message.content} streaming={message.pending} highlightQuery={searchHit ? searchQuery : ""} sources={assistantWebSources(message.webSearches)} /> : message.role !== "assistant" && message.content && message.content !== message.error ? <p>{searchHit ? highlightSearchNodes(message.content, searchQuery) : message.content}</p> : null}
             {message.role === "assistant" && <AssistantDataViews views={message.dataViews} messageId={message.id} />}
+            {errorKind ? <AssistantErrorCard error={errorKind} canRetry={isLastAssistant && !generating} onRetry={() => onRetry(liveMessage)} onEditPrompt={isLastAssistant && !generating ? onEditPrompt : undefined} /> : null}
             {message.role === "assistant" && message.proactive ? <AssistantProactiveNote kind={message.proactive} /> : null}
             {message.role === "assistant" && <AssistantWebSources searches={message.webSearches} />}
             {message.role === "assistant" && <AssistantArtifacts items={message.artifacts} />}
             {message.role === "assistant" && <AssistantToolActions actions={message.toolActions} busyId={toolActionBusyId} onExecute={(action) => onToolAction?.(message, action)} />}
-            {message.images?.length > 0 && <GeneratedImageGrid message={message} editSources={editSources} imageModels={imageModels} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} onOpenImage={onOpenImage} onImageLoad={onImageLoad} onImageError={onImageError} onImageRetry={onImageRetry} onUseReference={onUseReference} />}
+            {message.role === "assistant" ? <AssistantVideoResults videos={message.videos} /> : null}
+            {message.images?.length > 0 && <GeneratedImageGrid message={message} editSources={message.isEarlierVersion ? [] : editSources} imageModels={imageModels} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} onOpenImage={onOpenImage} onImageLoad={onImageLoad} onImageError={onImageError} onImageRetry={onImageRetry} onUseReference={onUseReference} canGenerateMissing={isLastAssistant && !generating && !message.isEarlierVersion} onGenerateMissing={onGenerateMissing} />}
           </>}
         </div>}
-        {message.role === "assistant" && !message.pending && <><p className="message-meta">以上内容由 AI 生成{usage?.durationMs ? <b className="message-meta-duration">{formatDurationMs(usage.durationMs)}</b> : null}</p><div className="message-actions">{sourceProposal && <button className="source-proposal-button" type="button" title="回到生成这组图片的方案" onClick={onReopenProposal}><i className="bi bi-sliders" /><span>编辑方案</span></button>}<button className="regenerate-button" type="button" title="重新生成" disabled={generating || !isLastAssistant} onClick={() => onRetry(message)}><RegenerateIcon /><span>重新生成</span></button><button className={`copy-message-button${copied ? " is-copied" : ""}`} type="button" title={copied ? "已复制" : "复制回复"} aria-label={copied ? "已复制" : "复制回复"} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button><AssistantMessageFeedbackActions message={message} busy={feedbackBusy} onFeedback={onFeedback} /><button type="button" title="引用" aria-label="引用" onClick={() => onQuote(message)}><i className="bi bi-quote" /></button><button type="button" title="更多操作" aria-label="更多操作" onClick={(event) => { event.stopPropagation(); onToggleMore(message.id); }}><i className="bi bi-three-dots" /></button>{moreOpen && <div className="message-more-menu" onClick={(event) => event.stopPropagation()}>{message.kind !== "image" && <button type="button" onClick={() => onDownloadMarkdown(message)}><i className="bi bi-filetype-md" /><span>下载 Markdown</span></button>}<button className="is-danger" type="button" onClick={() => onDelete(message.id)}><i className="bi bi-trash3" /><span>删除</span></button></div>}</div><AssistantMessageCorrections message={message} isLastAssistant={isLastAssistant} generating={generating} proposalExecuted={proposalExecuted} autoApproved={autoApproved} onCorrection={onCorrection} /></>}
+        {message.role === "assistant" && !message.pending && <><p className="message-meta">以上内容由 AI 生成{usage?.durationMs ? <b className="message-meta-duration">{formatDurationMs(usage.durationMs)}</b> : null}</p><div className="message-actions">{sourceProposal && <button className="source-proposal-button" type="button" title="回到生成这组图片的方案" onClick={onReopenProposal}><i className="bi bi-sliders" /><span>编辑方案</span></button>}{versions.length ? <span className="message-version-switch" role="group" aria-label="回复版本"><button type="button" title="上一版" aria-label="上一版" disabled={versionNumber <= 1} onClick={() => showVersion(versionNumber - 1)}><i className="bi bi-chevron-left" /></button><span aria-live="polite">{versionNumber}/{versionTotal}</span><button type="button" title="下一版" aria-label="下一版" disabled={versionNumber >= versionTotal} onClick={() => showVersion(versionNumber + 1)}><i className="bi bi-chevron-right" /></button></span> : null}<button className="regenerate-button" type="button" title="重新生成" disabled={generating || !isLastAssistant} onClick={() => onRetry(liveMessage)}><RegenerateIcon /><span>重新生成</span></button><button className={`copy-message-button${copied ? " is-copied" : ""}`} type="button" title={copied ? "已复制" : "复制回复"} aria-label={copied ? "已复制" : "复制回复"} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button><AssistantMessageFeedbackActions message={message} busy={feedbackBusy} onFeedback={onFeedback} /><button type="button" title="引用" aria-label="引用" onClick={() => onQuote(message)}><i className="bi bi-quote" /></button><button type="button" title="更多操作" aria-label="更多操作" onClick={(event) => { event.stopPropagation(); onToggleMore(message.id); }}><i className="bi bi-three-dots" /></button>{moreOpen && <div className="message-more-menu" onClick={(event) => event.stopPropagation()}>{message.kind !== "image" && <button type="button" onClick={() => onDownloadMarkdown(message)}><i className="bi bi-filetype-md" /><span>下载 Markdown</span></button>}<button className="is-danger" type="button" onClick={() => onDelete(message.id)}><i className="bi bi-trash3" /><span>删除</span></button></div>}</div>{askFeedbackReasons && message.feedback === "negative" && onFeedbackReasons ? <AssistantFeedbackReasons message={message} onSubmit={onFeedbackReasons} onDone={onDismissFeedbackReasons} /> : null}<AssistantMessageCorrections message={message} isLastAssistant={isLastAssistant} generating={generating} proposalExecuted={proposalExecuted} autoApproved={autoApproved} onCorrection={onCorrection} />{onFollowUp && isLastAssistant && !generating && message.status === "complete" ? <AssistantFollowUps items={assistantFollowUps(message)} agent={message.requestedMode === "agent"} onPick={onFollowUp} /> : null}</>}
       </article>}
     </div>
   );

@@ -2060,7 +2060,7 @@ func (w *Worker) executeAssistantAgent(
 	debugFirstToken := false
 	onUpdate := func(fullText, reasoning string) error {
 		fileRequirementsPending := assistantAgentFileRequirementsPending(fileIDs, wantsArtifact, successfulFileTools, artifacts)
-		visibleText, _ := splitAssistantNextPrompt(assistantAgentVisibleText(fullText, expectProposal, fileRequirementsPending))
+		visibleText, _ := splitAssistantFollowUps(assistantAgentVisibleText(fullText, expectProposal, fileRequirementsPending))
 		markAssistantFirstToken(&firstVisible, visibleText)
 		markAssistantFirstToken(&firstVisible, reasoning)
 		if time.Since(lastTerminationCheck) >= 400*time.Millisecond {
@@ -2270,6 +2270,7 @@ func (w *Worker) executeAssistantAgent(
 				call := batch[index]
 				if searchResults[index] != nil {
 					searches = append(searches, *searchResults[index])
+					observations[index] += assistantCitationNote(searches, *searchResults[index])
 				}
 				if failures[index] == nil && assistantAgentToolIsReadOnlyFileTool(call.Name) {
 					successfulFileTools = append(successfulFileTools, call.Name)
@@ -2325,6 +2326,7 @@ func (w *Worker) executeAssistantAgent(
 				observation, searchResult, toolErr = w.runAssistantAgentWebSearch(ctx, run, next.ToolCall)
 				if toolErr == nil {
 					searches = append(searches, searchResult)
+					observation += assistantCitationNote(searches, searchResult)
 				}
 			case taskStatusTool.Name:
 				if taskStatusCalls >= 2 {
@@ -2445,9 +2447,9 @@ func (w *Worker) executeAssistantAgent(
 	if result.ToolCall != nil && result.ToolCall.Name != proposalTool.Name {
 		return fmt.Errorf("工具 %s 已完成，但模型没有生成最终回答，请重试", result.ToolCall.Name)
 	}
-	// 回答末尾的 <next>…</next> 是给输入框的下一步建议，不属于正文。
-	var nextPrompt string
-	result.Text, nextPrompt = splitAssistantNextPrompt(result.Text)
+	// 回答末尾的 <followups>…</followups> 是追问建议（第一条也是输入框里按 Tab 采纳的那条），不属于正文。
+	var followUps []string
+	result.Text, followUps = splitAssistantFollowUps(result.Text)
 	if terminated, err := w.assistantRunTerminated(ctx, run.ID); err != nil || terminated {
 		if err != nil {
 			return err
@@ -2590,8 +2592,9 @@ func (w *Worker) executeAssistantAgent(
 	if strings.TrimSpace(result.Reasoning) != "" {
 		metadata["reasoning"] = result.Reasoning
 	}
-	if nextPrompt != "" {
-		metadata["nextPrompt"] = nextPrompt
+	if len(followUps) > 0 {
+		metadata["nextPrompt"] = followUps[0]
+		metadata["followUps"] = followUps
 	}
 	platform.attach(metadata, dataViews)
 	w.recordAssistantGoalContract(ctx, run.ID, assistantChatGoalContract(run, len(searches), len(artifacts)))
@@ -2729,7 +2732,7 @@ func (w *Worker) runAssistantAgentWebSearch(
 		Kind: "agent", Stage: "web_search",
 		Tool: &assistantstream.ToolCallEvent{RequestID: requestID, Name: webSearchTool().Name, Arguments: call.Arguments, Execution: "server", Status: "completed", Result: raw},
 	})
-	return "工具 web_search 的真实联网结果：\n" + string(raw) + "\n回答时必须保留与结论对应的来源链接。", result, nil
+	return "工具 web_search 的真实联网结果：\n" + string(raw), result, nil
 }
 
 func (w *Worker) executeAssistantProposal(ctx context.Context, client *sub2api.Client, run *store.AssistantRun, references []string, history []*store.AssistantMessage) error {

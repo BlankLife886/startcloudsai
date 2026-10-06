@@ -46,6 +46,7 @@ import {
 import { MentionMenu } from "../skills/MentionMenu.jsx";
 import { AssistantMemoryPanel, OPEN_MEMORY_EVENT } from "./AssistantMemoryViews.jsx";
 import { AssistantImageOpenContext, CommerceSetOwnersContext, commerceSetOwners } from "./AssistantCommerceSet.jsx";
+import { AssistantReplyActionsContext } from "./AssistantDataViews.jsx";
 import { imageEditSources } from "./domain/assistantImageCompare.js";
 import { useMentionMenu, withMentionHint } from "../skills/useMentionMenu.js";
 
@@ -244,6 +245,9 @@ export function AssistantWorkspaceLayout({ workspace }) {
     latestContext,
     navigatorItems,
     submitMessageFeedback,
+    feedbackAskIds,
+    submitFeedbackReasons,
+    dismissFeedbackReasons,
     toggleStatus,
     copyMessage,
     quoteMessage,
@@ -309,6 +313,8 @@ export function AssistantWorkspaceLayout({ workspace }) {
     updateProposal,
     approveAgentProposal,
     sendCorrection,
+    sendFollowUp,
+    generateMissingImages,
     assistantAutoApprove,
     assistantAutoApproveBudgetCents,
     setAssistantAutoApprove,
@@ -366,6 +372,15 @@ export function AssistantWorkspaceLayout({ workspace }) {
   });
 
   const commerceOwners = useMemo(() => commerceSetOwners(messages), [messages]);
+  // 卡片替用户发一句话（选择卡的选项）：沿用那条回复的模式发出去。
+  const replyActions = {
+    lastAssistantId,
+    busy: conversationHasWork,
+    send: (messageId, text) => {
+      const target = messages.find((item) => item.id === messageId);
+      if (target) void sendFollowUp(target, text);
+    },
+  };
   // 回复完成后模型给出的下一步（message.nextPrompt）：输入框为空时作为灰色建议显示，按 Tab 采纳。
   const lastMessage = messages[messages.length - 1];
   const nextSuggestion = !draft && !activeRun && !queueEditingId && lastMessage?.role === "assistant" && !lastMessage.pending
@@ -383,6 +398,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
   return (
     <AssistantImageOpenContext.Provider value={openImage}>
     <CommerceSetOwnersContext.Provider value={commerceOwners}>
+    <AssistantReplyActionsContext.Provider value={replyActions}>
     <div className={`assistant-workspace${isDark ? " is-dark" : ""}${activeRun ? " is-generating" : ""}${sidebarCollapsed ? " is-sidebar-narrow" : ""}${sidebarAnimating ? " is-sidebar-animating" : ""}`} onClick={() => { setCreationMenuOpen(false); setModelMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); setActiveMessageMenuId(""); setConversationMenuId(""); }}>
       <aside className="assistant-sidebar" onClick={(event) => { event.stopPropagation(); if (!event.target.closest(".conversation-more")) setConversationMenuId(""); }}>
         <button className="icon-button sidebar-close" type="button" aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"} aria-keyshortcuts="Meta+B Control+B" onClick={updateSidebar}
@@ -535,7 +551,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
               ? resolveProposalReferences(activeConversation, message).references
               : previousUser?.referenceImages;
             if (hiddenQueuedMessageIds.has(message.id)) return null;
-            return <AssistantMessageRow key={message.id} message={message} editSources={message.images?.length ? imageEditSources(message, messages) : undefined} turnId={previousUser?.id} showDate={showDate} expanded={expandedStatusId === message.id} copied={copiedMessageId === message.id} generating={conversationHasWork} feedbackBusy={feedbackBusyIds.has(message.id)} isLastAssistant={message.id === lastAssistantId} isLastUser={message.id === lastUserMessageId} editing={editingMessageId === message.id} editingDraft={editingMessageDraft} moreOpen={activeMessageMenuId === message.id} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} imageModels={imageModels} sourceProposal={sourceProposal} proposalExecuted={messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id)} attachedReferences={attachedReferences} autoApprove={assistantAutoApprove} autoApproveBudgetCents={assistantAutoApproveBudgetCents} autoApproved={message.kind === "proposal" ? proposalAutoApproved(message) : false} searchHit={threadSearchHitIds.has(message.id)} searchCurrent={message.id === currentThreadHitId} searchQuery={threadSearch} toolActionBusyId={toolActionBusyId} maxMessageCharacters={maxMessageCharacters} onToolAction={executeAssistantToolAction} onToggleStatus={toggleStatus} onCopy={copyMessage} onFeedback={submitMessageFeedback} onQuote={quoteMessage} onOpenImage={openImage} onImageLoad={markImageLoaded} onImageError={markImageFailed} onImageRetry={retryImage} onUseReference={useGeneratedImageAsReference} onStartEdit={startEditingUserMessage} onEditDraft={setEditingMessageDraft} onCancelEdit={cancelUserMessageEdit} onSubmitEdit={(item) => void submitUserMessageEdit(item)} onRetry={(item) => void retryAssistant(item)} onToggleMore={(id) => setActiveMessageMenuId((current) => current === id ? "" : id)} onDownloadMarkdown={downloadMarkdown} onDelete={(id) => void removeMessage(id)} onProposalChange={(patch) => updateProposal(message.id, patch)} onProposalDismiss={() => updateProposal(message.id, { dismissed: true })} onProposalRestore={() => updateProposal(message.id, { dismissed: false })} onProposalApprove={(options) => approveAgentProposal(message, options)} onReopenProposal={() => reopenSourceProposal(sourceProposal)} onCorrection={(action) => void sendCorrection(message, action)} />;
+            return <AssistantMessageRow key={message.id} message={message} editSources={message.images?.length ? imageEditSources(message, messages) : undefined} turnId={previousUser?.id} showDate={showDate} expanded={expandedStatusId === message.id} copied={copiedMessageId === message.id} generating={conversationHasWork} feedbackBusy={feedbackBusyIds.has(message.id)} isLastAssistant={message.id === lastAssistantId} isLastUser={message.id === lastUserMessageId} editing={editingMessageId === message.id} editingDraft={editingMessageDraft} moreOpen={activeMessageMenuId === message.id} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} imageModels={imageModels} sourceProposal={sourceProposal} proposalExecuted={messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id)} attachedReferences={attachedReferences} autoApprove={assistantAutoApprove} autoApproveBudgetCents={assistantAutoApproveBudgetCents} autoApproved={message.kind === "proposal" ? proposalAutoApproved(message) : false} searchHit={threadSearchHitIds.has(message.id)} searchCurrent={message.id === currentThreadHitId} searchQuery={threadSearch} toolActionBusyId={toolActionBusyId} maxMessageCharacters={maxMessageCharacters} onToolAction={executeAssistantToolAction} onToggleStatus={toggleStatus} onCopy={copyMessage} onFeedback={submitMessageFeedback} onQuote={quoteMessage} onOpenImage={openImage} onImageLoad={markImageLoaded} onImageError={markImageFailed} onImageRetry={retryImage} onUseReference={useGeneratedImageAsReference} onStartEdit={startEditingUserMessage} onEditDraft={setEditingMessageDraft} onCancelEdit={cancelUserMessageEdit} onSubmitEdit={(item) => void submitUserMessageEdit(item)} onRetry={(item) => void retryAssistant(item)} onToggleMore={(id) => setActiveMessageMenuId((current) => current === id ? "" : id)} onDownloadMarkdown={downloadMarkdown} onDelete={(id) => void removeMessage(id)} onProposalChange={(patch) => updateProposal(message.id, patch)} onProposalDismiss={() => updateProposal(message.id, { dismissed: true })} onProposalRestore={() => updateProposal(message.id, { dismissed: false })} onProposalApprove={(options) => approveAgentProposal(message, options)} onReopenProposal={() => reopenSourceProposal(sourceProposal)} onCorrection={(action) => void sendCorrection(message, action)} onFollowUp={(text) => void sendFollowUp(message, text)} onGenerateMissing={() => void generateMissingImages(message)} onEditPrompt={previousUser && previousUser.id === lastUserMessageId ? () => startEditingUserMessage(previousUser) : undefined} askFeedbackReasons={feedbackAskIds.has(message.id)} onFeedbackReasons={(reasons, note) => submitFeedbackReasons(message, reasons, note)} onDismissFeedbackReasons={() => dismissFeedbackReasons(message.id)} />;
           })}</div></section>}
         </div>
 
@@ -953,6 +969,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
         document.body,
       )}
     </div>
+    </AssistantReplyActionsContext.Provider>
     </CommerceSetOwnersContext.Provider>
     </AssistantImageOpenContext.Provider>
   );

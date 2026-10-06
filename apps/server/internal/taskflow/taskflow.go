@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -1068,7 +1069,7 @@ func cancelTaskInTx(ctx context.Context, tx pgx.Tx, owner *uuid.UUID, taskID uui
 		}
 		if actor == cancelActorAdmin {
 			body := taskNotifyName(t) + "已被管理员取消，费用已退回。"
-			if err := store.InsertNotification(ctx, tx, &t.UserID, "task", taskNotifyName(t)+"已取消", &body); err != nil {
+			if err := store.InsertNotificationWithTarget(ctx, tx, &t.UserID, "task", taskNotifyName(t)+"已取消", &body, taskNotifyPath(t)); err != nil {
 				return err
 			}
 		} else if actor == cancelActorUser {
@@ -1077,7 +1078,7 @@ func cancelTaskInTx(ctx context.Context, tx pgx.Tx, owner *uuid.UUID, taskID uui
 			if upstreamSubmitted {
 				body = "你已主动停止" + name + "任务。任务已提交，按本次预留积分结算，不按失败退款，也不会发放失败补偿。"
 			}
-			if err := store.InsertNotification(ctx, tx, &t.UserID, "task", name+"已主动停止", &body); err != nil {
+			if err := store.InsertNotificationWithTarget(ctx, tx, &t.UserID, "task", name+"已主动停止", &body, taskNotifyPath(t)); err != nil {
 				return err
 			}
 		}
@@ -1323,6 +1324,49 @@ func taskNotifyName(task *store.Task) string {
 	}
 }
 
+// taskNotifyPath 任务通知的跳转页：回到发起任务的创作页，未知类型回历史记录。
+func taskNotifyPath(task *store.Task) string {
+	if task == nil {
+		return "/history"
+	}
+	if store.IsCanvasOrigin(task.Params) {
+		return "/canvas"
+	}
+	if task.Type == "assistant" || store.IsAssistantOrigin(task.Params) {
+		if id := stringParam(task.Params, "conversationId"); id != "" {
+			if _, err := uuid.Parse(id); err == nil {
+				return "/assistant?c=" + id
+			}
+		}
+		return "/assistant"
+	}
+	switch task.Type {
+	case "t2i":
+		return "/text-to-image"
+	case "coloring":
+		return "/ai-illustration-coloring"
+	case "ui_design":
+		return "/design-workshop"
+	case "ecommerce_design":
+		return "/ecommerce-design"
+	case "model_sheet":
+		return "/model-sheet"
+	case "game_art":
+		return "/game-art"
+	case "puzzle":
+		return "/tools/puzzle"
+	case "background_remove":
+		return "/tools/background-remove"
+	case "media_tool":
+		if key, ok := task.Params["publicModelKey"].(string); ok {
+			if key = strings.TrimSpace(key); key != "" && url.PathEscape(key) == key {
+				return "/tools/" + key
+			}
+		}
+	}
+	return "/history"
+}
+
 // NotifyTaskSucceeded 主事务提交后尽力而为发通知，失败仅日志（M4 解耦）。
 func NotifyTaskSucceeded(ctx context.Context, q store.Q, task *store.Task, imageCount int) {
 	name := taskNotifyName(task)
@@ -1331,7 +1375,7 @@ func NotifyTaskSucceeded(ctx context.Context, q store.Q, task *store.Task, image
 		unit = "个结果"
 	}
 	body := fmt.Sprintf("%s已生成 %d %s。", name, imageCount, unit)
-	if err := store.InsertNotification(ctx, q, &task.UserID, "task", name+"已完成", &body); err != nil {
+	if err := store.InsertNotificationWithTarget(ctx, q, &task.UserID, "task", name+"已完成", &body, taskNotifyPath(task)); err != nil {
 		log.Printf("notify task %s succeeded: %v", task.ID, err)
 	}
 }
@@ -1340,7 +1384,7 @@ func NotifyTaskSucceeded(ctx context.Context, q store.Q, task *store.Task, image
 func NotifyTaskFailed(ctx context.Context, q store.Q, task *store.Task) {
 	name := taskNotifyName(task)
 	body := name + "执行失败，" + FailureBillingNote(task) + "。"
-	if err := store.InsertNotification(ctx, q, &task.UserID, "task", name+"失败", &body); err != nil {
+	if err := store.InsertNotificationWithTarget(ctx, q, &task.UserID, "task", name+"失败", &body, taskNotifyPath(task)); err != nil {
 		log.Printf("notify task %s failed: %v", task.ID, err)
 	}
 }

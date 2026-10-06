@@ -19,6 +19,12 @@ import (
 // pollMissingUnconfirmed 模拟：提交超时（未获确认）后，上游轮询始终查不到该任务。
 func pollMissingUnconfirmed(t *testing.T, retryCount string, prepare string) (*store.Store, uuid.UUID) {
 	t.Helper()
+	return pollMissingUnconfirmedTask(t, retryCount, prepare, ``)
+}
+
+// pollMissingUnconfirmedTask 同上，taskPrepare 可先改任务本身（如已回到排队）。
+func pollMissingUnconfirmedTask(t *testing.T, retryCount, prepare, taskPrepare string) (*store.Store, uuid.UUID) {
+	t.Helper()
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(retryCount)); err != nil {
@@ -27,6 +33,11 @@ func pollMissingUnconfirmed(t *testing.T, retryCount string, prepare string) (*s
 	taskID, routeKey, _ := insertPollableOpenAITask(t, st, ctx, time.Now().UTC().Add(-3*time.Minute))
 	if _, err := st.Pool.Exec(ctx, `UPDATE task_upstream_attempts SET submit_unconfirmed=true`+prepare+` WHERE task_id=$1`, taskID); err != nil {
 		t.Fatal(err)
+	}
+	if taskPrepare != "" {
+		if _, err := st.Pool.Exec(ctx, `UPDATE tasks SET `+taskPrepare+` WHERE id=$1`, taskID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -102,5 +113,48 @@ func TestUnconfirmedSubmitFirstMissingPollIsWithinGrace(t *testing.T) {
 	var missingSince *time.Time
 	if err := st.Pool.QueryRow(context.Background(), `SELECT upstream_missing_since FROM task_upstream_attempts WHERE task_id=$1`, taskID).Scan(&missingSince); err != nil || missingSince == nil {
 		t.Fatalf("first missing poll should start the grace clock: %v %v", missingSince, err)
+	}
+}
+
+func upstreamAttemptStatus(t *testing.T, st *store.Store, taskID uuid.UUID) string {
+	t.Helper()
+	var status string
+	if err := st.Pool.QueryRow(context.Background(), `SELECT status FROM task_upstream_attempts WHERE task_id=$1`, taskID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	return status
+}
+
+func TestUnconfirmedSubmitResubmitClosesUndeliveredAttempt(t *testing.T) {
+	st, taskID := pollMissingUnconfirmed(t, `2`, `, upstream_missing_since=now()-interval '2 minutes'`)
+	if status := upstreamAttemptStatus(t, st, taskID); status != store.UpstreamAttemptFailed {
+		t.Fatalf("undelivered attempt must not keep blocking its route after resubmitting: status=%s", status)
+	}
+}
+
+// 回到排队的任务上挂着一条上游从没收到的旧尝试：它不能一直占着线路让任务干等到过期。
+func TestUnconfirmedBackgroundAttemptOnQueuedTaskIsClosed(t *testing.T) {
+	st, taskID := pollMissingUnconfirmedTask(t, `2`, `, upstream_missing_since=now()-interval '2 minutes', failover_scheduled_at=now()-interval '2 minutes'`,
+		`status='queued', attempt=1, lease_owner=NULL, lease_until=NULL`)
+	if status := upstreamAttemptStatus(t, st, taskID); status != store.UpstreamAttemptFailed {
+		t.Fatalf("undelivered background attempt should be closed: status=%s", status)
+	}
+	task, err := store.GetTask(context.Background(), st.Pool, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "queued" {
+		t.Fatalf("queued task should stay queued for its resubmission: status=%s", task.Status)
+	}
+	if !timelineHasStage(t, st, taskID, "upstream_unconfirmed") {
+		t.Fatal("timeline should explain the upstream never received the old attempt")
+	}
+}
+
+func TestSeenBackgroundAttemptOnQueuedTaskKeepsPolling(t *testing.T) {
+	st, taskID := pollMissingUnconfirmedTask(t, `2`, `, upstream_seen_at=now()-interval '3 minutes', upstream_missing_since=now()-interval '2 minutes', failover_scheduled_at=now()-interval '2 minutes'`,
+		`status='queued', attempt=1, lease_owner=NULL, lease_until=NULL`)
+	if status := upstreamAttemptStatus(t, st, taskID); status != store.UpstreamAttemptPending {
+		t.Fatalf("an attempt the upstream acknowledged stays recoverable: status=%s", status)
 	}
 }

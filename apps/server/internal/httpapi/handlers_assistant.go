@@ -226,6 +226,8 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		DefaultReasoningEffort    string                       `json:"defaultReasoningEffort,omitempty"`
 		ReasoningPrices           gin.H                        `json:"reasoningPrices,omitempty"`
 		ReasoningEfforts          []gin.H                      `json:"reasoningEfforts,omitempty"`
+		// ToolCalling is false for chat models that cannot drive Agent mode.
+		ToolCalling *bool `json:"toolCalling,omitempty"`
 	}
 	reasoningOptions := func(model string) ([]string, string) {
 		efforts := modelconfig.ReasoningEffortsForModel(model)
@@ -270,8 +272,11 @@ func (s *Server) assistantConfig(c *gin.Context) {
 				}
 			}
 			reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems := []string(nil), "", gin.H(nil), []gin.H(nil)
+			var toolCalling *bool
 			if kind == modelconfig.ModelKindChat {
 				reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems = reasoningModelPayload(selection.Model, &modelCfg)
+				supported := !selection.Model.ToolCallingDisabled
+				toolCalling = &supported
 			}
 			options = append(options, modelOption{
 				Label: selection.Model.Name, Model: selection.Model.ID, Source: "configured",
@@ -295,6 +300,7 @@ func (s *Server) assistantConfig(c *gin.Context) {
 				ImageBatchLimit:           batchLimit,
 				SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort,
 				ReasoningPrices: reasoningPrices, ReasoningEfforts: reasoningEffortItems,
+				ToolCalling: toolCalling,
 			})
 		}
 		return options

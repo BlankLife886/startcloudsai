@@ -137,6 +137,9 @@ func NewMyDataManifest(db usermetrics.TxRunner, now func() time.Time) Manifest {
 					if err != nil {
 						return toolError(err)
 					}
+					query := request
+					query.Timezone = ""
+					result.Query = &query
 					return jsonResultWithMeta(result, "stats")
 				},
 			},

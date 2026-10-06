@@ -67,6 +67,16 @@ export interface RequestOptions {
 
 const pendingPageRequests = new Set<AbortController>();
 
+/** 通知铃 / 侧栏徽标依赖的待办接口；这些写操作成功后计数即过期。 */
+export const ADMIN_BADGES_STALE_EVENT = "startclouds-admin:badges-stale";
+const BADGE_MUTATION_PATH =
+  /^\/api\/v1\/admin\/(gallery\/submissions|feedback|trial-access-applications|subscription-changes|orders\/[^/]+\/subscription-refund)\b/;
+
+function markBadgesStaleAfter(method: string, path: string) {
+  if (method !== "GET" && BADGE_MUTATION_PATH.test(path))
+    window.dispatchEvent(new Event(ADMIN_BADGES_STALE_EVENT));
+}
+
 /** 页面切换时只取消读取请求，避免旧页面继续占用连接。 */
 export function abortPendingPageRequests(): void {
   const controllers = Array.from(pendingPageRequests);
@@ -145,7 +155,10 @@ export async function request<T>(
 
     let payload: unknown = null;
     if (res.status === 204) {
-      if (res.ok) return undefined as T;
+      if (res.ok) {
+        markBadgesStaleAfter(method, path);
+        return undefined as T;
+      }
     } else {
       try {
         payload = await res.json();
@@ -161,6 +174,7 @@ export async function request<T>(
       | null;
 
     if (res.ok && envelope && envelope.success === true) {
+      markBadgesStaleAfter(method, path);
       return envelope.data;
     }
 

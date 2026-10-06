@@ -116,6 +116,7 @@ interface ModelItem {
   maxOutputTokens: number;
   supportedReasoningEfforts: string[];
   reasoningEnabled?: boolean;
+  toolCallingDisabled?: boolean;
   reasoningPricing: ReasoningPricing | null;
   public: boolean;
   default: boolean;
@@ -1995,6 +1996,7 @@ const modelDraft = reactive<ModelDraft>({
   reasoningPricing: null,
   public: true,
   reasoningEnabled: false,
+  toolCallingDisabled: false,
   default: false,
   enabled: true,
 });
@@ -2065,6 +2067,7 @@ function openModel(index = -1) {
               : null,
           public: source.public,
           reasoningEnabled: source.reasoningEnabled ?? Boolean(source.supportedReasoningEfforts?.length),
+          toolCallingDisabled: source.toolCallingDisabled === true,
           default: source.default,
           enabled: source.enabled,
           pricePoints: normalizePoints(source.priceCents),
@@ -2134,6 +2137,7 @@ function openModel(index = -1) {
           supportedReasoningEfforts: [],
           reasoningPricing: null,
           reasoningEnabled: false,
+          toolCallingDisabled: false,
           public: true,
           default: false,
           enabled: true,
@@ -2857,6 +2861,7 @@ async function saveModelDraft() {
     supportedReasoningEfforts: [] as string[],
     reasoningPricing: null as ReasoningPricing | null,
     reasoningEnabled: modelDraft.kind === "chat" && modelDraft.reasoningEnabled === true,
+    toolCallingDisabled: modelDraft.kind === "chat" && modelDraft.toolCallingDisabled === true,
     public: modelDraft.public,
     default: modelDraft.default,
     enabled: modelDraft.enabled,
@@ -4209,6 +4214,10 @@ onBeforeUnmount(() => {
           <header class="model-section__head model-support-toggle">
             <span><strong>支持推理强度</strong><small>由管理员按上游能力配置；关闭后不向上游传递推理强度，用户按基础积分计费</small></span>
             <el-switch :model-value="modelDraft.reasoningEnabled === true" @change="toggleReasoningSupport" />
+          </header>
+          <header class="model-section__head model-support-toggle">
+            <span><strong>支持工具调用</strong><small>关闭后只能在 AI 助手的问答模式里使用；Agent 模式要调用套图、查数据、记忆等工具，不会显示这个模型</small></span>
+            <el-switch :model-value="modelDraft.toolCallingDisabled !== true" @change="(value) => { modelDraft.toolCallingDisabled = value !== true }" />
           </header>
         </section>
 

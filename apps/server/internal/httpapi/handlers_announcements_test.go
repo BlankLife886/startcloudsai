@@ -248,3 +248,63 @@ func TestAnnouncementHistoryKeepsExpiredButHidesDisabledAndScheduled(t *testing.
 		t.Fatal("expired announcement should not be in the active list")
 	}
 }
+
+func TestAdminAnnouncementTimelineRecordsEveryActionAndSurvivesDelete(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, adminToken := env.newUserSession(t, "admin")
+
+	response := env.do(t, http.MethodPost, "/api/v1/admin/announcements", gin.H{"title": "时间线公告", "body": "正文"}, adminToken)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create: status %d body %s", response.Code, response.Body.String())
+	}
+	created, _ := decode(t, response)
+	id, _ := created["id"].(string)
+	path := "/api/v1/admin/announcements/" + id
+
+	// 后台表单会整份回传：配置原样带回不应被记成「展示设置」改动。
+	steps := []struct {
+		method string
+		url    string
+		body   any
+	}{
+		{http.MethodPatch, path, gin.H{"title": "时间线公告", "body": "正文", "active": false, "config": created["config"]}},
+		{http.MethodPatch, path, gin.H{"title": "时间线公告（改）", "config": created["config"]}},
+		{http.MethodPatch, path, gin.H{"active": true}},
+		{http.MethodPost, path + "/push", nil},
+		{http.MethodDelete, path, nil},
+	}
+	for _, step := range steps {
+		if r := env.do(t, step.method, step.url, step.body, adminToken); r.Code >= 300 {
+			t.Fatalf("%s %s: status %d body %s", step.method, step.url, r.Code, r.Body.String())
+		}
+	}
+
+	response = env.do(t, http.MethodGet, "/api/v1/admin/announcements/events?announcementId="+id, nil, adminToken)
+	if response.Code != http.StatusOK {
+		t.Fatalf("events: status %d body %s", response.Code, response.Body.String())
+	}
+	payload, _ := decode(t, response)
+	items, _ := payload["items"].([]any)
+	var actions []string
+	for _, raw := range items {
+		item := raw.(map[string]any)
+		action := item["action"].(string)
+		if action == "updated" {
+			changes, _ := json.Marshal(item["changes"])
+			action += string(changes)
+		}
+		if name, _ := item["actorName"].(string); name == "" {
+			t.Fatalf("event %s has no actor", action)
+		}
+		actions = append(actions, action)
+	}
+	want := []string{"deleted", "pushed", "enabled", `updated["标题"]`, "disabled", "created"}
+	if len(actions) != len(want) {
+		t.Fatalf("actions = %v, want %v", actions, want)
+	}
+	for i := range want {
+		if actions[i] != want[i] {
+			t.Fatalf("actions = %v, want %v", actions, want)
+		}
+	}
+}

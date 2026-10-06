@@ -38,8 +38,11 @@ import {
   uploadAssistantFile,
   waitForAssistantRun,
   adoptAssistantCommerceShot,
+  announceAssetsChanged,
 } from "./services/assistantApi.js";
 import { COMMERCE_SET_CHANGED_EVENT } from "./AssistantCommerceSet.jsx";
+import { missingImageSlots } from "./domain/assistantImageSlots.js";
+import { versionsAfterRegenerate } from "./domain/assistantVersions.js";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import { scheduleWalletRefresh } from "@react/legacy-modules/services/walletSync.js";
 import {
@@ -339,6 +342,7 @@ export function useAssistantWorkspaceController() {
   const [imageActionBusy, setImageActionBusy] = useState("");
   const [toolActionBusyId, setToolActionBusyId] = useState("");
   const [feedbackBusyIds, setFeedbackBusyIds] = useState(() => new Set());
+  const [feedbackAskIds, setFeedbackAskIds] = useState(() => new Set());
   const [toolActionTarget, setToolActionTarget] = useState(null);
   const [imageDeleteTarget, setImageDeleteTarget] = useState(null);
   const [imageDeleteBusy, setImageDeleteBusy] = useState(false);
@@ -488,9 +492,14 @@ export function useAssistantWorkspaceController() {
   const currentThreadHitId = threadHitIndex >= 0 ? threadSearchHits[threadHitIndex]?.id || "" : "";
   const mode = creationType === "image" ? "image" : "chat";
   const selectedCreation = CREATION_TYPES.find((item) => item.id === creationType) || CREATION_TYPES[0];
-  const availableConversationModels = useMemo(() => availableCatalogModels(conversationModels), [conversationModels]);
+  // Agent 模式要调用工具（套图、查数据、记忆…）；不支持工具调用的模型只在问答模式里出现。
+  const modeConversationModels = useMemo(
+    () => (creationType === "agent" ? conversationModels.filter((model) => model.toolCalling !== false) : conversationModels),
+    [conversationModels, creationType],
+  );
+  const availableConversationModels = useMemo(() => availableCatalogModels(modeConversationModels), [modeConversationModels]);
   const availableImageModels = useMemo(() => constrainAssistantImageModels(availableCatalogModels(imageModels), imageLimits), [imageModels, imageLimits]);
-  const generationModels = mode === "image" ? imageModels : conversationModels;
+  const generationModels = mode === "image" ? imageModels : modeConversationModels;
   const availableGenerationModels = mode === "image" ? availableImageModels : availableConversationModels;
   const generationModel = mode === "image" ? imageModel : conversationModel;
   const resolveAssistantSend = (prompt, documentCount = documents.length) => {
@@ -772,6 +781,13 @@ export function useAssistantWorkspaceController() {
         ...conversation,
         messages: conversation.messages.map((item) => item.id === messageId ? { ...item, ...updatedMessage } : item),
       }));
+      // 刚点了踩、还没说原因：在这条回复下面问一句哪里不满意。
+      setFeedbackAskIds((current) => {
+        const next = new Set(current);
+        if (nextRating === "negative" && !updatedMessage.feedbackReasons?.length) next.add(messageId);
+        else next.delete(messageId);
+        return next;
+      });
     } catch (error) {
       if (mountedRef.current) notificationService.error(error?.message || "回复评价提交失败");
     } finally {
@@ -785,6 +801,29 @@ export function useAssistantWorkspaceController() {
       }
     }
   }, [activeConversation?.id, patchConversation]);
+
+  const submitFeedbackReasons = useCallback(async (message, reasons, note) => {
+    const conversationId = activeConversation?.id;
+    const messageId = String(message?.id || "").trim();
+    if (!conversationId || !messageId) return false;
+    try {
+      const updatedMessage = await setAssistantMessageFeedback(messageId, "negative", { reasons, note });
+      if (!mountedRef.current) return false;
+      patchConversation(conversationId, (conversation) => ({
+        ...conversation,
+        messages: conversation.messages.map((item) => item.id === messageId ? { ...item, ...updatedMessage } : item),
+      }));
+      return true;
+    } catch (error) {
+      if (mountedRef.current) notificationService.error(error?.message || "反馈提交失败");
+      return false;
+    }
+  }, [activeConversation?.id, patchConversation]);
+  const dismissFeedbackReasons = useCallback((id) => setFeedbackAskIds((current) => {
+    const next = new Set(current);
+    next.delete(id);
+    return next;
+  }), []);
 
   const toggleStatus = useCallback((id) => setExpandedStatusId((current) => current === id ? "" : id), []);
   const copyMessage = useCallback(async (message) => {
@@ -838,9 +877,13 @@ export function useAssistantWorkspaceController() {
         fileKey: uploaded.key,
         thumbnailKey: uploaded.thumbnailKey,
         contentType: uploaded.contentType || file.type,
+        // 记住原图，对话里的这张图就能显示“已存入素材库”
+        sourceType: "assistant",
+        sourceMetadata: { from: "assistant", sourceKey: item.fileKey },
       });
       setLibraryAssets((current) => [asset, ...current.filter((entry) => entry.id !== asset.id)]);
       libraryAssetsLoadedRef.current = false;
+      announceAssetsChanged();
       notificationService.success("已收藏到我的资产");
     } catch (caught) {
       notificationService.error(caught?.code === "asset_exists" ? "这张图片已经在资产库中" : caught?.message || "收藏失败");
@@ -2482,7 +2525,7 @@ export function useAssistantWorkspaceController() {
   }, [clearConversationRun, monitorRun, patchConversation]);
 
   // 返回 true 表示任务已经创建；返回 false 表示这次没能创建出来，调用方需要把入口还给用户。
-  const launchRun = useCallback(async ({ conversationId, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId = "", proposalSourceMessageId = "", autoApproved = false, maskEdit = null, correction = null, onNotCreated = null }) => {
+  const launchRun = useCallback(async ({ conversationId, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId = "", proposalSourceMessageId = "", autoApproved = false, maskEdit = null, correction = null, keepPreviousVersion = false, onNotCreated = null }) => {
     const controller = new AbortController();
     let launchedRun = {};
     try {
@@ -2516,6 +2559,7 @@ export function useAssistantWorkspaceController() {
         clientUserMessageId: userMessage.id,
         clientAssistantMessageId: assistantMessage.id,
         ...(sourceUserMessageId ? { sourceUserMessageId } : {}),
+        ...(sourceUserMessageId && keepPreviousVersion ? { keepPreviousVersion: true } : {}),
         proposalSourceMessageId,
         ...(autoApproved ? { autoApproved: true } : {}),
         ...(correction ? { correction } : {}),
@@ -3129,10 +3173,12 @@ export function useAssistantWorkspaceController() {
       ? target.kind
       : messageResponseMode(target);
     const responseMode = replayLocalAttempt ? requestedMode : assistantSendMode(requestedMode, 0, prompt);
-    const model = replayLocalAttempt && target.model
+    // 失败的回复按当前选择的模型重试：原模型可能正是失败原因，用户切换模型后不能再被它锁住。
+    const keepTargetModel = target.status !== "failed";
+    const model = replayLocalAttempt && keepTargetModel && target.model
       ? target.model
-      : modelForMode(responseMode, responseMode === requestedMode ? target.model : "");
-    if (responseMode === "image" && target.sizeMode === "exact" && !availableImageModels.some((item) => item.model === target.model && item.supportsExactSize === true)) {
+      : modelForMode(responseMode, keepTargetModel && responseMode === requestedMode ? target.model : "");
+    if (responseMode === "image" && target.sizeMode === "exact" && !availableImageModels.some((item) => item.model === model && item.supportsExactSize === true)) {
       notificationService.warning("原精确尺寸模型暂不可用，请重新选择支持精确尺寸的可用模型后发送。原任务尺寸已保留。");
       return;
     }
@@ -3218,6 +3264,9 @@ export function useAssistantWorkspaceController() {
     });
     if (retryIdentity.retryAssistantMessageId) assistantMessage.id = retryIdentity.retryAssistantMessageId;
     if (retryPlanItems.length) assistantMessage.imagePlanItems = retryPlanItems;
+    // 重新生成不丢旧回复：旧的那版留在新回复里，可以切回去看。
+    const keepPreviousVersion = Boolean(retryIdentity.sourceUserMessageId) && !target.localOnly && target.status === "complete";
+    if (keepPreviousVersion) assistantMessage.previousVersions = versionsAfterRegenerate(target);
     patchConversation(activeConversation.id, (conversation) => ({
       ...conversation,
       updatedAt: assistantMessage.createdAt,
@@ -3226,7 +3275,7 @@ export function useAssistantWorkspaceController() {
         assistantMessage,
       ],
     }));
-    await launchRun({ conversationId: activeConversation.id, prompt, userMessage: retryUserMessage, assistantMessage, responseMode, sourceUserMessageId: retryIdentity.sourceUserMessageId, proposalSourceMessageId: retrySourceProposal?.id || "" });
+    await launchRun({ conversationId: activeConversation.id, prompt, userMessage: retryUserMessage, assistantMessage, responseMode, sourceUserMessageId: retryIdentity.sourceUserMessageId, proposalSourceMessageId: retrySourceProposal?.id || "", keepPreviousVersion });
   };
 
   const submitUserMessageEdit = async (message) => {
@@ -3423,6 +3472,84 @@ export function useAssistantWorkspaceController() {
       conversationId: activeConversation.id, prompt: definition.prompt, userMessage, assistantMessage, responseMode,
       correction: { messageId: message.id, action },
     });
+  };
+
+  // 点回复下面的追问建议：直接发出去，沿用这条回复的模式（问答还是 Agent）。
+  const sendFollowUp = async (message, text) => {
+    const prompt = String(text || "").trim();
+    if (!prompt || !activeConversation || conversationHasWork) return;
+    if (requestAuth({ featureLabel: "AI 助手" })) return;
+    const responseMode = message.requestedMode === "agent" ? "agent" : "chat";
+    const sendModel = availableConversationModels.find((item) => item.model === conversationModel)?.model || availableConversationModels[0]?.model || "";
+    if (!(await confirmAssistantCost(responseMode, 1, sendModel, activeReasoningEffort))) return;
+    if (!mountedRef.current) return;
+    const imageSettings = assistantImageSettings(selectedImageModel, { ratio: generationRatio, resolution: generationResolution, quality: generationQuality });
+    const userMessage = { id: uid(), role: "user", content: prompt, kind: "chat", referenceImages: [], attachments: [], localOnly: true, createdAt: new Date().toISOString() };
+    const assistantMessage = createLocalAssistantPlaceholder({
+      prompt,
+      responseMode,
+      userMessageId: userMessage.id,
+      defaults: {
+        model: sendModel, reasoningEffort: activeReasoningEffort, count: 1,
+        ratio: imageSettings.ratio, resolution: imageSettings.resolution, requestSize: imageSettings.requestSize,
+        quality: imageSettings.quality, width: imageSettings.width, height: imageSettings.height,
+      },
+    });
+    patchConversation(activeConversation.id, (conversation) => ({ ...conversation, updatedAt: userMessage.createdAt, messages: [...conversation.messages, userMessage, assistantMessage] }));
+    scrollToBottom();
+    await launchRun({ conversationId: activeConversation.id, prompt, userMessage, assistantMessage, responseMode });
+  };
+
+  // 一组图里有几张没出来：只补这几张，作为新的一轮发出去，已经出来的图不动。
+  const generateMissingImages = async (message) => {
+    if (!activeConversation || conversationHasWork) return;
+    const missing = missingImageSlots(message);
+    if (!missing.length) return;
+    const index = messages.findIndex((item) => item.id === message.id);
+    const userMessage = messages[index - 1];
+    if (index < 1 || userMessage?.role !== "user") return;
+    const sourceProposal = userMessage.proposalSourceMessageId
+      ? messages.find((item) => item.id === userMessage.proposalSourceMessageId && item.proposal)
+      : null;
+    const prompt = String(sourceProposal?.proposal?.prompt || message.prompt || userMessage.content || "").trim();
+    if (!prompt) return;
+    const model = message.model || imageModel;
+    const priceModel = availableImageModels.find((item) => item.model === model) || selectedImageModel;
+    if (!(await confirmAssistantCost("image", missing.length, model))) return;
+    if (!mountedRef.current) return;
+    const planItems = Array.isArray(message.imagePlanItems) && message.imagePlanItems.length
+      ? missing.map((slot) => message.imagePlanItems[slot]).filter(Boolean)
+      : [];
+    const referenceMode = imageRunReferenceMode(userMessage, message);
+    const references = referenceMode === "individual"
+      ? missing.map((slot) => userMessage.referenceImages?.[slot]).filter(Boolean)
+      : userMessage.referenceImages || [];
+    const label = missing.map((slot) => slot + 1).join("、");
+    const nextUser = {
+      id: uid(), role: "user", content: `补生成第 ${label} 张`, kind: "chat", localOnly: true, createdAt: new Date().toISOString(),
+      referenceImages: references.map((image) => ({ ...image })), attachments: [], referenceMode,
+      ...(planItems.length ? { imagePlanItems: planItems } : {}),
+    };
+    const settings = assistantImageSettings(priceModel, {
+      ...(message.sizeMode === "exact" ? { sizeMode: "exact", exactWidth: message.exactWidth, exactHeight: message.exactHeight } : {}),
+      ratio: message.requestRatio || message.ratio || generationRatio,
+      resolution: message.resolution || generationResolution,
+      quality: message.quality || generationQuality,
+    });
+    const assistantMessage = createLocalAssistantPlaceholder({
+      prompt,
+      responseMode: "image",
+      userMessageId: nextUser.id,
+      defaults: {
+        model, count: missing.length, sizeMode: settings.sizeMode || "ratio", exactWidth: settings.exactWidth, exactHeight: settings.exactHeight,
+        ratio: settings.ratio, requestRatio: settings.ratio, resolution: settings.resolution, requestSize: settings.requestSize,
+        quality: settings.quality, width: settings.width, height: settings.height,
+      },
+    });
+    if (planItems.length) assistantMessage.imagePlanItems = planItems;
+    patchConversation(activeConversation.id, (conversation) => ({ ...conversation, updatedAt: nextUser.createdAt, messages: [...conversation.messages, nextUser, assistantMessage] }));
+    scrollToBottom();
+    await launchRun({ conversationId: activeConversation.id, prompt, userMessage: nextUser, assistantMessage, responseMode: "image" });
   };
 
   const sourceProposalForImage = (message) => {
@@ -3856,6 +3983,9 @@ export function useAssistantWorkspaceController() {
     latestContext,
     navigatorItems,
     submitMessageFeedback,
+    feedbackAskIds,
+    submitFeedbackReasons,
+    dismissFeedbackReasons,
     toggleStatus,
     copyMessage,
     quoteMessage,
@@ -3926,6 +4056,8 @@ export function useAssistantWorkspaceController() {
     updateProposal,
     approveAgentProposal,
     sendCorrection,
+    sendFollowUp,
+    generateMissingImages,
     sourceProposalForImage,
     reopenSourceProposal,
     stopRun,

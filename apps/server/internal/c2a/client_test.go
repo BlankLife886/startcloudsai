@@ -1475,3 +1475,35 @@ func TestPollImageTasksReturnsPublicTerminalError(t *testing.T) {
 		t.Fatalf("terminal text error was not preserved: %#v", result)
 	}
 }
+
+// A slow link that keeps delivering bytes must finish even when the whole file
+// takes longer than the stall timeout; a link that goes silent still fails fast.
+func TestImageDownloadTimesOutOnStallNotOnSlowProgress(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\n" + strings.Repeat("x", 64))
+	serve := func(gap time.Duration) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "image/png")
+			flusher := w.(http.Flusher)
+			for start := 0; start < len(png); start += 8 {
+				_, _ = w.Write(png[start:min(start+8, len(png))])
+				flusher.Flush()
+				time.Sleep(gap)
+			}
+		}))
+	}
+	slow := serve(60 * time.Millisecond)
+	defer slow.Close()
+	client := NewWithPolicy(slow.URL, "test-key", 30, true)
+	client.Timeout = 200 * time.Millisecond
+	if _, err := client.downloadImageB64(context.Background(), slow.URL+"/images/a.png"); err != nil {
+		t.Fatalf("steady slow download should finish: %v", err)
+	}
+	stalled := serve(400 * time.Millisecond)
+	defer stalled.Close()
+	client = NewWithPolicy(stalled.URL, "test-key", 30, true)
+	client.Timeout = 200 * time.Millisecond
+	_, err := client.downloadImageB64(context.Background(), stalled.URL+"/images/a.png")
+	if err == nil || imageDownloadErrorKind(err) != "timeout" {
+		t.Fatalf("stalled download should time out, err=%v kind=%s", err, imageDownloadErrorKind(err))
+	}
+}

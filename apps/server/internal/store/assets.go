@@ -374,3 +374,40 @@ func NormalizeAssetTags(values []string) ([]string, error) {
 func NormalizeAssetGroupName(raw string) string {
 	return strings.TrimSpace(raw)
 }
+
+// SavedAssistantImage is a library asset copied from a generated image.
+type SavedAssistantImage struct {
+	SourceKey string `json:"sourceKey"`
+	AssetID   string `json:"assetId"`
+	GroupName string `json:"groupName,omitempty"`
+}
+
+// ListSavedAssistantImages tells which of the given generated images the user
+// has copied into the library (and not deleted). The copy remembers the
+// original in source_metadata.sourceKey.
+func ListSavedAssistantImages(ctx context.Context, q Q, userID uuid.UUID, keys []string) ([]SavedAssistantImage, error) {
+	if len(keys) == 0 {
+		return []SavedAssistantImage{}, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT ON (asset.source_metadata->>'sourceKey')
+			asset.source_metadata->>'sourceKey', asset.id::text, COALESCE(grp.name, '')
+		FROM user_assets asset
+		LEFT JOIN user_asset_groups grp ON grp.id = asset.group_id AND grp.user_id = asset.user_id
+		WHERE asset.user_id = $1 AND asset.deleted_at IS NULL
+		  AND asset.source_metadata->>'sourceKey' = ANY($2::text[])
+		ORDER BY asset.source_metadata->>'sourceKey', asset.created_at DESC`, userID, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SavedAssistantImage{}
+	for rows.Next() {
+		var item SavedAssistantImage
+		if err := rows.Scan(&item.SourceKey, &item.AssetID, &item.GroupName); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}

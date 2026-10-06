@@ -6,6 +6,7 @@ import "@react/legacy-styles/generated/views/AccountSettingsView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { isProductGuidesEnabled, setProductGuidesEnabled } from "./shared/productGuides.js";
+import { NotificationPreferencesPanel } from "../features/inbox/NotificationPreferencesPanel.jsx";
 
 function profileFromUser(user) {
   return {
@@ -350,6 +351,7 @@ export function AccountSettingsView() {
               {preferenceSaving ? "正在保存…" : "已同步到当前账号"}
             </small>
           </section>
+          <NotificationPreferencesPanel userId={auth.user?.id} />
           <section className="account-panel account-guide">
             <h2>操作引导</h2>
             <p>打开后，每次进入对应页面都会显示操作引导。关闭后不再自动弹出，可在引导最后一步或头像菜单里重新打开。</p>

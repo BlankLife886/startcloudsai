@@ -101,7 +101,7 @@ func (s Service) BuildView(ctx context.Context, set *store.CommerceSet) (*View, 
 		return nil, err
 	}
 	for _, shot := range set.Shots {
-		for _, attempt := range shot.Attempts {
+		for _, attempt := range everyAttempt(shot) {
 			task := tasks[attempt.TaskID]
 			switch {
 			case task == nil:
@@ -171,7 +171,7 @@ func (s Service) BuildView(ctx context.Context, set *store.CommerceSet) (*View, 
 			} else {
 				ready = false
 			}
-			item.CanRedo = terminal(item.Status) && generatedAttempts(shot) < maxAttemptsPerShot
+			item.CanRedo = terminal(item.Status) && generatedAttempts(shot, tasks) < maxAttemptsPerShot
 		}
 		view.Shots = append(view.Shots, item)
 	}
@@ -180,13 +180,19 @@ func (s Service) BuildView(ctx context.Context, set *store.CommerceSet) (*View, 
 }
 
 // generatedAttempts counts the images the model made for a shot; edits the
-// user adopted do not use up redos.
-func generatedAttempts(shot store.CommerceSetShot) int {
+// user adopted do not use up redos, and neither do attempts that ended
+// without an image (upstream failure or the user stopping it).
+func generatedAttempts(shot store.CommerceSetShot, tasks map[uuid.UUID]*store.Task) int {
 	count := 0
 	for _, attempt := range shot.Attempts {
-		if attempt.FileKey == "" {
-			count++
+		// Edits of a finished image are new requests, not retries.
+		if attempt.FileKey != "" || attempt.BaseKey != "" {
+			continue
 		}
+		if task := tasks[attempt.TaskID]; task != nil && task.Status != "succeeded" && terminal(task.Status) {
+			continue
+		}
+		count++
 	}
 	return count
 }
@@ -216,7 +222,7 @@ func (s Service) ViewByID(ctx context.Context, userID, setID uuid.UUID) (*View, 
 func (s Service) allTasks(ctx context.Context, set *store.CommerceSet) (map[uuid.UUID]*store.Task, error) {
 	ids := []uuid.UUID{}
 	for _, shot := range set.Shots {
-		for _, attempt := range shot.Attempts {
+		for _, attempt := range everyAttempt(shot) {
 			ids = append(ids, attempt.TaskID)
 		}
 	}
@@ -224,4 +230,10 @@ func (s Service) allTasks(ctx context.Context, set *store.CommerceSet) (map[uuid
 		return map[uuid.UUID]*store.Task{}, nil
 	}
 	return store.GetTasksByIDs(ctx, s.St.Pool, ids)
+}
+
+// everyAttempt lists a shot's attempts including discarded ones: points
+// spent on them still count.
+func everyAttempt(shot store.CommerceSetShot) []store.CommerceSetAttempt {
+	return append(append([]store.CommerceSetAttempt(nil), shot.Attempts...), shot.Discarded...)
 }

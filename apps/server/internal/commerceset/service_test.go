@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -268,6 +269,40 @@ func TestFailedImageWithoutAutoApprovalWaitsForTheUser(t *testing.T) {
 	}
 }
 
+// Attempts that ended without an image (upstream down, or stopped by the
+// user) do not use up the shot's redos; only images the model made do.
+func TestFailedAndStoppedAttemptsKeepTheRedos(t *testing.T) {
+	f := setup(t)
+	set := f.plan(ShotRequest{Type: "white"})
+	confirmed := int64(10)
+	result, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByUser, ExpectedTotalCents: &confirmed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := result.TaskIDs[0]
+	for _, status := range []string{"failed", "canceled", "failed"} {
+		if _, err := f.st.Pool.Exec(f.ctx, `UPDATE tasks SET status = $2 WHERE id = $1`, last, status); err != nil {
+			t.Fatal(err)
+		}
+		redo, err := f.service.Redo(f.ctx, f.user.ID, set.ID, []string{"white"}, "", &confirmed)
+		if err != nil {
+			t.Fatalf("redo after %s attempt: %v", status, err)
+		}
+		last = redo.TaskIDs[0]
+	}
+	if _, err := f.st.Pool.Exec(f.ctx, `UPDATE tasks SET status = 'canceled' WHERE id = $1`, last); err != nil {
+		t.Fatal(err)
+	}
+	review, err := f.service.Review(f.ctx, f.user.ID, set.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, _ := f.service.BuildView(f.ctx, review.Set)
+	if shot := view.Shots[0]; !shot.CanRedo || shot.Status != "canceled" || len(shot.Issues) != 1 || shot.Issues[0] != "已停止" {
+		t.Fatalf("stopped shot = %+v", shot)
+	}
+}
+
 // An image edited in the viewer replaces the shot: shown, downloadable and
 // checked, without costing points or using up the shot's redos.
 func TestAdoptEditedImageReplacesTheShot(t *testing.T) {
@@ -303,5 +338,163 @@ func TestAdoptEditedImageReplacesTheShot(t *testing.T) {
 	}
 	if err := f.service.Adopt(f.ctx, f.user.ID, set.ID, AdoptInput{ShotID: "missing", FileKey: edited.FileKey}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("missing shot err = %v", err)
+	}
+}
+
+// Changing one thing on a finished set edits each current image (image 1 is
+// the shot's output, not the product photo) and keeps the change on redo and
+// in the check.
+func TestEditChangesTheFinishedImagesAndKeepsTheirLook(t *testing.T) {
+	f := setup(t)
+	set := f.plan(ShotRequest{Type: "white"}, ShotRequest{Type: "selling"})
+	f.autoApprove(true, 100)
+	first, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByBudget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Not finished yet: nothing to edit.
+	if _, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByBudget, Edit: "去掉 Logo"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("edit before output err = %v", err)
+	}
+	for _, id := range first.TaskIDs {
+		if _, err := f.st.Pool.Exec(f.ctx, `UPDATE tasks SET status = 'succeeded', output_keys = jsonb_build_array('out/'||id::text||'.png') WHERE id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	edited, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByBudget, Edit: "去掉杯身 Logo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edited.TaskIDs) != 2 || edited.TotalCents != 20 {
+		t.Fatalf("edit = %+v", edited)
+	}
+	for index, id := range edited.TaskIDs {
+		task, _ := store.GetTask(f.ctx, f.st.Pool, id)
+		base := "out/" + first.TaskIDs[index].String() + ".png"
+		if len(task.InputKeys) != 1 || task.InputKeys[0] != base {
+			t.Fatalf("edit inputs = %v, want %s", task.InputKeys, base)
+		}
+		if !strings.Contains(task.Prompt, "以图1为底图") || !strings.Contains(task.Prompt, "去掉杯身 Logo") || strings.Contains(task.Prompt, "参考图角色") {
+			t.Fatalf("edit prompt = %s", task.Prompt)
+		}
+		attempt := edited.Set.Shots[index].Attempts[1]
+		if attempt.BaseKey != base || attempt.EditNote != "去掉杯身 Logo" {
+			t.Fatalf("attempt = %+v", attempt)
+		}
+	}
+	// The check knows the difference from the product photo was asked for.
+	for _, id := range edited.TaskIDs {
+		if _, err := f.st.Pool.Exec(f.ctx, `UPDATE tasks SET status = 'succeeded', output_keys = '["out/edited.png"]' WHERE id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var prompts []string
+	var mu sync.Mutex
+	if _, err := f.service.Review(f.ctx, f.user.ID, set.ID, func(_ context.Context, prompt, _ string, _ []string) (string, error) {
+		mu.Lock()
+		prompts = append(prompts, prompt)
+		mu.Unlock()
+		return `{"pass":true,"issues":[]}`, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 2 || !strings.Contains(prompts[0], "要求是：「去掉杯身 Logo」") {
+		t.Fatalf("review prompts = %v", prompts)
+	}
+	// Redoing an edited shot redoes the edit of the same image.
+	confirmed := int64(10)
+	redo, err := f.service.Redo(f.ctx, f.user.ID, set.ID, []string{"white"}, "边缘再干净一点", &confirmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _ := store.GetTask(f.ctx, f.st.Pool, redo.TaskIDs[0])
+	if task.InputKeys[0] != "out/"+first.TaskIDs[0].String()+".png" || !strings.Contains(task.Prompt, "去掉杯身 Logo") || !strings.Contains(task.Prompt, "边缘再干净一点") {
+		t.Fatalf("redo of edit = %v %s", task.InputKeys, task.Prompt)
+	}
+	// Resending an earlier message edits the images as they were then: the
+	// attempts a later, replaced reply made are skipped.
+	for _, id := range redo.TaskIDs {
+		if _, err := f.st.Pool.Exec(f.ctx, `UPDATE tasks SET status = 'succeeded', output_keys = '["out/later.png"]' WHERE id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asOf := edited.Set.Shots[0].Attempts[0].CreatedAt.Add(time.Millisecond)
+	resent, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByBudget, ShotIDs: []string{"white"}, Edit: "瓶盖换成金色", EditAsOf: asOf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _ = store.GetTask(f.ctx, f.st.Pool, resent.TaskIDs[0])
+	if task.InputKeys[0] != "out/"+first.TaskIDs[0].String()+".png" {
+		t.Fatalf("edit as of the message used %v", task.InputKeys)
+	}
+}
+
+// Resending an earlier message rewinds the conversation's sets: what later
+// replies generated is discarded (its points still count) and the shots show
+// their images from that moment again; sets planned later are canceled.
+func TestRewindPutsTheSetBackToAnEarlierMoment(t *testing.T) {
+	f := setup(t)
+	conversationID := uuid.New()
+	if _, err := f.st.Pool.Exec(f.ctx, `INSERT INTO assistant_conversations (id, user_id, title) VALUES ($1, $2, 't')`, conversationID, f.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	set := f.plan(ShotRequest{Type: "white"})
+	if _, err := f.st.Pool.Exec(f.ctx, `UPDATE assistant_commerce_sets SET conversation_id = $2 WHERE id = $1`, set.ID, conversationID); err != nil {
+		t.Fatal(err)
+	}
+	f.autoApprove(true, 100)
+	first, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByBudget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Pool.Exec(f.ctx, `UPDATE tasks SET status = 'succeeded', output_keys = '["out/first.png"]' WHERE id = $1`, first.TaskIDs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.Review(f.ctx, f.user.ID, set.ID, func(context.Context, string, string, []string) (string, error) {
+		return `{"pass":true,"issues":[]}`, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	moment := time.Now()
+	time.Sleep(5 * time.Millisecond)
+	later, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByBudget, Edit: "去掉 Logo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Pool.Exec(f.ctx, `UPDATE tasks SET status = 'succeeded', output_keys = '["out/later.png"]' WHERE id = $1`, later.TaskIDs[0]); err != nil {
+		t.Fatal(err)
+	}
+	newer := f.plan(ShotRequest{Type: "white"})
+	if _, err := f.st.Pool.Exec(f.ctx, `UPDATE assistant_commerce_sets SET conversation_id = $2 WHERE id = $1`, newer.ID, conversationID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.st.Tx(f.ctx, func(tx pgx.Tx) error {
+		return f.service.Rewind(f.ctx, tx, f.user.ID, conversationID, moment)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	view, err := f.service.ViewByID(f.ctx, f.user.ID, set.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Status != store.CommerceSetDone || view.Shots[0].FileKey != "out/first.png" || view.Shots[0].Attempts != 1 || view.SpentCents != 20 {
+		t.Fatalf("rewound view = %+v %+v", view, view.Shots[0])
+	}
+	canceled, _ := store.GetUserCommerceSet(f.ctx, f.st.Pool, f.user.ID, newer.ID)
+	if canceled.Status != store.CommerceSetCanceled {
+		t.Fatalf("later set status = %s", canceled.Status)
+	}
+	// The next round gets a fresh task, not the discarded one back.
+	again, err := f.service.Generate(f.ctx, f.user.ID, set.ID, GenerateInput{Via: store.CommerceApprovedByBudget, Edit: "去掉 Logo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.TaskIDs[0] == later.TaskIDs[0] {
+		t.Fatal("rewound edit reused the discarded task")
+	}
+	task, _ := store.GetTask(f.ctx, f.st.Pool, again.TaskIDs[0])
+	if task.InputKeys[0] != "out/first.png" {
+		t.Fatalf("edit after rewind used %v", task.InputKeys)
 	}
 }

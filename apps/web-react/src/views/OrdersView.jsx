@@ -372,8 +372,16 @@ export function OrdersView() {
   const cancelConfirmRef = useRef(false);
   const dialogRef = useRef(null);
   const [status, setStatus] = useState("");
-  const [search, setSearch] = useState("");
-  const [query, setQuery] = useState("");
+  // /orders?q=订单号：从 AI 助手等处跳过来时直接按订单号筛出这一笔。
+  const initialQuery = () => {
+    try {
+      return new URLSearchParams(window.location.search).get("q")?.trim().slice(0, 64) || "";
+    } catch {
+      return "";
+    }
+  };
+  const [search, setSearch] = useState(initialQuery);
+  const [query, setQuery] = useState(initialQuery);
   const [summary, setSummary] = useState(null);
   const [notice, setNotice] = useState("");
   const [orders, setOrders] = useState([]);

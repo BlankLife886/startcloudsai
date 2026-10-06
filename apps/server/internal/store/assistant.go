@@ -218,17 +218,26 @@ func ListUserAssistantMessageOutputKeys(ctx context.Context, q Q, userID, messag
 	return listAssistantOutputKeys(ctx, q, userID, "message.id = $2", messageID)
 }
 
+// assistantMessageImagesSQL lists every generated image a message holds: its
+// own, its proposal's, and those of earlier versions kept by regenerate.
+const assistantMessageImagesSQL = `(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+					THEN message.metadata->'images' ELSE '[]'::jsonb END)
+				|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+					THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+				|| COALESCE((
+					SELECT jsonb_agg(version_image.value)
+					FROM jsonb_array_elements(CASE WHEN jsonb_typeof(message.metadata->'previousVersions') = 'array'
+						THEN message.metadata->'previousVersions' ELSE '[]'::jsonb END) AS version(value)
+					CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(version.value->'metadata'->'images') = 'array'
+						THEN version.value->'metadata'->'images' ELSE '[]'::jsonb END) AS version_image(value)
+				), '[]'::jsonb)`
+
 func listAssistantOutputKeysWithCondition(ctx context.Context, q Q, condition string, args ...any) ([]string, error) {
 	query := `
 		SELECT image.value->>'fileKey'
 		FROM assistant_messages message
 		JOIN assistant_conversations conversation ON conversation.id = message.conversation_id
-		CROSS JOIN LATERAL jsonb_array_elements(
-				(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
-					THEN message.metadata->'images' ELSE '[]'::jsonb END)
-				|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
-					THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
-		) AS image(value)
+		CROSS JOIN LATERAL jsonb_array_elements(` + assistantMessageImagesSQL + `) AS image(value)
 		WHERE ` + condition + `
 		  AND COALESCE(image.value->>'fileKey', '') <> ''`
 	rows, err := q.Query(ctx, query, args...)
@@ -301,12 +310,7 @@ func LockAssistantOutputKeys(ctx context.Context, q Q, userID uuid.UUID, keys []
 		SELECT image.value->>'fileKey'
 		FROM assistant_messages message
 		JOIN assistant_conversations conversation ON conversation.id = message.conversation_id
-		CROSS JOIN LATERAL jsonb_array_elements(
-				(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
-					THEN message.metadata->'images' ELSE '[]'::jsonb END)
-				|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
-					THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
-		) AS image(value)
+		CROSS JOIN LATERAL jsonb_array_elements(`+assistantMessageImagesSQL+`) AS image(value)
 		WHERE conversation.user_id = $1
 		  AND image.value->>'fileKey' = ANY($2::text[])
 		FOR SHARE OF message`, userID, keys)
@@ -423,9 +427,13 @@ func UpdateAssistantMessage(ctx context.Context, q Q, id uuid.UUID, content, kin
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
+	// 用户的评价（含点踩原因）和重新生成前的旧版本不属于这一轮的输出，改写回复时保留。
 	_, err := q.Exec(ctx, `UPDATE assistant_messages SET content = $2, kind = $3, status = $4,
-		metadata = $5::jsonb || CASE WHEN COALESCE(metadata, '{}'::jsonb) ? 'feedback'
-			THEN jsonb_build_object('feedback', metadata->'feedback') ELSE '{}'::jsonb END,
+		metadata = $5::jsonb || (
+			SELECT COALESCE(jsonb_object_agg(kept.key, kept.value), '{}'::jsonb)
+			FROM jsonb_each(COALESCE(metadata, '{}'::jsonb)) kept
+			WHERE kept.key IN ('feedback', 'feedbackReasons', 'feedbackNote', 'previousVersions')
+		),
 		updated_at = now() WHERE id = $1`, id, content, kind, status, metadata)
 	return err
 }
@@ -451,6 +459,24 @@ func SetUserAssistantMessageFeedback(
 					AND conversation.user_id = $1
 			)
 		RETURNING `+assistantMessageCols, userID, messageID, rating))
+	return nilOnNoRows(item, err)
+}
+
+// SetAssistantMessageFeedbackReasons stores why a reply got a thumbs-down;
+// empty reasons and note remove them.
+func SetAssistantMessageFeedbackReasons(ctx context.Context, q Q, messageID uuid.UUID, reasons []string, note string) (*AssistantMessage, error) {
+	if reasons == nil {
+		reasons = []string{}
+	}
+	item, err := scanAssistantMessage(q.QueryRow(ctx, `
+		UPDATE assistant_messages
+		SET metadata = CASE
+				WHEN cardinality($2::text[]) = 0 AND $3 = '' THEN COALESCE(metadata, '{}'::jsonb) - 'feedbackReasons' - 'feedbackNote'
+				ELSE COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('feedbackReasons', to_jsonb($2::text[]), 'feedbackNote', $3::text)
+			END,
+			updated_at = now()
+		WHERE id = $1 AND role = 'assistant'
+		RETURNING `+assistantMessageCols, messageID, reasons, note))
 	return nilOnNoRows(item, err)
 }
 
@@ -523,6 +549,13 @@ func AppendAssistantMessageArtifact(ctx context.Context, q Q, id uuid.UUID, arti
 }
 
 func DeleteAssistantMessagesAfter(ctx context.Context, q Q, conversationID, messageID uuid.UUID) error {
+	return DeleteAssistantMessagesAfterKeeping(ctx, q, conversationID, messageID, nil)
+}
+
+// DeleteAssistantMessagesAfterKeeping deletes like DeleteAssistantMessagesAfter
+// but leaves the given generated files alone: regenerate keeps the replaced
+// reply as an earlier version on the new reply, images included.
+func DeleteAssistantMessagesAfterKeeping(ctx context.Context, q Q, conversationID, messageID uuid.UUID, keepKeys []string) error {
 	if err := archiveAssistantRunsForUserDeletion(ctx, q, `
 		run.conversation_id = $2 AND EXISTS (
 			SELECT 1 FROM assistant_messages target
@@ -538,6 +571,22 @@ func DeleteAssistantMessagesAfter(ctx context.Context, q Q, conversationID, mess
 	keys, err := assistantOutputCleanupKeysForWindow(ctx, q, conversationID, messageID, false)
 	if err != nil {
 		return err
+	}
+	if len(keepKeys) > 0 {
+		keep := make(map[string]bool, len(keepKeys)*3)
+		for _, key := range keepKeys {
+			keep[key] = true
+			for _, variant := range AssistantVariantKeys(key) {
+				keep[variant] = true
+			}
+		}
+		remaining := keys[:0]
+		for _, key := range keys {
+			if !keep[key] {
+				remaining = append(remaining, key)
+			}
+		}
+		keys = remaining
 	}
 	if err := EnqueueObjectCleanup(ctx, q, keys); err != nil {
 		return err
@@ -1363,4 +1412,15 @@ func MoveQueuedAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID, dire
 	)
 	SELECT EXISTS (SELECT 1 FROM swapped WHERE id = $1)`, id, userID, direction).Scan(&moved)
 	return moved, err
+}
+
+// GetAssistantReplyAfter returns the first assistant message after the given
+// user message: the reply regenerate is about to replace.
+func GetAssistantReplyAfter(ctx context.Context, q Q, conversationID, userMessageID uuid.UUID) (*AssistantMessage, error) {
+	item, err := scanAssistantMessage(q.QueryRow(ctx, `SELECT `+assistantMessageCols+` FROM assistant_messages
+		WHERE conversation_id = $1 AND role = 'assistant' AND (created_at, id) > (
+			SELECT created_at, id FROM assistant_messages WHERE id = $2 AND conversation_id = $1
+		)
+		ORDER BY created_at, id LIMIT 1`, conversationID, userMessageID))
+	return nilOnNoRows(item, err)
 }

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import {
   Bell,
+  Clock,
   Delete,
   Download,
   Document,
@@ -457,6 +458,62 @@ async function removeAnn(item: Announcement) {
   await request(`/api/v1/admin/announcements/${item.id}`, { method: "DELETE" });
   ElMessage.success("已删除");
   await loadAnnouncements();
+}
+
+interface AnnouncementEvent {
+  id: string;
+  announcementId: string;
+  title: string;
+  action: "created" | "updated" | "enabled" | "disabled" | "pushed" | "deleted";
+  changes: string[];
+  actorName: string;
+  createdAt: string;
+}
+
+const ANN_EVENT_LABELS: Record<AnnouncementEvent["action"], string> = {
+  created: "创建公告",
+  updated: "编辑公告",
+  enabled: "启用",
+  disabled: "停用",
+  pushed: "立即推送",
+  deleted: "删除公告",
+};
+const ANN_EVENT_TONES: Record<AnnouncementEvent["action"], "primary" | "success" | "warning" | "danger" | "info"> = {
+  created: "primary",
+  updated: "info",
+  enabled: "success",
+  disabled: "warning",
+  pushed: "primary",
+  deleted: "danger",
+};
+
+// 时间线抽屉：传公告时只看这一条，不传时看全部操作记录（含已删除的公告）。
+const timelineOpen = ref(false);
+const timelineLoading = ref(false);
+const timelineError = ref("");
+const timelineTarget = ref<Announcement | null>(null);
+const timelineEvents = ref<AnnouncementEvent[]>([]);
+
+async function openAnnTimeline(item: Announcement | null) {
+  timelineTarget.value = item;
+  timelineOpen.value = true;
+  timelineLoading.value = true;
+  timelineError.value = "";
+  timelineEvents.value = [];
+  try {
+    const query = item ? `?announcementId=${encodeURIComponent(item.id)}` : "";
+    const data = await request<{ items: AnnouncementEvent[] }>(`/api/v1/admin/announcements/events${query}`);
+    timelineEvents.value = data?.items || [];
+  } catch (error) {
+    timelineError.value = (error as Error)?.message || "时间线读取失败";
+  } finally {
+    timelineLoading.value = false;
+  }
+}
+
+function annEventSummary(event: AnnouncementEvent) {
+  const label = ANN_EVENT_LABELS[event.action] || event.action;
+  return event.action === "updated" && event.changes?.length ? `${label}：${event.changes.join("、")}` : label;
 }
 
 async function pushAnn(item: Announcement) {
@@ -945,6 +1002,9 @@ onBeforeUnmount(() => clearInterval(announcementClock));
           >
             导出
           </el-button>
+          <el-button v-if="activeTab === 'announcements'" :icon="Clock" @click="openAnnTimeline(null)">
+            操作记录
+          </el-button>
           <el-button :icon="Refresh" :loading="currentLoading" @click="refreshAll">
             刷新
           </el-button>
@@ -1025,6 +1085,7 @@ onBeforeUnmount(() => clearInterval(announcementClock));
                     @click="pushAnn(item)"
                   >立即推送</el-button>
                 </span>
+                <el-button :icon="Clock" @click="openAnnTimeline(item)">时间线</el-button>
                 <el-button :icon="EditPen" :disabled="!!pushingAnnId" @click="openAnnEdit(item)">编辑</el-button>
                 <el-button
                   type="danger"
@@ -1562,10 +1623,53 @@ onBeforeUnmount(() => clearInterval(announcementClock));
         </el-form-item>
       </el-form>
     </AdminDialog>
+
+    <el-drawer
+      v-model="timelineOpen"
+      :title="timelineTarget ? `公告时间线 · ${timelineTarget.title}` : '公告操作记录'"
+      size="min(480px, 96vw)"
+      append-to-body
+    >
+      <div v-loading="timelineLoading" class="ann-timeline">
+        <p v-if="timelineError" class="ann-timeline__empty">{{ timelineError }}</p>
+        <p v-else-if="!timelineLoading && !timelineEvents.length" class="ann-timeline__empty">暂无记录</p>
+        <el-timeline v-else>
+          <el-timeline-item
+            v-for="event in timelineEvents"
+            :key="event.id"
+            :type="ANN_EVENT_TONES[event.action]"
+            :timestamp="formatShortTime(event.createdAt)"
+            placement="top"
+          >
+            <strong>{{ annEventSummary(event) }}</strong>
+            <p v-if="!timelineTarget" class="ann-timeline__title">{{ event.title }}</p>
+            <p class="ann-timeline__actor">操作人：{{ event.actorName || "系统" }}</p>
+          </el-timeline-item>
+        </el-timeline>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <style scoped>
+.ann-timeline {
+  min-height: 160px;
+}
+.ann-timeline__empty {
+  margin: 40px 0;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+}
+.ann-timeline__title,
+.ann-timeline__actor {
+  margin: 4px 0 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.ann-timeline__title {
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+}
 .content-page-heading { display: flex; align-items: baseline; gap: 10px; flex-shrink: 0; }
 .content-page-heading strong { color: var(--ink); font-size: 16px; }
 .content-page-heading span { color: var(--ink-3); font-size: 12px; }

@@ -194,9 +194,13 @@ func (s *Server) userTaskStream(c *gin.Context) {
 		events = pubsub.Channel()
 	}
 
+	// (b') 新通知写入时数据库触发器 pg_notify，这里立即推一次未读数。
+	newNotifications, stopNotifications := s.NotificationHub.Subscribe(user.ID)
+	defer stopNotifications()
+
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
-	// (c) 每 60 秒随心跳推一次未读数。
+	// (c) 每 60 秒兜底推一次未读数（已读、删除不会触发 pg_notify）。
 	notifyTicker := time.NewTicker(60 * time.Second)
 	defer notifyTicker.Stop()
 	for {
@@ -223,6 +227,10 @@ func (s *Server) userTaskStream(c *gin.Context) {
 				return
 			}
 			// (b) 任务事件（完成/失败）正是产生通知的时机，转发后立即刷新未读数。
+			if !writeUnreadCount() {
+				return
+			}
+		case <-newNotifications:
 			if !writeUnreadCount() {
 				return
 			}

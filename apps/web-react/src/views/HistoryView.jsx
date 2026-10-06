@@ -105,6 +105,11 @@ function isAssistantTask(task) {
   return String(task?.type || "") === ASSISTANT_TYPE;
 }
 
+// AI 助手套图出的图是真实生图任务，历史里归到 AI 助手，但进度仍按任务订阅。
+function isLiveTask(task) {
+  return !isAssistantTask(task) || task?.params?._source === "assistant_commerce_set";
+}
+
 function isHistoryTaskDeletable(task) {
   return Boolean(historyTaskDeleteTarget(task));
 }
@@ -454,7 +459,7 @@ export function HistoryView() {
   const syncSubscriptions = useCallback((rows) => {
     const active = new Set(
       rows
-        .filter((task) => !isAssistantTask(task))
+        .filter(isLiveTask)
         .filter((task) =>
           ["queued", "running"].includes(String(task.status).toLowerCase()),
         )

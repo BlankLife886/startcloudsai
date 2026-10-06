@@ -155,6 +155,7 @@ export function AppShell() {
   if (canvasHome) mainClasses.push("main--canvas-home");
   if (canvasEditor) mainClasses.push("main--canvas-app");
   if (location.pathname === "/check-in") mainClasses.push("main--checkin");
+  if (location.pathname === "/notifications") mainClasses.push("main--notifications");
   if (
     location.pathname === "/text-to-image" ||
     location.pathname === "/assistant" ||
