@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocale } from "../i18n/index.js";
+import { GlobeGlyph3D } from "./NavGlyph3D.jsx";
 import "@react/legacy-styles/generated/components/layout/LocaleSwitcher.css";
 
 export function LocaleSwitcher() {
@@ -23,6 +24,7 @@ export function LocaleSwitcher() {
   return (
     <div ref={rootRef} className={`locale-switcher nav-locale-switch${open ? " is-open" : ""}`}>
       <button type="button" className="locale-switcher__trigger" title="语言 / Language / 語言" aria-label="语言 / Language / 語言" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        <GlobeGlyph3D />
         <span className="locale-switcher__face" aria-hidden="true">{current.short}</span>
       </button>
       {open && (

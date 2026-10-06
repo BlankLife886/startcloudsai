@@ -28,6 +28,7 @@ import {
 import { displayNotification, isAnnouncementNotification, notificationHref } from "../utils/notificationDisplay.js";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
 import { REFERRALS_ENABLED } from "../config/referrals.js";
+import { BellGlyph3D, TicketGlyph3D } from "./NavGlyph3D.jsx";
 import { useLiveAnnouncements } from "../features/announcements/useLiveAnnouncements.js";
 import { useReadAnnouncements } from "../features/announcements/announcementRead.js";
 import "@react/legacy-styles/generated/components/layout/NavBar.css";
@@ -1446,7 +1447,7 @@ export function NavBar() {
                 onClick={openRedeemDialog}
               >
                 <span className="nav-redeem-btn__icon" aria-hidden="true">
-                  <i className="bi bi-ticket-perforated" />
+                  <TicketGlyph3D />
                 </span>
                 <span className="nav-redeem-btn__label">兑换</span>
               </button>
@@ -1487,7 +1488,7 @@ export function NavBar() {
                         closeAccountMenu();
                       }}
                     >
-                      <i className="bi bi-bell" aria-hidden="true" />
+                      <BellGlyph3D />
                       {notificationUnread > 0 && (
                         <em className="nav-notify__badge">
                           {notificationUnread > 99 ? "99+" : notificationUnread}
