@@ -2298,8 +2298,9 @@ function InfiniteCanvasPage() {
         if (!project) return message.error(t("canvas.projectPage.notFound"));
         const hide = message.loading(t("canvas.projectPage.exporting"), 0);
         try {
-            await exportCanvasProjects([project], project.title || t("canvas.title"));
-            message.success(t("canvas.projectPage.exported"));
+            const { missingAssets } = await exportCanvasProjects([project], project.title || t("canvas.title"));
+            if (missingAssets) message.warning(t("canvas.export.partial", { missing: missingAssets }));
+            else message.success(t("canvas.projectPage.exported"));
         } catch (error) {
             console.error(error);
             message.error(t("canvas.sidePanel.exportFailed"));

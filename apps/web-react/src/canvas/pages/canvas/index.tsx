@@ -167,11 +167,26 @@ export default function CanvasPage() {
         }
     };
 
+    const exportProjects = async (list: CanvasProject[], fileName: string) => {
+        if (!list.length) return;
+        const hide = message.loading(t("canvas.export.exporting"), 0);
+        try {
+            const { missingAssets } = await exportCanvasProjects(list, fileName);
+            if (missingAssets) message.warning(t("canvas.export.partial", { missing: missingAssets }));
+            else message.success(t("canvas.export.exported", { count: list.length }));
+        } catch (error) {
+            console.error(error);
+            message.error(t("canvas.export.failed"));
+        } finally {
+            hide();
+        }
+    };
+
     const projectActions: CanvasHomeProjectActions = {
         onOpen: (project, event) => launchProject(project.id, project.title, event),
         onRename: (project) => startEditing(project.id, project.title),
         onDuplicate: (project) => void duplicateProjects([project]),
-        onExport: (project) => void exportCanvasProjects([project], project.title || t("canvas.export.defaultProjectName")),
+        onExport: (project) => void exportProjects([project], project.title || t("canvas.export.defaultProjectName")),
         onDelete: (project) => setDeleteIds([project.id]),
     };
 
@@ -309,7 +324,7 @@ export default function CanvasPage() {
                         hydrated={hydrated}
                         quota={quota}
                         onCreate={(event) => void createAndEnter(event)}
-                        onExportMany={(list) => void exportCanvasProjects(list, t("canvas.homePage.library.exportName", { count: list.length }))}
+                        onExportMany={(list) => void exportProjects(list, t("canvas.homePage.library.exportName", { count: list.length }))}
                         onDuplicateMany={(list) => void duplicateProjects(list)}
                         onDeleteMany={(list) => setDeleteIds(list.map((project) => project.id))}
                         {...projectActions}

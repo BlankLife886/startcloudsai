@@ -388,7 +388,7 @@ export default {
             editEyebrow: "编辑信息", editTitle: "编辑画布名称", editDescription: "修改画布名称，节点和连线不会受影响。", nameLabel: "画布名称", namePlaceholder: "输入画布名称",
             deleteEyebrow: "删除确认", deleteTitle: "删除这张画布？", deleteDescription: "将删除 {{count}} 个画布，里面的节点和连线也会一起移除。", moreCount: "还有 {{count}} 个",
         },
-        export: { defaultProjectName: "无限画布", defaultNodesName: "画布元素", item: "元素" },
+        export: { defaultProjectName: "无限画布", defaultNodesName: "画布元素", item: "元素", exporting: "正在导出画布…", exported: "已导出 {{count}} 个画布", partial: "已导出，{{missing}} 个文件无法读取已跳过", failed: "导出失败，请重试" },
         sync: {
             saveFailed: "「{{name}}」云端保存失败，更改已保留在本地并标记为未同步",
             saveRecovered: "云端保存已恢复，本地更改已同步",

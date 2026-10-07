@@ -388,7 +388,7 @@ export default {
             editEyebrow: "Edit details", editTitle: "Edit canvas name", editDescription: "Change the canvas name. Nodes and connections stay as they are.", nameLabel: "Canvas name", namePlaceholder: "Enter a canvas name",
             deleteEyebrow: "Delete confirmation", deleteTitle: "Delete this canvas?", deleteDescription: "This will delete {{count}} canvases along with their nodes and connections.", moreCount: "{{count}} more",
         },
-        export: { defaultProjectName: "Infinite Canvas", defaultNodesName: "Canvas elements", item: "Element" },
+        export: { defaultProjectName: "Infinite Canvas", defaultNodesName: "Canvas elements", item: "Element", exporting: "Exporting canvases…", exported: "Exported {{count}} canvas(es)", partial: "Exported; skipped {{missing}} unreadable file(s)", failed: "Export failed, please try again" },
         sync: {
             saveFailed: "Cloud save for \"{{name}}\" failed; your changes are kept locally and marked as unsynced",
             saveRecovered: "Cloud saving recovered; local changes are synced again",

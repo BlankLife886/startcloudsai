@@ -36,13 +36,11 @@ export async function exportCanvasProjects(projects: CanvasProject[], fileName =
             return { project, files };
         }),
     );
-    if (missingAssets.length) {
-        throw new Error(`Canvas export could not read ${missingAssets.length} referenced file(s)`);
-    }
-
     const data: CanvasExportFile = { app: "infinite-canvas", version: 3, exportedAt: new Date().toISOString(), projects: exportedProjects };
     const zip = await createZip([{ name: "projects.json", data: JSON.stringify(data, null, 2) }, ...zipFiles]);
     saveAs(zip, `${safeFileName(fileName)}.zip`);
+    // 个别文件读不到（云端已删除/过期）时跳过它，不让整个导出失败。
+    return { missingAssets: missingAssets.length };
 }
 
 export async function exportCanvasNodes(nodes: CanvasNodeData[], fileName = i18n.t("canvas.export.defaultNodesName")) {
