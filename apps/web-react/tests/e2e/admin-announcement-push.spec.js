@@ -28,12 +28,12 @@ async function mockAnnouncements(page, { failFirstPush = false } = {}) {
     return fulfillJson(route, updated)
   })
   await page.goto(`${adminURL}/admin/content`)
-  await expect(page.getByRole('heading', { name: '在线更新公告', exact: true })).toBeVisible()
+  await expect(card(page, '在线更新公告')).toBeVisible()
   return { pushes }
 }
 
 function card(page, title) {
-  return page.locator('.ann-card').filter({ has: page.getByRole('heading', { name: title, exact: true }) })
+  return page.locator('.ann-table .el-table__body-wrapper tr').filter({ has: page.locator('.ann-cell-title strong', { hasText: title }) })
 }
 
 test('admin confirms an immediate push and sees the latest push time', async ({ page }) => {
@@ -51,7 +51,7 @@ test('admin confirms an immediate push and sees the latest push time', async ({ 
   await confirmation.getByRole('button', { name: '立即推送', exact: true }).click()
   await expect.poll(() => state.pushes.length).toBe(1)
   expect(state.pushes[0]).toEqual({ id: 'live', method: 'POST' })
-  await expect(live.getByText(/最近推送/)).toBeVisible()
+  await expect(live.locator('.ann-push-time')).toBeVisible()
   await expect(page.getByText('已发起推送，在线页面将自动更新', { exact: true })).toBeVisible()
   await expect(live.getByRole('button', { name: '立即推送', exact: true })).toBeEnabled()
 })
@@ -63,7 +63,7 @@ test('only currently visible announcements can be pushed', async ({ page }) => {
     await expect(card(page, title).getByRole('button', { name: '立即推送', exact: true })).toBeDisabled()
   }
   await page.setViewportSize({ width: 1280, height: 720 })
-  const overflow = await page.locator('.ann-card').evaluateAll(cards => cards.some(item => item.scrollWidth > item.clientWidth + 1))
+  const overflow = await page.locator('.ann-cell-title').evaluateAll(cells => cells.some(item => item.scrollWidth > item.clientWidth + 1))
   expect(overflow).toBe(false)
 })
 
@@ -77,8 +77,8 @@ test('a failed push retains the announcement and allows retry', async ({ page })
     await expect(live.getByRole('button', { name: '立即推送', exact: true })).toBeEnabled()
     if (attempt === 1) {
       await expect(page.locator('.el-message--error')).toBeVisible()
-      await expect(live.getByText(/最近推送/)).toHaveCount(0)
+      await expect(live.locator('.ann-push-time')).toHaveCount(0)
     }
   }
-  await expect(live.getByText(/最近推送/)).toBeVisible()
+  await expect(live.locator('.ann-push-time')).toBeVisible()
 })

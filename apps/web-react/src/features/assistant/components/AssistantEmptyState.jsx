@@ -5,7 +5,7 @@ import { getAssistantSuggestions } from "../services/assistantApi.js";
 
 gsap.registerPlugin(useGSAP);
 
-const EMPTY_STATE = {
+export const EMPTY_STATE = {
   chat: {
     title: "今天想聊点什么？",
     hint: "只进行对话，不会调用图片生成",
@@ -41,7 +41,7 @@ const EMPTY_STATE = {
 
 const MAX_CARDS = 4;
 
-function emptyStateSuggestions(creationId, editableFilesEnabled, personal) {
+export function emptyStateSuggestions(creationId, editableFilesEnabled, personal) {
   const suggestions = (EMPTY_STATE[creationId] || EMPTY_STATE.chat).suggestions;
   const fixed = suggestions.filter((item) => !item.requiresEditableFiles || editableFilesEnabled);
   return [...personal, ...fixed].slice(0, MAX_CARDS);
@@ -50,7 +50,7 @@ function emptyStateSuggestions(creationId, editableFilesEnabled, personal) {
 // Personal "carry on" cards from the server (memory + recent sets). They run
 // in Agent mode, so Q&A shows them too and switches over when one is picked;
 // image mode keeps its fixed cards.
-function usePersonalSuggestions(creationId) {
+export function usePersonalSuggestions(creationId) {
   const [items, setItems] = useState([]);
   const offered = creationId !== "image";
   useEffect(() => {

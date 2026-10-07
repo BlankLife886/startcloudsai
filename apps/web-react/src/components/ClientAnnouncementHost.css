@@ -252,11 +252,6 @@
   background: rgb(10 10 14 / 0.05);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  cursor: pointer;
-}
-
-.client-announcement-modal__backdrop:disabled {
-  cursor: default;
 }
 
 .client-announcement {
@@ -295,14 +290,91 @@
   box-shadow: none;
 }
 
+/* 左文右图：图片区尺寸来自原图比例（--ann-media-w/h），文字列固定宽度并垂直居中 */
 .client-announcement-modal .client-announcement.is-image-left,
 .client-announcement-modal .client-announcement.is-image-right {
-  width: min(720px, 100%);
-  grid-template-columns: minmax(200px, 0.9fr) minmax(240px, 1fr);
+  --ann-side-h: min(var(--ann-media-h, 340px), calc(100dvh - 96px));
+  width: auto;
+  max-width: calc(100vw - 32px);
+  grid-template-columns: var(--ann-media-w, 420px) minmax(300px, 340px);
+  grid-template-rows: var(--ann-side-h);
+  transition: opacity 180ms ease;
+}
+
+.client-announcement-modal .client-announcement.is-image-right {
+  grid-template-columns: minmax(300px, 340px) var(--ann-media-w, 420px);
 }
 
 .client-announcement-modal .client-announcement.is-image-right .client-announcement__media {
   order: 2;
+}
+
+.client-announcement-modal .client-announcement.is-measuring {
+  opacity: 0;
+}
+
+.client-announcement.is-image-left .client-announcement__copy,
+.client-announcement.is-image-right .client-announcement__copy {
+  justify-content: center;
+  min-height: 0;
+  padding: 32px 28px;
+}
+
+.client-announcement.is-image-left .client-announcement__copy strong,
+.client-announcement.is-image-right .client-announcement__copy strong {
+  font-size: 20px;
+}
+
+.client-announcement.is-image-left .client-announcement__copy p,
+.client-announcement.is-image-right .client-announcement__copy p {
+  max-height: none;
+  min-height: 0;
+  flex: 0 1 auto;
+  font-size: 14px;
+}
+
+.client-announcement.is-image-left .client-announcement__actions,
+.client-announcement.is-image-right .client-announcement__actions {
+  flex: none;
+  margin-top: 12px;
+}
+
+/* 文字在左时，关闭按钮落在图片上，保持深色圆底可读 */
+.client-announcement.is-image-right .client-announcement__close {
+  background: rgb(12 12 16 / 0.52);
+}
+
+.client-announcement__media.is-side {
+  overflow: hidden;
+  height: 100%;
+  min-height: 0;
+}
+
+.client-announcement__media.is-side .client-announcement__media-bg {
+  position: absolute;
+  inset: -24px;
+  width: calc(100% + 48px);
+  height: calc(100% + 48px);
+  object-fit: cover;
+  filter: blur(22px) saturate(1.15);
+  opacity: 0;
+  transform: scale(1.04);
+}
+
+.client-announcement__media.is-side .client-announcement__media-img {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.client-announcement__media.is-side.fit-contain .client-announcement__media-bg {
+  opacity: 0.7;
+}
+
+.client-announcement__media.is-side.fit-contain .client-announcement__media-img {
+  object-fit: contain;
+  filter: drop-shadow(0 10px 24px rgb(0 0 0 / 0.35));
 }
 
 .client-announcement__close {
@@ -452,12 +524,6 @@
 .client-announcement.is-image-top .client-announcement__poster-cta:visited {
   color: #fff;
   text-decoration: none;
-}
-
-.client-announcement.is-image-left .client-announcement__media,
-.client-announcement.is-image-right .client-announcement__media {
-  height: auto;
-  min-height: 100%;
 }
 
 .client-announcement__media img {
@@ -624,10 +690,49 @@
   color: rgb(255 255 255 / 0.82);
 }
 
-@media (max-width: 720px) {
+@media (max-width: 760px) {
   .client-announcement-modal .client-announcement.is-image-left,
   .client-announcement-modal .client-announcement.is-image-right {
     width: min(420px, 100%);
+    max-height: calc(100dvh - 48px);
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, auto);
+  }
+
+  .client-announcement-modal .client-announcement.is-image-right .client-announcement__media {
+    order: 0;
+  }
+
+  .client-announcement__media.is-side {
+    height: auto;
+    aspect-ratio: var(--ann-media-ratio, 1.33);
+    max-height: 48dvh;
+  }
+
+  .client-announcement__media.is-side.fit-contain .client-announcement__media-bg {
+    opacity: 0;
+  }
+
+  .client-announcement__media.is-side.fit-contain .client-announcement__media-img {
+    object-fit: cover;
+    filter: none;
+  }
+
+  .client-announcement__media.is-side.m-fit-contain .client-announcement__media-bg {
+    opacity: 0.7;
+  }
+
+  .client-announcement__media.is-side.m-fit-contain .client-announcement__media-img {
+    object-fit: contain;
+  }
+
+  .client-announcement.is-image-left .client-announcement__copy,
+  .client-announcement.is-image-right .client-announcement__copy {
+    padding: 20px 20px 22px;
+    overflow: auto;
+  }
+
+  .client-announcement.is-image-right .client-announcement__close {
+    background: rgb(12 12 16 / 0.42);
   }
 }

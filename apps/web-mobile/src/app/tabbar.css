@@ -1,0 +1,120 @@
+/* 与 App 的 AppBottomNavigationBar 同款：悬浮深色胶囊 + 滑动选中块 */
+.m-tabbar {
+  position: fixed;
+  z-index: 40;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  padding: 8px 12px calc(8px + var(--m-safe-bottom));
+  pointer-events: none;
+}
+
+html[data-editing="true"] .m-tabbar,
+.m-tabs.is-stack .m-tabbar {
+  display: none;
+}
+
+.m-tabbar-track {
+  position: relative;
+  width: 100%;
+  max-width: 536px;
+  height: var(--m-tabbar-h);
+  display: grid;
+  grid-template-columns: repeat(var(--m-tab-count), minmax(0, 1fr));
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 28px;
+  background: linear-gradient(180deg, #30343c, #20242b);
+  box-shadow: 0 7px 20px -2px rgba(0, 0, 0, 0.18);
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html[data-prefers-color-scheme="dark"] .m-tabbar-track {
+  border-color: rgba(255, 255, 255, 0.26);
+  background: linear-gradient(180deg, #262a32, #191c23);
+  box-shadow: 0 7px 20px -2px rgba(0, 0, 0, 0.3);
+}
+
+.m-tabbar-pill {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(100% / var(--m-tab-count) - 8px);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 999px;
+  background: #484e58;
+  transform: translateX(calc(var(--m-tab-index) * (100% + 8px)));
+  transition: transform 260ms cubic-bezier(0.215, 0.61, 0.355, 1), scale 120ms ease;
+  pointer-events: none;
+}
+
+.m-tabbar-track.is-scrubbing .m-tabbar-pill {
+  scale: 1.025;
+  transition: transform 120ms ease-out, scale 120ms ease;
+}
+
+.m-tabbar-item {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 2px 4px 4px;
+  border: 0;
+  background: none;
+  color: #bbc1cb;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 160ms ease;
+}
+
+.m-tabbar-item.is-on {
+  color: #fff;
+}
+
+.m-tabbar-icon {
+  height: 34px;
+  display: grid;
+  place-items: center;
+  transition: transform 160ms cubic-bezier(0.215, 0.61, 0.355, 1);
+}
+
+.m-tabbar-item.is-on .m-tabbar-icon {
+  transform: scale(1.04);
+}
+
+.m-tabbar-ai {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #fff;
+  border-radius: 50%;
+  background: #fff;
+  color: #20242b;
+  transition: border-width 160ms ease;
+}
+
+.m-tabbar-item.is-featured.is-on .m-tabbar-ai {
+  border-width: 2px;
+}
+
+.m-tabbar-label {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-tabbar-item.is-on .m-tabbar-label {
+  font-weight: 600;
+}

@@ -152,7 +152,8 @@ func New(cfg *appconfig.Config) (*Storage, error) {
 func immutableDeliveryObjectKey(key string) bool {
 	key = strings.TrimLeft(strings.TrimSpace(key), "/")
 	if strings.HasPrefix(key, "tasks/") || strings.HasPrefix(key, "uploads/") ||
-		strings.HasPrefix(key, "announcement-images/") || strings.HasPrefix(key, "canvas-template-assets/") {
+		strings.HasPrefix(key, "announcement-images/") || strings.HasPrefix(key, "canvas-template-assets/") ||
+		strings.HasPrefix(key, "skill-images/") {
 		return true
 	}
 	for _, prefix := range []string{"prompt-covers/", "canvas-template-covers/", "ecommerce-catalog/"} {

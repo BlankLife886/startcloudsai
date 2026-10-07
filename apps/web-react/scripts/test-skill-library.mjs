@@ -37,6 +37,7 @@ const {
   invalidateSkillLibrary,
   listLocalSkills,
   loadSkillLibrary,
+  safeSkillImageUrl,
   updateSkill,
 } = await import("../src/features/skills/skillLibrary.js");
 const { SKILL_LOCAL_MAX } = await import("../src/features/skills/skillComposition.js");
@@ -118,4 +119,39 @@ test("expandSkillMentions expands a local @skill and never throws", async () => 
   assert.equal(library.signedIn, false);
   assert.equal(library.items.length, 1);
   assert.equal(library.items[0].storage, "local");
+});
+
+test("official skill images only load from this site's skill-images files", () => {
+  assert.equal(safeSkillImageUrl("/api/v1/files/skill-images/abc/cover-1.webp"), "/api/v1/files/skill-images/abc/cover-1.webp");
+  for (const bad of [
+    "https://evil.example/x.png",
+    "/api/v1/files/tasks/u/t/0.png",
+    "/api/v1/files/skill-images/../tasks/x.png",
+    'javascript:alert(1)',
+    "/api/v1/files/skill-images/a b.png",
+  ]) {
+    assert.equal(safeSkillImageUrl(bad), "", bad);
+  }
+});
+
+test("a local skill keeps its usage guide through create and update", async () => {
+  const created = await createSkill({ name: "柔光人像", instruction: "使用柔和顶光", usageGuide: "示例：\n@柔光人像 一只猫" });
+  assert.equal(created.usageGuide, "示例：\n@柔光人像 一只猫");
+  const updated = await updateSkill(created, { ...created, instruction: "使用柔和侧光" });
+  assert.equal(updated.usageGuide, "示例：\n@柔光人像 一只猫");
+  assert.equal(listLocalSkills()[0].usageGuide, "示例：\n@柔光人像 一只猫");
+});
+
+test("skill source links only accept https urls without credentials", async () => {
+  const { skillSourceUrlError } = await import("../src/features/skills/skillComposition.js");
+  assert.equal(skillSourceUrlError(""), "");
+  assert.equal(skillSourceUrlError("https://github.com/helloianneo/ian-xiaohei-illustrations"), "");
+  for (const bad of ["http://github.com/a/b", "javascript:alert(1)", "github.com/a/b", "https://u:p@github.com/a"]) {
+    assert.ok(skillSourceUrlError(bad), bad);
+  }
+});
+
+test("a local skill never carries a source link", async () => {
+  const created = await createSkill({ name: "带来源", instruction: "x", sourceUrl: "https://github.com/a/b" });
+  assert.equal(created.sourceUrl, "");
 });

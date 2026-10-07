@@ -77,6 +77,11 @@ export default defineConfig({
   server: {
     port: 3105,
     proxy: {
+      // 手机站（apps/web-mobile）独立运行在 3106，开发时与线上一样挂在同源 /m 下，共用登录 Cookie。
+      "^/m(?:/|$)": {
+        target: process.env.VITE_MOBILE_PROXY_TARGET || "http://127.0.0.1:3106",
+        ws: true,
+      },
       "^/v1(?:/|$)": {
         target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8000",
         changeOrigin: true,
@@ -108,6 +113,15 @@ export default defineConfig({
       "/api": {
         target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8000",
         changeOrigin: true,
+        // 局域网真机调试（npm run dev:lan）时页面来源是局域网 IP，不在后端写请求的 Origin 白名单里；
+        // 仅在这个开发入口把它改写成已允许的本机地址，后端与线上的校验不变。
+        ...(process.env.DEV_LAN_ORIGIN ? {
+          configure(proxy) {
+            proxy.on("proxyReq", (proxyReq) => {
+              if (proxyReq.getHeader("origin")) proxyReq.setHeader("origin", process.env.DEV_LAN_ORIGIN);
+            });
+          },
+        } : {}),
       },
       "/oauth": {
         target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8000",

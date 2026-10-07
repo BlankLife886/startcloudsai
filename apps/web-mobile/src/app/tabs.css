@@ -1,0 +1,14 @@
+.m-tabs {
+  --m-tabbar-h: 64px;
+  /* 内容底部需要给悬浮底栏让出的高度（栏高 + 上下各 8px 间距 + 安全区） */
+  --m-tabbar-space: calc(var(--m-tabbar-h) + 16px + var(--m-safe-bottom));
+}
+
+html[data-editing="true"] .m-tabs,
+.m-tabs.is-stack {
+  --m-tabbar-space: 0px;
+}
+
+.m-tab-page[hidden] {
+  display: none;
+}

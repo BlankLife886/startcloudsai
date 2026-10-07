@@ -59,9 +59,6 @@ for (const presentation of [
     await expect(announcement).toContainText(item.title)
     await expect(announcement.getByRole('link', { name: '查看活动', exact: true })).toHaveCount(0)
     await expect(announcement.getByRole('button', { name: '关闭', exact: true })).toBeVisible()
-    if (presentation.placement === 'modal') {
-      await expect(announcement.getByRole('button', { name: '关闭公告', exact: true })).toBeEnabled()
-    }
     await announcement.getByRole('button', { name: '关闭', exact: true }).click()
     await expect(announcement).toHaveCount(0)
 

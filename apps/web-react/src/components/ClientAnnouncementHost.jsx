@@ -212,6 +212,42 @@ function PromoBanner({ item, cta, onDismiss }) {
   );
 }
 
+// 左文右图：图片区按原图比例定尺寸。竖图做成窄高条、方图做成方块、横图做成宽矮块，
+// 文字列宽度固定，整张卡片的比例不会被极端尺寸的图片撑坏。
+// 原图比例超出图片区可接受范围太多时（超宽横幅、超长竖图）改为完整显示 + 同图模糊铺底，避免裁掉主体。
+function sideMediaBox(ratio) {
+  const r = Number.isFinite(ratio) && ratio > 0 ? ratio : 4 / 3;
+  const shape = r < 0.85 ? "portrait" : r <= 1.25 ? "square" : "landscape";
+  const height = shape === "portrait" ? 440 : shape === "square" ? 380 : 320;
+  const boxRatio = Math.min(1.56, Math.max(0.62, r));
+  const width = Math.round(height * boxRatio);
+  const fit = Math.abs(Math.log(r / boxRatio)) > 0.2 ? "contain" : "cover";
+  // 窄屏上下排列，图片区比例也做上下限，过高的竖图不会把文字挤出屏幕
+  const mobileRatio = Math.min(1.9, Math.max(0.9, r));
+  const mobileFit = Math.abs(Math.log(r / mobileRatio)) > 0.2 ? "contain" : "cover";
+  return { shape, width, height, fit, mobileRatio, mobileFit };
+}
+
+function SideMedia({ asset, title, box, onMeasure }) {
+  return (
+    <div
+      className={`client-announcement__media is-side fit-${box.fit} m-fit-${box.mobileFit}`}
+    >
+      <img className="client-announcement__media-bg" src={asset.url} alt="" aria-hidden="true" />
+      <img
+        className="client-announcement__media-img"
+        src={asset.url}
+        alt={asset.alt || title}
+        onLoad={(event) => {
+          const { naturalWidth, naturalHeight } = event.currentTarget;
+          if (naturalWidth && naturalHeight) onMeasure(naturalWidth / naturalHeight);
+        }}
+        onError={() => onMeasure(4 / 3)}
+      />
+    </div>
+  );
+}
+
 function AnnouncementCard({ item, cta, onDismiss }) {
   const { t } = useLocale();
   const placement = item.placement === "banner" ? "banner" : "modal";
@@ -236,6 +272,17 @@ function AnnouncementCard({ item, cta, onDismiss }) {
     if (!media.length) return;
     carousel.setIndex((value) => (value + delta + media.length) % media.length);
   };
+
+  const isSide = placement === "modal" && (layout === "image_left" || layout === "image_right") && Boolean(current);
+  const [sideRatio, setSideRatio] = useState(null);
+  useEffect(() => {
+    setSideRatio(null);
+    if (!isSide) return undefined;
+    // 图片迟迟不回来也要先把弹窗露出来，按 4:3 排版
+    const timer = window.setTimeout(() => setSideRatio((value) => value ?? 4 / 3), 1200);
+    return () => window.clearTimeout(timer);
+  }, [current?.url, isSide]);
+  const sideBox = isSide ? sideMediaBox(sideRatio ?? 4 / 3) : null;
 
   if (isPoster) {
     return (
@@ -279,7 +326,18 @@ function AnnouncementCard({ item, cta, onDismiss }) {
 
   return (
     <article
-      className={`client-announcement is-${placement} is-${layout.replaceAll("_", "-")}`}
+      className={[
+        "client-announcement",
+        `is-${placement}`,
+        `is-${layout.replaceAll("_", "-")}`,
+        sideBox ? `is-${sideBox.shape}` : "",
+        isSide && sideRatio == null ? "is-measuring" : "",
+      ].filter(Boolean).join(" ")}
+      style={sideBox ? {
+        "--ann-media-w": `${sideBox.width}px`,
+        "--ann-media-h": `${sideBox.height}px`,
+        "--ann-media-ratio": sideBox.mobileRatio,
+      } : undefined}
     >
       {canClose ? (
         <button
@@ -348,6 +406,8 @@ function AnnouncementCard({ item, cta, onDismiss }) {
             ))}
           </div>
         </div>
+      ) : current && isSide ? (
+        <SideMedia asset={current} title={item.title} box={sideBox} onMeasure={setSideRatio} />
       ) : current ? (
         <div className="client-announcement__media">
           <img src={current.url} alt={current.alt || item.title} />
@@ -442,16 +502,8 @@ export function ClientAnnouncementHost() {
           aria-modal="true"
           aria-label={modal.title || "公告"}
         >
-          <button
-            type="button"
-            className="client-announcement-modal__backdrop"
-            aria-label="关闭公告"
-            disabled={modal.allowClose === false && Boolean(modalCta)}
-            onClick={() => {
-              if (modal.allowClose === false && modalCta) return;
-              dismiss(modal);
-            }}
-          />
+          {/* 遮罩只挡住页面，不响应点击：公告必须通过关闭按钮或行动按钮离开 */}
+          <div className="client-announcement-modal__backdrop" aria-hidden="true" />
           <AnnouncementCard item={modal} cta={modalCta} onDismiss={() => dismiss(modal)} />
         </div>
       ) : null}

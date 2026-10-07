@@ -53,6 +53,12 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 		return settings.CanvasProjectRequestMaxMB << 20
 	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates/") && strings.HasSuffix(path, "/cover"):
 		return promptCoverMaxBytes + (1 << 20)
+	case strings.HasPrefix(path, "/api/v1/admin/image-skills/") &&
+		(strings.HasSuffix(path, "/cover") || strings.HasSuffix(path, "/samples")):
+		return promptCoverMaxBytes + (1 << 20)
+	case strings.HasPrefix(path, "/api/v1/admin/image-skills/") && strings.HasSuffix(path, "/references"):
+		// 参考资料合计 512 KB，JSON 转义（中文、换行）后可能翻倍，留足余量。
+		return 2 << 20
 	case path == "/api/v1/admin/canvas-workflow-templates/analyze":
 		return 2 << 20
 	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates"):
@@ -632,6 +638,12 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/image-skills", s.adminOnly(s.adminCreateImageSkill))
 	admin.PATCH("/image-skills/:id", s.adminOnly(s.adminPatchImageSkill))
 	admin.DELETE("/image-skills/:id", s.adminOnly(s.adminDeleteImageSkill))
+	admin.PUT("/image-skills/:id/cover", s.adminOnly(s.adminUploadImageSkillCover))
+	admin.DELETE("/image-skills/:id/cover", s.adminOnly(s.adminDeleteImageSkillCover))
+	admin.POST("/image-skills/:id/samples", s.adminOnly(s.adminAddImageSkillSample))
+	admin.PUT("/image-skills/:id/samples", s.adminOnly(s.adminSetImageSkillSamples))
+	admin.GET("/image-skills/:id/references", s.adminOnly(s.adminImageSkillReferences))
+	admin.PUT("/image-skills/:id/references", s.adminOnly(s.adminSetImageSkillReferences))
 	admin.GET("/prompt-categories", s.adminOnly(s.adminPromptCategories))
 	admin.POST("/prompt-categories", s.adminOnly(s.adminCreatePromptCategory))
 	admin.PATCH("/prompt-categories/:id", s.adminOnly(s.adminPatchPromptCategory))

@@ -1,0 +1,689 @@
+/* 文生图：与 App 的 CreateScreen 一致——对话式时间线，最新一组贴着底部输入区 */
+.m-create {
+  min-height: 100dvh;
+}
+
+/* ── 顶栏 ─────────────────────────────────────────────── */
+
+.m-header {
+  position: fixed;
+  z-index: 20;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--m-header-h) + var(--m-safe-top));
+  padding: var(--m-safe-top) 12px 0 4px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  background: var(--m-bg);
+}
+
+.m-header h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.m-header-back {
+  justify-self: start;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--m-text);
+  font-size: 22px;
+}
+
+.m-header-side {
+  justify-self: end;
+}
+
+.m-main {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding-top: calc(var(--m-header-h) + var(--m-safe-top));
+  padding-bottom: calc(var(--m-composer-h, 190px) + var(--m-tabbar-space, 0px));
+}
+
+/* ── 时间线 ─────────────────────────────────────────────── */
+
+/* 加载更早作品时由页面自己保持位置，关掉浏览器的滚动锚定免得两边一起补偿 */
+.m-timeline {
+  overflow-anchor: none;
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px 16px;
+}
+
+.m-turn {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 22px;
+}
+
+.m-turn:last-child {
+  margin-bottom: 0;
+}
+
+/* 提示词气泡：靠右，右下角收尖 */
+.m-turn-prompt {
+  align-self: flex-end;
+  max-width: 78%;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0 0 10px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 18px 18px 6px 18px;
+  background: var(--m-accent-soft);
+  color: var(--m-text);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: left;
+  white-space: pre-wrap;
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.m-turn-prompt.is-expanded {
+  -webkit-line-clamp: unset;
+}
+
+.m-turn-result.is-single {
+  display: flex;
+}
+
+/* 多张：横向滑动，每张固定高度 */
+.m-turn-result.is-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin: 0 -16px;
+  padding: 0 16px;
+  overscroll-behavior-x: contain;
+}
+
+.m-turn-result.is-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.m-slot {
+  position: relative;
+  flex: 0 0 auto;
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  border-radius: var(--m-radius-lg);
+  background: var(--m-surface-2);
+  -webkit-touch-callout: none;
+}
+
+.m-turn-result.is-strip .m-slot {
+  max-width: none;
+}
+
+.m-slot.is-image img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 240ms ease;
+}
+
+.m-slot.is-image.is-loaded img {
+  opacity: 1;
+}
+
+.m-slot.is-image {
+  transition: transform 120ms ease;
+}
+
+.m-slot.is-image:active {
+  transform: scale(0.985);
+}
+
+.m-slot-seconds {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  text-shadow: 0 0 10px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.m-slot.is-pending {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--m-text-2);
+  font-size: 14px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.m-slot.is-pending .adm-dot-loading {
+  font-size: 22px;
+}
+
+.m-slot.is-failed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 20px;
+  color: var(--m-text-2);
+  text-align: center;
+}
+
+.m-slot.is-failed svg {
+  font-size: 34px;
+  color: var(--m-danger);
+}
+
+.m-slot.is-failed strong {
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--m-text);
+}
+
+.m-slot.is-failed small {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--m-danger);
+}
+
+.m-turn-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--m-text-2);
+}
+
+.m-turn-meta span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-turn-meta span:last-child:not(:first-child) {
+  flex: 0 0 auto;
+}
+
+.m-skeleton-bubble {
+  align-self: flex-end;
+  --width: 62%;
+  --height: 44px;
+  --border-radius: 18px;
+  margin-bottom: 10px;
+}
+
+.m-skeleton-image {
+  --height: 260px;
+  --border-radius: 24px;
+}
+
+.m-feed-end {
+  min-height: 40px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  color: var(--m-text-3);
+}
+
+.m-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+  font-size: 15px;
+  color: var(--m-text);
+  text-align: center;
+}
+
+/* ── 底部：未完成提交提示 + 参数条 + 输入卡片 ─────────────── */
+
+.m-composer {
+  position: fixed;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  bottom: var(--m-tabbar-space, 0px);
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px calc(12px + var(--m-composer-safe, var(--m-safe-bottom)));
+  background: var(--m-bg);
+  transition: transform 160ms ease;
+}
+
+/* 内容滚到输入区下面时柔和过渡，不出现硬边 */
+.m-composer::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 16px;
+  background: linear-gradient(to bottom, transparent, var(--m-bg));
+  pointer-events: none;
+}
+
+html[data-editing="true"] .m-composer {
+  --m-composer-safe: 0px;
+}
+
+.m-pending-notice {
+  margin-bottom: 8px;
+  border-radius: var(--m-radius-md);
+}
+
+.m-notice-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.m-notice-actions button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-weight: 600;
+  color: inherit;
+}
+
+.m-dock {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 10px 12px;
+  border: 0;
+  border-radius: var(--m-radius-md);
+  background: none;
+  color: var(--m-text);
+  text-align: left;
+}
+
+.m-dock:disabled {
+  opacity: 0.5;
+}
+
+.m-dock > svg {
+  flex: 0 0 auto;
+  color: var(--m-text-2);
+}
+
+.m-dock-items {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.m-dock-items::-webkit-scrollbar {
+  display: none;
+}
+
+.m-dock-items i {
+  margin: 0 8px;
+  font-style: normal;
+  font-weight: 700;
+  color: var(--m-text-3);
+}
+
+.m-composer-card {
+  margin-top: 8px;
+  padding: 8px 8px 8px 4px;
+  border: 1px solid var(--m-hairline);
+  border-radius: var(--m-radius-lg);
+  background: var(--m-surface);
+  box-shadow: var(--m-card-shadow);
+}
+
+.m-composer-text {
+  width: 100%;
+  min-height: calc(1.5em * 3 + 12px);
+  max-height: calc(1.5em * 3 + 12px);
+  display: block;
+  padding: 4px 10px 8px 14px;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: none;
+  color: var(--m-text);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.5;
+  transition: max-height 160ms ease;
+}
+
+.m-composer.is-focused .m-composer-text {
+  max-height: calc(1.5em * 5 + 12px);
+  field-sizing: content;
+}
+
+.m-composer-text::placeholder {
+  color: var(--m-text-2);
+}
+
+.m-composer-text[readonly] {
+  color: var(--m-text-2);
+}
+
+.m-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 4px;
+}
+
+.m-add-ref {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--m-line);
+  border-radius: 14px;
+  background: var(--m-bg);
+  color: var(--m-text);
+  font-size: 22px;
+}
+
+.m-add-ref:disabled {
+  opacity: 0.4;
+}
+
+.m-ref {
+  position: relative;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  margin: 0;
+}
+
+.m-ref img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  border-radius: 12px;
+}
+
+.m-ref-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 2px solid var(--m-surface);
+  border-radius: 50%;
+  background: var(--m-text);
+  color: var(--m-surface);
+}
+
+.m-ref-more {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: var(--m-surface-3);
+  color: var(--m-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* 主按钮：墨黑胶囊“消耗 N 积分” */
+.m-send {
+  flex: 0 0 auto;
+  max-width: 180px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 0 16px 0 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 999px;
+  background: var(--m-accent);
+  color: var(--m-on-accent);
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.m-send:disabled {
+  opacity: 0.6;
+}
+
+.m-tabs:not(.is-stack) .m-composer {
+  --m-composer-safe: 0px;
+}
+
+/* ── 生成设置弹层 ─────────────────────────────────────── */
+
+.m-settings {
+  padding-bottom: 12px;
+}
+
+.m-set-row {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.m-set-title {
+  flex: 0 0 72px;
+  padding-top: 7px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.m-set-options {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.m-set-options.is-rail {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin-right: -16px;
+  padding-right: 16px;
+}
+
+.m-set-options.is-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.m-set-chip {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--m-surface-2);
+  color: var(--m-text);
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.m-set-chip.is-on {
+  background: var(--m-text);
+  color: var(--m-surface);
+}
+
+.m-count {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--m-radius-md);
+  background: var(--m-surface-2);
+}
+
+.m-count button {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--m-text);
+  font-size: 16px;
+}
+
+.m-count button:disabled {
+  color: var(--m-text-3);
+}
+
+.m-count strong {
+  min-width: 44px;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.m-set-subtitle {
+  margin: 20px 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.m-toggle-list {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--m-radius-md);
+  background: var(--m-surface-2);
+}
+
+.m-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.m-toggle-row + .m-toggle-row {
+  border-top: 1px solid var(--m-line);
+}
+
+.m-toggle-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.m-toggle-row strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.m-toggle-row small {
+  font-size: 12px;
+  color: var(--m-text-2);
+}
+
+/* ── 参考图弹层 ─────────────────────────────────────── */
+
+.m-refs-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 6px 0 16px;
+}
+
+.m-refs-item {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  margin: 0;
+}
+
+.m-refs-item img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  border-radius: 18px;
+}
+
+.m-refs-add {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--m-line);
+  border-radius: 18px;
+  background: var(--m-bg);
+  color: var(--m-text);
+  font-size: 24px;
+}
+
+/* ── 确认弹窗与大图 ─────────────────────────────────────── */
+
+.m-cost-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.m-cost-confirm div {
+  display: flex;
+  justify-content: space-between;
+}
+
+.m-cost-confirm span {
+  color: var(--m-text-3);
+}
+

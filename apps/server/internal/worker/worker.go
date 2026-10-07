@@ -906,7 +906,7 @@ func (w *Worker) callSub2APIClient(ctx context.Context, task *store.Task, client
 	if model != "" {
 		client = client.WithImageModel(model)
 	}
-	finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
+	finalPrompt, size := prompt.Compile(task.Type, w.taskPromptWithSkills(ctx, task), task.Params)
 	quality := taskParamString(task.Params, "quality")
 	inputData, err := w.loadInputImageBytes(ctx, task.InputKeys)
 	if err != nil {
@@ -1127,7 +1127,7 @@ func (w *Worker) createCRUNImageTasks(
 	if taskParamBool(task.Params, "_crunSubmissionUncertain") {
 		return taskParamStrings(task.Params, "_crunTaskIds"), &crun.SubmissionUncertainError{Err: errors.New("a previous submission was not acknowledged")}
 	}
-	finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
+	finalPrompt, size := prompt.Compile(task.Type, w.taskPromptWithSkills(ctx, task), task.Params)
 	aspectRatio := normalizeCRUNAspectRatio(task.Params, size)
 	resolution := normalizeCRUNResolutionForAspect(normalizeCRUNResolution(task.Params), aspectRatio)
 	if _, err := w.loadInputImageBytes(ctx, task.InputKeys); err != nil {
@@ -1268,7 +1268,7 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 	switch provider.Adapter {
 	case modelconfig.AdapterOpenAI:
 		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, timeout, w.Cfg.C2APrivateNetworkAllowed()).WithAsyncImageEdits()
-		finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
+		finalPrompt, size := prompt.Compile(task.Type, w.taskPromptWithSkills(ctx, task), task.Params)
 		imageOptions := c2a.ImageOptions{
 			Quality:               taskParamString(task.Params, "quality"),
 			InputFidelity:         taskParamString(task.Params, "inputFidelity"),
@@ -1351,7 +1351,7 @@ func (w *Worker) callUpstreamLegacy(ctx context.Context, task *store.Task, provi
 		return w.callCRUN(ctx, task, onImage)
 	}
 	client := w.frozenC2AClient(frozen)
-	finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
+	finalPrompt, size := prompt.Compile(task.Type, w.taskPromptWithSkills(ctx, task), task.Params)
 	imageOptions := c2a.ImageOptions{
 		Quality:               taskParamString(task.Params, "quality"),
 		InputFidelity:         taskParamString(task.Params, "inputFidelity"),
@@ -1644,6 +1644,30 @@ func (w *Worker) wakeUserTaskQueue(userID uuid.UUID) {
 // urlPattern H1 脱敏：过滤上游错误文案中的 URL，避免泄漏内部地址。
 var urlPattern = regexp.MustCompile(`https?://\S+`)
 
+// 裸域名、IP 和存储/网关的请求追踪号同样不能出现在给用户看的文案里。
+var (
+	hostPattern    = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|net|org|io|ai|cn|dev|app|cloud|co|xyz|top|me|site|tech|info|biz|asia|cc|tv|us|uk|jp|hk|tw|sg|vip|link|pro|online|store|live|run|sh|local|internal|localhost)(?::\d+)?\b`)
+	ipPattern      = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b`)
+	traceIDPattern = regexp.MustCompile(`(?i)\b(?:request ?id|host ?id|x-amz-[a-z-]+|trace ?id|cf-ray)\s*[:=]\s*[^\s,;]*,?`)
+)
+
+// upstreamInfraMessage 把存储、网络这类内部基础设施错误换成用户能看懂的一句话，原文只进日志。
+func upstreamInfraMessage(lower string) string {
+	switch {
+	case strings.Contains(lower, "nosuchkey") || strings.Contains(lower, "specified key does not exist"):
+		return "图片文件已失效或不存在，请重新上传后重试"
+	case strings.Contains(lower, "operation error s3") || strings.Contains(lower, "nosuchbucket") ||
+		strings.Contains(lower, "accessdenied") || strings.Contains(lower, "signaturedoesnotmatch"):
+		return "文件存储暂时不可用，请稍后重试"
+	case strings.Contains(lower, "dial tcp") || strings.Contains(lower, "no such host") ||
+		strings.Contains(lower, "connection refused") || strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "x509:") || strings.Contains(lower, "tls handshake") ||
+		strings.Contains(lower, "server misbehaving"):
+		return "生成服务连接失败，请稍后重试"
+	}
+	return ""
+}
+
 // sanitizeUpstreamMessage 保留上游业务错误 message，但去掉其中的 URL。
 func sanitizeUpstreamMessage(msg string) string {
 	cleaned := strings.TrimSpace(urlPattern.ReplaceAllString(msg, ""))
@@ -1655,6 +1679,9 @@ func sanitizeUpstreamMessage(msg string) string {
 		}
 	}
 	lower := strings.ToLower(cleaned)
+	if friendly := upstreamInfraMessage(lower); friendly != "" {
+		return friendly
+	}
 	if canvasAgentLooksLikeAuthFailure(cleaned) {
 		return "对话模型认证失效，请检查后台模型服务商配置后重试"
 	}
@@ -1668,6 +1695,10 @@ func sanitizeUpstreamMessage(msg string) string {
 	if strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype html") {
 		return "生成服务暂时不可用，请稍后重试"
 	}
+	cleaned = traceIDPattern.ReplaceAllString(cleaned, "")
+	cleaned = hostPattern.ReplaceAllString(cleaned, "")
+	cleaned = ipPattern.ReplaceAllString(cleaned, "")
+	cleaned = strings.Trim(strings.Join(strings.Fields(cleaned), " "), " ,;:")
 	if cleaned == "" {
 		return "生成服务返回错误，请稍后重试"
 	}

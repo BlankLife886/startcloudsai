@@ -13,23 +13,28 @@ import (
 
 type imageSkillIn struct {
 	// Slug 是调用名；留空则由名称推导（推不出时用 id 兜底）。
-	Slug        string   `json:"slug"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Instruction string   `json:"instruction"`
-	TaskTypes   []string `json:"taskTypes"`
-	Category    *string  `json:"category"`
-	Tags        []string `json:"tags"`
-	CoverKey    *string  `json:"coverKey"`
-	Sort        *int     `json:"sort"`
-	Active      *bool    `json:"active"`
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+	// Description 为 nil 表示不修改；传空串表示清空。
+	Description *string `json:"description"`
+	Instruction string  `json:"instruction"`
+	// UsageGuide 为 nil 表示不修改；传空串表示清空。
+	UsageGuide *string `json:"usageGuide"`
+	// SourceURL 为 nil 表示不修改；传空串表示清空。只有后台可写。
+	SourceURL *string  `json:"sourceUrl"`
+	TaskTypes []string `json:"taskTypes"`
+	Category  *string  `json:"category"`
+	Tags      []string `json:"tags"`
+	Sort      *int     `json:"sort"`
+	Active    *bool    `json:"active"`
 }
 
 func imageSkillDict(skill store.ImageSkill) gin.H {
 	return gin.H{
 		"id": skill.ID, "slug": skill.Slug, "name": skill.Name, "description": skill.Description,
-		"instruction": skill.Instruction, "taskTypes": skill.TaskTypes,
-		"category": skill.Category, "tags": skill.Tags, "coverKey": skill.CoverKey,
+		"instruction": skill.Instruction, "usageGuide": skill.UsageGuide, "sourceUrl": skill.SourceURL,
+		"taskTypes": skill.TaskTypes, "category": skill.Category, "tags": skill.Tags,
+		"coverUrl": promptCoverURL(skill.CoverKey), "sampleImages": skillSampleImageDicts(skill.SampleImages),
 		"sort": skill.Sort, "active": skill.Active, "official": skill.Official(),
 		"createdAt": skill.CreatedAt, "updatedAt": skill.UpdatedAt,
 	}
@@ -39,6 +44,26 @@ func imageSkillDicts(skills []store.ImageSkill) []gin.H {
 	out := make([]gin.H, 0, len(skills))
 	for _, skill := range skills {
 		out = append(out, imageSkillDict(skill))
+	}
+	return out
+}
+
+// userImageSkillDict 是用户端看到的技能。官方技能不下发正文：用户只拿到名称、
+// 简介和使用说明，`@` 调用时由服务端在请求模型前展开（见 skillmention 包）。
+func userImageSkillDict(skill store.ImageSkill) gin.H {
+	dict := imageSkillDict(skill)
+	if skill.Official() {
+		delete(dict, "instruction")
+		delete(dict, "taskTypes")
+		delete(dict, "sort")
+	}
+	return dict
+}
+
+func userImageSkillDicts(skills []store.ImageSkill) []gin.H {
+	out := make([]gin.H, 0, len(skills))
+	for _, skill := range skills {
+		out = append(out, userImageSkillDict(skill))
 	}
 	return out
 }
@@ -55,8 +80,14 @@ func applyImageSkillInput(base *store.ImageSkill, body imageSkillIn, creating bo
 	if creating || body.Instruction != "" {
 		base.Instruction = body.Instruction
 	}
-	if creating || body.Description != "" {
-		base.Description = body.Description
+	if body.Description != nil {
+		base.Description = *body.Description
+	}
+	if body.UsageGuide != nil {
+		base.UsageGuide = *body.UsageGuide
+	}
+	if body.SourceURL != nil {
+		base.SourceURL = *body.SourceURL
 	}
 	if body.TaskTypes != nil {
 		base.TaskTypes = body.TaskTypes
@@ -64,11 +95,9 @@ func applyImageSkillInput(base *store.ImageSkill, body imageSkillIn, creating bo
 	if body.Tags != nil {
 		base.Tags = body.Tags
 	}
+	// Category 为 nil（未传或 null）表示不修改；传空串表示清空，由 NormalizeSkill 收敛成 NULL。
 	if body.Category != nil {
 		base.Category = body.Category
-	}
-	if body.CoverKey != nil {
-		base.CoverKey = body.CoverKey
 	}
 	if body.Sort != nil {
 		base.Sort = *body.Sort
@@ -102,7 +131,16 @@ func (s *Server) adminListImageSkills(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"items": imageSkillDicts(skills), "taskTypes": store.SkillTaskTypes})
+	counts, err := store.CountSkillReferences(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items := imageSkillDicts(skills)
+	for index, skill := range skills {
+		items[index]["referenceCount"] = counts[skill.ID]
+	}
+	ok(c, gin.H{"items": items, "taskTypes": store.SkillTaskTypes})
 }
 
 func (s *Server) adminCreateImageSkill(c *gin.Context, _ *store.User) {
@@ -157,13 +195,22 @@ func (s *Server) adminDeleteImageSkill(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	if err := store.DeleteSkill(c.Request.Context(), s.St.Pool, skillID, nil); err != nil {
+	ctx := c.Request.Context()
+	current, err := store.GetSkill(ctx, s.St.Pool, skillID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if err := store.DeleteSkill(ctx, s.St.Pool, skillID, nil); err != nil {
 		if errors.Is(err, store.ErrSkillNotFound) {
 			fail(c, apperr.E("not_found", "Skill 不存在", 404))
 			return
 		}
 		fail(c, err)
 		return
+	}
+	if current != nil {
+		s.deleteSkillImages(ctx, store.SkillImageKeys(*current))
 	}
 	ok(c, gin.H{"deleted": true})
 }
@@ -195,7 +242,7 @@ func (s *Server) myImageSkills(c *gin.Context) {
 		}
 	}
 	ok(c, gin.H{
-		"items": imageSkillDicts(skills),
+		"items": userImageSkillDicts(skills),
 		// 云端配额：前端据此决定还能不能"保存到云端"。
 		"owned": owned, "maxOwned": store.SkillMaxOwnedPerUser,
 	})
@@ -225,8 +272,8 @@ func (s *Server) createMyImageSkill(c *gin.Context) {
 	}
 	skill := store.ImageSkill{OwnerUserID: &user.ID}
 	applyImageSkillInput(&skill, body, true)
-	// 排序位和封面只由后台词库使用，用户自建不开放。
-	skill.Sort, skill.CoverKey = 0, nil
+	// 排序位、封面和来源地址只由后台词库使用，用户自建不开放。
+	skill.Sort, skill.CoverKey, skill.SourceURL = 0, nil, ""
 	created, err := store.InsertSkill(ctx, s.St.Pool, &skill)
 	if err != nil {
 		failSkillValidation(c, err)
@@ -266,6 +313,7 @@ func (s *Server) patchMyImageSkill(c *gin.Context) {
 	// 自建 skill 恒为启用：用户列表按 active 过滤，一旦停用就再也看不到、
 	// 也改不回来了。不想用了直接删。
 	current.Active = true
+	current.SourceURL = ""
 	updated, err := store.UpdateSkill(ctx, s.St.Pool, current)
 	if err != nil {
 		failSkillValidation(c, err)

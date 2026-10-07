@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test:diagnostic-export": "node --test --experimental-strip-types scripts/test-diagnostic-export.mjs",
+    "test:skill-markdown": "node --test --experimental-strip-types scripts/test-skill-markdown.mjs",
     "test:pagination": "node --test --experimental-strip-types scripts/test-pagination.mjs",
     "test:model-reasoning": "node --test scripts/test-model-reasoning.mjs",
     "test:task-auto-refresh": "node --test --experimental-strip-types scripts/test-task-auto-refresh.mjs",

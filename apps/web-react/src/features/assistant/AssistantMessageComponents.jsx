@@ -1709,11 +1709,10 @@ function AssistantErrorCard({ error, canRetry, onRetry, onEditPrompt }) {
   }).filter(Boolean);
   return (
     <section className={`assistant-error-card is-${error.kind}`} role="alert">
-      <span className="assistant-error-icon"><i className={`bi ${error.icon}`} aria-hidden="true" /></span>
       <div className="assistant-error-text">
         <strong>{error.title}</strong>
         <p>{error.hint}</p>
-        {error.detail && error.detail !== error.title ? <small title={error.detail}>{error.detail}</small> : null}
+        {error.detail ? <small>{error.detail}</small> : null}
       </div>
       {buttons.length ? (
         <footer>

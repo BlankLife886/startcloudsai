@@ -36,6 +36,8 @@ const props = withDefaults(
      * 普通弹窗保持默认（body 中部滚动）。
      */
     nestedScroll?: boolean
+    /** 透传 el-dialog 的 before-close：点 ×、Esc、遮罩关闭前调用，调用 done() 才真正关闭。 */
+    beforeClose?: (done: () => void) => void
   }>(),
   {
     width: '520px',
@@ -115,6 +117,7 @@ function onConfirm() {
     :close-on-click-modal="closeOnClickModal"
     :align-center="alignCenter"
     :show-close="showClose"
+    :before-close="beforeClose"
     class="admin-dialog"
     :class="[panelClass, { 'is-nested-scroll': nestedScroll }]"
     modal-class="admin-dialog-modal"

@@ -311,6 +311,31 @@ function clearAnnDecor() {
   annForm.decorImageUrl = "";
 }
 
+// 时间选择器给出的是本机时区的无时区字符串；服务端会把无时区时间当 UTC，
+// 所以提交前统一转成带时区的 ISO，回显时再转回本机时间。
+function toLocalPickerValue(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function toIsoOrNull(value: string) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+const localTimezoneLabel = (() => {
+  const offset = -new Date().getTimezoneOffset();
+  const sign = offset >= 0 ? "+" : "-";
+  const abs = Math.abs(offset);
+  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mm = String(abs % 60).padStart(2, "0");
+  return `UTC${sign}${hh}:${mm}`;
+})();
+
 function announcementConfigOf(item: Announcement): AnnouncementConfig {
   const defaults = defaultAnnouncementForm();
   const config = item.config || {};
@@ -346,11 +371,8 @@ function announcementState(item: Announcement) {
   return { key: "live" as const, label: "展示中", tone: "success" as const };
 }
 
-function scheduleLabel(item: Announcement) {
-  if (!item.startsAt && !item.endsAt) return "长期有效";
-  const start = item.startsAt ? formatShortTime(item.startsAt) : "立即开始";
-  const end = item.endsAt ? formatShortTime(item.endsAt) : "不限期";
-  return `${start} → ${end}`;
+function annRowClass({ row }: { row: unknown }) {
+  return `is-${announcementState(row as Announcement).key}`;
 }
 
 function openAnnCreate() {
@@ -367,8 +389,8 @@ function openAnnEdit(item: Announcement) {
     title: item.title || "",
     body: item.body || "",
     active: item.active ?? true,
-    startsAt: item.startsAt || "",
-    endsAt: item.endsAt || "",
+    startsAt: toLocalPickerValue(item.startsAt),
+    endsAt: toLocalPickerValue(item.endsAt),
     ...config,
     assets: config.assets.map((asset) => ({
       url: asset.url,
@@ -404,12 +426,18 @@ async function submitAnn() {
     ElMessage.warning("行动按钮文案和跳转地址需要同时填写");
     return;
   }
+  const startsAt = toIsoOrNull(annForm.startsAt);
+  const endsAt = toIsoOrNull(annForm.endsAt);
+  if (startsAt && endsAt && new Date(endsAt) <= new Date(startsAt)) {
+    ElMessage.warning("结束时间需要晚于开始时间");
+    return;
+  }
   const body = {
     title: annForm.title.trim(),
     body: annForm.body.trim(),
     active: annForm.active,
-    startsAt: annForm.startsAt || null,
-    endsAt: annForm.endsAt || null,
+    startsAt,
+    endsAt,
     config: {
       placement: annForm.placement,
       layout: annForm.layout,
@@ -1033,72 +1061,111 @@ onBeforeUnmount(() => clearInterval(announcementClock));
         @retry="retryCurrent"
       />
 
-      <div v-loading="currentLoading" class="content-board">
-        <div
+      <div
+        v-loading="currentLoading"
+        class="content-board"
+        :class="{ 'is-table': activeTab === 'announcements' && announcementPagination.items.value.length }"
+      >
+        <el-table
           v-if="activeTab === 'announcements' && announcementPagination.items.value.length"
-          class="ann-grid"
+          :data="announcementPagination.items.value"
+          row-key="id"
+          height="100%"
+          class="ann-table"
+          :row-class-name="annRowClass"
         >
-          <article
-            v-for="item in announcementPagination.items.value"
-            :key="item.id"
-            class="ann-card"
-            :class="`is-${announcementState(item).key}`"
-          >
-            <header class="ann-card__head">
-              <div>
-                <h3>{{ item.title }}</h3>
-                <p>{{ item.body || "未填写正文" }}</p>
+          <el-table-column label="公告" min-width="240">
+            <template #default="{ row }">
+              <div class="ann-cell-title">
+                <strong :title="row.title">{{ row.title }}</strong>
+                <span :title="row.body || ''">{{ row.body || "未填写正文" }}</span>
               </div>
-              <span
-                class="status-chip"
-                :class="`is-${announcementState(item).tone}`"
-              >
-                {{ announcementState(item).label }}
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="88">
+            <template #default="{ row }">
+              <span class="status-chip" :class="`is-${announcementState(row as Announcement).tone}`">
+                {{ announcementState(row as Announcement).label }}
               </span>
-            </header>
-            <div class="ann-card__meta">
-              <span>{{ PLACEMENT_LABELS[announcementConfigOf(item).placement] }}</span>
-              <span>{{ FREQUENCY_LABELS[announcementConfigOf(item).frequency] }}</span>
-              <span>{{ LAYOUT_LABELS[announcementConfigOf(item).layout] }}</span>
-              <span>{{ scheduleLabel(item) }}</span>
-              <span class="tnum">{{ formatShortTime(item.createdAt) }}</span>
-              <span v-if="item.pushedAt" class="ann-push-time">最近推送 {{ formatShortTime(item.pushedAt) }}</span>
-            </div>
-            <footer class="ann-card__foot">
-              <label class="content-switch">
-                <span>{{ item.active === false ? "已停用" : "已启用" }}</span>
-                <el-switch
-                  :model-value="item.active !== false"
-                  :loading="switchingAnnId === item.id"
-                  :disabled="!!pushingAnnId"
-                  @change="toggleAnnActive(item, Boolean($event))"
-                />
-              </label>
-              <div class="content-actions">
-                <span :title="announcementState(item).key === 'live' ? '让在线用户立即看到这条公告' : '仅展示中的公告可推送，请先启用并确认展示时间'">
-                  <el-button
-                    type="primary"
-                    plain
-                    :icon="Bell"
-                    :loading="pushingAnnId === item.id"
-                    :disabled="announcementState(item).key !== 'live' || !!switchingAnnId || (!!pushingAnnId && pushingAnnId !== item.id)"
-                    @click="pushAnn(item)"
-                  >立即推送</el-button>
-                </span>
-                <el-button :icon="Clock" @click="openAnnTimeline(item)">时间线</el-button>
-                <el-button :icon="EditPen" :disabled="!!pushingAnnId" @click="openAnnEdit(item)">编辑</el-button>
+            </template>
+          </el-table-column>
+          <el-table-column label="展示形式" width="112">
+            <template #default="{ row }">
+              <div class="ann-cell-stack">
+                <span>{{ PLACEMENT_LABELS[announcementConfigOf(row as Announcement).placement] }}</span>
+                <small v-if="announcementConfigOf(row as Announcement).placement !== 'banner'">
+                  {{ LAYOUT_LABELS[announcementConfigOf(row as Announcement).layout] }}
+                </small>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="展示频率" width="140">
+            <template #default="{ row }">
+              {{ FREQUENCY_LABELS[announcementConfigOf(row as Announcement).frequency] }}
+            </template>
+          </el-table-column>
+          <el-table-column label="投放时间" width="148">
+            <template #default="{ row }">
+              <div class="ann-cell-stack tnum">
+                <span>{{ row.startsAt ? formatShortTime(row.startsAt) : "立即开始" }}</span>
+                <small>至 {{ row.endsAt ? formatShortTime(row.endsAt) : "长期有效" }}</small>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="推送 / 创建" width="128">
+            <template #default="{ row }">
+              <div class="ann-cell-stack tnum">
+                <span v-if="row.pushedAt" class="ann-push-time">{{ formatShortTime(row.pushedAt) }}</span>
+                <span v-else class="ann-muted">未推送</span>
+                <small>创建 {{ formatShortTime(row.createdAt) }}</small>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="启用" width="64" align="center">
+            <template #default="{ row }">
+              <el-switch
+                :model-value="row.active !== false"
+                :loading="switchingAnnId === row.id"
+                :disabled="!!pushingAnnId"
+                :aria-label="row.active === false ? '启用公告' : '停用公告'"
+                @change="toggleAnnActive(row as Announcement, Boolean($event))"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="272" fixed="right">
+            <template #default="{ row }">
+              <div class="ann-row-actions">
+                <el-tooltip
+                  :content="announcementState(row as Announcement).key === 'live' ? '让在线用户立即看到这条公告' : '仅展示中的公告可推送，请先启用并确认展示时间'"
+                  placement="top"
+                >
+                  <span>
+                    <el-button
+                      text
+                      type="primary"
+                      size="small"
+                      :icon="Bell"
+                      :loading="pushingAnnId === row.id"
+                      :disabled="announcementState(row as Announcement).key !== 'live' || !!switchingAnnId || (!!pushingAnnId && pushingAnnId !== row.id)"
+                      @click="pushAnn(row as Announcement)"
+                    >立即推送</el-button>
+                  </span>
+                </el-tooltip>
+                <el-button text size="small" :icon="Clock" @click="openAnnTimeline(row as Announcement)">时间线</el-button>
+                <el-button text size="small" :icon="EditPen" :disabled="!!pushingAnnId" @click="openAnnEdit(row as Announcement)">编辑</el-button>
                 <el-button
+                  text
                   type="danger"
-                  plain
+                  size="small"
                   :icon="Delete"
                   aria-label="删除公告"
                   :disabled="!!pushingAnnId"
-                  @click="removeAnn(item)"
-                />
+                  @click="removeAnn(row as Announcement)"
+                >删除</el-button>
               </div>
-            </footer>
-          </article>
-        </div>
+            </template>
+          </el-table-column>
+        </el-table>
 
         <div
           v-else-if="activeTab === 'changelog' && changelogPagination.items.value.length"
@@ -1208,8 +1275,9 @@ onBeforeUnmount(() => clearInterval(announcementClock));
       :title="annEditingId ? '编辑公告配置' : '发布公告'"
       subtitle="左侧编辑，右侧实时预览用户端效果"
       :icon="Bell"
-      width="min(1280px, calc(100vw - 40px))"
+      width="min(1480px, calc(100vw - 32px))"
       panel-class="announcement-dialog"
+      :close-on-click-modal="false"
       nested-scroll
       confirm-text="保存"
       :confirm-loading="annSubmitting"
@@ -1221,36 +1289,38 @@ onBeforeUnmount(() => clearInterval(announcementClock));
           <section class="announcement-editor__section">
             <header class="announcement-editor__head">
               <strong>文案</strong>
-              <small>用户第一眼看到的标题和正文</small>
+              <small>用户第一眼看到的内容</small>
             </header>
-            <el-form-item label="标题" required>
-              <el-input
-                v-model="annForm.title"
-                maxlength="200"
-                show-word-limit
-                placeholder="简洁说明本次公告"
-              />
-            </el-form-item>
-            <el-form-item label="正文" required>
-              <el-input
-                v-model="annForm.body"
-                type="textarea"
-                :autosize="{ minRows: 7, maxRows: 14 }"
-                maxlength="3000"
-                show-word-limit
-                placeholder="支持换行，建议只保留与用户相关的重点内容"
-              />
-            </el-form-item>
+            <div class="announcement-editor__fields">
+              <el-form-item label="标题" required class="is-full">
+                <el-input
+                  v-model="annForm.title"
+                  maxlength="200"
+                  show-word-limit
+                  placeholder="简洁说明本次公告"
+                />
+              </el-form-item>
+              <el-form-item label="正文" required class="is-full">
+                <el-input
+                  v-model="annForm.body"
+                  type="textarea"
+                  :autosize="{ minRows: 6, maxRows: 12 }"
+                  maxlength="3000"
+                  show-word-limit
+                  placeholder="支持换行，建议只保留与用户相关的重点内容"
+                />
+              </el-form-item>
+            </div>
           </section>
 
           <section class="announcement-editor__section">
             <header class="announcement-editor__head">
               <strong>展示</strong>
-              <small>决定公告出现的位置和版式</small>
+              <small>公告出现的位置和版式</small>
             </header>
-            <div class="announcement-editor__row">
+            <div class="announcement-editor__fields">
               <el-form-item label="展示位置">
-                <el-radio-group v-model="annForm.placement">
+                <el-radio-group v-model="annForm.placement" class="ann-segmented">
                   <el-radio-button value="modal">居中弹窗</el-radio-button>
                   <el-radio-button value="banner">顶部横幅</el-radio-button>
                 </el-radio-group>
@@ -1265,16 +1335,11 @@ onBeforeUnmount(() => clearInterval(announcementClock));
                   />
                 </el-select>
               </el-form-item>
-            </div>
-            <div
-              v-if="showContentImages || showDecorImage"
-              class="announcement-editor__media"
-              :class="{
-                'is-single': !showContentImages || !showDecorImage,
-                'is-multi': annAssetLimit > 1,
-              }"
-            >
-              <el-form-item v-if="showContentImages" :label="contentImageLabel">
+              <el-form-item
+                v-if="showContentImages"
+                :label="contentImageLabel"
+                class="is-full"
+              >
                 <div
                   class="ann-upload-grid"
                   :class="{ 'is-single': annAssetLimit === 1 }"
@@ -1322,40 +1387,42 @@ onBeforeUnmount(() => clearInterval(announcementClock));
                   @change="onAnnAssetsPick"
                 />
               </el-form-item>
-              <el-form-item v-if="showDecorImage" label="横幅配图">
-                <div
-                  class="ann-upload-tile is-single"
-                  :class="{ 'has-image': Boolean(annForm.decorImageUrl) }"
-                >
-                  <button
-                    v-if="annForm.decorImageUrl"
-                    type="button"
-                    class="ann-upload-tile__preview"
-                    @click="triggerAnnDecorPick"
+              <el-form-item v-if="showDecorImage" label="横幅配图" class="is-full">
+                <div class="ann-upload-grid is-single">
+                  <div
+                    class="ann-upload-tile is-single"
+                    :class="{ 'has-image': Boolean(annForm.decorImageUrl) }"
                   >
-                    <img :src="annForm.decorImageUrl" alt="横幅配图" />
-                  </button>
-                  <button
-                    v-else
-                    type="button"
-                    class="ann-upload-empty"
-                    :disabled="annDecorUploading"
-                    @click="triggerAnnDecorPick"
-                  >
-                    <el-icon :size="20"><Picture /></el-icon>
-                    <strong>{{
-                      annDecorUploading ? "上传中…" : "上传配图"
-                    }}</strong>
-                    <small>显示在顶部横幅左侧</small>
-                  </button>
-                  <button
-                    v-if="annForm.decorImageUrl"
-                    type="button"
-                    class="ann-upload-tile__remove"
-                    @click="clearAnnDecor"
-                  >
-                    移除
-                  </button>
+                    <button
+                      v-if="annForm.decorImageUrl"
+                      type="button"
+                      class="ann-upload-tile__preview"
+                      @click="triggerAnnDecorPick"
+                    >
+                      <img :src="annForm.decorImageUrl" alt="横幅配图" />
+                    </button>
+                    <button
+                      v-else
+                      type="button"
+                      class="ann-upload-empty"
+                      :disabled="annDecorUploading"
+                      @click="triggerAnnDecorPick"
+                    >
+                      <el-icon :size="20"><Picture /></el-icon>
+                      <strong>{{
+                        annDecorUploading ? "上传中…" : "上传配图"
+                      }}</strong>
+                      <small>显示在顶部横幅左侧（可选）</small>
+                    </button>
+                    <button
+                      v-if="annForm.decorImageUrl"
+                      type="button"
+                      class="ann-upload-tile__remove"
+                      @click="clearAnnDecor"
+                    >
+                      移除
+                    </button>
+                  </div>
                 </div>
                 <input
                   ref="annDecorInputRef"
@@ -1365,38 +1432,41 @@ onBeforeUnmount(() => clearInterval(announcementClock));
                   @change="onAnnDecorPick"
                 />
               </el-form-item>
-            </div>
-            <div
-              v-if="showCarouselOptions"
-              class="announcement-editor__row"
-            >
-              <el-form-item label="自动轮播">
-                <el-switch v-model="annForm.carouselEnabled" />
-              </el-form-item>
-              <el-form-item label="轮播间隔">
-                <el-input-number
-                  v-model="annForm.carouselIntervalMs"
-                  :min="1500"
-                  :max="20000"
-                  :step="500"
-                  controls-position="right"
-                />
-                <span class="form-unit">毫秒</span>
-              </el-form-item>
+              <template v-if="showCarouselOptions">
+                <el-form-item label="自动轮播">
+                  <div class="ann-switch-field">
+                    <span>{{ annForm.carouselEnabled ? "自动切换图片" : "仅手动切换" }}</span>
+                    <el-switch v-model="annForm.carouselEnabled" />
+                  </div>
+                </el-form-item>
+                <el-form-item label="轮播间隔">
+                  <div class="ann-unit-field">
+                    <el-input-number
+                      v-model="annForm.carouselIntervalMs"
+                      :min="1500"
+                      :max="20000"
+                      :step="500"
+                      :disabled="!annForm.carouselEnabled"
+                      controls-position="right"
+                    />
+                    <span>毫秒</span>
+                  </div>
+                </el-form-item>
+              </template>
             </div>
           </section>
 
           <section class="announcement-editor__section">
             <header class="announcement-editor__head">
-              <strong>行动</strong>
-              <small>按钮文案、跳转和再次出现的规则</small>
+              <strong>按钮</strong>
+              <small>行动按钮跳转和关闭方式</small>
             </header>
-            <div class="announcement-editor__row is-3">
+            <div class="announcement-editor__fields">
               <el-form-item label="行动按钮文案">
                 <el-input
                   v-model="annForm.ctaText"
                   maxlength="40"
-                  placeholder="例如：立即体验"
+                  placeholder="例如：立即体验（可选）"
                 />
               </el-form-item>
               <el-form-item label="跳转地址">
@@ -1410,13 +1480,45 @@ onBeforeUnmount(() => clearInterval(announcementClock));
                   v-model="annForm.closeText"
                   maxlength="40"
                   placeholder="我知道了"
+                  :disabled="!annForm.allowClose"
                 />
               </el-form-item>
-            </div>
-            <div class="announcement-editor__row is-3">
               <el-form-item label="允许关闭">
-                <el-switch v-model="annForm.allowClose" />
+                <div class="ann-switch-field">
+                  <span>{{ annForm.allowClose ? "显示关闭按钮" : "只能通过行动按钮离开" }}</span>
+                  <el-switch v-model="annForm.allowClose" />
+                </div>
               </el-form-item>
+            </div>
+          </section>
+
+          <section class="announcement-editor__section">
+            <header class="announcement-editor__head">
+              <strong>投放</strong>
+              <small>生效时间、出现频率和是否启用</small>
+            </header>
+            <div class="announcement-editor__fields">
+              <el-form-item label="开始时间">
+                <el-date-picker
+                  v-model="annForm.startsAt"
+                  type="datetime"
+                  value-format="YYYY-MM-DDTHH:mm:ss"
+                  format="YYYY-MM-DD HH:mm"
+                  placeholder="立即开始"
+                />
+              </el-form-item>
+              <el-form-item label="结束时间">
+                <el-date-picker
+                  v-model="annForm.endsAt"
+                  type="datetime"
+                  value-format="YYYY-MM-DDTHH:mm:ss"
+                  format="YYYY-MM-DD HH:mm"
+                  placeholder="长期有效"
+                />
+              </el-form-item>
+              <p class="ann-field-hint is-full">
+                时间按本机时区（{{ localTimezoneLabel }}）计算，到开始时间后已打开网站的用户会自动弹出。
+              </p>
               <el-form-item label="展示频率">
                 <el-select v-model="annForm.frequency">
                   <el-option
@@ -1442,41 +1544,18 @@ onBeforeUnmount(() => clearInterval(announcementClock));
                 v-else-if="annForm.frequency === 'dismiss_hours'"
                 label="再次展示间隔"
               >
-                <el-input-number
-                  v-model="annForm.dismissHours"
-                  :min="1"
-                  :max="720"
-                  controls-position="right"
-                />
-                <span class="form-unit">小时</span>
+                <div class="ann-unit-field">
+                  <el-input-number
+                    v-model="annForm.dismissHours"
+                    :min="1"
+                    :max="720"
+                    controls-position="right"
+                  />
+                  <span>小时</span>
+                </div>
               </el-form-item>
-            </div>
-          </section>
-
-          <section class="announcement-editor__section">
-            <header class="announcement-editor__head">
-              <strong>投放</strong>
-              <small>生效时间和是否对用户可见</small>
-            </header>
-            <div class="announcement-editor__row is-3">
-              <el-form-item label="开始时间">
-                <el-date-picker
-                  v-model="annForm.startsAt"
-                  type="datetime"
-                  value-format="YYYY-MM-DDTHH:mm:ss"
-                  placeholder="立即开始"
-                />
-              </el-form-item>
-              <el-form-item label="结束时间">
-                <el-date-picker
-                  v-model="annForm.endsAt"
-                  type="datetime"
-                  value-format="YYYY-MM-DDTHH:mm:ss"
-                  placeholder="长期有效"
-                />
-              </el-form-item>
-              <el-form-item label="启用公告">
-                <div class="announcement-publish-switch">
+              <el-form-item label="启用公告" class="is-full">
+                <div class="ann-switch-field is-wide">
                   <div>
                     <strong>{{ annForm.active ? "已启用" : "已停用" }}</strong>
                     <span>关闭后用户端不会读取到这条公告</span>
@@ -1796,14 +1875,92 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   overscroll-behavior: contain;
 }
 
-.ann-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
-  align-content: start;
-  gap: 12px;
+.content-board.is-table {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.ann-card,
+.ann-table {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.ann-table :deep(.el-table__cell) {
+  padding: 12px 0;
+  vertical-align: middle;
+}
+
+.ann-table :deep(th.el-table__cell) {
+  padding: 10px 0;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.ann-table :deep(tr.is-disabled td:not(:last-child)),
+.ann-table :deep(tr.is-ended td:not(:last-child)) {
+  opacity: 0.62;
+}
+
+.ann-table :deep(tr.is-disabled td:last-child),
+.ann-table :deep(tr.is-ended td:last-child) {
+  opacity: 1;
+}
+
+.ann-cell-title {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ann-cell-title strong,
+.ann-cell-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ann-cell-title strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ann-cell-title span {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.ann-cell-stack {
+  display: grid;
+  gap: 2px;
+  line-height: 1.45;
+}
+
+.ann-cell-stack small,
+.ann-muted {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.ann-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.ann-row-actions .el-button {
+  padding: 4px 6px;
+}
+
+.ann-row-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
 .log-card {
   display: flex;
   min-width: 0;
@@ -1816,22 +1973,8 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   box-shadow: inset 3px 0 0 transparent;
 }
 
-.ann-card:hover,
 .log-card:hover {
   border-color: var(--border-strong);
-}
-
-.ann-card.is-live {
-  box-shadow: inset 3px 0 0 var(--success);
-}
-
-.ann-card.is-pending {
-  box-shadow: inset 3px 0 0 var(--warning);
-}
-
-.ann-card.is-disabled,
-.ann-card.is-ended {
-  opacity: 0.78;
 }
 
 .log-card {
@@ -1846,14 +1989,6 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   background: color-mix(in srgb, var(--warning-soft) 45%, var(--surface-2));
 }
 
-.ann-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.ann-card__head h3,
 .log-card__body h3 {
   margin: 0;
   font-size: 15px;
@@ -1868,7 +2003,6 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   white-space: nowrap;
 }
 
-.ann-card__head p,
 .log-card__body p {
   margin: 6px 0 0;
   color: var(--ink-2);
@@ -1894,16 +2028,6 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   font-weight: 650;
 }
 
-.ann-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.ann-card__foot,
 .log-card__foot {
   display: flex;
   align-items: center;
@@ -2028,7 +2152,7 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 .announcement-editor {
   display: grid;
   flex: 1;
-  grid-template-columns: minmax(0, 1fr) 400px;
+  grid-template-columns: minmax(0, 1fr) 440px;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -2041,48 +2165,47 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 18px 20px 20px;
+  padding: 4px 28px;
 }
 
 .announcement-editor__form :deep(.el-form-item) {
-  margin-bottom: 14px;
+  min-width: 0;
+  margin-bottom: 0;
 }
 
 .announcement-editor__form :deep(.el-form-item__label) {
+  margin-bottom: 6px;
   color: var(--ink-2);
   font-weight: 650;
+  line-height: 20px;
 }
 
 .announcement-editor__form :deep(.el-input),
 .announcement-editor__form :deep(.el-textarea),
 .announcement-editor__form :deep(.el-select),
 .announcement-editor__form :deep(.el-date-editor),
-.announcement-editor__form :deep(.el-input-number),
-.announcement-editor__form :deep(.el-radio-group) {
+.announcement-editor__form :deep(.el-date-editor.el-input),
+.announcement-editor__form :deep(.el-input-number) {
   width: 100%;
 }
 
+/* 每个分组：左侧标题列 + 右侧两列等宽字段网格，所有输入框左右对齐 */
 .announcement-editor__section {
-  padding: 0 0 4px;
-  margin: 0 0 6px;
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  gap: 24px;
+  padding: 22px 0;
 }
 
-.announcement-editor__section:not(:last-child) {
-  margin-bottom: 14px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border);
-}
-
-.announcement-editor__section:last-child {
-  margin-bottom: 0;
-  padding-bottom: 0;
-  border-bottom: 0;
+.announcement-editor__section + .announcement-editor__section {
+  border-top: 1px solid var(--border);
 }
 
 .announcement-editor__head {
   display: grid;
-  gap: 2px;
-  margin-bottom: 12px;
+  align-content: start;
+  gap: 4px;
+  padding-top: 2px;
 
   strong,
   small {
@@ -2091,55 +2214,112 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 
   strong {
     color: var(--ink);
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 750;
   }
 
   small {
     color: var(--ink-3);
     font-size: 12px;
-    line-height: 1.45;
+    line-height: 1.5;
   }
 }
 
-.announcement-publish-switch span {
-  color: var(--ink-3);
-  font-size: 12px;
-}
-
-.announcement-editor__row {
+.announcement-editor__fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 16px;
+  gap: 16px 20px;
+  align-items: start;
 }
 
-.announcement-editor__row.is-3 {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.announcement-editor__fields > .is-full {
+  grid-column: 1 / -1;
 }
 
-.announcement-editor__row :deep(.el-select),
-.announcement-editor__row :deep(.el-date-editor) {
+.ann-segmented {
+  display: flex;
   width: 100%;
 }
 
-.announcement-editor__media {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0 16px;
+.ann-segmented :deep(.el-radio-button) {
+  flex: 1;
 }
 
-.announcement-editor__media:not(.is-single) {
-  grid-template-columns: minmax(0, 1.4fr) minmax(180px, 0.6fr);
+.ann-segmented :deep(.el-radio-button__inner) {
+  width: 100%;
+}
+
+.ann-field-hint {
+  margin: -6px 0 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ann-switch-field {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--el-border-radius-base, 8px);
+  background: var(--surface-2);
+
+  > span {
+    overflow: hidden;
+    color: var(--ink-2);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.ann-switch-field.is-wide {
+  min-height: 56px;
+  padding: 0 16px;
+
+  > div {
+    display: grid;
+    gap: 2px;
+    line-height: 1.4;
+  }
+
+  strong {
+    color: var(--ink);
+    font-size: 13px;
+  }
+
+  span {
+    color: var(--ink-3);
+    font-size: 12px;
+  }
+}
+
+.ann-unit-field {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+
+  > span {
+    flex: none;
+    color: var(--ink-3);
+    font-size: 12px;
+  }
 }
 
 .ann-upload-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  width: 100%;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .ann-upload-grid.is-single {
-  grid-template-columns: minmax(0, 280px);
+  grid-template-columns: minmax(0, 320px);
 }
 
 .ann-upload-tile,
@@ -2154,7 +2334,7 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 .ann-upload-tile__preview {
   display: block;
   width: 100%;
-  height: 108px;
+  height: 120px;
   object-fit: cover;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -2180,7 +2360,7 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 
 .ann-upload-empty {
   display: grid;
-  min-height: 108px;
+  min-height: 120px;
   place-items: center;
   align-content: center;
   gap: 4px;
@@ -2223,29 +2403,6 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   font-size: 11px;
   font-weight: 650;
   cursor: pointer;
-}
-
-.form-unit {
-  margin-left: 8px;
-  color: var(--ink-3);
-  font-size: 12px;
-}
-
-.announcement-publish-switch {
-  display: flex;
-  min-height: 32px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.announcement-publish-switch > div {
-  display: grid;
-  gap: 2px;
-}
-
-.announcement-publish-switch strong {
-  font-size: 13px;
 }
 
 .announcement-preview-stage {
@@ -2516,17 +2673,18 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   color: rgba(255, 255, 255, 0.78);
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1240px) {
   .announcement-editor {
-    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-columns: minmax(0, 1fr) 360px;
   }
 
-  .announcement-editor__row.is-3 {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .announcement-editor__media {
+  .announcement-editor__section {
     grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .ann-upload-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2538,11 +2696,10 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 
   .announcement-editor__form {
     overflow: visible;
+    padding: 4px 16px;
   }
 
-  .announcement-editor__row,
-  .announcement-editor__row.is-3,
-  .announcement-editor__media {
+  .announcement-editor__fields {
     grid-template-columns: 1fr;
   }
 
@@ -2624,8 +2781,8 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 
 <style>
 .admin-dialog.announcement-dialog.el-dialog {
-  width: min(1280px, calc(100vw - 40px)) !important;
-  max-width: calc(100vw - 40px);
-  height: min(880px, calc(100dvh - 40px));
+  width: min(1480px, calc(100vw - 32px)) !important;
+  max-width: calc(100vw - 32px);
+  height: min(920px, calc(100dvh - 32px));
 }
 </style>

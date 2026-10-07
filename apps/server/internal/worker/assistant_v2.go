@@ -172,6 +172,10 @@ func (w *Worker) assistantAgentPlatformFor(
 			ConversationID: &conversationID, InputKeys: assistantV2ReferenceKeys(run.Params),
 		}))
 	}
+	referenceSources := w.assistantSkillReferenceSources(ctx, run)
+	if len(referenceSources) > 0 {
+		extra = append(extra, assistanttools.NewSkillReferenceManifest(w.St.Pool, referenceSources))
+	}
 	registry, err := assistantv2.Registry(w.St, time.Now, false, extra...)
 	if err != nil {
 		return nil, err
@@ -211,6 +215,7 @@ func (w *Worker) assistantAgentPlatformFor(
 		}
 		instructions.WriteString(w.assistantV2CompetitorNote(ctx, run))
 	}
+	instructions.WriteString(assistanttools.SkillReferencePrompt(referenceSources))
 	return &assistantAgentPlatform{
 		registry: registry, tools: tools, permissions: permissions,
 		instructions: instructions.String(), chatOnly: chatOnly,

@@ -18,7 +18,7 @@ export const SKILL_ENTRY_POINTS = [
 /** 走 tasksApi.createTask 的入口任务类型；助手与画布有各自的发送路径。 */
 export const SKILL_TASK_TYPES = SKILL_ENTRY_POINTS.map((item) => item.taskType).filter(Boolean);
 
-/** 存储位置：本地（仅此浏览器）/ 云端（账号下同步，有配额）/ 官方（只读）。 */
+/** 存储位置：本地（仅此浏览器）/ 云端（账号下同步，有配额）/ 内置（只读）。 */
 export const SKILL_STORAGE_LOCAL = "local";
 export const SKILL_STORAGE_CLOUD = "cloud";
 export const SKILL_STORAGE_OFFICIAL = "official";
@@ -26,7 +26,7 @@ export const SKILL_STORAGE_OFFICIAL = "official";
 export const SKILL_STORAGE_LABELS = {
   [SKILL_STORAGE_LOCAL]: "本地",
   [SKILL_STORAGE_CLOUD]: "云端",
-  [SKILL_STORAGE_OFFICIAL]: "官方",
+  [SKILL_STORAGE_OFFICIAL]: "内置",
 };
 
 /** 本地技能上限；云端上限由服务端返回（默认 5）。 */
@@ -36,6 +36,25 @@ export const SKILL_CLOUD_MAX_DEFAULT = 5;
 export const SKILL_NAME_MAX_LENGTH = 64;
 export const SKILL_DESCRIPTION_MAX_LENGTH = 500;
 export const SKILL_INSTRUCTION_MAX_LENGTH = 4000;
+/** 使用说明：告诉用户怎么用这个技能，官方技能对用户只展示它。 */
+export const SKILL_USAGE_GUIDE_MAX_LENGTH = 2000;
+export const SKILL_SOURCE_URL_MAX_LENGTH = 300;
+
+/** 来源地址：只接受带主机名、不带账号密码的 https 链接，与服务端一致。空串合法。 */
+export function skillSourceUrlError(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  let parsed = null;
+  try {
+    parsed = new URL(text);
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password || text.length > SKILL_SOURCE_URL_MAX_LENGTH) {
+    return `来源地址需是 https 开头的链接，不超过 ${SKILL_SOURCE_URL_MAX_LENGTH} 个字符`;
+  }
+  return "";
+}
 export const SKILL_TAG_MAX_LENGTH = 24;
 export const SKILL_TAGS_MAX = 10;
 
@@ -104,10 +123,44 @@ export async function readSkillFile(file) {
   if (file.size > SKILL_FILE_MAX_BYTES) {
     throw new Error(`文件超过 ${Math.round(SKILL_FILE_MAX_BYTES / 1024)} KB，技能正文最多 ${SKILL_INSTRUCTION_MAX_LENGTH} 字`);
   }
-  const text = await file.text();
+  const text = decodeSkillFileBytes(new Uint8Array(await file.arrayBuffer()));
   if (text.includes("\u0000")) throw new Error("文件包含二进制内容，不是 SKILL.md");
   return text.replace(/^\uFEFF/, "");
 }
+
+/**
+ * 按 UTF-8 解码；不是合法 UTF-8 时再试 GB18030（Windows 记事本旧默认编码），
+ * 免得中文文件导入后满屏乱码。两种都不行就报错，不把乱码填进表单。
+ */
+export function decodeSkillFileBytes(bytes) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    // 继续尝试 GB18030
+  }
+  try {
+    return new TextDecoder("gb18030", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("文件编码无法识别，请另存为 UTF-8 编码后再上传");
+  }
+}
+
+/** 一份完整的 SKILL.md 示例，供「下载模板」和格式说明使用。 */
+export const SKILL_MARKDOWN_TEMPLATE = `---
+name: soft-light-portrait
+description: 柔和顶光人像，背景干净，适合头像和证件风格写真
+metadata:
+  display-name: 柔光人像
+  tags: [人像, 写真]
+  usage: |
+    在输入框写 @柔光人像，后面接人物和场景，例如：
+    @柔光人像 25 岁女生，白衬衫，浅灰背景
+---
+
+使用柔和的顶光和正面补光，光线均匀，没有硬阴影。
+背景为纯净的浅灰或米白，主体居中，占画面三分之二。
+肤色自然通透，保留皮肤纹理，不过度磨皮。
+`;
 
 /** 拼接后提示词的硬上限，避免多个技能叠加后超出上游模型限制。 */
 export const SKILL_PROMPT_MAX_LENGTH = 6000;
@@ -272,24 +325,41 @@ export function composeSkillPrompt(prompt, skills = []) {
 
 /**
  * 一次提交的完整展开：识别 `@技能` → 摘掉 token → 技能正文拼到前面。
- * 返回 { prompt, skills }，skills 为实际展开的技能（按出现顺序）。
+ * 返回 { prompt, skills }，skills 为提及到的技能（按出现顺序，含官方技能）。
  * 没有任何提及时 prompt 原样返回（只收敛首尾空白）。
+ *
+ * 官方技能不下发正文：它们的 `@名称` 原样留在提示词里，由服务端在调用模型前
+ * 展开（apps/server/internal/skillmention），任务和对话记录里因此只有用户的文字。
  */
 export function expandSkillMentionsInText(text, skills) {
   const mentions = findSkillMentions(text, skills);
   if (!mentions.length) return { prompt: String(text || "").trim(), skills: [] };
-  const cleaned = stripSkillMentions(text, mentions.map((item) => item.token));
-  const used = mentions.map((item) => item.skill);
-  return { prompt: composeSkillPrompt(cleaned, used), skills: used };
+  const local = mentions.filter((item) => instructionOf(item.skill));
+  const cleaned = stripSkillMentions(text, local.map((item) => item.token));
+  return {
+    prompt: composeSkillPrompt(cleaned, local.map((item) => item.skill)),
+    skills: mentions.map((item) => item.skill),
+  };
 }
 
 // ---------- SKILL.md 互转 ----------
 
-const META_KEYS = { displayName: "display-name", tags: "tags", category: "category" };
+const META_KEYS = {
+  displayName: "display-name",
+  tags: "tags",
+  category: "category",
+  usage: "usage",
+  sourceUrl: "source-url",
+};
 
 function yamlString(value) {
   // JSON 字符串是合法的 YAML 双引号标量，直接复用以规避转义细节。
   return JSON.stringify(String(value ?? ""));
+}
+
+/** `|` 多行块的内容行：逐行缩进，空行保持为空。 */
+function yamlBlockLines(text, indent) {
+  return text.split("\n").map((line) => (line.trim() ? indent + line : ""));
 }
 
 function yamlFlowList(items) {
@@ -317,6 +387,10 @@ export function serializeSkillMarkdown(skill) {
   const tags = Array.isArray(skill?.tags) ? skill.tags.filter(Boolean) : [];
   if (tags.length) meta.push(`  ${META_KEYS.tags}: ${yamlFlowList(tags)}`);
   if (skill?.category) meta.push(`  ${META_KEYS.category}: ${yamlString(skill.category)}`);
+  const sourceUrl = String(skill?.sourceUrl || "").trim();
+  if (sourceUrl) meta.push(`  ${META_KEYS.sourceUrl}: ${yamlString(sourceUrl)}`);
+  const usage = String(skill?.usageGuide || "").trim();
+  if (usage) meta.push(`  ${META_KEYS.usage}: |`, ...yamlBlockLines(usage, "    "));
   if (meta.length) lines.push("metadata:", ...meta);
   lines.push("---", "");
   lines.push(String(skill?.instruction || "").trim(), "");
@@ -378,15 +452,19 @@ function parseFrontmatter(block) {
   const lines = String(block || "").replace(/\r\n?/g, "\n").split("\n");
   let index = 0;
   function readBlockScalar(indent, folded) {
-    const collected = [];
+    const raw = [];
     while (index < lines.length) {
       const line = lines[index];
       if (line.trim() && line.search(/\S/) <= indent) break;
-      collected.push(line.slice(Math.min(indent + 2, line.length)).replace(/^\s{0,2}/, ""));
+      raw.push(line);
       index += 1;
     }
-    const joined = folded ? collected.join(" ").replace(/\s+/g, " ") : collected.join("\n");
-    return joined.trim();
+    // 按整块最小缩进去掉公共前缀，块内的相对缩进（嵌套列表等）原样保留。
+    const widths = raw.filter((line) => line.trim()).map((line) => line.search(/\S/));
+    const common = widths.length ? Math.min(...widths) : 0;
+    const collected = raw.map((line) => (line.trim() ? line.slice(common) : ""));
+    if (folded) return collected.join(" ").replace(/\s+/g, " ").trim();
+    return collected.join("\n").replace(/^\n+/, "").trimEnd();
   }
   function readBlockList(indent) {
     const items = [];
@@ -458,9 +536,9 @@ export function parseSkillMarkdown(text) {
   const warnings = [];
   let front = {};
   let body = source;
-  const match = /^---\n([\s\S]*?)\n---\n?/.exec(source);
+  const match = /^---[ \t]*\n(?:([\s\S]*?)\n)?---[ \t]*(?:\n|$)/.exec(source);
   if (match) {
-    front = parseFrontmatter(match[1]);
+    front = parseFrontmatter(match[1] || "");
     body = source.slice(match[0].length);
   } else {
     warnings.push("没有找到 frontmatter，整段内容按指令处理。");
@@ -480,22 +558,41 @@ export function parseSkillMarkdown(text) {
     sanitizeSkillLine(meta[META_KEYS.displayName] || meta.displayName, SKILL_NAME_MAX_LENGTH) ||
     sanitizeSkillLine(firstHeading(body), SKILL_NAME_MAX_LENGTH) ||
     rawName;
-  const tags = sanitizeSkillTags(Array.isArray(meta.tags) ? meta.tags : parseYamlList(meta.tags || ""));
+  // 标签放在 metadata 下（本站导出格式）或顶层都认。
+  const tagSource = meta.tags ?? front.tags ?? "";
+  const rawTags = Array.isArray(tagSource) ? tagSource : parseYamlList(tagSource);
+  const tags = sanitizeSkillTags(rawTags);
+  if (rawTags.filter(Boolean).length > SKILL_TAGS_MAX) warnings.push(`标签最多 ${SKILL_TAGS_MAX} 个，多出的已忽略。`);
+  const rawDescription = sanitizeSkillLine(front.description, Number.MAX_SAFE_INTEGER);
+  if (Array.from(rawDescription).length > SKILL_DESCRIPTION_MAX_LENGTH) {
+    warnings.push(`简介超过 ${SKILL_DESCRIPTION_MAX_LENGTH} 字，已截断。`);
+  }
   const rawInstruction = body.trim();
   const instruction = sanitizeSkillText(rawInstruction, SKILL_INSTRUCTION_MAX_LENGTH);
   if (Array.from(rawInstruction).length > SKILL_INSTRUCTION_MAX_LENGTH) {
     warnings.push(`正文超过 ${SKILL_INSTRUCTION_MAX_LENGTH} 字，已截断。`);
   }
   if (!instruction) warnings.push("指令内容为空。");
+  // 这里只读取一个文件：Codex 技能目录里配套的 scripts/、references/ 等文件不会一起带上。
+  if (/(?:^|[\s(`"'])(?:\.\/)?(?:scripts|references|assets|templates)\/[\w.-]/m.test(rawInstruction) || /\]\((?!https?:|#)[^)\s]+\.(?:md|py|js|sh|json|txt)\)/.test(rawInstruction)) {
+    warnings.push("正文引用了技能目录里的其他文件（如 scripts/、references/），这里只会读取 SKILL.md 本身，请把需要的内容直接写进正文。");
+  }
   if (!displayName) warnings.push("没有名称，请补一个。");
+  let sourceUrl = sanitizeSkillLine(meta[META_KEYS.sourceUrl], SKILL_SOURCE_URL_MAX_LENGTH + 1);
+  if (sourceUrl && skillSourceUrlError(sourceUrl)) {
+    warnings.push(`metadata.source-url「${sourceUrl}」不是 https 链接，已忽略。`);
+    sourceUrl = "";
+  }
   return {
     skill: {
       slug,
       name: displayName,
-      description: sanitizeSkillLine(front.description, SKILL_DESCRIPTION_MAX_LENGTH),
+      description: sanitizeSkillLine(rawDescription, SKILL_DESCRIPTION_MAX_LENGTH),
       instruction,
       tags,
       category: sanitizeSkillLine(meta.category, SKILL_TAG_MAX_LENGTH) || null,
+      usageGuide: sanitizeSkillText(meta[META_KEYS.usage], SKILL_USAGE_GUIDE_MAX_LENGTH),
+      sourceUrl,
     },
     warnings,
   };

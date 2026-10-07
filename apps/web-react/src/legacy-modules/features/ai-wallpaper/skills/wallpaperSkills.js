@@ -12,14 +12,6 @@ export const BUILTIN_WALLPAPER_SKILLS = [
     builtin: true,
   },
   {
-    id: 'female-portrait-director',
-    name: '人像导演',
-    icon: 'bi-person-bounding-box',
-    description: '智能编排成年女性人像的造型、镜头、光线与场景',
-    serverManaged: true,
-    builtin: true,
-  },
-  {
     id: 'prompt-architect',
     name: 'Prompt Architect',
     icon: 'bi-vector-pen',

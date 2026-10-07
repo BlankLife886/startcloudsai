@@ -5,11 +5,13 @@ import {
   SKILL_FILE_MAX_BYTES,
   SKILL_INSTRUCTION_MAX_LENGTH,
   SKILL_MAX_MENTIONS_PER_PROMPT,
+  SKILL_MARKDOWN_TEMPLATE,
   SKILL_PROMPT_MAX_LENGTH,
   SKILL_SLUG_MAX_LENGTH,
   SKILL_SLUG_PATTERN,
   SKILL_TASK_TYPES,
   composeSkillPrompt,
+  decodeSkillFileBytes,
   expandSkillMentionsInText,
   findSkillMentions,
   isValidSkillSlug,
@@ -92,6 +94,15 @@ test("expandSkillMentionsInText puts skill bodies first and leaves mention-free 
   assert.deepEqual(expandSkillMentionsInText("@未知技能 一只猫", skills), {
     prompt: "@未知技能 一只猫",
     skills: [],
+  });
+});
+
+test("official skills keep their mention for server-side expansion while own skills expand locally", () => {
+  const own = skill({ id: "1", name: "柔光人像", slug: "soft-portrait", instruction: "使用柔和顶光" });
+  const official = { id: "2", name: "材质插画", slug: "material-illustration", instruction: "", official: true };
+  assert.deepEqual(expandSkillMentionsInText("@柔光人像 @材质插画 画一张流程图", [own, official]), {
+    prompt: "使用柔和顶光\n\n@材质插画 画一张流程图",
+    skills: [own, official],
   });
 });
 
@@ -243,11 +254,45 @@ test("readSkillFile rejects wrong extensions, oversized files and binary content
     name,
     type,
     size: content.length,
-    text: async () => content,
+    arrayBuffer: async () => new TextEncoder().encode(content).buffer,
   });
   await assert.rejects(readSkillFile(file("skill.exe", "x")), /只支持/);
   await assert.rejects(readSkillFile(file("skill.md", "x", "image/png")), /文本/);
   await assert.rejects(readSkillFile({ ...file("skill.md", "x"), size: SKILL_FILE_MAX_BYTES + 1 }), /超过/);
   await assert.rejects(readSkillFile(file("skill.md", "a\u0000b")), /二进制/);
   assert.equal(await readSkillFile(file("SKILL.MD", "\uFEFF# ok", "")), "# ok");
+});
+
+test("decodeSkillFileBytes falls back to GB18030 for legacy Chinese files", () => {
+  // 「柔光」的 GBK 编码
+  const gbk = new Uint8Array([0xc8, 0xe1, 0xb9, 0xe2]);
+  assert.equal(decodeSkillFileBytes(gbk), "柔光");
+  assert.equal(decodeSkillFileBytes(new TextEncoder().encode("柔光")), "柔光");
+});
+
+test("the SKILL.md template parses cleanly", () => {
+  const { skill: parsed, warnings } = parseSkillMarkdown(SKILL_MARKDOWN_TEMPLATE);
+  assert.deepEqual(warnings, []);
+  assert.equal(parsed.slug, "soft-light-portrait");
+  assert.equal(parsed.name, "柔光人像");
+  assert.deepEqual(parsed.tags, ["人像", "写真"]);
+  assert.ok(parsed.usageGuide.includes("@柔光人像"));
+  assert.ok(parsed.instruction.startsWith("使用柔和的顶光"));
+});
+
+test("parseSkillMarkdown tolerates fence whitespace, empty frontmatter and top-level tags", () => {
+  const spaced = parseSkillMarkdown("--- \nname: a-b\ntags: [x, y]\n---  \n正文");
+  assert.equal(spaced.skill.slug, "a-b");
+  assert.deepEqual(spaced.skill.tags, ["x", "y"]);
+  assert.equal(spaced.skill.instruction, "正文");
+  const empty = parseSkillMarkdown("---\n---\n# 标题\n正文");
+  assert.equal(empty.skill.name, "标题");
+  assert.ok(!empty.warnings.some((item) => item.includes("frontmatter")));
+});
+
+test("parseSkillMarkdown warns when the body depends on other files in the skill folder", () => {
+  const { warnings } = parseSkillMarkdown("---\nname: x\n---\n运行 scripts/build.py，再参考 [规范](references/spec.md)。");
+  assert.ok(warnings.some((item) => item.includes("scripts/")));
+  const clean = parseSkillMarkdown("---\nname: x\n---\n参考 [文档](https://example.com/a.md)。");
+  assert.ok(!clean.warnings.some((item) => item.includes("scripts/")));
 });

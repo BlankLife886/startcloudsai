@@ -50,6 +50,7 @@
 | [用户工具目录](USER_TOOL_CATALOG.md) | 当前用户工具及入口状态 |
 | [页面控制](PAGE_CONTROLS.md) | 页面开关、直接访问和后台管理 |
 | [技能库与后续方案](SKILL_PAGE_PLAN.md) | 真实本地/云端/官方技能与 `@` 调用；另列未实现规划 |
+| [第三方官方技能接入](THIRD_PARTY_SKILLS_PLAN.md) | 8 个第三方技能（手绘 PPT、小红书视觉导演、小黑配图、电商详情图等）的接入方案与需补能力（未实现） |
 | [助手工具与路线](ASSISTANT_TOOL_ROADMAP.md) | 当前工具、计费/确认边界和候选方向 |
 | [PSD 工作区](PSD_WORKSPACE_DESIGN.md) | PSD 实现与真实上游交付质量边界 |
 | [闪光卡](HOLO_CARD.md) | 现有闪光卡制作能力 |

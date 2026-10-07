@@ -118,11 +118,15 @@ test("guests can browse local skills in 技能库 without touching other drafts"
   const businessWrites = await openSkillsPage(page);
   await expect(page.getByTestId("skills-page")).toBeVisible();
   await expect(page.getByRole("heading", { name: "技能库" })).toBeVisible();
+  // 默认停在内置技能库，切到我的技能库才看到自己的技能。
+  await expect(page.getByRole("tab", { name: /内置技能库/ })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: /我的技能库/ }).click();
   await expect(page.getByRole("button", { name: "查看 本地柔光" })).toBeVisible();
   // 未登录：云端为空，配额卡提示登录。
   await expect(page.getByRole("button", { name: /^云端\s*0\/5$/ })).toBeVisible();
   await page.getByRole("button", { name: "新建技能" }).click();
-  await expect(page.getByRole("button", { name: /云端（0\/5）/ })).toBeDisabled();
+  await expect(page.getByRole("radio", { name: /云端 0\/5/ })).toHaveAttribute("aria-disabled", "true");
+  await expect(page.getByRole("radio", { name: /本地/ })).toHaveAttribute("aria-checked", "true");
   await page.getByRole("button", { name: "关闭" }).click();
   // 详情里的「移到云端」未登录时可点（会弹登录），不发业务写请求。
   await page.getByRole("button", { name: "查看 本地柔光" }).click();
@@ -131,17 +135,22 @@ test("guests can browse local skills in 技能库 without touching other drafts"
   await expectOtherPagesUntouched(page, businessWrites);
 });
 
-test("signed-in users see local, cloud and official cards with cloud quota", async ({
+test("signed-in users switch between official and own skill libraries", async ({
   page,
 }) => {
   const businessWrites = await openSkillsPage(page, {
     user: { id: "skill-user", username: "创作者", email: "skill@example.com" },
   });
   await expect(page.getByTestId("skills-page")).toBeVisible();
+  // 内置技能库只有内置技能，也没有存储位置筛选。
+  await expect(page.getByRole("button", { name: "查看 柔光人像" })).toBeVisible();
+  await expect(page.locator(".skill-card")).toHaveCount(1);
+  await expect(page.getByRole("navigation", { name: "存储位置" })).toHaveCount(0);
+
+  await page.getByRole("tab", { name: /我的技能库/ }).click();
   await expect(page.getByRole("button", { name: "查看 本地柔光" })).toBeVisible();
   await expect(page.getByRole("button", { name: "查看 商品主图" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "查看 柔光人像" })).toBeVisible();
-  await expect(page.locator(".skill-card")).toHaveCount(3);
+  await expect(page.locator(".skill-card")).toHaveCount(2);
 
   await page.getByRole("navigation", { name: "存储位置" }).getByRole("button", { name: /^云端/ }).click();
   await expect(page.getByRole("button", { name: /^云端\s*1\/5$/ })).toHaveAttribute("aria-pressed", "true");
@@ -157,9 +166,14 @@ test("skill detail shows @ mention and export", async ({ page }) => {
   await page.getByRole("button", { name: "查看 柔光人像" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "柔光人像", level: 2 })).toBeVisible();
-  await expect(dialog.getByText("@柔光人像")).toBeVisible();
+  await expect(dialog.locator("code.skill-token")).toHaveText("@柔光人像");
+  // 内置技能只教用法，不提供导出。
+  await expect(dialog.getByRole("button", { name: "导出 SKILL.md" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("tab", { name: /我的技能库/ }).click();
+  await page.getByRole("button", { name: "查看 商品主图" }).click();
   await expect(dialog.getByRole("button", { name: "导出 SKILL.md" })).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "复制到本地" })).toBeVisible();
   await expectOtherPagesUntouched(page, businessWrites);
 });
 
@@ -171,6 +185,7 @@ test("技能库 fits a 390-wide screen without horizontal scroll", async ({
     user: { id: "skill-user", username: "创作者" },
   });
   await expect(page.getByTestId("skills-page")).toBeVisible();
+  await page.getByRole("tab", { name: /我的技能库/ }).click();
   await expect
     .poll(() =>
       page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),

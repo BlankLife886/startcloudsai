@@ -1,0 +1,385 @@
+/* 与 App 的 ProfileScreen 一致 */
+.m-me.is-signed-in {
+  padding-top: calc(var(--m-safe-top) + 8px);
+}
+
+/* ── 身份区 ─────────────────────────────────────────── */
+
+.m-me-hero {
+  padding: 8px 0;
+}
+
+.m-me-identity,
+.m-me-guest {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.m-me-guest {
+  padding: 20px;
+}
+
+.m-me-avatar {
+  position: relative;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--m-accent-soft);
+  color: var(--m-text);
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.m-me-avatar.is-brand {
+  background: var(--m-surface-2);
+}
+
+.m-me-avatar.is-brand img {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.m-me-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.m-me-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.m-me-name strong {
+  overflow: hidden;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-me-name small {
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--m-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-me-guest .m-btn-primary {
+  flex: 0 0 auto;
+  height: 44px;
+  padding: 0 20px;
+}
+
+.m-me-hero-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-self: flex-start;
+}
+
+.m-me-icon-btn {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--m-text);
+  font-size: 21px;
+}
+
+.m-me-badge {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #875663;
+  color: #fff;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 17px;
+  text-align: center;
+}
+
+.m-me-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 22px;
+}
+
+.m-me-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+}
+
+.m-me-metric strong {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+}
+
+.m-me-metric small {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--m-text-2);
+}
+
+/* ── 区块 ─────────────────────────────────────────── */
+
+.m-me-section {
+  margin-top: 24px;
+}
+
+.m-me-section h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.m-me-tiles,
+.m-me-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.m-me-tile {
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px;
+  color: inherit;
+  font-size: 24px;
+  text-align: left;
+}
+
+.m-me-tile strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* 设置行：图标井 + 文字 + 箭头，行间细分隔线从文字处开始 */
+.m-me-cell {
+  position: relative;
+  width: 100%;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+
+.m-me-cell + .m-me-cell::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 52px;
+  right: 0;
+  height: 1px;
+  background: rgba(0, 0, 0, 0.045);
+}
+
+html[data-prefers-color-scheme="dark"] .m-me-cell + .m-me-cell::before {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.m-me-cell-icon {
+  position: relative;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--m-hairline);
+  border-radius: 16px;
+  background: var(--m-surface);
+  color: var(--m-text-2);
+  font-size: 20px;
+}
+
+.m-me-cell-icon .m-me-badge {
+  top: -6px;
+  right: -8px;
+}
+
+.m-me-cell-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.m-me-cell-text strong {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.m-me-cell-text small {
+  font-size: 13px;
+  color: var(--m-text-2);
+}
+
+.m-me-cell-arrow {
+  flex: 0 0 auto;
+  display: grid;
+  color: var(--m-text-3);
+}
+
+/* 套餐与订单：深色横幅 */
+.m-me-banner {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 16px 16px 20px;
+  border: 0;
+  border-radius: 20px;
+  background: linear-gradient(180deg, #30343c, #20242b);
+  color: #fff;
+  text-align: left;
+}
+
+.m-me-banner-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.m-me-banner-text strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.m-me-banner-text small {
+  font-size: 13px;
+  opacity: 0.72;
+}
+
+.m-me-banner-go {
+  flex: 0 0 auto;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: #ffc87a;
+  color: #20242b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.m-me-pair {
+  margin-top: 12px;
+}
+
+.m-me-color {
+  min-height: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 16px 16px 14px;
+  border: 0;
+  border-radius: 20px;
+  color: var(--m-text);
+  font-size: 22px;
+  text-align: left;
+}
+
+.m-me-color strong {
+  margin-top: 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.m-me-color small {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--m-text-2);
+}
+
+.m-me-color.is-mint {
+  background: #d8f3ee;
+}
+
+.m-me-color.is-mint svg {
+  color: #0f766e;
+}
+
+.m-me-color.is-rose {
+  background: #fce4ec;
+}
+
+.m-me-color.is-rose svg {
+  color: #e05d5d;
+}
+
+html[data-prefers-color-scheme="dark"] .m-me-color.is-mint {
+  background: #1e3a36;
+}
+
+html[data-prefers-color-scheme="dark"] .m-me-color.is-rose {
+  background: #3d2a38;
+}
+
+.m-me-legal {
+  display: flex;
+  justify-content: center;
+  gap: 28px;
+  margin-top: 28px;
+}
+
+.m-me-legal a {
+  color: var(--m-text-2);
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.m-me-logout {
+  width: 100%;
+  height: 48px;
+  margin-top: 24px;
+  border: 1px solid var(--m-hairline);
+  border-radius: 999px;
+  background: var(--m-surface);
+  color: var(--m-danger);
+  font-size: 15px;
+  font-weight: 600;
+}

@@ -1,0 +1,92 @@
+.m-design-title {
+  margin: 14px 0 10px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.m-design-title:first-child {
+  margin-top: 0;
+}
+
+.m-design-title + .m-design-utils {
+  margin-top: 0;
+}
+
+.m-design-featured {
+  width: 100%;
+  min-height: 176px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+  color: inherit;
+  text-align: left;
+}
+
+.m-design-featured-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.m-design-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #326c62;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+html[data-prefers-color-scheme="dark"] .m-design-tool {
+  color: #a4d5c5;
+}
+
+.m-design-featured strong {
+  margin-top: 10px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.m-design-featured small {
+  margin-top: 3px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--m-text-2);
+}
+
+.m-design-featured img {
+  flex: 0 0 auto;
+  width: 72px;
+  height: 88px;
+  object-fit: contain;
+}
+
+.m-design-title:not(:first-child) {
+  margin-top: 28px;
+}
+
+.m-design-utils {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.m-design-util {
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px;
+  color: inherit;
+  font-size: 24px;
+  text-align: left;
+}
+
+.m-design-util strong {
+  font-size: 16px;
+  font-weight: 600;
+}

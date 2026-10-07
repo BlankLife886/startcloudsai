@@ -18,6 +18,8 @@ import {
   SKILL_STORAGE_LOCAL,
   SKILL_STORAGE_OFFICIAL,
   SKILL_TAG_MAX_LENGTH,
+  SKILL_USAGE_GUIDE_MAX_LENGTH,
+  skillSourceUrlError,
   expandSkillMentionsInText,
   fallbackSkillSlug,
   isValidSkillSlug,
@@ -56,13 +58,33 @@ function newLocalId() {
   return `local-${random}`;
 }
 
+// 官方技能配图只接受本站文件地址，避免接口数据被篡改后加载任意外链。
+export function safeSkillImageUrl(value) {
+  const url = String(value || "").trim();
+  return /^\/api\/v1\/files\/skill-images\/[^\s"'<>]+$/.test(url) && !url.includes("..") ? url : "";
+}
+
+function normalizeSampleImages(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => ({ url: safeSkillImageUrl(item?.url), caption: sanitizeSkillText(item?.caption, 200) }))
+    .filter((item) => item.url)
+    .slice(0, 6);
+}
+
+function safeSkillSourceUrl(value) {
+  const text = String(value || "").trim();
+  return text && !skillSourceUrlError(text) ? text : "";
+}
+
 // 无论来自 localStorage 还是接口，都按同一套规则清洗与裁剪：localStorage 可被
 // 其他脚本/扩展改写，接口数据也可能来自旧版本。
 function normalizeSkill(raw, storage) {
   if (!raw || typeof raw !== "object") return null;
   const name = sanitizeSkillLine(raw.name, SKILL_NAME_MAX_LENGTH);
   const instruction = sanitizeSkillText(raw.instruction, SKILL_INSTRUCTION_MAX_LENGTH);
-  if (!name || !instruction) return null;
+  // 官方技能的正文不下发（由服务端在调用模型时展开），只有自己的技能必须带正文。
+  if (!name || (!instruction && storage !== SKILL_STORAGE_OFFICIAL)) return null;
   const id = sanitizeSkillLine(raw.id, 80) || newLocalId();
   let slug = String(raw.slug || "").trim().toLowerCase();
   if (!isValidSkillSlug(slug)) slug = slugifySkillName(name) || fallbackSkillSlug(id);
@@ -71,7 +93,12 @@ function normalizeSkill(raw, storage) {
     slug,
     name,
     description: sanitizeSkillLine(raw.description, SKILL_DESCRIPTION_MAX_LENGTH),
-    instruction,
+    instruction: storage === SKILL_STORAGE_OFFICIAL ? "" : instruction,
+    usageGuide: sanitizeSkillText(raw.usageGuide, SKILL_USAGE_GUIDE_MAX_LENGTH),
+    // 来源地址只有官方技能有（显示为跳转图标）；不是 https 的一律丢掉。
+    sourceUrl: storage === SKILL_STORAGE_OFFICIAL ? safeSkillSourceUrl(raw.sourceUrl) : "",
+    coverUrl: storage === SKILL_STORAGE_OFFICIAL ? safeSkillImageUrl(raw.coverUrl) : "",
+    sampleImages: storage === SKILL_STORAGE_OFFICIAL ? normalizeSampleImages(raw.sampleImages) : [],
     tags: sanitizeSkillTags(raw.tags),
     category: sanitizeSkillLine(raw.category, SKILL_TAG_MAX_LENGTH) || null,
     storage,
@@ -193,6 +220,7 @@ function pickInput(input) {
     name: sanitizeSkillLine(input?.name, Number.MAX_SAFE_INTEGER),
     description: sanitizeSkillLine(input?.description, Number.MAX_SAFE_INTEGER),
     instruction: sanitizeSkillText(input?.instruction, Number.MAX_SAFE_INTEGER),
+    usageGuide: sanitizeSkillText(input?.usageGuide, SKILL_USAGE_GUIDE_MAX_LENGTH),
     tags: sanitizeSkillTags(input?.tags),
   };
 }
@@ -265,7 +293,7 @@ export async function updateSkill(skill, input) {
     items[index] = updated;
     saveLocalSkills(items);
   } else {
-    throw new Error("官方技能只读，可以复制一份再改");
+    throw new Error("内置技能只读，可以复制一份再改");
   }
   notifySkillLibraryUpdated();
   return updated;
@@ -278,23 +306,25 @@ export async function deleteSkill(skill) {
   } else if (skill?.storage === SKILL_STORAGE_LOCAL) {
     saveLocalSkills(listLocalSkills().filter((item) => item.id !== skill.id));
   } else {
-    throw new Error("官方技能不能删除");
+    throw new Error("内置技能不能删除");
   }
   notifySkillLibraryUpdated();
 }
 
 /**
  * 在本地与云端之间搬运：先在目标位置创建成功，再删掉原来的，任何一步失败都不丢数据。
- * 官方技能可"复制到"本地或云端（相当于复制为我的）。
+ * 官方技能只能 `@` 调用，不能复制成自己的（正文不对用户开放）。
  */
 export async function moveSkill(skill, targetStorage) {
   if (!skill || skill.storage === targetStorage) return skill;
+  if (skill.storage === SKILL_STORAGE_OFFICIAL) throw new Error("内置技能不能复制，直接用 @ 调用即可");
   const created = await createSkill(
     {
       slug: skill.storage === SKILL_STORAGE_OFFICIAL ? "" : skill.slug,
       name: skill.name,
       description: skill.description,
       instruction: skill.instruction,
+      usageGuide: skill.usageGuide,
       tags: skill.tags,
     },
     targetStorage,

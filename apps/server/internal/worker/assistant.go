@@ -4396,7 +4396,7 @@ func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.
 	if run.Params == nil {
 		run.Params = map[string]any{}
 	}
-	finalPrompt := prompt.ConstrainAutoAspectRatio(run.Prompt, run.Params)
+	finalPrompt := prompt.ConstrainAutoAspectRatio(w.assistantImagePromptWithSkills(ctx, run), run.Params)
 	size := assistantParamString(run.Params, "requestSize", "")
 	if size == "auto" {
 		size = ""
@@ -4695,7 +4695,7 @@ func (w *Worker) executeAssistantImageCRUNClient(
 	if reservationErr != nil {
 		return reservationErr
 	}
-	finalPrompt := prompt.ConstrainAutoAspectRatio(run.Prompt, run.Params)
+	finalPrompt := prompt.ConstrainAutoAspectRatio(w.assistantImagePromptWithSkills(ctx, run), run.Params)
 	references, temporaryKeys, err := w.crunAssistantReferenceURLs(ctx, run)
 	if len(temporaryKeys) > 0 {
 		defer w.enqueueAssistantOutputCleanup(temporaryKeys)
@@ -4794,7 +4794,7 @@ func (w *Worker) executeAssistantImage(ctx context.Context, client *sub2api.Clie
 	if reservationErr != nil {
 		return reservationErr
 	}
-	finalPrompt := prompt.ConstrainAutoAspectRatio(run.Prompt, run.Params)
+	finalPrompt := prompt.ConstrainAutoAspectRatio(w.assistantImagePromptWithSkills(ctx, run), run.Params)
 	size := assistantParamString(run.Params, "requestSize", "auto")
 	quality := assistantParamString(run.Params, "quality", "high")
 	storedByIndex := make([]map[string]any, count)

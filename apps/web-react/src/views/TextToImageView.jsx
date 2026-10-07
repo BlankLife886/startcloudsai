@@ -5,10 +5,6 @@ import { gsap } from "gsap";
 import { useNavigate } from "react-router";
 import { ProductGuideTour, useProductGuide } from "./shared/ProductGuideTour.jsx";
 import { PRODUCT_GUIDE_KEYS, T2I_GUIDE_STEPS } from "./shared/productGuides.js";
-import {
-  buildWallpaperSkillPrompt,
-  resolveActiveWallpaperSkills,
-} from "@react/legacy-modules/features/ai-wallpaper/skills/wallpaperSkills.js";
 import { normalizeSelectedWallpaperSkillIds } from "@react/legacy-modules/features/ai-wallpaper/skills/wallpaperSkillSelection.js";
 import {
   SHOW_GENERATION_SKILL_CONTROLS,
@@ -19,10 +15,8 @@ import {
   T2I_RESOLUTION_OPTIONS,
   WALLPAPER_PROMPT_PRESETS,
   WALLPAPER_SKILL_OPTIONS,
-  resolveT2iOutputSize,
 } from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
 import {
-  getModelAutoAspectRatioCandidates,
   getModelAspectRatiosForResolution,
   IMAGE_COUNT_HARD_MAX,
   clampImageCount,
@@ -50,7 +44,7 @@ import {
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { AI_WALLPAPER_STUDIO_DRAFT_KEY } from "@react/legacy-modules/services/aiWallpaperState.js";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
-import { normalizeModelLabel, resolveModelDisplayName } from "@react/legacy-modules/features/ai-shared/modelDisplay.js";
+import { resolveModelDisplayName } from "@react/legacy-modules/features/ai-shared/modelDisplay.js";
 import {
   getScopedLocalItem,
   getScopedLocalStorageKey,
@@ -92,7 +86,8 @@ import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
 import { RegenerateIcon } from "../components/common/RegenerateIcon.jsx";
 import { ExactImageSizeControl } from "../components/ExactImageSizeControl.jsx";
-import { exactImageSizeParams, validateExactImageSize } from "../config/exactImageSize.js";
+import { validateExactImageSize } from "../config/exactImageSize.js";
+import { backgroundRemovalModelsOf, buildT2iPayload, featureModels, wallpaperFeature } from "../features/text-to-image/t2iRequest.js";
 import "./TextToImageView.css";
 
 gsap.registerPlugin(useGSAP);
@@ -250,33 +245,6 @@ function storedDraft(storageKey) {
   } catch {
     return {};
   }
-}
-
-function normalizePublicModel(item = {}) {
-  const id = String(item.id || item.publicModelKey || item.model || "").trim();
-  if (!id) return null;
-  const pointPricing = resolveModelPointPricing(item);
-  return {
-    ...item,
-    ...normalizeImageModelCapabilities(item),
-    id,
-    label: normalizeModelLabel(item),
-    pointPricing,
-    creditCost: Math.max(0, Number(pointPricing.effective ?? 0)),
-  };
-}
-
-function wallpaperFeature(config = {}) {
-  const raw = config.features?.["ai.wallpaperGeneration"] || {};
-  return raw.config && typeof raw.config === "object"
-    ? { ...raw, ...raw.config }
-    : raw;
-}
-
-function featureModels(config) {
-  const feature = wallpaperFeature(config);
-  const values = Array.isArray(feature.publicModels) ? feature.publicModels : [];
-  return values.map(normalizePublicModel).filter(Boolean);
 }
 
 function ratioStyle(value) {
@@ -870,13 +838,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const availableModels = useMemo(() => availableCatalogModels(models), [models]);
   const feature = useMemo(() => wallpaperFeature(runtime), [runtime]);
   const promptMaxChars = runtime?.promptInputLimits?.t2iPromptMaxChars ?? 8000;
-  const backgroundRemovalModels = useMemo(() => {
-    const raw = runtime.features?.["ai.imageTools"] || {};
-    const config = raw.config && typeof raw.config === "object" ? raw.config : raw;
-    return Array.isArray(config.backgroundRemovalModels)
-      ? config.backgroundRemovalModels.filter((item) => item?.id)
-      : [];
-  }, [runtime]);
+  const backgroundRemovalModels = useMemo(() => backgroundRemovalModelsOf(runtime), [runtime]);
   const backgroundRemovalModel =
     backgroundRemovalModels.find((item) => item.default === true) ||
     backgroundRemovalModels[0] ||
@@ -1389,88 +1351,26 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     });
   };
 
-  const buildPayload = useCallback(({ sourceUrls, batchId, batchIndex, batchSize, batchCreatedAt }) => {
-    const capabilities = normalizeImageModelCapabilities(currentModel || {});
-    const exact = imageSize.sizeMode === "exact";
-    const exactParams = exact ? exactImageSizeParams(currentModel, imageSize.exactWidth, imageSize.exactHeight) : {};
-    const supportsResolution = !exact && capabilities.resolutions.includes(resolution);
-    const supportsQuality = capabilities.qualities.includes(quality);
-    const supportedRatios = getModelAspectRatiosForResolution(currentModel || {}, resolution);
-    const supportsRatio = !exact && supportedRatios.includes(ratio);
-    const activeSkills = resolveActiveWallpaperSkills({
-      outputType: "image",
-      resolutionScale: supportsResolution ? resolution : "",
-      superResolutionEnabled: feature.superResolutionEnabled !== false,
-      // 技能控件隐藏时用户既看不到也关不掉已选技能（旧设置、创作台默认值），此时不附加任何技能。
-      selectedSkillIds: SHOW_GENERATION_SKILL_CONTROLS ? selectedSkillIds : [],
-      customSkills: [],
-    });
-    const skillPrompt = buildWallpaperSkillPrompt(activeSkills);
-    const outputSize = exact ? `${exactParams.exactWidth}x${exactParams.exactHeight}` : supportsResolution && supportsRatio
-      ? resolveT2iOutputSize(ratio, resolution)
-      : "";
-    const publicModelKey = currentModel?.id || modelId;
-    const kind = sourceUrls.length ? "wallpaper-image-edit" : "wallpaper-image-generation";
-    const requestPrompt = [prompt.trim(), skillPrompt].filter(Boolean).join("\n\n");
-    const supportedFormats = currentModel?.outputFormats || [];
-    const requestedFormat = transparent ? "png" : outputFormat;
-    const effectiveOutputFormat = supportedFormats.includes(requestedFormat)
-      ? requestedFormat
-      : "";
-    const supportedModeration = currentModel?.moderationLevels || [];
-    const effectiveModeration = supportedModeration.includes(moderation)
-      ? moderation
-      : "";
-    const input = {
-      sourceUrl: sourceUrls[0] || "",
-      sourceUrls,
-      ...exactParams,
-      ...(supportsRatio ? { aspectRatio: ratio, requestedAspectRatio: ratio } : {}),
-      ...(supportsRatio && ratio === "auto"
-        ? { autoAspectRatioCandidates: getModelAutoAspectRatioCandidates(currentModel || {}, resolution) }
-        : {}),
-      ...(outputSize ? { outputSize, size: outputSize } : {}),
-      ...(supportsResolution ? { resolutionScale: resolution } : {}),
-      ...(supportsQuality ? { quality } : {}),
-      count: 1,
-      n: 1,
-      batchId,
-      batchIndex,
-      batchSize,
-      batchCreatedAt,
-      sourceMode: "text",
-      userPrompt: prompt.trim(),
-      promptPolishEnabled: polish,
-      autoTranslateEnabled: translate,
-      ...(capabilities.transparentBackground
-        ? {
-            transparentPngEnabled: transparent,
-            transparentBackground: transparent,
-          }
-        : {}),
-      autoBackgroundRemovalEnabled: autoRemove,
-      autoBackgroundRemovalModelKey: autoRemove ? backgroundRemovalModel?.id || "" : "",
-      ...(effectiveOutputFormat ? { outputFormat: effectiveOutputFormat } : {}),
-      ...(effectiveModeration ? { moderationLevel: effectiveModeration } : {}),
-      skills: activeSkills,
-      skillIds: activeSkills.map((item) => item.id),
-    };
-    return {
-      kind,
-      clientRequestId: crypto.randomUUID(),
-      prompt: requestPrompt,
-      input,
-      params: {
-        ...input,
-        providerHint: "",
-        modelHint: publicModelKey,
-        publicModelKey,
-        executionMode: "server",
-      },
-      units: 1,
-      expectedUnitPriceCents: quotedUnitPriceRef.current,
-    };
-  }, [autoRemove, backgroundRemovalModel?.id, currentModel, feature.superResolutionEnabled, imageSize, modelId, moderation, outputFormat, polish, prompt, quality, ratio, resolution, selectedSkillIds, translate, transparent]);
+  const buildPayload = useCallback((batch) => buildT2iPayload({
+    model: currentModel,
+    modelId,
+    prompt,
+    ratio,
+    resolution,
+    quality,
+    imageSize,
+    outputFormat,
+    moderation,
+    transparent,
+    polish,
+    translate,
+    autoRemove,
+    backgroundRemovalModelId: backgroundRemovalModel?.id || "",
+    // 技能控件隐藏时用户既看不到也关不掉已选技能（旧设置、创作台默认值），此时不附加任何技能。
+    selectedSkillIds: SHOW_GENERATION_SKILL_CONTROLS ? selectedSkillIds : [],
+    superResolutionEnabled: feature.superResolutionEnabled !== false,
+    expectedUnitPriceCents: quotedUnitPriceRef.current,
+  }, batch), [autoRemove, backgroundRemovalModel?.id, currentModel, feature.superResolutionEnabled, imageSize, modelId, moderation, outputFormat, polish, prompt, quality, ratio, resolution, selectedSkillIds, translate, transparent]);
 
   const refreshGenerationCost = useCallback(async ({ authoritativeOnly = false, priceUpdated = false, batch = null } = {}) => {
     const requestId = ++quoteRequestRef.current;

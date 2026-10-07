@@ -788,6 +788,7 @@ func (w *Worker) prepareAssistantContext(
 	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{Kind: kind, Stage: "preparing-context"})
 
+	systemPrompt = w.withOfficialSkillInstructions(ctx, run, systemPrompt)
 	payload, stats := buildAssistantContext(systemPrompt, history, run, references, skipCanvasRefusals)
 	contextStats := applyAssistantContextStats(run, stats)
 	if stats.CompactionPerformed {

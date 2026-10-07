@@ -6,7 +6,7 @@ import { useAuth } from "./AuthContext.jsx";
 import { AuthRequiredDialog } from "./AuthRequiredDialog.jsx";
 import "@react/legacy-styles/generated/components/auth/AuthRequiredDialog.css";
 
-const AuthPromptContext = createContext(null);
+export const AuthPromptContext = createContext(null);
 const SCROLL_LOCK_OWNER = "global-auth-prompt";
 const AUTH_BACKGROUND_URL = "/brand/auth-manga-bg.png";
 

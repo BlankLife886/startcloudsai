@@ -91,6 +91,23 @@ func TestSanitizeUpstreamMessageHidesInvalidatedToken(t *testing.T) {
 	}
 }
 
+func TestSanitizeUpstreamMessageHidesStorageInternals(t *testing.T) {
+	got := sanitizeUpstreamMessage("operation error S3: GetObject, https response error StatusCode: 404, RequestID: 18DBADB69747A91D, HostID: dd9025bab4ad, NoSuchKey: The specified key does not exist.")
+	if strings.Contains(got, "S3") || strings.Contains(got, "RequestID") || strings.Contains(got, "18DBADB") || !strings.Contains(got, "重新上传") {
+		t.Fatalf("storage internals leaked: %q", got)
+	}
+}
+
+func TestSanitizeUpstreamMessageHidesHostsAndIPs(t *testing.T) {
+	got := sanitizeUpstreamMessage("upstream api.vendor-internal.com:8443 返回 503 (10.0.3.17:9000) 请稍后再试")
+	if strings.Contains(got, "vendor-internal") || strings.Contains(got, "10.0.3.17") || !strings.Contains(got, "请稍后再试") {
+		t.Fatalf("host leaked: %q", got)
+	}
+	if got := sanitizeUpstreamMessage(`Get "https://bucket.oss.example.cn/a.png": dial tcp: lookup bucket.oss.example.cn: no such host`); strings.Contains(got, "example") {
+		t.Fatalf("host leaked: %q", got)
+	}
+}
+
 func TestSanitizeUpstreamMessageHidesGatewayHTML(t *testing.T) {
 	got := sanitizeUpstreamMessage("<html><head><title>504 Gateway Time-out</title></head><body>nginx</body></html>")
 	if strings.Contains(strings.ToLower(got), "html") || !strings.Contains(got, "响应超时") {

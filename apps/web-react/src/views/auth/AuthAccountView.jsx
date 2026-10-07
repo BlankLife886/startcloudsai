@@ -29,6 +29,13 @@ function safeRedirect(value) {
   return path.startsWith("/") && !path.startsWith("//") ? path : "/";
 }
 
+// 手机站（/m）是独立应用，站内路由到不了，需要整页跳转。
+function followRedirect(navigate, value) {
+  const path = safeRedirect(value);
+  if (path === "/m" || path.startsWith("/m/")) window.location.replace(path);
+  else navigate(path, { replace: true });
+}
+
 const REFERRAL_CHECK_TIMEOUT_MS = 5000;
 
 export function AuthAccountView() {
@@ -172,7 +179,7 @@ export function AuthAccountView() {
 
   useEffect(() => {
     if (auth.user?.id) {
-      navigate(safeRedirect(query.get("redirect")), { replace: true });
+      followRedirect(navigate, query.get("redirect"));
     }
   }, [auth.user, navigate, query]);
 
@@ -233,7 +240,7 @@ export function AuthAccountView() {
         else notificationService.info(result.referral.message);
       }
       auth.setUser(result?.user || null);
-      navigate(safeRedirect(query.get("redirect")), { replace: true });
+      followRedirect(navigate, query.get("redirect"));
     } catch (caught) {
       setError(caught?.message || "验证失败");
     } finally {

@@ -405,6 +405,8 @@ func (s *Server) getFile(c *gin.Context) {
 		allowed = true // 提示词封面公开可读
 	case strings.HasPrefix(key, "canvas-template-covers/"):
 		allowed = true // 画布生产模板封面公开可读
+	case strings.HasPrefix(key, skillImagePrefix):
+		allowed = true // 官方技能封面与效果示例图公开可读
 	case strings.HasPrefix(key, "canvas-template-assets/"):
 		allowed = true // 已发布画布模板的内嵌资源公开可读
 	case strings.HasPrefix(key, "announcement-images/"):
@@ -503,7 +505,7 @@ func (s *Server) compressCoverImage(ctx context.Context, data []byte, ext, conte
 func isImmutableObjectKey(key string) bool {
 	if strings.HasPrefix(key, "tasks/") || strings.HasPrefix(key, "uploads/") ||
 		strings.HasPrefix(key, "announcement-images/") || strings.HasPrefix(key, "model-icons/") ||
-		strings.HasPrefix(key, "canvas-template-assets/") {
+		strings.HasPrefix(key, "canvas-template-assets/") || strings.HasPrefix(key, skillImagePrefix) {
 		return true
 	}
 	for _, prefix := range []string{"prompt-covers/", "canvas-template-covers/", "ecommerce-catalog/"} {

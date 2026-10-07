@@ -1,0 +1,180 @@
+:root {
+  /* 与 Flutter App（apps/mobile/lib/app/starclouds_theme.dart）同一套令牌：墨黑主色、冷灰底、白卡片。 */
+  --adm-color-primary: #20242b;
+  --m-accent: #20242b;
+  --m-on-accent: #ffffff;
+  --m-accent-soft: #e8ebef;
+  --m-bg: #f2f4f8;
+  --m-surface: #ffffff;
+  --m-surface-2: #f5f6f8;
+  --m-surface-3: #eef0f3;
+  --m-text: #20242b;
+  --m-text-2: #626974;
+  --m-text-3: #8a919c;
+  --m-line: #dee2e7;
+  --m-hairline: rgba(255, 255, 255, 0.95);
+  --m-danger: #cf3b4a;
+  --m-shadow: 0 5px 16px -3px rgba(0, 0, 0, 0.045);
+  --m-card-shadow: 0 5px 16px -3px rgba(0, 0, 0, 0.045);
+  --m-radius-sm: 12px;
+  --m-radius-md: 16px;
+  --m-radius-lg: 24px;
+  --m-radius-xl: 28px;
+  --m-header-h: 56px;
+  --m-safe-top: env(safe-area-inset-top, 0px);
+  --m-safe-bottom: env(safe-area-inset-bottom, 0px);
+  color-scheme: light;
+}
+
+html[data-prefers-color-scheme="dark"] {
+  --adm-color-primary: #f5f6f8;
+  --m-accent: #f5f6f8;
+  --m-on-accent: #20242b;
+  --m-accent-soft: #32373f;
+  --m-bg: #12151b;
+  --m-surface: #1b2028;
+  --m-surface-2: #252a32;
+  --m-surface-3: #292e36;
+  --m-text: #f3f4f6;
+  --m-text-2: #bfc5cf;
+  --m-text-3: #858d98;
+  --m-line: #41464f;
+  --m-hairline: rgba(255, 255, 255, 0.16);
+  --m-danger: #ffb3b0;
+  --m-shadow: 0 5px 16px -3px rgba(0, 0, 0, 0.18);
+  --m-card-shadow: 0 5px 16px -3px rgba(0, 0, 0, 0.18);
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--m-bg);
+  color: var(--m-text);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+  /* 兜底：任何内容都不能把页面横向撑宽。一旦布局视口变宽，手机浏览器会缩放整页，
+     固定栏错位、点击不准、每次滚动都要重排，整站都会显得很卡。 */
+  overflow-x: clip;
+  /* 提示词里常有很长的英文/代码片段，允许在任意位置断行 */
+  overflow-wrap: anywhere;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+img {
+  -webkit-user-drag: none;
+}
+
+/* 触屏按压反馈：替代桌面端的 hover */
+.m-pressable {
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 120ms ease, opacity 120ms ease, background-color 120ms ease;
+}
+
+.m-pressable:active {
+  transform: scale(0.978);
+}
+
+/* 白色卡片：与 App 的 AppGlassSurface 相同的圆角、细边和轻阴影 */
+.m-card-surface {
+  border-radius: var(--m-radius-lg);
+  background: var(--m-surface);
+  border: 1px solid var(--m-hairline);
+  box-shadow: var(--m-card-shadow);
+}
+
+/* 主按钮：墨黑胶囊 */
+.m-btn-primary {
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 22px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 999px;
+  background: var(--m-accent);
+  color: var(--m-on-accent);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.m-btn-primary:disabled {
+  opacity: 0.4;
+}
+
+.m-btn-ghost {
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--m-radius-md);
+  background: none;
+  color: var(--m-text-2);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* 区块标题：与 App 的 _SectionHeader 一致 */
+.m-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 22px 4px 12px;
+}
+
+.m-section-title h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.m-section-title button {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--m-text-2);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.m-page-fallback {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+}
+
+/* 全屏看图底部的操作按钮（文生图、助手共用） */
+.m-viewer-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.m-viewer-actions button {
+  min-width: 84px;
+  height: 38px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 14px;
+}

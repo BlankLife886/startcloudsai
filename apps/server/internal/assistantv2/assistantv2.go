@@ -69,7 +69,8 @@ func ToolsFor(registry *assistanttools.Registry) []string {
 // AgentToolsFor returns the platform tools the worker's agent adds to its
 // own. Task status and files are left out: the agent has its own versions.
 func AgentToolsFor(registry *assistanttools.Registry) []string {
-	return toolsIn(registry, DomainMyData, DomainMyAccount, DomainCommerce, DomainMyAssets, DomainMemory, assistanttools.DomainAsk)
+	return toolsIn(registry, DomainMyData, DomainMyAccount, DomainCommerce, DomainMyAssets, DomainMemory, assistanttools.DomainAsk,
+		assistanttools.DomainSkillReferences)
 }
 
 func toolsIn(registry *assistanttools.Registry, domains ...string) []string {

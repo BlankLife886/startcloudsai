@@ -88,7 +88,10 @@ test('announcements have their own nav entry, separate from the notification bel
   await expect(page.locator('.nt-side').getByRole('link', { name: /平台公告/ })).toHaveCount(0)
 
   // 弹窗看过并关掉后，公告入口不再提示未读
-  await page.locator('.client-announcement-modal__backdrop').click({ position: { x: 8, y: 8 } })
+  // 点遮罩不会关掉公告，必须点按钮
+  await page.locator('.client-announcement-modal__backdrop').click({ position: { x: 8, y: 8 }, force: true })
+  await expect(page.locator('.client-announcement')).toBeVisible()
+  await page.locator('.client-announcement').getByRole('button', { name: '我知道了' }).click()
   await expect(page.locator('.nav-announce__badge')).toHaveCount(0)
 
   await page.locator('.nav-notify__btn').hover()
