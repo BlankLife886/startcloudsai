@@ -1,19 +1,26 @@
 # AI 助手 v2 交接文档
 
-> 更新时间：2026-10-02（P0–P5 完成；专业工作台按用户决定暂不做）
-> 分支：`codex/ai-assistant-v2`（本地，**未推送**）
-> 工作树：`/Users/ycc/Documents/TestCode/startcloudsai-ai-assistant-v2`
-> 基线：`1608691`（`codex/publish-current-project` 当时的最新提交）
+> 更新时间：2026-10-07（v2 已完成并合入，是 AI 助手页唯一在用的引擎）
+> 分支：`codex/publish-current-project`（`codex/ai-assistant-v2` 于 2026-10-03 快进合入后已删除，独立工作树也已删除）
+> 当前代码：`902b365`；原 v2 开发基线 `1608691`
 
-状态标记：✅ 已完成并有测试　🟡 部分完成　⬜ 未开始
+状态标记：✅ 已完成并有测试　🟡 部分完成　⬜ 未开始　⏸ 按用户决定暂不做　♻️ 做过、后来被替换
 
 ---
 
 ## 1. 一句话现状
 
-AI 助手**沿用原有界面**（`AssistantWorkspaceLayout` 等，不做新 UI），底层换成了 **v2 引擎**：问答和 Agent 模式的消息由 v2 先判断“这一轮要做什么”，查用户自己的数据、排查任务、普通问答由 v2 直接处理；生图方案（包括抠图 / 去背景：gpt-image-2 编辑原图，输出透明 PNG）、联网搜索、站内工具（放大、导出等）在**同一轮内交回原引擎**处理。图片模式不变。
+AI 助手**沿用原有界面**（`AssistantWorkspaceLayout` 等），底层是 **v2 引擎**，已经做完并在主分支上使用，不再有“灰度替换旧版”这一步。
 
-整体路线是 P0–P5 六个阶段，目前 **P0–P5 已完成**（P3 的专业工作台按用户决定暂不做）。剩下替换旧版（替换前先问用户）。
+最终形态（2026-10-04 定）：**没有单独的判断层**。问答和 Agent 模式的消息带 `engine: "v2"`，worker 的 `runAssistantV2` 只负责收集记忆、使用习惯和套图上下文，然后进入**唯一的 Agent 循环** `executeAssistantAgent`，平台工具（我的数据、账户、资产、记忆、电商套图、竞品参考、技能参考等）作为 `assistantAgentPlatform` 挂进去，由模型自己决定调用什么工具。
+
+- **问答**：只回答（可联网），不出图、不做套图、不用站内工具。
+- **Agent**：能回答，也能出图、改图、做套图、用站内工具；可编辑 PSD / PPT 只在 Agent 模式。
+- **图片**：保持原生图流程不变。局部编辑、已确认的出图方案、方案执行也走原流程（不带 `engine`）。
+
+质量不再靠判断模型和人工复核，而是**用用户自己的行为当标签**（一键纠正、停止、点踩、出图后很快删除等），后台“AI 助手质量”页看指标、管回归用例、做版本对比。
+
+P0–P5 全部完成；10-03 之后又完成了合并、单一 Agent 循环、质量闭环、对话生命周期、界面打磨、竞品参考与技能参考（见第 5 节末尾）。
 
 ---
 
@@ -21,39 +28,37 @@ AI 助手**沿用原有界面**（`AssistantWorkspaceLayout` 等，不做新 UI�
 
 | 决策 | 内容 |
 |---|---|
-| 界面 | **必须沿用原界面**。用户打磨了很久，曾做过一版独立新界面被否决并已删除。新能力只能按原界面风格（`--assistant-*` 变量）嵌入原组件。 |
-| 模式选择 | 保留“问答 / 图片 / Agent”三个模式。问答和 Agent 走 v2；图片模式保持原生图流程，P2 再升级。 |
+| 界面 | **必须沿用原界面**。曾做过一版独立新界面被否决并已删除。新能力只能按原界面风格（`--assistant-*` 变量）嵌入原组件。 |
+| 模式 | 保留“问答 / 图片 / Agent”三个模式。问答只能问答（联网保留）；Agent 能问答能出图；图片模式不变。 |
+| 编排 | 只有一个 Agent 循环，不做每轮路由。判断模型、关键词强制工具、`hand_over` 已全部删除（2026-10-04）。 |
 | 定位 | 平台统一入口，“说出目标，交付结果”；能力覆盖全平台，包括用户**自己的**数据统计。 |
 | 数据范围 | 统计只给普通用户看**自己的**数据。用户身份由服务端从登录态取；模型只能从白名单指标里选，不能写 SQL。 |
 | 统计口径 | 必须与个人中心、钱包完全一致（有对账测试守着）。 |
-| 决策模型 | **不绑定任何一家**（用户暂时没有 JEV）。默认用后台“页面分配”给 AI 助手页的默认对话模型；可选覆盖设置 `assistant_decision_model`；都不可用时退回规则。 |
-| 付费确认 | 两种都要，用户自己选：**逐步确认**（默认）/ **按任务预算**（服务端累计把关）。复用 `requireCostConfirm`、`assistantAutoApprove`、`assistantAutoApproveBudgetCents`。属于 P2。 |
-| 旗舰场景 | P2 先做**电商套图**。 |
-| 其它助手 | 画布 Agent、电商简报助手等**不在范围内**，不用管。 |
+| 付费确认 | 两种都要，用户自己选：**逐步确认**（默认）/ **按任务预算**（服务端累计把关）。自动授权有服务端闸门：一个方案只能自动执行一次（`proposal.autoExecutedAt`），出方案后 10 分钟内有效。 |
+| 质量 | 用户否决了人工逐条复核和 LLM 评审，定为“用户行为即标签”（见 5.7）。 |
+| 旗舰场景 | 电商套图。 |
+| 专业工作台 | 文生图 / 游戏 / 模型 / UI 设计等工作台的提示词搬迁**暂不做**，不要再主动提。 |
+| 其它助手 | 画布 Agent、电商简报助手等**不在范围内**。 |
 
 ---
 
 ## 3. 工作环境与注意事项
 
-- **不要从 `main` 开分支**：`main` 比基线分支落后 191 个提交，现有助手、支付等代码都不在 `main` 上。
-- 主工作目录 `startcloudsai`（分支 `codex/publish-current-project`）有 30 多个**未提交**改动（含电商），本分支没有动它们。合并前需要和那批电商改动对齐。
-- 本分支新增了 **5 个数据库迁移**：`00177_assistant_decision_logs.sql`（判断记录表）、`00178_assistant_commerce_sets.sql`（电商套图）、`00179_assistant_memories.sql`（助手记忆与开关）、`00180_assistant_proactive.sql`（主动提醒设置、“助手提醒”对话、套图已通知批次）、`00181_assistant_suggestions.sql`（主动建议开关）。合并前确认其他分支没有占用这些编号。**本地开发库在 181**（之前短暂应用过一个已删除的 `00179_assistant_job_kinds`，2026-10-02 已手动回滚：删列并删掉 goose 版本记录，然后才应用现在的 179）。
-- **真实生成要先问用户**：本地服务连接的是真实上游模型，任何可能提交生成的操作（包括在本地页面里发消息）都会真实扣费。
-- **本地服务不要随意重启**：接口和 worker 由启动器以 `go run` 方式运行，环境变量来自启动器而不是 `.env`。只在用户要求时重启。
-- 本地正在运行的接口（`localhost:8000`）跑的是**主工作目录的旧代码**，不认识 `engine=v2`。要真实试用 v2，需要用本工作树的代码另起接口和 worker（还没做，需用户同意）。
-- **本分支的一套本地服务**（2026-10-02 起）：接口 `localhost:8001`、worker，用本地同一个数据库，但 Redis 用 **7 号库**（和 8000 那套的任务队列分开，互不抢任务）。二进制和环境在当次会话的临时目录里，会话结束后可能不在；需要时按同样方式重建：编译本分支 → 沿用 8000 那套的环境，改 `PORT=8001` 和 `REDIS_URL` 的库号 → 分别起 `serve` 和 `worker`。**改了 worker 里的代码要两个进程都重启**：助手回合是 worker 进程跑的，只重启 `serve` 不生效（2026-10-02 踩过：旧 worker 跑了几个小时的旧代码）。前端用主工作目录 `.claude/launch.json` 里的 `assistant-v2-web-8001`（端口 3104，代理到 8001）。
-- 前端开发服务器：`.claude/launch.json` 里的 `assistant-v2-web`，端口 **3104**。本地接口的 `ALLOWED_ORIGINS` 只放行 3102–3105、3200、8081，其他端口登录会被拒。
-- 本地测试账号：`sc.local.assistant.test@gmail.com`。本地开了 `DEV_LOGIN_CODE_ECHO`，验证码在 `POST /api/v1/auth/email-verification-codes` 的响应里（`developmentCode`），不会真的发邮件。
-- 工作树里的 `apps/web-react/node_modules` 是用 `npm ci` 装的真实目录（不要用软链接，否则 Vite 会拒绝加载图标字体）。
+- **不要从 `main` 开分支**：`main` 远远落后于 `codex/publish-current-project`，助手、支付等代码都不在 `main` 上。
+- 本地接口 `localhost:8000` 和 worker 由启动器以 `go run` 运行，环境变量来自启动器而不是 `.env`；**只在用户要求时重启**。助手回合在 worker 里跑，改了 worker 代码要连 worker 一起重启。
+- 前端：主站 `localhost:3105`（`.claude/launch.json` 的 `web-dev`）；手机站 `/m` 的助手页复用同一套 controller。本地接口的 `ALLOWED_ORIGINS` 只放行 3102–3105、3200、8081 等端口。
+- 真实生成：2026-10-02 起用户允许做真实模型 / 生成测试，不必逐次询问，但要控制规模。本地库是共用的，主动提醒会真实发给本地其它账号。
+- 本地测试账号：`sc.local.assistant.test@gmail.com`。本地开了 `DEV_LOGIN_CODE_ECHO`，验证码在 `POST /api/v1/auth/email-verification-codes` 响应的 `developmentCode` 里。
+- 开发专用页面 `/__assistant-gallery`：用示例数据渲染每一种消息类型，改消息样式时先在这里看。
 
 ### 测试命令
 
 ```bash
 # 服务端（需要本机 Postgres，默认 postgres://localhost:5432/postgres，可用 TEST_DATABASE_URL 覆盖）
 cd apps/server
-go test ./internal/usermetrics/ ./internal/decision/ ./internal/assistanttools/
-go test ./internal/worker/ -run AssistantV2
-go test ./internal/httpapi/ -run 'AssistantRunAcceptsV2|Usage|Wallet'
+go test ./internal/usermetrics/ ./internal/assistanttools/ ./internal/assistantreview/ ./internal/assistantmemory/ ./internal/assistantproactive/ ./internal/commerceset/
+go test ./internal/worker/ -run 'AssistantV2|AssistantAgent'
+go test ./internal/httpapi/ -run 'Assistant|Usage|Wallet'
 go test ./...        # 全量，约 5 分钟
 
 # 前端单元测试
@@ -61,9 +66,12 @@ cd apps/web-react
 npm run test:assistant-conversation-refresh
 npm run test:assistant-stream-merge
 npm run test:assistant-tool-steps
+npm run test:assistant-corrections
+npm run test:assistant-image-compare
+npm run test:assistant-stats-csv
 
 # 前端端到端（全部模拟接口，不调用真实模型）
-WEB_BASE_URL=http://127.0.0.1:3125 npx playwright test tests/e2e/assistant-engine-v2.spec.js --project chromium
+npx playwright test tests/e2e/assistant-engine-v2.spec.js tests/e2e/assistant-conversation-lifecycle.spec.js --project chromium
 ```
 
 ---
@@ -71,68 +79,69 @@ WEB_BASE_URL=http://127.0.0.1:3125 npx playwright test tests/e2e/assistant-engin
 ## 4. 当前架构
 
 ```
-原界面（问答 / 图片 / Agent，未改样式）
-   │  问答、Agent → createAssistantRun 带 engine:"v2" + timezone（附件、参考图、引用都走 v2）
-   │  图片模式、局部编辑、已确认的出图方案 → 原流程（不带 engine）
+原界面（问答 / 图片 / Agent）
+   │  问答、Agent → createAssistantRun 带 engine:"v2" + timezone
+   │  图片模式、局部编辑、已确认的出图方案、方案执行 → 原流程（不带 engine）
    ▼
 POST /api/v1/assistant/runs（handlers_assistant_workspace.go）
-   │  engine=v2：保持用户选的模式（不再按关键词升级），但按 Agent 预备图片能力（模型目录）
+   │  校验一键纠正（assistant_turn_signals.go），记录本轮对之前回合的行为信号
    ▼
 worker.executeAssistantRun（assistant.go）
-   ├─ 非 v2 → executeAssistantRunLegacy（原引擎）
+   ├─ 非 v2 → 原流程（图片模式等）
    └─ v2 → runAssistantV2（assistant_v2.go）
-        1. assistantdecision.Resolve：判断模型 = 后台单独指定的模型，否则 AI 助手页默认对话模型；
-           读取该模型的阈值；模型不可用时只用规则
-        2. assistantdecision.Decide：模型判断 intent / 是否追问；同时算出规则的判断（影子对比）；
-           置信度低于阈值时改用规则的判断；写一行 assistant_decision_logs
-        3. create / web / workspace → assistantV2HandOver：以 Agent 身份交给原引擎，
-           并带上 _v2Intent，原引擎直接用这个判断，不再自己跑关键词和模型判断
-        4. 其余 → 工具循环（最多 6 步，只执行 read 级工具）：
-           my_stats_query、my_records_list、my_account_overview、my_orders_list、explain_charge、
-           task_status，附带文档时加 files_list/search/read（系统提示词与工具集在 internal/assistantv2，
-           worker 和后台统计评测共用）；
-           参考图随本轮消息一起发给模型；引用由上下文构建自动带上
-        5. 写消息元数据（dataViews、toolSteps、_decision）→ CompleteAgentAttempt 结算 → 推送 Done
+        1. 收集上下文：记忆（提示词块，2400 字封顶）、使用习惯、本对话的套图、竞品参考
+        2. 组装 assistantAgentPlatform：平台工具 + 规则 + 权限；问答模式 chatOnly
+           （去掉出图、套图、站内工具，保留联网）
+        3. executeAssistantAgent：唯一的 Agent 循环。只读平台工具可以并行调用；
+           出图 / 改图 / 联网 / 站内工具都在这个循环里，不再“交回原引擎”
+        4. 回复末尾的 <next>…</next> 被剥离存成 nextPrompt（输入框里按 Tab 采用）
+        5. 写消息元数据（dataViews、toolSteps 等）→ 结算 → 推送 Done
    ▼
-原界面渲染：正文 + AssistantDataViews（统计卡片 / 图表 / 表格 / 明细 / 账户概况 / 订单 / 扣费说明）
+原界面渲染：正文 + 统计 / 明细 / 账户 / 订单 / 扣费卡片、套图卡片、记忆卡片、纠正按钮
 
-后台 /admin/assistant-decision（AssistantDecisionView.vue）
-   设置判断模型和每个模型的阈值 · 看近 7/30 日判断记录 · 跑内置评测集（规则免费 / 模型真实调用）
-   · 跑统计问答评测（64 题，真实调用模型，工具查管理员自己的数据）
+后台 /admin/assistant-quality（旧 /assistant-decision 重定向过来）
+   行为指标（按模式 / 模型 / 提示词版本）· 回归用例管理 · 回归评测 · 版本对比 · 统计问答评测（64 题）
 ```
 
 ### 关键文件
 
 | 文件 | 作用 |
 |---|---|
+| `apps/server/internal/worker/assistant_v2.go` | v2 入口：上下文收集、`assistantAgentPlatform`、问答模式限制 |
+| `apps/server/internal/worker/assistant.go` | 原 Agent 循环 `executeAssistantAgent` 与运行调度 |
+| `apps/server/internal/worker/assistant_next_prompt.go` | `<next>` 下一步建议的剥离与保存 |
+| `apps/server/internal/worker/assistant_probe.go` | `ProbeAssistantAgent`：只跑第一步，供版本对比用（经 `assistantreview.Prober` 在 `main.go` 注入） |
+| `apps/server/internal/worker/assistant_conversation_purge.go` | 已归档对话到期后连同图片删除 |
+| `apps/server/internal/assistantv2/` | v2 的系统提示词、工具集和权限，worker 与统计评测共用 |
+| `apps/server/internal/assistantreview/` | 质量闭环：一键纠正定义（`signals.go`）、回归用例（`cases.go`）、评测（`eval.go`）、版本对比（`compare.go`） |
+| `apps/server/internal/httpapi/assistant_turn_signals.go` | 发送时记录行为信号与一键纠正 |
+| `apps/server/internal/httpapi/handlers_admin_assistant_quality.go` + `store/assistant_quality.go` | 后台质量接口与指标查询 |
+| `apps/admin/src/views/AssistantQualityView.vue` | 后台“AI 助手质量”（路由 `/assistant-quality`） |
+| `apps/server/internal/httpapi/handlers_assistant_conversation_lifecycle.go` | 对话上限、归档 / 恢复、置顶、每日新建上限 |
 | `apps/server/internal/store/metric_facts.go` | **统计口径的唯一来源**：创作事实和账本事实两段 SQL |
 | `apps/server/internal/usermetrics/` | 指标目录、时间范围、白名单查询 `Query`、明细 `ListRecords` |
-| `apps/server/internal/decision/` | 可插拔决策层：`Decider` 接口、LLM（JSON 输出）、规则、`Chain`；设置（判断模型覆盖 + 每个模型的阈值）；`SelectModel` / `ResolveModel` / `NewChatClient` |
-| `apps/server/internal/assistantdecision/` | AI 助手的判断本身：意图、问题、规则、`Resolve`、`Decide`（阈值 + 影子对比）；内置评测集 `BuiltinCases` 与 `Evaluate`。worker 和后台评测共用这一份代码 |
-| `apps/server/internal/store/assistant_decision_logs.go` | 判断记录写入与统计 |
-| `apps/server/internal/httpapi/handlers_admin_assistant_decision.go` | 后台接口：`GET/PUT /admin/assistant/decision`、`GET /admin/assistant/decision/stats`、`POST /admin/assistant/decision/evals` |
-| `apps/admin/src/views/AssistantDecisionView.vue` | 后台页面“AI 助手判断” |
-| `apps/server/internal/assistanttools/registry.go` | 工具注册表，新增 `Level`（read / spend / change） |
-| `apps/server/internal/assistanttools/my_data.go` | “我的数据”能力清单（统计、明细，含 API 调用） |
-| `apps/server/internal/assistanttools/my_account.go` | “我的账户”能力清单：`my_account_overview`、`my_orders_list`、`explain_charge` |
-| `apps/server/internal/useraccount/` | 余额、订阅、订单、单笔扣费解释；只复用钱包 / 订阅 / 订单页的 store 函数（`Wallet.AvailablePoints`、`GetSubscriptionProgress`、`SearchUserOrders`、账本事实） |
-| `apps/server/internal/assistantv2/` | v2 的系统提示词、工具集和权限，worker 与统计评测共用 |
-| `apps/server/internal/statseval/` | 统计问答评测：64 个问法（`BuiltinCases`）、评分（工具 / 参数 / 时间范围 / 是否对比 / 数字出处）、`NewAgent` 与 `Evaluate` |
-| `apps/server/internal/worker/assistant_v2.go` | v2 编排：决策、交回原引擎、工具循环、结算 |
-| `apps/server/internal/assistantmemory/` | 助手记忆：增删改查、同类同名覆盖、上限 200 条、开关、提示词块（预算 2400 字）、按名字找记住的商品、把套图存成满意方案 |
-| `apps/server/internal/assistanttools/my_memory.go` | 记忆工具：`memory_search`、`memory_save`、`memory_update`、`memory_forget`（新级别 `LevelMemory`） |
-| `apps/web-react/src/features/assistant/AssistantMemoryViews.jsx` + `assistant-memory.css` | 回复里的记忆卡片（可撤销）、左侧“记忆与提醒”面板（记忆 / 提醒两个标签）、主动消息底部的“提醒设置” |
-| `apps/server/internal/assistantproactive/` | 主动能力：设置、`Post`（对话消息 + 铃铛通知同一事务、按来源去重）、套图完成通知、异常提醒、定时报告、主动建议与使用习惯（`suggestions.go`） |
-| `apps/server/internal/worker/assistant_proactive.go` | 三个定时任务：套图完成（每 30 秒）、异常提醒（每 10 分钟）、定时报告（每 15 分钟） |
-| `apps/web-react/src/features/assistant/useAssistantWorkspaceController.js` | 原 controller：v2 路由与几处状态修复 |
-| `apps/web-react/src/features/assistant/AssistantDataViews.jsx` + `assistant-data-views.css` | 原界面里的统计卡片 |
-| `apps/web-react/src/features/assistant/domain/assistantConversationRefresh.js` | 切回对话时的服务端合并逻辑 |
+| `apps/server/internal/useraccount/` | 余额、订阅、订单、单笔扣费解释，复用钱包 / 订阅 / 订单页的 store 函数 |
+| `apps/server/internal/statseval/` | 统计问答评测：64 个问法与评分 |
+| `apps/server/internal/commerceset/` | 电商套图：目录、提示词、报价、生成、检查、重做、打包 |
+| `apps/server/internal/assistantmemory/` | 助手记忆 |
+| `apps/server/internal/assistantproactive/` + `worker/assistant_proactive.go` | 主动能力：完成通知、异常提醒、定时报告、主动建议 |
+| `apps/server/internal/assistanttools/registry.go` | 工具注册表与级别（read / spend / change / memory） |
+| `apps/server/internal/assistanttools/my_data.go`、`my_account.go`、`my_assets.go`、`my_memory.go`、`commerce_set.go` | 平台工具 |
+| `apps/server/internal/assistanttools/competitor.go` | `competitor_analyze`：竞品图风格参考（迁移 `00190`） |
+| `apps/server/internal/assistanttools/ask_choices.go` | `ask_choices`：让用户点选的提问 |
+| `apps/server/internal/assistanttools/skill_references.go` | `read_skill_reference`：`@技能` 时按需读取内置技能的参考资料 |
+| `apps/web-react/src/features/assistant/useAssistantWorkspaceController.js` | 原 controller：v2 路由、发送、纠正 |
+| `apps/web-react/src/features/assistant/AssistantDataViews.jsx`、`AssistantMemoryViews.jsx`、`AssistantCommerceSet.jsx` | 统计卡片、记忆面板与卡片、套图卡片 |
+
+已删除：`internal/decision`、`internal/assistantdecision`、`assistanttools/hand_over.go`。`assistant_decision_logs` 表保留但不再写入。
 
 ---
 
 ## 5. 进度清单
 
 ### P0 底座 ✅ 全部完成
+
+> 2026-10-04 起，下表中的判断层相关项（可插拔决策层、判断模型设置、按模型阈值、影子对比、判断评测集、服务端统一判断、交回原引擎）已被单一 Agent 循环和质量闭环取代（♻️），保留为历史记录。
 
 | 状态 | 项 | 说明 / 位置 |
 |---|---|---|
@@ -264,7 +273,7 @@ worker.executeAssistantRun（assistant.go）
 
 ---
 
-### 用户试用后的判断修正（2026-10-02）
+### 用户试用后的判断修正（2026-10-02，♻️ 已被 5.6 取代）
 
 用户试用：先说“我想做一张小狗在中间4个老虎在四周的图片，1920 * 600 尺寸”，出了方案和图；再说“我要粉色的小狗，然后4K高清”，v2 却自己回了一段文字，还让用户去文生图工作台。原因和修正：
 
@@ -273,11 +282,51 @@ worker.executeAssistantRun（assistant.go）
 - **v2 判错时没法自救**：提示词里“生成或修改图片就引导用户去工作台”是早期写法。新增 `hand_over` 工具（`assistanttools/hand_over.go`）：v2 的主模型发现这一轮其实要出图 / 改图、联网或用站内工具时，第一步调用它，worker 按 `create / web / workspace` 交回原引擎（和判断层判对时同一条路，置信度记为 1，原引擎不再重判），判断记录改为已交接。
 - 原样重放（测试账号）：两轮都判为生成或修改图片并交回原引擎；第二轮直接出了新方案：粉色小狗、清晰度“超清 4K”、质量“高”。判断模型两次仍然超时，这两次是规则判对的。`hand_over` 这条路有单元测试，没有在真实对话里触发过。
 
+---
+
+### 5.6 合并与单一 Agent 循环 ✅（2026-10-03 / 04）
+
+| 状态 | 项 | 说明 |
+|---|---|---|
+| ✅ | 合入主分支 | 2026-10-03 `codex/ai-assistant-v2` 快进合入 `codex/publish-current-project`，v2 分支和工作树随后删除；本地 3105/8000 就是 v2 |
+| ✅ | 去掉每轮路由 | `runAssistantV2` 只收集上下文，然后调用唯一的 `executeAssistantAgent`；判断模型、关键词强制、`hand_over` 全部删除 |
+| ✅ | 模式规则 | 问答只答（联网保留），Agent 能答能出图，图片不变；可编辑 PSD / PPT 只在 Agent |
+| ✅ | 自动授权闸门 | 一个方案只能自动执行一次，出方案 10 分钟内有效 |
+| ✅ | 只读工具并行 | 同一步里的多个只读平台工具可并行执行（如“本月和上月各花了多少”） |
+
+### 5.7 质量闭环 ✅（2026-10-04，迁移 `00183`、`00184`）
+
+| 状态 | 项 | 说明 |
+|---|---|---|
+| ✅ | 一键纠正 | 只在最后一条回复显示：出图方案下“我只是问问”，文字回答下“帮我画出来 / 联网查一下”。点了就按纠正重跑，同时记一条行为事件并自动生成回归用例 |
+| ✅ | 行为指标 | `assistant_turn_events` 记录方案被执行、纠正、停止、点踩、出图后很快删、紧接着用文字纠正；后台按模式 / 模型 / 提示词版本看比例和趋势 |
+| ✅ | 版本对比 | 抽真实回合，用当前提示词 + 模型重放第一步，只列出第一步变了的，按用户当时的行为判断变好还是变坏 |
+| ✅ | 后台页面 | “AI 助手质量” `/assistant-quality`（旧 `/assistant-decision` 重定向）；统计问答评测保留在同页 |
+| ♻️ | 人工复核 | `assistant_turn_reviews` 已在 `00184` 删除 |
+
+### 5.8 对话生命周期与界面 ✅（2026-10-04 / 05，迁移 `00185`）
+
+- 每人默认保留 40 个对话（订阅可加，后台可调）；超出时归档最久未用的，置顶和有运行中任务的不归档；置顶存在服务端。
+- 可归档 / 恢复；已归档 7 天后由 worker 连同图片删除。每人每天最多新建 100 个对话（北京时间），删除不返还名额；可选单对话消息上限。
+- 对话列表只为最近 40 个带消息，其余打开时再加载；删除时提示图片会一起删。
+- 图片编辑器：标注（画笔、文字、形状、橡皮、撤销重做）、擦除、评论、改尺寸、缩放平移；编辑结果可与原图在全屏查看器里对比。
+- 消息界面：单行状态条、思考 / 过程 / 用时面板、计划步骤条、紧凑的数据卡片、联网来源标签；每个对话一张完整的套图卡片；自动授权弹窗重做。
+- 下一步建议：回复末尾的 `<next>` 存成 `nextPrompt`，空输入框里按 Tab 采用。
+
+### 5.9 10-06 / 07 补充 ✅
+
+- 竞品风格参考：`competitor_analyze`，上传竞品图做风格参考（迁移 `00190`）。
+- 引用、`ask_choices` 点选提问、已保存图片列表（`/assistant/saved-images`）、重新生成多个版本、统计导出。
+- `@技能` 展开：任务和助手都会展开技能提及；内置技能的参考资料由 `read_skill_reference` 按需读取。
+- 手机站 `/m/assistant` 直接复用桌面端 controller 和消息组件。
+
+---
+
 ## 6. 已知问题与遗留
 
-### 6.1 原助手的端到端测试有 9 条在改动前就失败
+### 6.1 原助手的端到端测试
 
-`tests/e2e/react-assistant.spec.js` 设置了串行模式，第一条失败后其余全部跳过，所以这些问题长期没人看到。改成同时运行后对比：基线失败 10 条，本分支失败 9 条（修好了“新对话第一次发送”）。剩余 9 条**都是基线就有的**，没有新引入的：
+2026-10-02 时 `tests/e2e/react-assistant.spec.js` 有 9 条在 v2 改动前就失败（该文件为串行模式，第一条失败后其余跳过）：
 
 1. image preferences balance dynamic model capability options
 2. keeps keyboard send guards aligned with the send button
@@ -289,68 +338,68 @@ worker.executeAssistantRun（assistant.go）
 8. infers the recent visual context and image count from the prompt
 9. migrates legacy local conversations into cloud history once
 
-建议优先看第 3、5、8 条，它们和助手行为直接相关，可能是真实问题。要看到全部结果，可以临时去掉串行模式运行。
+`119b8fe` 修了其中一部分过期用例（手机侧栏、输入长度上限、迁移路由），但本次（2026-10-07）没有重新跑全量，剩余失败数未核实。第 3、5 条和助手行为直接相关，建议优先看。
 
 ### 6.2 行为变化（需要告知产品和运营）
 
-- **个人中心的创作数、图片数会变小**：以前把助手出图时写的“历史镜像任务”也算了一次，现在已排除，这是更正后的值。
-- **个人中心的消耗口径与钱包统一**：早期一些金额记为 0 的账本记录，现在会按关联任务的实际扣费计入。
-- **问答模式不再在前端拦截**：服务端决定是否升级为 Agent。
-- **联网搜索的关键词判断**：不再把“物联网 / 互联网 / 车联网 / 上网本”当成联网请求。
-- **API 调用的消耗归到“API 调用”**：账本里开发者 API 的扣费以前在个人中心和统计里按功能分组时归为“其他”，现在归为“API 调用”。总数不变。
-- **任务状态的关键词判断**：必须是用户自己的任务（如“我的任务”“刚才那个任务”），写代码、问系统设计类的提问不再触发。
+- **个人中心的创作数、图片数会变小**：以前把助手出图时写的“历史镜像任务”也算了一次，现在已排除。
+- **个人中心的消耗口径与钱包统一**：早期一些金额记为 0 的账本记录，现在按关联任务的实际扣费计入。
+- **问答模式只回答**：不再出图或升级成 Agent；需要出图时用户点“帮我画出来”或切到 Agent。
+- **API 调用的消耗归到“API 调用”**：以前按功能分组时归为“其他”，总数不变。
+- **对话数量有上限**：默认 40 个，超出自动归档最久未用的；归档 7 天后连同图片删除；每天最多新建 100 个。
 
-### 6.3 上一轮排查中发现、仍未处理的问题
+### 6.3 仍未处理的问题
 
-- 历史对话列表固定只返回最近 40 个，没有分页（`handlers_assistant_workspace.go` 中 `assistantConversationLimit`）。
-- 加载对话列表时，每个对话都要单独查一次消息，40 个对话就是 40 次查询；原界面每个对话还会带回 24 条消息。
 - Redis 不可用时，SSE 连接返回 200 后立即断开，浏览器每 3 秒左右重连一次。
-- 发送失败时，原界面在对话里保留“生成失败”的消息，同时把草稿放回输入框。这是有意保留原界面行为，产品上可以再确认一次。
+- 发送失败时，原界面在对话里保留“生成失败”的消息，同时把草稿放回输入框。这是有意保留的原行为，产品上可以再确认。
+- `useAssistantWorkspaceController.js` 里 `useEngineV2` 附近的注释还写着“交回原引擎”，是单一循环之前的说法，代码行为以 `assistant_v2.go` 为准。
 
-### 6.4 v2 当前的限制
+### 6.4 当前的限制
 
-- spend 级工具（目前只有电商套图的生成和重做）由工具自己在事务里核对预算；change 级工具仍直接拒绝。
-- LLM 自报的置信度没有校准，所以阈值按模型分别设置（后台可改，默认意图 0.6、追问 0.75）。**建议先在后台跑一次“评测模型”，用报告里的建议值设置阈值。**以后接入 JEV 这类有校准概率的模型时，同样按模型单独设阈值。
-- 规则兜底（`assistantdecision.Rules`）在决策模型不可用、超时（3 秒）或置信度低于阈值时使用。
-- 内置评测集是代码里的固定列表（`BuiltinCases`），要扩充就改代码并提交；还没有在后台增删评测问题的功能。统计评测集同理（`statseval.BuiltinCases`）。
-- 统计评测用的是管理员自己账号的真实数据，数据很少时“数字有出处”这一项更容易通过；需要更严格时可以用一个数据较多的测试账号登录后台再跑。“解读”只检查是否说明了变化，不评判解读质量。
-- `my_account_overview` 读取余额时和打开钱包页一样，会先结算已过期的订阅积分（`GetWallet` 的既有行为），除此之外不写任何数据。
-- 对话上下文沿用原有的 `prepareAssistantContext`（包含压缩）。
-- 交给原引擎处理的那一轮，决策模型那次调用**没有**计入利润表的上游调用次数（v2 自己处理的轮次已计入）。
+- spend 级工具（电商套图生成、重做）由工具自己在事务里核对预算；change 级工具仍直接拒绝。
+- 主动能力的时区固定为 Asia/Shanghai；只覆盖助手里发起的电商套图。
+- 记忆只用于 AI 助手，没有接到电商工作台等其它页面；不会从对话里自动提取记忆。
+- 统计评测集是代码里的固定列表（`statseval.BuiltinCases`）；回归用例来自一键纠正，可在后台管理。
+- 统计评测用管理员自己的真实数据，数据少时“数字有出处”更容易通过。
+- 含糊的“我花了多少积分”，模型有时按全部时间统计，而不是提示词要求的最近 30 天。
 
-### 6.5 第一次真实评测（2026-10-02，本地库，模型 gpt-5.6-luna）
+### 6.5 历史评测（2026-10-02，判断层时期）
 
-- **判断模型**：不限等待时准确率 40/43（93%），规则 27/43（63%）。但模型慢：中位 2.8 秒，90% 在 6.3 秒内，最慢 10.7 秒。按原来 3 秒的等待上限，近一半回合会超时改用规则，实际准确率只有约 81%。等待上限 5 秒时约 93%（19% 改用规则），6 秒时约 95%。等待上限现在可以在后台按模型设置（`timeoutMs`，默认仍为 3 秒），模型评测会给出建议值。评测建议的意图置信度下限为 0.75。
-  仍判错的：“哪个模型最费钱”被判成联网搜索；“我刚才那个任务为什么失败了”被判成直接回答；“失败的那次生图退款了吗”被判成账户与支付（后两条交给 v2 时都能查到数据，影响小）。
-- **统计问答**：64 题最终 62 题通过，工具和参数 100% 正确。第一次运行抓出一个真实 bug：查询的时间段里没有数据、又不分组时，求和结果是 NULL，查询直接报错；新用户问“上个月”、或者环比的上一期没有数据都会碰到，已修复。另外按评测结果改了 `my_records_list` 的说明（“最贵的几次”要用消耗明细）。剩下 2 道是出处检查只认两个数之间的运算，模型其实算对了，检查已经放宽为同一组结果里任意几项的合计也算有出处。
-- 有一处与预期不同的行为：含糊的“我花了多少积分”，模型有时按全部时间统计，而不是系统提示词要求的最近 30 天。
+判断模型 gpt-5.6-luna 不限等待时准确率 93%，3 秒上限下约 81%；统计问答 64 题通过 62 题，并修了空时间段 SUM 为 NULL 的 bug。判断层已删除，判断准确率部分仅作历史参考；统计问答的结论仍适用。
 
 ---
 
-## 7. 建议的接手顺序
+## 7. 后续可做
 
-1. 用本工作树的代码起一套本地接口和 worker（先问用户），用测试账号做一次真实试用；在后台“AI 助手判断”跑一次“评测模型”，按建议值设置阈值。
-2. 修复 6.1 中和助手行为相关的第 3、5、8 条测试问题。
-3. 在后台把判断等待上限设好（见 6.5），并在 6.5 的判断模型评测里看看“哪个模型最费钱”这类判错能不能靠调整判断提示词修正。
-4. 灰度替换旧版 `/assistant`：**替换前先停下来问用户**。
+1. 重新跑一遍 `react-assistant.spec.js`（去掉串行模式），把 6.1 剩余的失败清掉。
+2. 在后台“AI 助手质量”页积累一段时间的行为指标后，用版本对比验证提示词改动。
+3. 手机站助手页补齐与桌面一致的交互细节（见 `apps/web-mobile/README.md`）。
 
 ---
 
-## 8. 本分支提交记录
+## 8. 提交记录
 
 | 提交 | 内容 |
 |---|---|
 | `09222b2` | v2 服务端底座：决策层、工具分级、个人统计、v2 编排 |
-| `0faffb3` | 独立 v2 网页（**已在 `c4dabf5` 中删除**，保留在历史里仅供参考） |
+| `0faffb3` | 独立 v2 网页（**已在 `c4dabf5` 中删除**） |
 | `34015fa` | v2 接入 `task_status` |
-| `accf762` | 问答 / Agent 走 v2，缺的能力交回原引擎；修正联网和任务状态的误判 |
+| `accf762` | 问答 / Agent 走 v2，缺的能力交回原引擎 |
 | `c4dabf5` | 原界面接入 v2 引擎；统计卡片；状态修复 |
 | `01e39a4` | 交接文档 |
-| `75b3e7d` | 判断模型设置与阈值、影子对比与判断记录、内置评测集与后台页面、服务端统一判断、附件 / 参考图 / 引用进 v2 |
-| `3c93cec` | 撤掉专用抠图任务：抠图改为 gpt-image-2 编辑原图（走原引擎的出图方案），删除迁移 `00179_assistant_job_kinds` |
-| `04b5bc3` | P4 记忆：存储与开关、记忆工具、提示词与出图方案里用上记忆、记住的商品直接做套图、记忆面板与可撤销卡片、“记住这套方案” |
-| `1881330` | 抠图输出透明 PNG：方案带 `transparentBackground`，服务端按模型能力保留 |
-| `2600bae` | P5 前三项：完成通知、异常提醒、定时报告，“记忆与提醒”面板 |
-| `7065222` | 周报只在周一发；P5 真实测试记录 |
-| `ff00222` | P5 主动建议：新对话卡片、对话里用上使用习惯、“主动建议”开关，迁移 `00181` |
-| `5ce41c5` | P3 存入资产库：`assets_save`（对话最近的图 / 套图 / 搜到的图），确认后复制进资产库，可撤销 |
+| `75b3e7d` | P0：判断模型设置与阈值、影子对比、内置评测集与后台页面 |
+| `0e970ae` | P1：账户、订单、扣费解释、API 用量、统计评测 |
+| `9592812` | 第一次真实评测后的校准 |
+| `a323703` | P2：电商套图 |
+| `8e1b1b4` / `bc354c9` | P3 第一批与真实测试校准 |
+| `3c93cec` | 撤掉专用抠图任务：抠图改为 gpt-image-2 编辑原图 |
+| `04b5bc3` | P4 记忆 |
+| `1881330` | 抠图输出透明 PNG |
+| `2600bae` / `7065222` | P5：完成通知、异常提醒、定时报告；周报只在周一发 |
+| `ff00222` | P5 主动建议 |
+| `5ce41c5` | P3 存入资产库 |
+| `2018c32` | 改图被当聊天的修正（判断层时期的最后一次修正） |
+| `119b8fe` | 合并后的单一 Agent 循环、质量闭环、对话生命周期、图片编辑器、面板改版 |
+| `ec27cb9` | 对话界面打磨、下一步建议、修改前后对比 |
+| `d4c72cb` | 竞品风格参考、引用、点选提问、已保存图片、多版本重新生成、统计导出 |
+| `902b365` | `@技能` 展开与内置技能参考资料；手机站助手页 |

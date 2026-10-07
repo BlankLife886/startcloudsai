@@ -1,16 +1,17 @@
 # StarCloudsAI · 星空云绘
 
-星空云绘是一个 AI 图像创作与作品社区平台，提供文生图、插画染色、设计工作台、模型设定图、游戏美术、AI 电商、拼图、AI 助手和无限画布，并包含技能库、个人素材库、共享画廊、提示词库、钱包、充值与订阅，以及独立运营后台。
+星空云绘是一个 AI 图像创作与作品社区平台，提供文生图、插画染色、设计工作台、模型设定图、游戏美术、AI 电商、拼图、AI 助手和无限画布，并包含技能库、个人素材库、共享画廊、提示词库、公告与通知、钱包、充值与订阅，以及独立运营后台。
 
-项目由 React 主站（内置无限画布模块）、Vue 管理端、Go API/Worker 和独立 Flutter App 组成。网站服务通过 Docker Compose 部署，移动端独立构建和发布。支付、模型调用、API 调用等能力受后台配置和凭据控制；源码有入口不代表某个环境已开放。
+项目由 React 主站（内置无限画布模块）、React 手机站（`/m`，开发中）、Vue 管理端、Go API/Worker 和独立 Flutter App 组成。网站服务通过 Docker Compose 部署，移动端独立构建和发布。支付、模型调用、API 调用等能力受后台配置和凭据控制；源码有入口不代表某个环境已开放。
 
-> 文档基准：2026-09-22 当前工作区，包含尚未提交的改动，不代表生产部署状态。完整文档与历史记录见 [文档索引](docs/README.md)。Web 主站和管理端面向桌面浏览器，最低支持视口为 `1280x720`；独立 Flutter App 不受此 Web 适配限制，见 [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)。
+> 文档基准：2026-10-07，HEAD `902b365`（工作区无未提交改动），不代表生产部署状态。完整文档与历史记录见 [文档索引](docs/README.md)。Web 主站和管理端面向桌面浏览器，最低支持视口为 `1280x720`；手机浏览器走独立的 `apps/web-mobile`，独立 Flutter App 同样不受此 Web 适配限制，见 [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)。
 
 ## 仓库结构
 
 ```text
 .
 ├── apps/web-react/ # 用户端与内置无限画布：React 19 + Vite + Zustand
+├── apps/web-mobile/# 手机站 /m：React 19 + Vite + antd-mobile，复用 web-react 业务代码
 ├── apps/admin/     # 管理端：Vue 3 + Vite + TypeScript + Element Plus
 ├── apps/server/    # API 与 Worker：Go + Gin + pgx + Asynq
 ├── apps/mobile/    # 独立移动端：Flutter + Riverpod + Dio
@@ -93,7 +94,7 @@ Compose 默认把网关绑定到 `127.0.0.1`。线上必须由宿主机或独立
 
 用户端仅支持 Gmail、Googlemail 和 QQ 邮箱验证码认证。已注册邮箱验证后直接登录，首次验证成功会自动创建账号、钱包与初始积分，并弹出可跳过的资料完善窗口；不提供用户密码或第三方 OAuth 登录。Gmail 点号、加号标签和 Googlemail 地址会规范为同一账号。开发环境必须显式设置 `DEV_LOGIN_CODE_ECHO=true` 才能使用响应中的调试验证码；生产环境强制关闭回显。`/oauth/*` 用于外部图片技能授权，不是用户第三方登录。
 
-升级现有环境前先审阅迁移。当前包含 `00154_drop_user_skill_bindings.sql`，会删除旧技能装载关系；其 Down 只重建空表，不恢复旧记录。旧实例仍使用该表时不能先启动共享生产库的候选 API。按 [维护窗口部署](docs/MAINTENANCE_RELEASE.md) 协调升级，只有确认新旧 Schema/执行协议兼容后才使用蓝绿流程。
+升级现有环境前先审阅迁移（源码最高 `00194`）。其中有不可逆的删表/删列/删数据：`00154` 删除旧技能装载表；`00165` 删除手持商品质检表与字段；`00167`、`00168`、`00174` 删除 Webhook 表、API Key 的 scopes、重放指纹和旧模型白名单；`00184` 删除 `assistant_turn_reviews`；`00186` 删除通知表里的公告镜像行，`00187` 每人只保留最近 100 条通知（之后由触发器持续裁剪）。这些迁移的 Down 不恢复旧数据，旧实例仍依赖相关表/字段时不能先启动共享生产库的候选 API。按 [维护窗口部署](docs/MAINTENANCE_RELEASE.md) 协调升级，只有确认新旧 Schema/执行协议兼容后才使用蓝绿流程。
 
 ## 本地开发
 
@@ -117,7 +118,14 @@ npm run dev
 cd apps/admin
 npm ci
 npm run dev
+
+# 手机站：运行在 3106，经主站代理访问 http://localhost:3105/m/
+cd apps/web-mobile
+npm ci
+npm run dev
 ```
+
+手机站目前只接入了开发服务器代理，Docker 镜像和 `deploy/nginx.conf` 还没有 `/m` 的构建与转发，生产环境暂不可访问，详见 [手机站说明](apps/web-mobile/README.md)。
 
 根目录环境文件由 Docker Compose 按所选参数读取；直接运行 Go 命令时需要在 shell 中导出相应变量，步骤见 [本地开发](docs/LOCAL_DEVELOPMENT.md)。API/Worker 使用相同数据库、Redis 和对象存储。实际生成还需在后台配置可用模型、服务商、价格和上游凭据。移动端运行与验证见 [移动端说明](apps/mobile/README.md)。
 
@@ -144,7 +152,7 @@ CI 还执行 Go race/安全扫描、前端依赖审计、画布工作流与 Agen
 - [旧服务器到新服务器的数据迁移](docs/PRODUCTION_DATA_MIGRATION.md)
 - [架构说明](docs/ARCHITECTURE.md)
 - [API 契约](docs/API_CONTRACT.md)
-- [开放 API 与 Webhook 接入](docs/OPEN_API.md)
+- [开放 API（OpenAI 兼容 /v1）](docs/OPEN_API.md)
 - [数据库设计](docs/DATABASE.md)
 - [全站图片加载与瀑布流滚动性能方案](docs/PROMPT_MASONRY_PERFORMANCE.md)
 - [高并发任务稳定性方案](docs/HIGH_CONCURRENCY_TASK_STABILITY.md)
@@ -154,5 +162,7 @@ CI 还执行 Go race/安全扫描、前端依赖审计、画布工作流与 Agen
 - [用户端迁移与视觉基线记录](apps/web-react/REACT_MIGRATION.md)
 - [用户端首页历史设计基线](apps/web-react/DESIGN.md)
 - [用户端开发说明](apps/web-react/README.md)
+- [手机站开发说明](apps/web-mobile/README.md)
+- [AI 助手 v2 交接](docs/AI_ASSISTANT_V2_HANDOFF.md)
 - [管理端开发说明](apps/admin/README.md)
 - [服务端开发说明](apps/server/README.md)

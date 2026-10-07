@@ -1,6 +1,6 @@
 # 文档索引与维护基准
 
-核对日期：2026-09-22。文档以当前工作区代码为准，包括尚未提交的改动；不是生产部署或业务验收报告。当前 HEAD 为 `3ebe980fa2c87bdef424ac434537090c13097bb6`，迁移文件共 154 份，最高编号 `00155`，缺号 `00131`。实际数据库版本必须查看对应环境的 `goose_db_version`。
+核对日期：2026-10-07。文档以当前已提交代码为准，不是生产部署或业务验收报告。当前 HEAD 为 `902b365cde1a315a35272723570efea4a67d408f`，工作区无未提交改动；迁移文件共 193 份，最高编号 `00194`，缺号 `00131`。实际数据库版本必须查看对应环境的 `goose_db_version`。
 
 ## 使用方式
 
@@ -19,10 +19,11 @@
 | [架构](ARCHITECTURE.md) | 网站/App、任务/助手/直通 API、计费、存储和部署边界 |
 | [服务端当前基线](SERVER_CURRENT_STATE.md) | 本次核对的服务端行为、并发、取消、轮询与迁移 |
 | [React 主站](../apps/web-react/README.md) | 路由、源码组织、Vite、领域与浏览器测试 |
+| [手机站 /m](../apps/web-mobile/README.md) | 手机浏览器前端：页面进度、复用主站代码的方式与开发代理；尚未接入部署 |
 | [管理端](../apps/admin/README.md) | Vue 后台现有页面、权限和开发约定 |
 | [服务端](../apps/server/README.md) | Go 子命令、包职责、配置与测试 |
 | [Flutter App](../apps/mobile/README.md) | 当前开放页面、环境隔离、运行和发布 |
-| [桌面 UI 支持策略](DESKTOP_UI_POLICY.md) | Web 最低视口和验收范围，不限制独立 Flutter App |
+| [桌面 UI 支持策略](DESKTOP_UI_POLICY.md) | Web 最低视口和验收范围，不限制手机站和独立 Flutter App |
 
 ## API、数据与商业规则
 
@@ -50,15 +51,20 @@
 | [用户工具目录](USER_TOOL_CATALOG.md) | 当前用户工具及入口状态 |
 | [页面控制](PAGE_CONTROLS.md) | 页面开关、直接访问和后台管理 |
 | [技能库与后续方案](SKILL_PAGE_PLAN.md) | 真实本地/云端/官方技能与 `@` 调用；另列未实现规划 |
+| [材质插画与人像导演技能](MATERIAL_ILLUSTRATION_SKILL_PLAN.md) | 内置技能接入方案；第 1 期已完成，第 2 期未开始 |
 | [第三方官方技能接入](THIRD_PARTY_SKILLS_PLAN.md) | 8 个第三方技能（手绘 PPT、小红书视觉导演、小黑配图、电商详情图等）的接入方案与需补能力（未实现） |
 | [助手工具与路线](ASSISTANT_TOOL_ROADMAP.md) | 当前工具、计费/确认边界和候选方向 |
+| [AI 助手 v2 交接](AI_ASSISTANT_V2_HANDOFF.md) | 已完成并在用：单一 Agent 循环、平台工具、质量闭环、对话生命周期、已知问题 |
 | [PSD 工作区](PSD_WORKSPACE_DESIGN.md) | PSD 实现与真实上游交付质量边界 |
 | [闪光卡](HOLO_CARD.md) | 现有闪光卡制作能力 |
 | [闪光卡样例](HOLO_CARD_SAMPLE.md) | 样例资产和使用说明 |
 | [精确图片尺寸](EXACT_IMAGE_SIZE.md) | 请求尺寸与交付尺寸策略 |
 | [首页轮播](HOME_BANNERS.md) | 后台配置、原图上传与用户展示 |
-| [公告即时推送](ANNOUNCEMENT_PUSH.md) | 公告快照、推送身份、SSE 和模拟回归 |
+| [公告即时推送](ANNOUNCEMENT_PUSH.md) | 公告快照、推送身份、SSE 和模拟回归；公告已与通知分表（`00186`） |
 | [管理端 UI 规范](ADMIN_UI_STYLE.md) | 现行导航、布局、控件与主题 |
+| [后台首页总览](ADMIN_DASHBOARD.md) | 仪表盘指标布局与用户画像大屏入口 |
+| [后台运维工作台](ADMIN_OPERATIONS_GUIDE.md) | 首页、异常排查与各运维页面的使用方法 |
+| [大数据量后台列表](ADMIN_LIST_SEARCH.md) | 服务端筛选、游标分页、跳页与对应索引 |
 | [图标存储与使用](ICON_STORAGE_AND_USAGE.md) | 图标来源和项目引用规则 |
 | [MCP 方案](MCP_PLAN.md) | 未实现的产品 MCP 服务规划；不与 CodeGraph 或图片技能 OAuth 混淆 |
 
@@ -89,13 +95,13 @@
 | [跨服务器数据迁移](PRODUCTION_DATA_MIGRATION.md) | 场景前提、只读盘点、对象清单和受控切换 |
 | [可选 Cloudflare 接入](CLOUDFLARE_SETUP.md) | 可选代理、动态接口绕过缓存与回退 |
 
-网站打包脚本只归档已提交的网站文件并排除 App。共享生产库的候选 API 启动会自动迁移；当前 `00154` 删除旧技能装载表，旧代码仍依赖该表时必须安排维护升级，不能承诺零停机。维护脚本目前会强制关闭 `developer_api`，发布前要核对该行为是否符合发布目标。
+网站打包脚本只归档已提交的网站文件并排除 App；手机站 `apps/web-mobile` 目前也没有进入镜像和网关。共享生产库的候选 API 启动会自动迁移；`00154`、`00165`、`00167`、`00168`、`00174`、`00184`、`00186`、`00187` 会删表、删列或删数据（旧技能装载、手持质检、Webhook 与 Key scopes、助手复核表、公告镜像通知、超出 100 条的通知），旧代码仍依赖这些结构时必须安排维护升级，不能承诺零停机。维护脚本目前会强制关闭 `developer_api`，发布前要核对该行为是否符合发布目标。
 
 ## 历史、审计与来源
 
 | 文档 | 适用边界 |
 | --- | --- |
-| [项目演进时间线](PROJECT_UPDATE_TIMELINE.md) | 顶部为本次代码快照，主体保留原历史阶段 |
+| [项目演进时间线](PROJECT_UPDATE_TIMELINE.md) | 顶部为 2026-10-07 代码快照，其后保留 09-22 快照和原历史阶段 |
 | [2026-09-01 未提交记录](UNCOMMITTED_UPDATE_2026-09-01.md) | 原工作区 diff 与原测试证据，不代表今天未提交/未部署状态 |
 | [2026-09-09 发布核查](RELEASE_REVIEW_2026_09_09.md) | 原接受项、失败项和验证结果 |
 | [文生图审计](TEXT_TO_IMAGE_AUDIT.md) | 历史问题与当前行为补充 |
