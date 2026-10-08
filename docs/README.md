@@ -73,6 +73,8 @@
 | 文档 | 用途 |
 | --- | --- |
 | [AI 服务路由](AI_SERVICE_ROUTING.md) | 模型、服务商、执行快照、重试与调度 |
+| [多厂商模型接入](MODEL_PROVIDER_INTEGRATION.md) | Gemini / Grok / 国内模型接入、厂商模板、兼容规则、真实测试命令 |
+| [多模型接入交接](MODEL_INTEGRATION_HANDOFF.md) | 多模型接入的需求、决策、进度、下一步、验证与文件归属 |
 | [任务执行设计](TASK_EXECUTION_DESIGN.md) | 状态机、准入、执行和恢复 |
 | [高并发稳定性](HIGH_CONCURRENCY_TASK_STABILITY.md) | 业务并发、物理槽位、队列、轮询和回收 |
 | [图片存储与交付](IMAGE_STORAGE_AND_DELIVERY.md) | S3/OSS、引用、变体和鉴权读取 |

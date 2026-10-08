@@ -362,6 +362,11 @@
 | PUT | `/api/v1/admin/model-config` | `s.adminOnly(s.adminPutModelConfig)` |
 | POST | `/api/v1/admin/model-config/icons` | `s.adminOnly(s.adminUploadModelIcon)` |
 | POST | `/api/v1/admin/model-config/discoveries` | `s.adminOnly(s.adminDiscoverProviderModels)` |
+| POST | `/api/v1/admin/model-config/connection-tests` | `s.adminOnly(s.adminTestProviderConnection)` |
+| POST | `/api/v1/admin/model-config/model-tests` | `s.adminOnly(s.adminTestModel)` |
+| GET | `/api/v1/admin/model-config/presets` | `s.adminOnly(s.adminGetModelPresets)` |
+| PUT | `/api/v1/admin/model-config/presets` | `s.adminOnly(s.adminPutModelPresets)` |
+| DELETE | `/api/v1/admin/model-config/presets` | `s.adminOnly(s.adminResetModelPresets)` |
 | GET | `/api/v1/admin/ecommerce/catalog` | `s.adminOnly(s.adminListTryonCatalog)` |
 | POST | `/api/v1/admin/ecommerce/catalog` | `s.adminOnly(s.adminCreateTryonCatalog)` |
 | POST | `/api/v1/admin/ecommerce/catalog/analyze` | `s.adminOnly(s.adminAnalyzeEcommerceCatalogImage)` |

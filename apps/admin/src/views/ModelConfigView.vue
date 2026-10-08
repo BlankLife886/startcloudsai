@@ -10,15 +10,19 @@ import {
 } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Check, Close, Connection, Cpu, Delete, EditPen, Loading, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
+import { Check, Close, Connection, Cpu, EditPen, Loading, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
 import PageCard from "@/components/PageCard.vue";
 import { ApiError, request } from "@/request";
 import { useClientPagination } from "@/useClientPagination";
 import { formatPoints, IMAGE_SERVICE_ROUTES, normalizePoints } from "@/utils";
 import { exactSizeLimits, schemaSupportsExactSize, validateExactSizeLimits, type ExactSizeLimits } from "@/exactImageSize";
+import CompatRulesEditor from "./model-config/CompatRulesEditor.vue";
+import ModelTestDialog, { type ModelTestTarget } from "./model-config/ModelTestDialog.vue";
+import ImageParamProfileDialog from "./model-config/ImageParamProfileDialog.vue";
+import ProviderWorkspace from "./model-config/ProviderWorkspace.vue";
+import type { ImageParamProfile, ModelImport, ModelProvider, RequestCompat } from "./model-config/providerTypes";
 
-type ProviderAdapter = "openai" | "crun";
 type ModelKind = "image" | "chat" | "image_tool";
 type ModelStatus = "available" | "maintenance";
 type ImageTool = string;
@@ -32,29 +36,6 @@ type WorkspaceKey =
   | "model_sheet"
   | "game_art"
   | "infinite_canvas";
-
-interface ModelProvider {
-  id: string;
-  name: string;
-  adapter: ProviderAdapter;
-  baseUrl: string;
-  apiKey: string;
-  timeoutSecs: number;
-  maxConcurrency: number;
-  enabled: boolean;
-  discoveredModels: string[];
-  routes: ProviderRoute[];
-}
-
-interface ProviderRoute {
-  id: string;
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  timeoutSecs: number;
-  maxConcurrency: number;
-  enabled: boolean;
-}
 
 interface ReasoningEffortPricing {
   enabled?: boolean;
@@ -117,6 +98,8 @@ interface ModelItem {
   supportedReasoningEfforts: string[];
   reasoningEnabled?: boolean;
   toolCallingDisabled?: boolean;
+  /** Model-specific request rewrites layered over the provider's. */
+  compat?: RequestCompat | null;
   reasoningPricing: ReasoningPricing | null;
   public: boolean;
   default: boolean;
@@ -418,10 +401,6 @@ function aspectRatioUnion(source: Record<string, string[]>) {
   return IMAGE_ASPECT_RATIOS.filter((ratio) => selected.has(ratio));
 }
 
-const adapterMeta: Record<ProviderAdapter, { name: string; detail: string }> = {
-  openai: { name: "OpenAI 兼容", detail: "/v1/models · Images · Chat" },
-  crun: { name: "CRUN 任务协议", detail: "后端转换为统一图片调用" },
-};
 
 const kindMeta: Record<ModelKind, { name: string; detail: string }> = {
   image: { name: "生图模型", detail: "供全部图片工作台与 AI 助手选择" },
@@ -528,7 +507,6 @@ const filteredModels = computed(() => {
 });
 
 const modelPagination = useClientPagination(() => filteredModels.value, 12);
-const providerPagination = useClientPagination(() => config.providers, 10);
 
 const isDirty = computed(
   () => configLoaded.value && signature() !== savedSignature.value,
@@ -549,9 +527,8 @@ const kindCounts = computed(() => {
   for (const model of config.models) counts[model.kind] = (counts[model.kind] || 0) + 1;
   return counts;
 });
-const providerRouteCount = computed(() =>
-  config.providers.reduce((sum, provider) => sum + (provider.routes?.length || 0), 0),
-);
+const editableFilesDialogVisible = ref(false);
+const imageParamProfilesOpen = ref(false);
 const saveShortcutLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘S" : "Ctrl+S";
 
 const modelSearchInput = ref<{ focus: () => void } | null>(null);
@@ -875,9 +852,6 @@ function providerName(id: string) {
   );
 }
 
-function providerModels(id: string) {
-  return config.models.filter((item) => item.providerId === id);
-}
 
 const editableFileProviders = computed(() =>
   config.providers.filter(
@@ -1470,10 +1444,9 @@ function modelWorkspaceNames(modelId: string) {
 }
 
 function providerAdapterLabel(providerId: string) {
-  return config.providers.find((item) => item.id === providerId)?.adapter ===
-    "crun"
-    ? "CRUN"
-    : "OpenAI";
+  const adapter = config.providers.find((item) => item.id === providerId)?.adapter;
+  const labels: Record<string, string> = { crun: "CRUN", gemini: "Gemini", dashscope: "百炼", minimax: "MiniMax" };
+  return labels[adapter || ""] || "OpenAI";
 }
 
 function joinList(values: string[] | undefined, empty = "—") {
@@ -1610,37 +1583,6 @@ function modelModerationLine(model: ModelItem) {
   );
 }
 
-const discoveredModelsDialogVisible = ref(false);
-const discoveredModelsViewer = reactive({
-  providerId: "",
-  providerName: "",
-  models: [] as string[],
-  configured: [] as string[],
-});
-
-function isDiscoveredModelConfigured(modelId: string) {
-  return discoveredModelsViewer.configured.includes(modelId);
-}
-
-function openDiscoveredModelsDialog(provider: ModelProvider) {
-  const models = provider.discoveredModels || [];
-  if (!models.length) return;
-  const configured = providerModels(provider.id).map(
-    (model) => model.upstreamModel,
-  );
-  const configuredSet = new Set(configured);
-  discoveredModelsViewer.providerName = provider.name || "服务商";
-  discoveredModelsViewer.providerId = provider.id;
-  discoveredModelsViewer.configured = configured;
-  discoveredModelsViewer.models = [...models].sort((a, b) => {
-    const aConfigured = configuredSet.has(a) ? 0 : 1;
-    const bConfigured = configuredSet.has(b) ? 0 : 1;
-    if (aConfigured !== bConfigured) return aConfigured - bConfigured;
-    return a.localeCompare(b);
-  });
-  discoveredModelsDialogVisible.value = true;
-}
-
 const importingDiscoveredTools = ref(false);
 
 function importedToolName(entry: ModelCatalogEntry) {
@@ -1655,14 +1597,14 @@ function importedToolName(entry: ModelCatalogEntry) {
   return labels[entry.id] || entry.id;
 }
 
-async function importDiscoveredMediaTools() {
-  const provider = config.providers.find((item) => item.id === discoveredModelsViewer.providerId);
+async function importDiscoveredMediaTools(providerId: string) {
+  const provider = config.providers.find((item) => item.id === providerId);
   if (!provider || provider.adapter !== "crun") return;
   const entries = (catalogEntriesByProvider[provider.id] || []).filter(
     (entry) => entry.compatible && entry.kind === "image_tool",
   );
   if (!entries.length) {
-    ElMessage.warning("请先在服务商编辑窗口读取最新 CRUN 模型目录");
+    ElMessage.warning("请先读取最新 CRUN 模型目录");
     return;
   }
   importingDiscoveredTools.value = true;
@@ -1702,48 +1644,119 @@ async function importDiscoveredMediaTools() {
       });
       created += 1;
     }
-    discoveredModelsViewer.configured = providerModels(provider.id).map((model) => model.upstreamModel);
     ElMessage.success(`已暂存 ${schemas.length} 个媒体工具，新增 ${created} 个；请设置平台积分并点击顶部“保存配置”`);
   } finally {
     importingDiscoveredTools.value = false;
   }
 }
 
+/** Stage catalog models as disabled, private site models for the admin to price. */
+function importCatalogModels(items: ModelImport[]) {
+  let created = 0;
+  for (const item of items) {
+    if (config.models.some((model) => model.providerId === item.providerId && model.upstreamModel === item.upstreamModel)) continue;
+    const chat = item.kind === "chat";
+    config.models.push({
+      id: createId("model"), name: item.upstreamModel, iconUrl: "", status: "available", providerId: item.providerId,
+      upstreamModel: item.upstreamModel, upstreamInputFields: [], upstreamRequiredInputFields: [], upstreamInputSchema: {},
+      modality: "", operations: [], kind: item.kind, tool: "", description: "",
+      priceCents: chat ? 0 : 20, discountPriceCents: null, upstreamCostCents: 0,
+      allowZeroPrice: false, allowLossLeader: false, imageUpscalePricing: null, fastMode: false,
+      minSeconds: chat ? 0 : 30, maxSeconds: chat ? 0 : 90,
+      resolutions: chat ? [] : ["1K"], supportsExactSize: false, exactSizeLimits: exactSizeLimits(),
+      aspectRatios: chat ? [] : [...IMAGE_ASPECT_RATIOS],
+      aspectRatiosByResolution: chat ? {} : { "1K": [...IMAGE_ASPECT_RATIOS] },
+      qualities: chat ? [] : IMAGE_QUALITIES.map((quality) => quality.value),
+      transparentBackground: !chat, outputFormats: chat ? [] : [...IMAGE_OUTPUT_FORMATS],
+      moderationLevels: chat ? [] : [...IMAGE_MODERATION_LEVELS],
+      maxReferenceImages: chat ? 0 : 4, maxImages: chat ? 0 : 4,
+      contextWindowTokens: chat ? 128000 : 0, maxOutputTokens: chat ? 8192 : 0,
+      supportedReasoningEfforts: [], reasoningEnabled: false, toolCallingDisabled: false,
+      compat: item.compat ? cloneJSON(item.compat) : null, reasoningPricing: null, public: false, default: false, enabled: false,
+    });
+    created += 1;
+  }
+  sanitizeWorkspaceBindings();
+  ElMessage.success(`已暂存 ${created} 个模型（默认停用、不对用户开放）；在「模型目录」设置名称和积分后启用，再点击「保存配置」`);
+}
+
+/**
+ * Fill the model's options from a picked image parameter profile, so users
+ * are only offered what the upstream accepts (e.g. Grok: 1K/2K, no quality).
+ */
+function applyImageParamProfile(profile: ImageParamProfile) {
+  const capabilities = profile.capabilities || {};
+  const dropped = new Set(profile.rules?.drop || []);
+  if (capabilities.resolutions?.length) {
+    const ratios = (capabilities.aspectRatios?.length
+      ? IMAGE_ASPECT_RATIOS.filter((ratio) => capabilities.aspectRatios!.includes(ratio))
+      : modelDraft.aspectRatios.length ? [...modelDraft.aspectRatios] : [...IMAGE_ASPECT_RATIOS]);
+    modelDraft.resolutions = [...capabilities.resolutions];
+    modelDraft.aspectRatios = ratios;
+    modelDraft.aspectRatiosByResolution = Object.fromEntries(
+      capabilities.resolutions.map((resolution) => [
+        resolution,
+        (modelDraft.aspectRatiosByResolution[resolution]?.length ? modelDraft.aspectRatiosByResolution[resolution] : ratios)
+          .filter((ratio) => ratios.includes(ratio)),
+      ]),
+    );
+  }
+  if (capabilities.qualities?.length) modelDraft.qualities = [...capabilities.qualities];
+  if (profile.rules?.qualityMode === "drop") modelDraft.qualities = [];
+  if (dropped.has("background")) modelDraft.transparentBackground = false;
+  if (dropped.has("output_format")) {
+    modelDraft.outputFormats = [];
+    modelDraft.outputFormatsEnabled = false;
+  }
+  if (dropped.has("moderation")) {
+    modelDraft.moderationLevels = [];
+    modelDraft.moderationEnabled = false;
+  }
+  if (typeof capabilities.maxReferenceImages === "number") modelDraft.maxReferenceImages = capabilities.maxReferenceImages;
+  ElMessage.success(`已按「${profile.name}」填好分辨率、画质等能力，可在「生图能力」里再调整`);
+}
+
+const modelTestOpen = ref(false);
+const modelTestTarget = ref<ModelTestTarget | null>(null);
+
+/** Real chat/image calls for one catalog model, using its current (possibly unsaved) settings. */
+function openModelTest(model: ModelItem) {
+  const provider = config.providers.find((item) => item.id === model.providerId);
+  modelTestTarget.value = {
+    name: model.name || model.upstreamModel,
+    providerId: model.providerId,
+    providerName: provider?.name || model.providerId,
+    providerAdapter: provider?.adapter || "",
+    upstreamModel: model.upstreamModel,
+    kind: model.kind as "chat" | "image",
+    compat: model.compat ? cloneJSON(model.compat) : null,
+    supportedReasoningEfforts: [...(model.supportedReasoningEfforts || [])],
+  };
+  modelTestOpen.value = true;
+}
+
+function editModelById(modelId: string) {
+  const index = config.models.findIndex((model) => model.id === modelId);
+  if (index >= 0) openModel(index);
+}
+
+function newModelFromCatalog(item: ModelImport) {
+  openModel(-1);
+  chooseModelType(item.kind);
+  modelDraft.providerId = item.providerId;
+  modelDraft.upstreamModel = item.upstreamModel;
+  modelDraft.name = item.upstreamModel;
+  modelDraft.compat = item.compat ? cloneJSON(item.compat) : null;
+  void onUpstreamModelChange(item.upstreamModel);
+}
+
 function qualityLabel(value: string) {
   return IMAGE_QUALITIES.find((item) => item.value === value)?.label || value;
 }
 
-function adapterName(value: unknown) {
-  return adapterMeta[String(value) as ProviderAdapter]?.name || "未知协议";
-}
 
-function providerCapacity(value: unknown) {
-	const provider = value as ModelProvider;
-	return (provider.routes || [])
-		.filter((route) => route.enabled)
-		.reduce((total, route) => total + (route.maxConcurrency || 0), 0);
-}
 
-const providerDialogVisible = ref(false);
-const providerEditIndex = ref(-1);
-const discoveringProviderModels = ref(false);
-const providerCatalogSummary = ref("");
 const catalogEntriesByProvider = reactive<Record<string, ModelCatalogEntry[]>>({});
-const testingProviderRouteId = ref("");
-const providerRouteChecks = reactive<Record<string, string>>({});
-const providerDraft = reactive<ModelProvider>({
-  id: "",
-  name: "",
-  adapter: "openai",
-  baseUrl: "",
-  apiKey: "",
-  timeoutSecs: 300,
-  maxConcurrency: 100,
-  enabled: true,
-  discoveredModels: [],
-	routes: [],
-});
-
 function syncProviderPrimary(provider: ModelProvider) {
 	const primary = provider.routes[0];
 	if (!primary) return;
@@ -1753,178 +1766,12 @@ function syncProviderPrimary(provider: ModelProvider) {
 	provider.maxConcurrency = primary.maxConcurrency;
 }
 
-function copyProvider(source: ModelProvider): ModelProvider {
-  return {
-    id: source.id,
-    name: source.name,
-    adapter: source.adapter,
-    baseUrl: source.baseUrl,
-    apiKey: source.apiKey,
-    timeoutSecs: source.timeoutSecs,
-    maxConcurrency: source.maxConcurrency || 100,
-    enabled: source.enabled,
-    discoveredModels: [...(source.discoveredModels || [])],
-	routes: (source.routes || []).map((route) => ({ ...route })),
-  };
-}
-
-function openProvider(index = -1) {
-  const source = index >= 0 ? config.providers[index] : null;
-  Object.assign(
-    providerDraft,
-    source
-      ? copyProvider(source)
-      : {
-          id: createId("provider"),
-          name: "",
-          adapter: "openai",
-          baseUrl: "",
-          apiKey: "",
-          timeoutSecs: 300,
-          maxConcurrency: 100,
-          enabled: true,
-          discoveredModels: [],
-		  routes: [{
-			  id: createId("route"), name: "默认线路", baseUrl: "", apiKey: "",
-			  timeoutSecs: 300, maxConcurrency: 100, enabled: true,
-		  }],
-        },
-  );
-  providerEditIndex.value = index;
-  providerCatalogSummary.value = "";
-  for (const key of Object.keys(providerRouteChecks)) delete providerRouteChecks[key];
-  providerDialogVisible.value = true;
-}
-
-function invalidateProviderModels() {
-  providerDraft.discoveredModels = [];
-  providerCatalogSummary.value = "";
-  for (const key of Object.keys(providerRouteChecks)) delete providerRouteChecks[key];
-}
-
 async function fetchProviderModels(provider: ModelProvider) {
 	syncProviderPrimary(provider);
   return request<ModelDiscoveryResult>(
     "/api/v1/admin/model-config/discoveries",
     { method: "POST", body: provider },
   );
-}
-
-function discoverySummary(result: ModelDiscoveryResult) {
-  const compatible = result.compatibleCount ?? result.modelCount ?? result.models?.length ?? 0;
-  if (result.catalogSource === "crun-live-catalog") {
-    return `可配置 ${compatible} 个 · 媒体目录 ${result.taskModelCount || 0} 个`;
-  }
-  return `已读取 ${result.modelCount || result.models?.length || 0} 个模型`;
-}
-
-async function discoverProviderModels() {
-  syncProviderPrimary(providerDraft);
-  const baseUrl = providerDraft.baseUrl.trim().replace(/\/$/, "");
-  if (!/^https?:\/\//.test(baseUrl)) {
-    ElMessage.warning("请先填写完整 Base URL");
-    return null;
-  }
-  if (!providerDraft.apiKey.trim()) {
-    ElMessage.warning("请先填写 API Key");
-    return null;
-  }
-  providerDraft.baseUrl = baseUrl;
-  if (providerDraft.routes[0]) providerDraft.routes[0].baseUrl = baseUrl;
-  discoveringProviderModels.value = true;
-  try {
-    const result = await fetchProviderModels(providerDraft);
-    providerDraft.discoveredModels = result.models || [];
-    catalogEntriesByProvider[providerDraft.id] = result.entries || [];
-    providerCatalogSummary.value = discoverySummary(result);
-    if (result.warning) ElMessage.warning(result.warning);
-    else ElMessage.success(providerCatalogSummary.value);
-    return providerDraft.discoveredModels;
-  } catch {
-    return null;
-  } finally {
-    discoveringProviderModels.value = false;
-  }
-}
-
-async function testProviderRoute(route: ProviderRoute) {
-  if (testingProviderRouteId.value) return;
-  if (!/^https?:\/\//.test(route.baseUrl.trim()) || !route.apiKey.trim()) {
-    ElMessage.warning("请先填写该线路的 Base URL 和 API Key");
-    return;
-  }
-  testingProviderRouteId.value = route.id;
-  providerRouteChecks[route.id] = "";
-  try {
-    const result = await request<ModelDiscoveryResult & { ok: boolean }>(
-      "/api/v1/admin/model-config/discoveries",
-      {
-        method: "POST",
-        query: { routeId: route.id },
-        body: copyProvider(providerDraft),
-      },
-    );
-    providerDraft.discoveredModels = [...new Set([...providerDraft.discoveredModels, ...(result.models || [])])];
-    providerRouteChecks[route.id] = `目录连接正常 · 可读取 ${result.modelCount ?? 0} 个${result.warning ? ` · ${result.warning}` : ''}`;
-    ElMessage.success(`${route.name || "线路"}连接正常`);
-  } catch (error) {
-    providerRouteChecks[route.id] = `连接失败：${error instanceof Error ? error.message : '未知错误，请重试'}`;
-  } finally {
-    testingProviderRouteId.value = "";
-  }
-}
-
-async function saveProviderDraft() {
-  providerDraft.name = providerDraft.name.trim();
-	providerDraft.routes = providerDraft.routes.map((route) => ({
-		...route, name: route.name.trim(), baseUrl: route.baseUrl.trim().replace(/\/$/, ""),
-	}));
-	syncProviderPrimary(providerDraft);
-	if (!providerDraft.name || !providerDraft.routes.length || providerDraft.routes.some((route) => !route.name || !/^https?:\/\//.test(route.baseUrl))) {
-		ElMessage.warning("请填写服务商名称和每条线路的完整 Base URL");
-		return;
-	}
-  if (providerDraft.routes.some((route) => route.enabled && !route.apiKey.trim())) {
-		ElMessage.warning("请填写启用线路的 API Key");
-    return;
-  }
-  const value = copyProvider(providerDraft);
-  if (providerEditIndex.value >= 0)
-    config.providers[providerEditIndex.value] = value;
-  else config.providers.push(value);
-  providerDialogVisible.value = false;
-}
-
-function addProviderRoute() {
-	providerDraft.routes.push({
-		id: createId("route"), name: `线路 ${providerDraft.routes.length + 1}`,
-		baseUrl: "", apiKey: "", timeoutSecs: 300, maxConcurrency: 100, enabled: true,
-	});
-}
-
-function removeProviderRoute(routeId: string) {
-	if (providerDraft.routes.length <= 1) {
-		ElMessage.warning("服务商至少需要一条线路");
-		return;
-	}
-	providerDraft.routes = providerDraft.routes.filter((route) => route.id !== routeId);
-	syncProviderPrimary(providerDraft);
-}
-
-async function removeProvider(index: number) {
-  const provider = config.providers[index];
-  if (providerModels(provider.id).length) {
-    ElMessage.warning("该服务商仍有关联模型，请先删除或迁移模型");
-    return;
-  }
-  await ElMessageBox.confirm(
-    `确认删除服务商“${provider.name}”？`,
-    "删除服务商",
-    {
-      type: "warning",
-    },
-  );
-  config.providers.splice(index, 1);
 }
 
 const modelDialogVisible = ref(false);
@@ -1997,6 +1844,7 @@ const modelDraft = reactive<ModelDraft>({
   public: true,
   reasoningEnabled: false,
   toolCallingDisabled: false,
+  compat: null,
   default: false,
   enabled: true,
 });
@@ -2068,6 +1916,7 @@ function openModel(index = -1) {
           public: source.public,
           reasoningEnabled: source.reasoningEnabled ?? Boolean(source.supportedReasoningEfforts?.length),
           toolCallingDisabled: source.toolCallingDisabled === true,
+          compat: source.compat ? cloneJSON(source.compat) : null,
           default: source.default,
           enabled: source.enabled,
           pricePoints: normalizePoints(source.priceCents),
@@ -2138,6 +1987,7 @@ function openModel(index = -1) {
           reasoningPricing: null,
           reasoningEnabled: false,
           toolCallingDisabled: false,
+          compat: null,
           public: true,
           default: false,
           enabled: true,
@@ -2607,12 +2457,11 @@ async function refreshModelOptions() {
     const result = await fetchProviderModels(provider);
     provider.discoveredModels = result.models || [];
     catalogEntriesByProvider[provider.id] = result.entries || [];
-    providerCatalogSummary.value = discoverySummary(result);
     if (provider.adapter === "crun" && modelDraft.upstreamModel) {
       await loadCRUNModelSchema(modelDraft.upstreamModel);
     }
     if (result.warning) ElMessage.warning(result.warning);
-    else ElMessage.success(providerCatalogSummary.value);
+    else ElMessage.success(`已读取 ${result.modelCount ?? provider.discoveredModels.length} 个模型`);
   } finally {
     discoveringModelOptions.value = false;
   }
@@ -2778,6 +2627,7 @@ async function saveModelDraft() {
     status: modelDraft.status,
     providerId: modelDraft.providerId,
     upstreamModel: modelDraft.upstreamModel.trim(),
+    compat: modelDraft.compat && selectedModelProvider.value?.adapter !== "crun" ? cloneJSON(modelDraft.compat) : null,
     upstreamInputFields: [...modelDraft.upstreamInputFields],
     upstreamRequiredInputFields: [...modelDraft.upstreamRequiredInputFields],
     upstreamInputSchema: cloneJSON(modelDraft.upstreamInputSchema),
@@ -2996,6 +2846,25 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="config-toolbar__commit">
+            <button
+              v-if="activeView === 'providers' || activeView === 'models'"
+              type="button"
+              class="editable-file-trigger"
+              @click="imageParamProfilesOpen = true"
+            >
+              生图参数档案
+            </button>
+            <button
+              v-if="activeView === 'providers'"
+              type="button"
+              class="editable-file-trigger"
+              :class="{ 'is-on': config.editableFiles.enabled }"
+              @click="editableFilesDialogVisible = true"
+            >
+              <span class="editable-file-trigger__dot" aria-hidden="true" />
+              PPT / PSD 导出
+              <em>{{ config.editableFiles.enabled ? "已开放" : "未开放" }}</em>
+            </button>
             <el-tooltip content="从服务器重新加载配置" placement="bottom">
               <el-button class="toolbar-icon-button" :icon="Refresh" :loading="loading" aria-label="刷新" @click="load" />
             </el-tooltip>
@@ -3063,14 +2932,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-else-if="activeView === 'providers'" class="config-toolbar__row config-toolbar__row--sub">
-          <span class="config-toolbar__summary tnum">
-            {{ config.providers.length }} 个服务商 · {{ providerRouteCount }} 条线路
-          </span>
-          <div class="config-toolbar__buttons">
-            <el-button class="toolbar-add" :icon="Plus" @click="openProvider()">添加服务商</el-button>
-          </div>
-        </div>
       </div>
 
       <section v-if="activeView === 'models'" class="config-panel">
@@ -3344,6 +3205,14 @@ onBeforeUnmount(() => {
                     @click="openReasoningPricing(row as ModelItem)"
                   >
                     推理定价
+                  </el-button>
+                  <el-button
+                    v-if="row.kind === 'chat' || row.kind === 'image'"
+                    link
+                    type="primary"
+                    @click="openModelTest(row as ModelItem)"
+                  >
+                    测试
                   </el-button>
                   <el-button
                     link
@@ -3817,373 +3686,61 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else class="config-panel">
-      <div class="editable-file-control">
-        <div class="editable-file-control__identity">
-          <span class="editable-file-control__icon"><el-icon><Connection /></el-icon></span>
-          <div>
-            <strong>
-              可编辑文件 · PPT / PSD
-              <span class="provider-chip" :class="config.editableFiles.enabled ? 'is-on' : 'is-off'">
-                {{ config.editableFiles.enabled ? "用户端已开放" : "未开放" }}
-              </span>
-            </strong>
-            <small>为 PPT / PSD 导出指定服务商与线路</small>
-          </div>
-        </div>
-        <div class="editable-file-control__fields">
+      <ProviderWorkspace
+        class="provider-workspace"
+        :providers="config.providers"
+        :models="config.models"
+        :catalog-entries="catalogEntriesByProvider"
+        @import-models="importCatalogModels"
+        @edit-model="editModelById"
+        @new-model="newModelFromCatalog"
+        @sync-media-tools="importDiscoveredMediaTools"
+      />
+      </section>
+    </PageCard>
+
+    <AdminDialog
+      v-model="editableFilesDialogVisible"
+      title="可编辑文件 · PPT / PSD"
+      subtitle="为 PPT / PSD 导出指定服务商与线路；修改后点击「保存配置」生效"
+      :icon="Connection"
+      width="min(560px, calc(100% - 24px))"
+      :show-confirm="false"
+      cancel-text="完成"
+    >
+      <div class="editable-file-dialog">
+        <label class="editable-file-dialog__row">
+          <span>向用户端开放</span>
+          <el-switch
+            v-model="config.editableFiles.enabled"
+            :disabled="!editableFileProviders.length"
+            aria-label="开放 PPT / PSD 导出"
+            @change="toggleEditableFiles"
+          />
+        </label>
+        <p v-if="!editableFileProviders.length" class="editable-file-dialog__hint">需要先有一个已启用的 OpenAI 兼容（chatgpt2api）服务商。</p>
+        <label class="editable-file-dialog__field">
+          <span>服务商</span>
           <el-select
             :model-value="config.editableFiles.providerId"
             placeholder="选择服务商"
             :disabled="!config.editableFiles.enabled"
             @change="selectEditableFileProvider"
           >
-            <el-option
-              v-for="provider in editableFileProviders"
-              :key="provider.id"
-              :label="provider.name"
-              :value="provider.id"
-            />
+            <el-option v-for="provider in editableFileProviders" :key="provider.id" :label="provider.name" :value="provider.id" />
           </el-select>
+        </label>
+        <label class="editable-file-dialog__field">
+          <span>线路</span>
           <el-select
             v-model="config.editableFiles.routeId"
             placeholder="选择线路"
             :disabled="!config.editableFiles.enabled || !config.editableFiles.providerId"
           >
-            <el-option
-              v-for="route in editableFileRoutes"
-              :key="route.id"
-              :label="route.name"
-              :value="route.id"
-            />
+            <el-option v-for="route in editableFileRoutes" :key="route.id" :label="route.name" :value="route.id" />
           </el-select>
-          <el-switch
-            v-model="config.editableFiles.enabled"
-            :disabled="!editableFileProviders.length"
-            inline-prompt
-            active-text="开"
-            inactive-text="关"
-            @change="toggleEditableFiles"
-          />
-        </div>
+        </label>
       </div>
-      <AdminListShell
-        class="config-list-shell"
-        fill
-        :has-prev="providerPagination.hasPrev.value"
-        :has-next="providerPagination.hasNext.value"
-        :loading="loading"
-        :page="providerPagination.page.value"
-        :count="providerPagination.items.value.length"
-        :total="providerPagination.total.value"
-        :page-size="providerPagination.pageSize.value"
-        @update:page="providerPagination.goToPage"
-        @update:page-size="providerPagination.setPageSize"
-      >
-        <div class="config-table-shell">
-      <el-table
-        :data="providerPagination.items.value"
-        height="100%"
-        row-key="id"
-        size="small"
-        class="config-table"
-      >
-        <template #empty>
-          <el-empty description="添加服务商并读取其模型目录" :image-size="60" />
-        </template>
-        <el-table-column
-          label="服务商"
-          min-width="240"
-          align="left"
-          header-align="left"
-        >
-          <template #default="{ row }">
-            <div
-              class="provider-identity"
-              :class="{ 'is-disabled': !row.enabled }"
-              :title="`${row.name || '—'} · ${row.baseUrl || '—'}`"
-            >
-              <span class="provider-avatar" :class="`is-${row.adapter}`" aria-hidden="true">
-                {{ (row.name || "?").slice(0, 1).toUpperCase() }}
-              </span>
-              <span class="provider-identity__copy">
-                <strong>{{ row.name || "—" }}</strong>
-                <span class="mono">{{ row.baseUrl || "—" }}</span>
-              </span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="协议" min-width="120" align="left" header-align="left">
-          <template #default="{ row }">
-            <span class="provider-chip" :class="`is-${row.adapter}`">{{ adapterName(row.adapter) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="线路" min-width="72" align="left" header-align="left">
-          <template #default="{ row }">
-            <span class="provider-count tnum">{{ row.routes?.length || 1 }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          label="并发 主 / 总"
-          min-width="110"
-          align="left"
-          header-align="left"
-        >
-          <template #default="{ row }">
-            <span class="cell-text tnum">
-              {{ row.maxConcurrency }}<span class="cell-sep">/</span>{{ providerCapacity(row as ModelProvider) }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          label="超时"
-          min-width="80"
-          align="left"
-          header-align="left"
-        >
-          <template #default="{ row }">
-            <span class="cell-text tnum">{{ row.timeoutSecs }}<span class="cell-unit">s</span></span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          label="模型目录"
-          min-width="110"
-          align="left"
-          header-align="left"
-        >
-          <template #default="{ row }">
-            <button
-              v-if="row.discoveredModels?.length"
-              type="button"
-              class="provider-catalog-btn"
-              @click="openDiscoveredModelsDialog(row as ModelProvider)"
-            >
-              <span class="tnum">{{ row.discoveredModels.length }}</span> 个 · 查看
-            </button>
-            <span v-else class="cell-text is-muted">未读取</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="启用" min-width="76" align="left" header-align="left">
-          <template #default="{ row }">
-            <el-switch v-model="row.enabled" />
-          </template>
-        </el-table-column>
-        <el-table-column
-          label="操作"
-          min-width="130"
-          align="left"
-          header-align="left"
-        >
-          <template #default="{ $index }">
-            <div class="row-actions">
-              <button type="button" class="card-btn is-solid" @click="openProvider($index)">
-                <EditPen aria-hidden="true" />
-                编辑
-              </button>
-              <el-tooltip content="删除服务商" placement="top">
-                <button type="button" class="card-btn is-icon is-danger" aria-label="删除服务商" @click="removeProvider($index)">
-                  <Delete aria-hidden="true" />
-                </button>
-              </el-tooltip>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
-        </div>
-      </AdminListShell>
-      </section>
-    </PageCard>
-
-    <AdminDialog
-      v-model="discoveredModelsDialogVisible"
-      :title="`${discoveredModelsViewer.providerName} · 可读取模型`"
-      :subtitle="`共 ${discoveredModelsViewer.models.length} 个，已配置 ${discoveredModelsViewer.configured.length} 个`"
-      :icon="Cpu"
-      width="min(720px, calc(100% - 24px))"
-      :show-confirm="false"
-      cancel-text="关闭"
-    >
-      <div v-if="config.providers.find((item) => item.id === discoveredModelsViewer.providerId)?.adapter === 'crun'" class="discovered-model-actions">
-        <el-button type="primary" :loading="importingDiscoveredTools" @click="importDiscoveredMediaTools">
-          同步全部媒体工具
-        </el-button>
-        <span>严格读取每个工具的实时 schema；新工具默认关闭，设置本站积分后再开放。</span>
-      </div>
-      <div class="discovered-model-grid">
-        <span
-          v-for="modelId in discoveredModelsViewer.models"
-          :key="modelId"
-          class="discovered-model-chip"
-          :class="{ 'is-configured': isDiscoveredModelConfigured(modelId) }"
-          :title="modelId"
-        >
-          {{ modelId }}
-          <em v-if="isDiscoveredModelConfigured(modelId)">已配置</em>
-        </span>
-      </div>
-    </AdminDialog>
-
-    <AdminDialog
-      v-model="providerDialogVisible"
-      :title="providerEditIndex >= 0 ? '编辑服务商' : '添加服务商'"
-      subtitle="配置 Base URL 线路、密钥与模型目录"
-      :icon="Connection"
-      width="min(1120px, calc(100% - 24px))"
-      confirm-text="确认"
-      :confirm-loading="discoveringProviderModels"
-      @confirm="saveProviderDraft"
-    >
-      <el-form label-position="top" class="dialog-form">
-        <div class="form-grid">
-          <el-form-item label="自定义名称"
-            ><el-input
-              v-model="providerDraft.name"
-              placeholder="例如 C2A 主线路 / RS Image"
-          /></el-form-item>
-          <el-form-item label="调用协议">
-            <el-radio-group
-              v-model="providerDraft.adapter"
-              class="full-radio"
-              @change="invalidateProviderModels"
-            >
-              <el-radio-button value="openai">OpenAI 兼容</el-radio-button
-              ><el-radio-button value="crun">CRUN</el-radio-button>
-            </el-radio-group>
-          </el-form-item>
-          <el-form-item label="启用服务商"
-            ><el-switch v-model="providerDraft.enabled"
-          /></el-form-item>
-        </div>
-        <section class="provider-route-editor">
-          <div class="provider-route-heading">
-            <div>
-              <strong>Base URL 线路</strong>
-              <span>
-                已启用 {{ providerDraft.routes.filter((route) => route.enabled).length }} 条，
-                总并发 {{ providerCapacity(providerDraft) }}
-              </span>
-            </div>
-            <el-button :icon="Plus" @click="addProviderRoute">添加线路</el-button>
-          </div>
-          <div
-            v-for="(route, routeIndex) in providerDraft.routes"
-            :key="route.id"
-            class="provider-route-item"
-          >
-            <div class="provider-route-item-head">
-              <div>
-                <strong>{{ route.name || `线路 ${routeIndex + 1}` }}</strong>
-                <el-tag v-if="routeIndex === 0" size="small" effect="plain">主线路</el-tag>
-              </div>
-              <div class="provider-route-actions">
-                <el-button
-                  size="small"
-                  plain
-                  :loading="testingProviderRouteId === route.id"
-                  :disabled="Boolean(testingProviderRouteId) && testingProviderRouteId !== route.id"
-                  @click="testProviderRoute(route)"
-                >
-                  测试线路
-                </el-button>
-                <span>启用</span>
-                <el-switch v-model="route.enabled" />
-                <el-tooltip v-if="routeIndex > 0" content="删除线路" placement="top">
-                  <el-button
-                    :icon="Delete"
-                    circle
-                    plain
-                    type="danger"
-                    aria-label="删除线路"
-                    @click="removeProviderRoute(route.id)"
-                  />
-                </el-tooltip>
-              </div>
-            </div>
-            <div class="provider-route-fields">
-              <label class="provider-route-field route-name-field">
-                <span>线路名称</span>
-                <el-input v-model="route.name" placeholder="例如 主线路" />
-              </label>
-              <label class="provider-route-field route-url-field">
-                <span>Base URL</span>
-                <el-input
-                  v-model="route.baseUrl"
-                  :placeholder="
-                    providerDraft.adapter === 'crun'
-                      ? 'https://api.crun.ai'
-                      : 'https://api.example.com/v1'
-                  "
-                  @input="invalidateProviderModels"
-                />
-              </label>
-              <label class="provider-route-field route-key-field">
-                <span>API Key</span>
-                <el-input
-                  v-model="route.apiKey"
-                  type="password"
-                  show-password
-                  :placeholder="route.apiKey.startsWith('****') ? route.apiKey : 'API Key'"
-                  @input="invalidateProviderModels"
-                />
-              </label>
-              <label class="provider-route-field route-limit-field">
-                <span>并发容量</span>
-                <el-input-number
-                  v-model="route.maxConcurrency"
-                  :min="1"
-                  :max="10000"
-                  :step="10"
-                />
-              </label>
-              <label class="provider-route-field route-timeout-field">
-                <span>请求超时（秒）</span>
-                <el-input-number
-                  v-model="route.timeoutSecs"
-                  :min="0"
-                  :max="1800"
-                  :step="30"
-                />
-              </label>
-            </div>
-            <p class="discovery-note">超时不含排队。0 使用默认值（OpenAI 300 秒，CRUN 图片 1200 秒）；对话小于 30 秒按 300 秒处理。目录测试单次最多 20 秒。OpenAI 图片异步切线等待至少 180 秒，超时后仍可能继续查询或重试，不代表立即停止上游生成。</p>
-            <div v-if="providerRouteChecks[route.id]" class="provider-route-check">
-              <el-tag
-                :type="providerRouteChecks[route.id].startsWith('连接失败') ? 'danger' : 'success'"
-                size="small"
-                effect="plain"
-              >
-                {{ providerRouteChecks[route.id] }}
-              </el-tag>
-            </div>
-          </div>
-        </section>
-        <div class="model-discovery">
-          <div>
-            <strong>模型目录</strong
-            ><span v-if="providerCatalogSummary">{{
-              providerCatalogSummary
-            }}</span
-            ><span v-else-if="providerDraft.discoveredModels.length"
-              >已读取 {{ providerDraft.discoveredModels.length }} 个模型</span
-            ><span v-else>{{
-              providerDraft.adapter === "crun"
-                ? "实时读取 CRUN 对话与媒体目录，并过滤尚未接入的能力"
-                : "从 /v1/models 读取兼容模型目录，也可手工填写模型 ID"
-            }}</span>
-          </div>
-          <el-button
-            :icon="Refresh"
-            :loading="discoveringProviderModels"
-            @click="discoverProviderModels"
-            >{{
-              providerDraft.discoveredModels.length ? "重新读取" : "读取模型"
-            }}</el-button
-          >
-        </div>
-        <p class="discovery-note">线路测试读取模型目录，验证地址与鉴权；不代表所有模型均可生成。具体模型能力仍以上游实际调用为准。</p>
-        <div v-if="providerDraft.discoveredModels.length" class="discovered-model-list" aria-label="已读取的模型">
-          <el-tag v-for="model in providerDraft.discoveredModels" :key="model" size="small" effect="plain">{{ model }}</el-tag>
-        </div>
-      </el-form>
     </AdminDialog>
 
     <AdminDialog
@@ -4962,9 +4519,24 @@ onBeforeUnmount(() => {
           </div>
           <el-button @click="modelEditorTab = 'basic'">前往模型映射</el-button>
         </section>
+        <section v-if="selectedModelProvider?.adapter !== 'crun'" v-show="modelEditorTab === 'basic'" class="model-section">
+          <header class="model-section__head">
+            <strong>请求兼容规则</strong>
+            <small>只对这个模型生效；各中转站、各模型的要求不同，按实际情况填写</small>
+          </header>
+          <CompatRulesEditor
+            v-model="modelDraft.compat"
+            :gemini="selectedModelProvider?.adapter === 'gemini' && (modelDraft.kind === 'chat' || modelDraft.kind === 'image') ? modelDraft.kind : ''"
+            :image-edit="(selectedModelProvider?.adapter || 'openai') === 'openai' && modelDraft.kind === 'image'"
+            :image-params="(selectedModelProvider?.adapter || 'openai') === 'openai' && modelDraft.kind === 'image'"
+            @profile-picked="applyImageParamProfile"
+          />
+        </section>
       </el-form>
       </div>
     </AdminDialog>
+    <ModelTestDialog v-model="modelTestOpen" :target="modelTestTarget" />
+    <ImageParamProfileDialog v-model="imageParamProfilesOpen" :models="config.models" :providers="config.providers" />
   </div>
 </template>
 
@@ -5528,8 +5100,7 @@ onBeforeUnmount(() => {
   margin-left: 0;
 }
 
-.config-toolbar__result,
-.config-toolbar__summary {
+.config-toolbar__result {
   color: var(--ink-3);
   font-size: 12px;
   font-weight: 600;
@@ -5757,77 +5328,79 @@ html.dark .status-tab.is-active em {
   min-height: 0;
 }
 
-.editable-file-control {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 12px;
-  padding: 10px 12px 10px 10px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface);
+.provider-workspace {
+  flex: 1;
+  min-height: 0;
+  margin-top: 12px;
 }
 
-.editable-file-control__identity,
-.editable-file-control__fields {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-}
-
-.editable-file-control__icon {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
-  place-items: center;
-  border-radius: 10px;
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-}
-
-.editable-file-control__identity > div {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.editable-file-control__identity strong {
+.editable-file-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.editable-file-trigger:hover {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.editable-file-trigger em {
+  color: var(--ink-3);
+  font-style: normal;
+  font-weight: 500;
+}
+
+.editable-file-trigger__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+.editable-file-trigger.is-on .editable-file-trigger__dot {
+  background: var(--success);
+}
+
+.editable-file-dialog {
+  display: grid;
+  gap: 14px;
+}
+
+.editable-file-dialog__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   color: var(--ink);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
-.editable-file-control__identity small {
-  color: var(--ink-3);
+.editable-file-dialog__field {
+  display: grid;
+  gap: 6px;
+}
+
+.editable-file-dialog__field > span {
+  color: var(--ink-2);
   font-size: 12px;
+  font-weight: 600;
 }
 
-.editable-file-control__fields :deep(.el-select__wrapper) {
-  border-radius: var(--radius-pill);
-}
-
-.editable-file-control__fields :deep(.el-select) {
-  width: 180px;
-}
-
-@media (max-width: 900px) {
-  .editable-file-control {
-    grid-template-columns: 1fr;
-  }
-
-  .editable-file-control__fields {
-    flex-wrap: wrap;
-  }
-
-  .editable-file-control__fields :deep(.el-select) {
-    width: min(100%, 240px);
-  }
+.editable-file-dialog__hint {
+  margin: -6px 0 0;
+  color: var(--warning);
+  font-size: 12px;
 }
 
 .config-list-shell {
@@ -5844,12 +5417,6 @@ html.dark .status-tab.is-active em {
   min-height: 56px;
   padding: 8px 18px;
   background: var(--surface);
-}
-
-.config-table-shell {
-  height: 100%;
-  min-width: 0;
-  overflow: hidden;
 }
 
 .model-catalog-shell {
@@ -7337,10 +6904,6 @@ html.dark .assign-card.is-ghost:hover {
 
 /* 价格列按整列最宽值对齐：同一分组内的行共用最小宽度 */
 
-
-
-
-
 .assignment-limit-chip {
   display: inline-flex;
   align-items: center;
@@ -7576,9 +7139,6 @@ html.dark .assign-card.is-ghost:hover {
 .assignment-limit-pop footer .assignment-link {
   flex: 0 0 auto;
 }
-
-
-
 
 /* 页面价格胶囊：价格为主，来源（继承 / 页面价）为辅，末尾的笔形图标提示可编辑 */
 .price-tag {
@@ -7920,60 +7480,6 @@ html.dark .assign-card.is-ghost:hover {
   background: var(--danger-soft);
 }
 
-.config-table :deep(.el-table__inner-wrapper::before) {
-  display: none;
-}
-
-.config-table :deep(.el-table__header-wrapper th.el-table__cell),
-.config-table :deep(.el-table__body td.el-table__cell),
-.config-table :deep(.el-table .cell) {
-  text-align: left !important;
-}
-
-.config-table :deep(.el-table .cell) {
-  display: block;
-  padding-left: 12px;
-  padding-right: 12px;
-}
-
-.config-table :deep(.el-table__header-wrapper th.el-table__cell) {
-  height: 48px;
-  padding: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-.config-table :deep(.el-table__body .el-table__cell) {
-  padding: 10px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-}
-
-.config-table :deep(.el-table__row td.el-table__cell) {
-  height: 64px;
-}
-
-.config-table :deep(.el-table__row:hover > td.el-table__cell) {
-  background: var(--surface-2);
-}
-
-.config-table :deep(.el-table__body tr.el-table__row:last-child td.el-table__cell) {
-  border-bottom-color: transparent;
-}
-
-.cell-text {
-  display: block;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 13px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .price-plain {
   display: block;
   width: 40px;
@@ -8023,210 +7529,6 @@ html.dark .assign-card.is-ghost:hover {
   line-height: 1;
 }
 
-.cell-text.is-muted,
-.cell-muted {
-  color: var(--ink-3);
-  font-size: 12px;
-}
-
-.cell-text.mono {
-  color: var(--ink-2);
-  font-size: 12px;
-}
-
-.provider-identity {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-}
-
-.provider-identity.is-disabled {
-  opacity: 0.55;
-}
-
-.provider-avatar {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
-  place-items: center;
-  border-radius: 10px;
-  background: var(--surface-2);
-  box-shadow: inset 0 0 0 1px var(--border);
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 750;
-}
-
-.provider-avatar.is-crun {
-  background: var(--warning-soft);
-  color: var(--warning);
-  box-shadow: none;
-}
-
-.provider-identity__copy {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.provider-identity__copy strong {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.provider-identity__copy .mono {
-  overflow: hidden;
-  color: var(--ink-3);
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.provider-chip {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 9px;
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  color: var(--ink-2);
-  font-size: 11.5px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
-.provider-chip.is-openai {
-  background: var(--info-soft);
-  color: var(--info);
-}
-
-.provider-chip.is-crun {
-  background: var(--warning-soft);
-  color: var(--warning);
-}
-
-.provider-chip.is-on {
-  background: var(--success-soft);
-  color: var(--success);
-}
-
-.provider-chip.is-off {
-  background: var(--surface-3);
-  color: var(--ink-3);
-}
-
-.provider-count {
-  display: inline-grid;
-  min-width: 24px;
-  height: 22px;
-  padding: 0 7px;
-  place-items: center;
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.cell-sep {
-  margin: 0 4px;
-  color: var(--ink-3);
-}
-
-.cell-unit {
-  margin-left: 1px;
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.provider-catalog-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  height: 26px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.provider-catalog-btn:hover {
-  background: var(--accent);
-  color: var(--accent-on);
-}
-
-.discovered-model-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 8px;
-}
-
-.discovered-model-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-soft);
-}
-
-.discovered-model-actions span {
-  color: var(--ink-2);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-@media (max-width: 640px) {
-  .discovered-model-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-}
-
-.discovered-model-chip {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.35;
-  word-break: break-all;
-  box-shadow: var(--shadow-sm);
-}
-
-.discovered-model-chip.is-configured {
-  border-color: color-mix(in srgb, var(--success) 28%, var(--border));
-  background: color-mix(in srgb, var(--success-soft) 70%, var(--surface));
-}
-
-.discovered-model-chip em {
-  flex: none;
-  color: var(--success);
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 700;
-  white-space: nowrap;
-}
 .primary-cell .model-description {
   display: -webkit-box;
   max-width: 220px;
@@ -8238,13 +7540,7 @@ html.dark .assign-card.is-ghost:hover {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 1;
 }
-.provider-cell b {
-  overflow: hidden;
-  color: var(--ink-2);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -8293,15 +7589,13 @@ html.dark .assign-card.is-ghost:hover {
   color: var(--ink-3);
   font-size: 10px;
 }
-.resolution-list,
-.provider-models {
+.resolution-list {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 4px;
 }
-.resolution-list i,
-.provider-models span {
+.resolution-list i {
   padding: 3px 5px;
   border-radius: 4px;
   color: var(--info);
@@ -8369,21 +7663,7 @@ html.dark .assign-card.is-ghost:hover {
   color: var(--ink-3);
   font-size: 10px;
 }
-.provider-models span {
-  max-width: 90px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.provider-models small {
-  color: var(--accent);
-  font-size: 10px;
-}
-.provider-models em {
-  color: var(--ink-3);
-  font-size: 10px;
-  font-style: normal;
-}
+
 .model-count {
   color: var(--accent);
   font-size: 13px;
@@ -8413,134 +7693,13 @@ html.dark .assign-card.is-ghost:hover {
 .kind-radio :deep(.el-radio-button__inner) {
   width: 100%;
 }
-.model-discovery {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-.provider-route-editor {
-  display: grid;
-  gap: 10px;
-  padding: 12px 0;
-  border-top: 1px solid var(--border);
-}
-.provider-route-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--ink-1);
-  font-size: 13px;
-}
-.provider-route-heading > div {
-  display: grid;
-  gap: 2px;
-}
-.provider-route-heading span {
-  color: var(--ink-3);
-  font-size: 11px;
-}
-.provider-route-item {
-  display: grid;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-}
-.provider-route-item-head,
-.provider-route-actions,
-.provider-route-item-head > div {
-  display: flex;
-  align-items: center;
-}
-.provider-route-item-head {
-  justify-content: space-between;
-  gap: 12px;
-}
-.provider-route-item-head > div,
-.provider-route-actions {
-  gap: 8px;
-}
-.provider-route-actions > span {
-  color: var(--ink-3);
-  font-size: 11px;
-}
-.provider-route-fields {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 8px;
-}
-.provider-route-field {
-  display: grid;
-  min-width: 0;
-  gap: 5px;
-}
-.provider-route-field small,
+
 .discovery-note {
   color: var(--ink-3);
   font-size: 12px;
   line-height: 1.6;
 }
-.discovered-model-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  max-height: 220px;
-  overflow: auto;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-2);
-}
-.discovered-model-list :deep(.el-tag),
-.provider-route-check :deep(.el-tag) {
-  height: auto;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  line-height: 1.6;
-}
-.provider-route-field > span {
-  color: var(--ink-3);
-  font-size: 11px;
-}
-.provider-route-field :deep(.el-input-number) {
-  width: 100%;
-}
-.route-name-field {
-  grid-column: span 4;
-}
-.route-url-field {
-  grid-column: span 8;
-}
-.route-key-field {
-  grid-column: span 6;
-}
-.route-limit-field,
-.route-timeout-field {
-  grid-column: span 3;
-}
-.provider-route-check {
-  display: flex;
-  justify-content: flex-end;
-}
 
-.model-discovery > div {
-  display: grid;
-  gap: 2px;
-}
-.model-discovery strong {
-  color: var(--ink-1);
-  font-size: 13px;
-}
-.model-discovery span {
-  color: var(--ink-3);
-  font-size: 10px;
-}
 .model-picker {
   display: grid;
   width: 100%;

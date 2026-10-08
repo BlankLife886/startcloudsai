@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
@@ -124,5 +125,30 @@ func TestDescribeCRUNModelReturnsInputSchema(t *testing.T) {
 	}
 	if entry.ID != "google/nano-banana" || entry.InputSchema["type"] != "object" {
 		t.Fatalf("entry = %#v", entry)
+	}
+}
+
+func TestGeminiCatalogEntryLeavesKindToAdmin(t *testing.T) {
+	cases := []struct {
+		name       string
+		methods    []string
+		compatible bool
+	}{
+		{"models/gemini-2.5-pro", []string{"generateContent", "countTokens"}, true},
+		{"models/gemini-2.5-flash-image", []string{"generateContent"}, true},
+		{"models/imagen-4.0-generate-001", []string{"predict"}, true},
+		{"models/gemini-embedding-001", []string{"embedContent"}, false},
+		{"models/veo-3.0-generate-001", []string{"predictLongRunning"}, false},
+		{"models/gemini-2.5-flash-preview-tts", []string{"generateContent"}, false},
+		// Relays often omit supportedGenerationMethods.
+		{"models/gemini-3-pro-image-preview", nil, true},
+		{"gemini-nano-banana-2.1", nil, true},
+		{"veo-3.1-generate-preview", nil, false},
+	}
+	for _, tc := range cases {
+		entry := GeminiCatalogEntry(tc.name, tc.methods)
+		if entry.Kind != "" || entry.Compatible != tc.compatible || strings.HasPrefix(entry.ID, "models/") {
+			t.Errorf("%s: %+v", tc.name, entry)
+		}
 	}
 }

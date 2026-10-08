@@ -93,11 +93,13 @@ func (s *Server) adminPutModelConfig(c *gin.Context, _ *store.User) {
 	ok(c, out)
 }
 
-func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
+// draftProvider reads a provider draft from the request and fills masked keys
+// from the saved configuration. With ?routeId= it narrows to that route.
+func (s *Server) draftProvider(c *gin.Context) (modelconfig.Provider, bool) {
 	var provider modelconfig.Provider
 	if err := bindJSON(c, &provider); err != nil {
 		fail(c, err)
-		return
+		return modelconfig.Provider{}, false
 	}
 	provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
 	// Test the requested draft route, not the (possibly empty/stale) primary route.
@@ -115,17 +117,17 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 		}
 		if !found {
 			fail(c, apperr.E("validation_error", "线路不存在", 422))
-			return
+			return modelconfig.Provider{}, false
 		}
 	}
 	allowPrivate := s.Cfg.C2APrivateNetworkAllowed()
 	if !modelconfig.ValidAdapter(provider.Adapter) {
 		fail(c, apperr.E("validation_error", "请选择有效的调用协议", 422))
-		return
+		return modelconfig.Provider{}, false
 	}
 	if provider.BaseURL == "" || netguard.ValidateURL(provider.BaseURL, allowPrivate, false) != nil {
 		fail(c, apperr.E("validation_error", "服务商地址无效或指向受限网络", 422))
-		return
+		return modelconfig.Provider{}, false
 	}
 	needsSavedSecrets := provider.APIKey == "" || strings.HasPrefix(provider.APIKey, "****")
 	for _, route := range provider.Routes {
@@ -138,7 +140,7 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 		runtimeCfg, err := modelconfig.Runtime(c.Request.Context(), s.St.Pool, s.Cfg.AppSecret)
 		if err != nil {
 			fail(c, err)
-			return
+			return modelconfig.Provider{}, false
 		}
 		for _, saved := range runtimeCfg.Providers {
 			if saved.ID == provider.ID {
@@ -175,17 +177,27 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 		}
 		if !found {
 			fail(c, apperr.E("validation_error", "线路不存在", 422))
-			return
+			return modelconfig.Provider{}, false
 		}
 		if provider.BaseURL == "" || netguard.ValidateURL(provider.BaseURL, allowPrivate, false) != nil {
 			fail(c, apperr.E("validation_error", "线路地址无效或指向受限网络", 422))
-			return
+			return modelconfig.Provider{}, false
 		}
 	}
 	if strings.TrimSpace(provider.APIKey) == "" {
 		fail(c, apperr.E("validation_error", "请先填写 API Key", 422))
+		return modelconfig.Provider{}, false
+	}
+	provider.APIPath = modelconfig.NormalizeAPIPath(provider.APIPath)
+	return provider, true
+}
+
+func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
+	provider, valid := s.draftProvider(c)
+	if !valid {
 		return
 	}
+	allowPrivate := s.Cfg.C2APrivateNetworkAllowed()
 	if model := strings.TrimSpace(c.Query("model")); model != "" {
 		entry, err := modelprovider.DescribeCRUNModel(
 			c.Request.Context(), provider, model, allowPrivate,
@@ -209,7 +221,7 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 	if strings.TrimSpace(c.Query("routeId")) != "" {
 		ok(c, gin.H{
 			"ok": true, "modelCount": len(catalog.Models), "models": catalog.Models,
-			"warning": catalog.Warning,
+			"warning":         catalog.Warning,
 			"compatibleCount": catalog.CompatibleCount, "taskModelCount": catalog.TaskModelCount,
 		})
 		return

@@ -217,6 +217,79 @@ type Client struct {
 	openAIImageEdits bool
 	asyncImageEdits  bool
 	standardImages   bool
+	// apiPrefix replaces the /v1 of OpenAI paths, e.g. /v1beta/openai.
+	apiPrefix string
+	// authHeaders overrides the default Bearer authentication.
+	authHeaders map[string]string
+	// imageBackend replaces the OpenAI Images protocol entirely.
+	imageBackend ImageBackend
+	// imageEditFormat sends standard edits as JSON instead of multipart;
+	// see ImageEdit* in json_edits.go.
+	imageEditFormat string
+}
+
+// ImageBackend generates images over a non-OpenAI protocol (e.g. Gemini's
+// native API). inputs are base64 reference images; results are base64.
+type ImageBackend interface {
+	GenerateImages(ctx context.Context, prompt, model string, n int, size string, inputs []string) ([]string, error)
+}
+
+// WithImageBackend routes every image call through backend.
+func (c *Client) WithImageBackend(backend ImageBackend) *Client {
+	if c == nil || backend == nil {
+		return c
+	}
+	clone := *c
+	clone.imageBackend = backend
+	return &clone
+}
+
+// WithAPIPrefix makes OpenAI paths (/v1/...) resolve under prefix appended to
+// the Base URL, for vendors whose compatible root is not /v1.
+func (c *Client) WithAPIPrefix(prefix string) *Client {
+	prefix = strings.TrimRight(strings.TrimSpace(prefix), "/")
+	if c == nil || prefix == "" {
+		return c
+	}
+	clone := *c
+	clone.apiPrefix = "/" + strings.TrimLeft(prefix, "/")
+	return &clone
+}
+
+// WithAuthHeaders replaces Bearer authentication with the given headers.
+func (c *Client) WithAuthHeaders(headers map[string]string) *Client {
+	if c == nil || len(headers) == 0 {
+		return c
+	}
+	clone := *c
+	clone.authHeaders = headers
+	return &clone
+}
+
+// WithTransportWrapper routes requests through wrap (e.g. body rewriting).
+func (c *Client) WithTransportWrapper(wrap func(http.RoundTripper) http.RoundTripper) *Client {
+	if c == nil || wrap == nil {
+		return c
+	}
+	clone := *c
+	base := http.DefaultClient
+	if c.HTTPClient != nil {
+		base = c.HTTPClient
+	}
+	wrapped := *base
+	wrapped.Transport = wrap(base.Transport)
+	clone.HTTPClient = &wrapped
+	return &clone
+}
+
+func (c *Client) applyAuth(req *http.Request) {
+	if len(c.authHeaders) == 0 {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		return
+	}
+	for key, value := range c.authHeaders {
+		req.Header.Set(key, value)
+	}
 }
 
 // WithOpenAIImageEdits uses the standard multipart /v1/images/edits contract.
@@ -295,7 +368,9 @@ func (c *Client) endpointURL(requestPath string) (string, error) {
 	}
 	requestPath = rel.Path
 	basePath := strings.TrimRight(base.Path, "/")
-	if strings.HasSuffix(basePath, "/v1") {
+	if c.apiPrefix != "" && (requestPath == "/v1" || strings.HasPrefix(requestPath, "/v1/")) {
+		requestPath = c.apiPrefix + strings.TrimPrefix(requestPath, "/v1")
+	} else if strings.HasSuffix(basePath, "/v1") {
 		switch {
 		case strings.HasPrefix(requestPath, "/v1/"):
 			requestPath = strings.TrimPrefix(requestPath, "/v1")
@@ -367,7 +442,7 @@ func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, 
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	c.applyAuth(req)
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
@@ -786,6 +861,12 @@ func (c *Client) normalizeImageURL(raw string) (*url.URL, bool, error) {
 	return target, sameOrigin, nil
 }
 
+// DownloadImageB64 fetches one upstream image URL under the client's
+// network policy and size limits.
+func (c *Client) DownloadImageB64(ctx context.Context, rawURL string) (string, error) {
+	return c.downloadImageB64(ctx, rawURL)
+}
+
 func (c *Client) downloadImageB64(ctx context.Context, rawURL string) (string, error) {
 	target, sameOrigin, err := c.normalizeImageURL(rawURL)
 	if err != nil {
@@ -796,7 +877,7 @@ func (c *Client) downloadImageB64(ctx context.Context, rawURL string) (string, e
 		return "", err
 	}
 	if sameOrigin {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		c.applyAuth(req)
 	}
 	stallTimeout := imageDownloadTimeout(c.Timeout)
 	dlCtx, cancel := context.WithTimeoutCause(ctx, maxImageDownloadTotal, context.DeadlineExceeded)
@@ -1292,7 +1373,7 @@ func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expec
 		emitRemaining(ImageTaskPollResult{Err: err})
 		return
 	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	c.applyAuth(req)
 	// Status JSON is fully decoded before any image download so the upstream
 	// connection is not held idle while we persist results.
 	streamCtx, cancel := context.WithTimeout(ctx, imagePollStatusTimeout)
@@ -1659,6 +1740,9 @@ func (c *Client) editImagesMultipartResponse(
 	if len(inputImagesB64) > maxTaskImages {
 		return StandardImageResponse{}, &UpstreamError{Message: "参考图数量超过限制"}
 	}
+	if c.imageEditFormat != ImageEditMultipart {
+		return c.editImagesJSONResponse(ctx, prompt, model, n, inputImagesB64, size, options)
+	}
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	responseFormat := strings.ToLower(strings.TrimSpace(options.ResponseFormat))
@@ -1792,7 +1876,7 @@ func (c *Client) sendImageEdit(ctx context.Context, taskID string, body io.Reade
 		return StandardImageResponse{}, err
 	}
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	c.applyAuth(req)
 	if strings.TrimSpace(taskID) != "" {
 		req.Header.Set("Idempotency-Key", taskID)
 	}
@@ -1911,6 +1995,14 @@ func standardImageGenerationPayload(prompt, model string, n int, size string, op
 // GenerateImagesStandard sends one standard OpenAI /v1/images/generations
 // request. The gateway never retries it, so no idempotency key is sent.
 func (c *Client) GenerateImagesStandard(ctx context.Context, prompt, model string, n int, size string, options ImageOptions) (StandardImageResponse, error) {
+	if c.imageBackend != nil {
+		images, err := c.imageBackend.GenerateImages(ctx, prompt, model, n, size, nil)
+		response := StandardImageResponse{Created: time.Now().Unix()}
+		for _, image := range images {
+			response.Data = append(response.Data, StandardImageData{B64JSON: image})
+		}
+		return response, err
+	}
 	if c == nil || !c.standardImages {
 		return StandardImageResponse{}, errors.New("standard image client is not enabled")
 	}
@@ -1932,6 +2024,9 @@ func (c *Client) GenerateImagesWithID(ctx context.Context, taskID, prompt, model
 }
 
 func (c *Client) GenerateImagesWithOptions(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, error) {
+	if c.imageBackend != nil {
+		return c.imageBackend.GenerateImages(ctx, prompt, model, n, size, nil)
+	}
 	if c.standardImages {
 		body, err := c.doRequestWithHeaders(ctx, http.MethodPost, "/v1/images/generations",
 			standardImageGenerationPayload(prompt, model, n, size, options), c.Timeout,
@@ -1955,6 +2050,10 @@ func (c *Client) SubmitGenerateImages(ctx context.Context, taskID, prompt, model
 // SubmitGenerateImagesTracked also returns the canonical upstream task ID so
 // queue workers never have to assume that it equals client_task_id.
 func (c *Client) SubmitGenerateImagesTracked(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, bool, string, error) {
+	if c.imageBackend != nil {
+		images, err := c.imageBackend.GenerateImages(ctx, prompt, model, n, size, nil)
+		return images, false, "", err
+	}
 	if c.standardImages {
 		images, err := c.GenerateImagesWithOptions(ctx, taskID, prompt, model, n, size, options)
 		return images, false, "", err
@@ -1984,6 +2083,9 @@ func (c *Client) EditImagesWithID(ctx context.Context, taskID, prompt, model str
 }
 
 func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, error) {
+	if c.imageBackend != nil {
+		return c.imageBackend.GenerateImages(ctx, prompt, model, n, size, inputImagesB64)
+	}
 	if c.openAIImageEdits {
 		return c.editImagesMultipart(ctx, taskID, prompt, model, n, inputImagesB64, size, options)
 	}
@@ -2024,6 +2126,10 @@ func (c *Client) SubmitEditImages(ctx context.Context, taskID, prompt, model str
 // SubmitEditImagesTracked is the edit equivalent of
 // SubmitGenerateImagesTracked.
 func (c *Client) SubmitEditImagesTracked(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, string, error) {
+	if c.imageBackend != nil {
+		images, err := c.imageBackend.GenerateImages(ctx, prompt, model, n, size, inputImagesB64)
+		return images, false, "", err
+	}
 	if c.openAIImageEdits {
 		images, err := c.editImagesMultipart(ctx, taskID, prompt, model, n, inputImagesB64, size, options)
 		return images, false, "", err

@@ -9,7 +9,7 @@
 每个服务商保存协议和一组 Base URL 路由：
 
 - 自定义名称，例如 `C2A`、`RS Image`、`CRUN`。
-- 调用协议：`openai` 或 `crun`。
+- 调用协议：`openai`、`crun` 或 `gemini`；接口路径前缀、鉴权方式、生图接口类型和请求兼容规则见 [多厂商模型接入](MODEL_PROVIDER_INTEGRATION.md)。
 - 每条路由独立配置名称、Base URL、单个 API Key、请求超时、启用状态和最大并发。
 - OpenAI 兼容服务从 `/v1/models` 读取上游模型。
 - CRUN 对话目录使用 `/api/v1/models`；媒体目录使用 `/api/v1/client/job/Models`。后台合并目录时保留模型类型和操作，不会把视频、音频或尚未接入的工具误标成图片模型。
@@ -47,7 +47,7 @@
 
 后台开启“同名模型跨服务商泄压”后，Worker 会把不同服务商中同类型、同显示名称、已启用且公开的模型合并为执行候选池。跨服务商候选的有效积分必须与任务创建时冻结的单价快照完全相同，并且支持该任务实际使用的比例、质量、透明背景、输出格式、审核级别和参考图数量；任一条件不满足都不会参与调度。专用图片工具还必须具有完全相同的工具操作，例如背景移除只能切换到同为 `background_remove` 的候选。候选选择仍按各线路 `running / maxConcurrency` 比较，切换服务商只更新执行路由和上游模型，不修改任务费用。
 
-`openai` 协议调用 OpenAI 兼容的模型列表、对话和图片接口。`crun` 对话模型调用 `/api/v1/chat/completions`；图片和图片工具由后端转换为 CRUN 的 `EstimateTask`、`CreateTask`、`TaskInfo` 异步任务结构。创建前的 `EstimateTask` 只校验上游输入和账户可承担性，不参与用户计价；`CreateTask` 永不自动重试，避免重复创建和重复扣费。
+`openai` 协议调用 OpenAI 兼容的模型列表、对话和图片接口。`gemini` 协议对话走 Google 的 OpenAI 兼容端点，生图走原生 `generateContent` / Imagen `predict`。`crun` 对话模型调用 `/api/v1/chat/completions`；图片和图片工具由后端转换为 CRUN 的 `EstimateTask`、`CreateTask`、`TaskInfo` 异步任务结构。创建前的 `EstimateTask` 只校验上游输入和账户可承担性，不参与用户计价；`CreateTask` 永不自动重试，避免重复创建和重复扣费。
 
 CRUN 图片请求只发送模型实时 schema 声明的字段。后台保存 `upstreamInputFields` 快照，Worker 会再次过滤任务参数，因此旧页面或异常客户端也不能向上游发送该模型不支持的 `resolution`、`quality`、`output_format`、`background` 或 `moderation`。
 

@@ -32,6 +32,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/prompt"
+	"github.com/BlankLife886/startcloudsai/server/internal/providerclient"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
@@ -824,19 +825,9 @@ func (w *Worker) configuredAssistantChatClient(selection *modelconfig.Selection)
 	if strings.TrimSpace(provider.APIKey) == "" {
 		return nil, errors.New("对话模型服务商没有可用的 API Key")
 	}
-	baseURL := provider.BaseURL
-	if provider.Adapter == modelconfig.AdapterCRUN {
-		baseURL = crunOpenAICompatibleBaseURL(baseURL)
-	}
-	client, err := sub2api.New(
-		baseURL, provider.APIKey, selection.Model.UpstreamModel,
-		w.Cfg.Sub2APIImageModel, provider.TimeoutSecs,
-	)
+	client, err := providerclient.ChatForSelection(selection, w.Cfg.Sub2APIImageModel)
 	if err != nil {
 		return nil, err
-	}
-	if provider.Adapter == modelconfig.AdapterCRUN {
-		client = client.WithAPIKeyHeader("x-api-key")
 	}
 	client = client.WithWebSearchModel(assistantWebSearchFallbackModel(provider.DiscoveredModels))
 	return client, nil
@@ -887,8 +878,8 @@ func (w *Worker) executeConfiguredAssistantImage(ctx context.Context, run *store
 		return errors.New("模型服务商没有可用的 API Key")
 	}
 	switch provider.Adapter {
-	case modelconfig.AdapterOpenAI:
-		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, w.Cfg.C2APrivateNetworkAllowed()).WithAsyncImageEdits()
+	case modelconfig.AdapterOpenAI, modelconfig.AdapterGemini, modelconfig.AdapterDashScope, modelconfig.AdapterMiniMax:
+		client := providerclient.TaskImageForSelection(selection, w.Cfg.C2APrivateNetworkAllowed())
 		return w.executeAssistantImageC2AClient(ctx, run, references, client, model)
 	case modelconfig.AdapterCRUN:
 		client, err := crun.New(provider.BaseURL, provider.APIKey, model, provider.TimeoutSecs)

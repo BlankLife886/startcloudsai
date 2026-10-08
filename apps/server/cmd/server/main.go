@@ -55,8 +55,10 @@ func main() {
 		err = runSeed(cfg)
 	case "api-models-migrate":
 		err = runAPIModelsMigrate(cfg, os.Args[2:])
+	case "model-smoke":
+		err = runModelSmoke(cfg, os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: server <serve|worker|create-admin|seed|api-models-migrate> [flags]\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: server <serve|worker|create-admin|seed|api-models-migrate|model-smoke> [flags]\n", os.Args[1])
 		os.Exit(2)
 	}
 	if err != nil {

@@ -19,6 +19,15 @@ const (
 
 	AdapterOpenAI = "openai"
 	AdapterCRUN   = "crun"
+	// AdapterGemini speaks Google's native API for images and its
+	// OpenAI-compatible endpoint for chat.
+	AdapterGemini = "gemini"
+	// AdapterDashScope speaks Alibaba Model Studio's native API for images
+	// (qwen-image) and its compatible mode for chat.
+	AdapterDashScope = "dashscope"
+	// AdapterMiniMax speaks MiniMax's image_generation API for images and its
+	// OpenAI-compatible endpoint for chat.
+	AdapterMiniMax = "minimax"
 
 	ModelKindImage     = "image"
 	ModelKindChat      = "chat"
@@ -72,9 +81,21 @@ const (
 )
 
 type Provider struct {
-	ID               string          `json:"id"`
-	Name             string          `json:"name"`
-	Adapter          string          `json:"adapter"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Adapter string `json:"adapter"`
+	// Vendor names the preset the provider was created from (informational).
+	Vendor string `json:"vendor,omitempty"`
+	// APIPath is the OpenAI-compatible root under each route's Base URL, e.g.
+	// /v1beta/openai or /api/v3. Empty keeps the historical /v1 handling.
+	APIPath string `json:"apiPath,omitempty"`
+	// AuthStyle selects the header carrying the key; empty is the adapter default.
+	AuthStyle string `json:"authStyle,omitempty"`
+	// ImageAPI is ImageAPIStandard for vendors without chatgpt2api's task API.
+	ImageAPI string `json:"imageApi,omitempty"`
+	// Compat is legacy: request rules now live on each model. normalize moves
+	// any stored provider rules onto the provider's models and clears this.
+	Compat           *RequestCompat  `json:"compat,omitempty"`
 	Routes           []ProviderRoute `json:"routes"`
 	BaseURL          string          `json:"baseUrl"`
 	APIKey           string          `json:"apiKey"`
@@ -103,6 +124,11 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 		ID               string          `json:"id"`
 		Name             string          `json:"name"`
 		Adapter          string          `json:"adapter"`
+		Vendor           string          `json:"vendor"`
+		APIPath          string          `json:"apiPath"`
+		AuthStyle        string          `json:"authStyle"`
+		ImageAPI         string          `json:"imageApi"`
+		Compat           *RequestCompat  `json:"compat"`
 		Routes           []ProviderRoute `json:"routes"`
 		Type             string          `json:"type"`
 		BaseURL          string          `json:"baseUrl"`
@@ -138,6 +164,7 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 	}
 	*p = Provider{
 		ID: raw.ID, Name: raw.Name, Adapter: adapter, BaseURL: raw.BaseURL,
+		Vendor: raw.Vendor, APIPath: raw.APIPath, AuthStyle: raw.AuthStyle, ImageAPI: raw.ImageAPI, Compat: raw.Compat,
 		APIKey: apiKey, TimeoutSecs: raw.TimeoutSecs, MaxConcurrency: raw.MaxConcurrency, Enabled: raw.Enabled,
 		DiscoveredModels: raw.DiscoveredModels, Routes: raw.Routes,
 	}
@@ -145,52 +172,54 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 }
 
 type Model struct {
-	ID                           string               `json:"id"`
-	Name                         string               `json:"name"`
-	IconURL                      string               `json:"iconUrl,omitempty"`
-	Status                       string               `json:"status,omitempty"`
-	ProviderID                   string               `json:"providerId"`
-	UpstreamModel                string               `json:"upstreamModel"`
-	UpstreamInputFields          []string             `json:"upstreamInputFields,omitempty"`
-	UpstreamRequiredInputFields  []string             `json:"upstreamRequiredInputFields,omitempty"`
-	UpstreamInputSchema          map[string]any       `json:"upstreamInputSchema,omitempty"`
-	Modality                     string               `json:"modality,omitempty"`
-	Operations                   []string             `json:"operations,omitempty"`
-	Kind                         string               `json:"kind"`
-	Tool                         string               `json:"tool,omitempty"`
-	Description                  string               `json:"description,omitempty"`
-	PriceCents                   int64                `json:"priceCents"`
-	DiscountPriceCents           *int64               `json:"discountPriceCents"`
-	UpstreamCostCents            int64                `json:"upstreamCostCents"`
-	AllowZeroPrice               bool                 `json:"allowZeroPrice"`
-	AllowLossLeader              bool                 `json:"allowLossLeader"`
-	ImageUpscalePricing          *ImageUpscalePricing `json:"imageUpscalePricing,omitempty"`
-	FastMode                     bool                 `json:"fastMode"`
-	MinSeconds                   int                  `json:"minSeconds"`
-	MaxSeconds                   int                  `json:"maxSeconds"`
-	Resolutions                  []string             `json:"resolutions"`
-	AspectRatios                 []string             `json:"aspectRatios"`
-	AspectRatiosByResolution     map[string][]string  `json:"aspectRatiosByResolution"`
-	SupportsExactSize            bool                 `json:"supportsExactSize"`
-	ExactSizeLimits              *ExactSizeLimits     `json:"exactSizeLimits,omitempty"`
-	Qualities                    []string             `json:"qualities"`
-	TransparentBackground        bool                 `json:"transparentBackground"`
-	OutputFormats                []string             `json:"outputFormats"`
-	ModerationLevels             []string             `json:"moderationLevels"`
-	MaxReferenceImages           int                  `json:"maxReferenceImages"`
-	MaxImages                    int                  `json:"maxImages"`
-	ContextWindowTokens          int                  `json:"contextWindowTokens,omitempty"`
-	MaxOutputTokens              int                  `json:"maxOutputTokens,omitempty"`
-	SupportedReasoningEfforts    []string             `json:"supportedReasoningEfforts"`
-	ReasoningEnabled             *bool                `json:"reasoningEnabled,omitempty"`
+	ID                          string               `json:"id"`
+	Name                        string               `json:"name"`
+	IconURL                     string               `json:"iconUrl,omitempty"`
+	Status                      string               `json:"status,omitempty"`
+	ProviderID                  string               `json:"providerId"`
+	UpstreamModel               string               `json:"upstreamModel"`
+	UpstreamInputFields         []string             `json:"upstreamInputFields,omitempty"`
+	UpstreamRequiredInputFields []string             `json:"upstreamRequiredInputFields,omitempty"`
+	UpstreamInputSchema         map[string]any       `json:"upstreamInputSchema,omitempty"`
+	Modality                    string               `json:"modality,omitempty"`
+	Operations                  []string             `json:"operations,omitempty"`
+	Kind                        string               `json:"kind"`
+	Tool                        string               `json:"tool,omitempty"`
+	Description                 string               `json:"description,omitempty"`
+	PriceCents                  int64                `json:"priceCents"`
+	DiscountPriceCents          *int64               `json:"discountPriceCents"`
+	UpstreamCostCents           int64                `json:"upstreamCostCents"`
+	AllowZeroPrice              bool                 `json:"allowZeroPrice"`
+	AllowLossLeader             bool                 `json:"allowLossLeader"`
+	ImageUpscalePricing         *ImageUpscalePricing `json:"imageUpscalePricing,omitempty"`
+	FastMode                    bool                 `json:"fastMode"`
+	MinSeconds                  int                  `json:"minSeconds"`
+	MaxSeconds                  int                  `json:"maxSeconds"`
+	Resolutions                 []string             `json:"resolutions"`
+	AspectRatios                []string             `json:"aspectRatios"`
+	AspectRatiosByResolution    map[string][]string  `json:"aspectRatiosByResolution"`
+	SupportsExactSize           bool                 `json:"supportsExactSize"`
+	ExactSizeLimits             *ExactSizeLimits     `json:"exactSizeLimits,omitempty"`
+	Qualities                   []string             `json:"qualities"`
+	TransparentBackground       bool                 `json:"transparentBackground"`
+	OutputFormats               []string             `json:"outputFormats"`
+	ModerationLevels            []string             `json:"moderationLevels"`
+	MaxReferenceImages          int                  `json:"maxReferenceImages"`
+	MaxImages                   int                  `json:"maxImages"`
+	ContextWindowTokens         int                  `json:"contextWindowTokens,omitempty"`
+	MaxOutputTokens             int                  `json:"maxOutputTokens,omitempty"`
+	SupportedReasoningEfforts   []string             `json:"supportedReasoningEfforts"`
+	ReasoningEnabled            *bool                `json:"reasoningEnabled,omitempty"`
 	// ToolCallingDisabled marks a chat model whose upstream ignores function
 	// tools (some web-session proxies answer in text instead). It can answer
 	// questions but cannot drive Agent mode.
 	ToolCallingDisabled bool `json:"toolCallingDisabled,omitempty"`
-	ReasoningPricing             *ReasoningPricing    `json:"reasoningPricing,omitempty"`
-	Public                       bool                 `json:"public"`
-	Default                      bool                 `json:"default"`
-	Enabled                      bool                 `json:"enabled"`
+	// Compat adds model-specific request rewrites on top of the provider's.
+	Compat                       *RequestCompat    `json:"compat,omitempty"`
+	ReasoningPricing             *ReasoningPricing `json:"reasoningPricing,omitempty"`
+	Public                       bool              `json:"public"`
+	Default                      bool              `json:"default"`
+	Enabled                      bool              `json:"enabled"`
 	transparentBackgroundSet     bool
 	maxReferenceImagesSet        bool
 	maxImagesSet                 bool
@@ -443,6 +472,11 @@ func normalize(cfg *Config) {
 		provider.ID = strings.TrimSpace(provider.ID)
 		provider.Name = strings.TrimSpace(provider.Name)
 		provider.Adapter = strings.TrimSpace(provider.Adapter)
+		provider.Vendor = strings.TrimSpace(provider.Vendor)
+		provider.APIPath = NormalizeAPIPath(provider.APIPath)
+		provider.AuthStyle = strings.TrimSpace(provider.AuthStyle)
+		provider.ImageAPI = strings.TrimSpace(provider.ImageAPI)
+		provider.Compat = normalizeCompat(provider.Compat)
 		provider.DiscoveredModels = cleanStrings(provider.DiscoveredModels)
 		if len(provider.Routes) == 0 && (provider.BaseURL != "" || provider.APIKey != "") {
 			provider.Routes = []ProviderRoute{{
@@ -488,6 +522,7 @@ func normalize(cfg *Config) {
 		model.Modality = strings.ToLower(strings.TrimSpace(model.Modality))
 		model.Operations = cleanStrings(model.Operations)
 		model.Kind = strings.TrimSpace(model.Kind)
+		model.Compat = normalizeCompat(model.Compat)
 		// Retired capability: do not advertise fast mode from old configurations.
 		model.FastMode = false
 		model.Tool = strings.TrimSpace(model.Tool)
@@ -571,6 +606,21 @@ func normalize(cfg *Config) {
 				defaultKinds[kind] = true
 				break
 			}
+		}
+	}
+	// Request compat is per model. Fold legacy provider-level rules into each
+	// of the provider's models so nothing is lost, then drop them.
+	legacyCompat := map[string]*RequestCompat{}
+	for index := range cfg.Providers {
+		if provider := &cfg.Providers[index]; provider.Compat != nil {
+			legacyCompat[provider.ID] = provider.Compat
+			provider.Compat = nil
+		}
+	}
+	for index := range cfg.Models {
+		model := &cfg.Models[index]
+		if compat := legacyCompat[model.ProviderID]; compat != nil {
+			model.Compat = MergeCompat(compat, model.Compat)
 		}
 	}
 	normalizedWorkspaces := make(map[string]WorkspaceBinding, len(cfg.Workspaces))
@@ -737,7 +787,8 @@ func AutoAspectRatioCandidates(model Model, resolution string) []string {
 }
 
 func ValidAdapter(value string) bool {
-	return value == AdapterOpenAI || value == AdapterCRUN
+	return value == AdapterOpenAI || value == AdapterCRUN || value == AdapterGemini ||
+		value == AdapterDashScope || value == AdapterMiniMax
 }
 
 func ValidModelKind(value string) bool {
@@ -784,6 +835,18 @@ func Validate(cfg Config) error {
 		}
 		if len(provider.Routes) == 0 {
 			return fmt.Errorf("服务商 %s 至少需要一条 Base URL 线路", provider.Name)
+		}
+		if err := validateAPIPath("服务商 "+provider.Name, provider.APIPath); err != nil {
+			return err
+		}
+		if provider.AuthStyle != "" && !containsExact(authStyles, provider.AuthStyle) {
+			return fmt.Errorf("服务商 %s 的鉴权方式无效", provider.Name)
+		}
+		if provider.ImageAPI != ImageAPIAuto && provider.ImageAPI != ImageAPIStandard {
+			return fmt.Errorf("服务商 %s 的生图接口类型无效", provider.Name)
+		}
+		if err := validateCompat("服务商 "+provider.Name, provider.Compat); err != nil {
+			return err
 		}
 		routeIDs := map[string]bool{}
 		enabledRoutes := 0
@@ -837,6 +900,9 @@ func Validate(cfg Config) error {
 		}
 		if _, exists := providers[model.ProviderID]; !exists {
 			return fmt.Errorf("模型 %s 没有关联有效服务商", model.Name)
+		}
+		if err := validateCompat("模型 "+model.Name, model.Compat); err != nil {
+			return err
 		}
 		if model.Status != ModelStatusAvailable && model.Status != ModelStatusMaintenance {
 			return fmt.Errorf("模型 %s 的状态无效", model.Name)
@@ -1170,6 +1236,9 @@ func PrepareAdminSave(ctx context.Context, q store.Q, input Config, masterKey st
 			route.APIKey = encrypted
 		}
 		syncProviderPrimary(provider)
+	}
+	if err := EmbedImageParamRules(ctx, q, &input); err != nil {
+		return Config{}, err
 	}
 	if err := Validate(input); err != nil {
 		return Config{}, err

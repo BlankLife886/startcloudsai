@@ -1,0 +1,178 @@
+[
+  {
+    "id": "openai",
+    "name": "OpenAI",
+    "region": "global",
+    "description": "GPT 对话与 gpt-image 生图官方接口",
+    "adapter": "openai",
+    "baseUrl": "https://api.openai.com",
+    "apiPath": "/v1",
+    "imageApi": "standard",
+    "keyUrl": "https://platform.openai.com/api-keys"
+  },
+  {
+    "id": "gemini",
+    "name": "Google Gemini",
+    "region": "global",
+    "description": "Gemini 对话与原生生图（Gemini 图片模型 / Imagen）",
+    "adapter": "gemini",
+    "baseUrl": "https://generativelanguage.googleapis.com",
+    "apiPath": "/v1beta",
+    "keyUrl": "https://aistudio.google.com/apikey"
+  },
+  {
+    "id": "xai",
+    "name": "xAI Grok",
+    "region": "global",
+    "description": "Grok 对话与 Grok Imagine 生图（图生图以 JSON 发送参考图）",
+    "adapter": "openai",
+    "baseUrl": "https://api.x.ai",
+    "apiPath": "/v1",
+    "imageApi": "standard",
+    "compat": {
+      "imageParams": "grok",
+      "imageEdit": "json_image_url"
+    },
+    "keyUrl": "https://console.x.ai"
+  },
+  {
+    "id": "anthropic",
+    "name": "Anthropic Claude",
+    "region": "global",
+    "description": "Claude 对话（OpenAI 兼容接口）",
+    "adapter": "openai",
+    "baseUrl": "https://api.anthropic.com",
+    "apiPath": "/v1",
+    "imageApi": "standard",
+    "keyUrl": "https://console.anthropic.com/settings/keys"
+  },
+  {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "region": "cn",
+    "description": "DeepSeek 对话与推理模型",
+    "adapter": "openai",
+    "baseUrl": "https://api.deepseek.com",
+    "apiPath": "/v1",
+    "imageApi": "standard",
+    "keyUrl": "https://platform.deepseek.com/api_keys"
+  },
+  {
+    "id": "qwen",
+    "name": "阿里云百炼 · 通义千问",
+    "region": "cn",
+    "description": "通义千问对话（兼容模式）与 qwen-image 生图（百炼原生接口）",
+    "adapter": "dashscope",
+    "baseUrl": "https://dashscope.aliyuncs.com",
+    "apiPath": "/api/v1",
+    "keyUrl": "https://bailian.console.aliyun.com/?apiKey=1"
+  },
+  {
+    "id": "doubao",
+    "name": "火山方舟 · 豆包",
+    "region": "cn",
+    "description": "豆包对话与 Seedream 生图（参考图走生图接口的 image 字段，默认关闭水印）",
+    "adapter": "openai",
+    "baseUrl": "https://ark.cn-beijing.volces.com",
+    "apiPath": "/api/v3",
+    "imageApi": "standard",
+    "keyUrl": "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
+    "compat": {
+      "extraBody": {
+        "watermark": false
+      },
+      "imageEdit": "json_generations"
+    }
+  },
+  {
+    "id": "zhipu",
+    "name": "智谱 GLM",
+    "region": "cn",
+    "description": "GLM 对话与 CogView 生图（不支持参考图；尺寸需能被 16 整除）",
+    "adapter": "openai",
+    "baseUrl": "https://open.bigmodel.cn",
+    "apiPath": "/api/paas/v4",
+    "imageApi": "standard",
+    "keyUrl": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
+    "compat": {
+      "dropParams": [
+        "quality",
+        "background",
+        "moderation",
+        "output_format",
+        "output_compression",
+        "style",
+        "response_format"
+      ]
+    }
+  },
+  {
+    "id": "moonshot",
+    "name": "月之暗面 Kimi",
+    "region": "cn",
+    "description": "Kimi 对话模型",
+    "adapter": "openai",
+    "baseUrl": "https://api.moonshot.cn",
+    "apiPath": "/v1",
+    "imageApi": "standard",
+    "keyUrl": "https://platform.moonshot.cn/console/api-keys"
+  },
+  {
+    "id": "minimax",
+    "name": "MiniMax",
+    "region": "cn",
+    "description": "MiniMax 对话与 image-01 生图（参考图仅支持人物）",
+    "adapter": "minimax",
+    "baseUrl": "https://api.minimaxi.com",
+    "apiPath": "/v1",
+    "keyUrl": "https://platform.minimaxi.com/user-center/basic-information/interface-key"
+  },
+  {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "region": "relay",
+    "description": "聚合平台，一个 Key 调用国内外主流模型",
+    "adapter": "openai",
+    "baseUrl": "https://openrouter.ai",
+    "apiPath": "/api/v1",
+    "imageApi": "standard",
+    "keyUrl": "https://openrouter.ai/settings/keys"
+  },
+  {
+    "id": "siliconflow",
+    "name": "硅基流动",
+    "region": "relay",
+    "description": "国内聚合平台，DeepSeek / Qwen / GLM 等开源模型",
+    "adapter": "openai",
+    "baseUrl": "https://api.siliconflow.cn",
+    "apiPath": "/v1",
+    "imageApi": "standard",
+    "keyUrl": "https://cloud.siliconflow.cn/account/ak"
+  },
+  {
+    "id": "chatgpt2api",
+    "name": "ChatGPT2API 中转",
+    "region": "relay",
+    "description": "chatgpt2api 兼容中转，生图走可恢复的异步任务协议",
+    "adapter": "openai",
+    "baseUrl": ""
+  },
+  {
+    "id": "crun",
+    "name": "CRUN",
+    "region": "relay",
+    "description": "CRUN 任务协议，模型能力按实时 schema 读取",
+    "adapter": "crun",
+    "baseUrl": ""
+  },
+  {
+    "id": "custom",
+    "name": "自定义 OpenAI 兼容",
+    "region": "relay",
+    "description": "任意 OpenAI 兼容接口，所有字段手动填写",
+    "adapter": "openai",
+    "baseUrl": "",
+    "apiPath": "/v1",
+    "imageApi": "standard"
+  }
+]

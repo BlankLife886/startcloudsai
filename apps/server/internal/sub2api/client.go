@@ -31,6 +31,9 @@ const (
 
 type Client struct {
 	baseURL           string
+	rawBaseURL        string
+	apiPrefix         string
+	authHeaders       map[string]string
 	apiKey            string
 	apiKeyHeader      string
 	chatModel         string
@@ -229,6 +232,7 @@ func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Clien
 	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, errors.New("Sub2API base URL must be an http(s) origin")
 	}
+	rawBaseURL := baseURL
 	if strings.HasSuffix(u.Path, "/v1") {
 		u.Path = strings.TrimSuffix(u.Path, "/v1")
 		baseURL = strings.TrimRight(u.String(), "/")
@@ -252,6 +256,7 @@ func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Clien
 	passthroughTransport.ResponseHeaderTimeout = timeout
 	return &Client{
 		baseURL:           baseURL,
+		rawBaseURL:        rawBaseURL,
 		apiKey:            strings.TrimSpace(apiKey),
 		chatModel:         fallback(strings.TrimSpace(chatModel), "gpt-5.4"),
 		imageModel:        fallback(strings.TrimSpace(imageModel), "gpt-image-2"),
@@ -338,7 +343,69 @@ func (c *Client) WithAPIKeyHeader(header string) *Client {
 	return &clone
 }
 
+// WithAPIPrefix makes OpenAI paths (/v1/...) resolve under prefix appended to
+// the configured Base URL, for vendors whose compatible root is not /v1
+// (e.g. /v1beta/openai, /api/v3).
+func (c *Client) WithAPIPrefix(prefix string) *Client {
+	prefix = strings.TrimRight(strings.TrimSpace(prefix), "/")
+	if c == nil || prefix == "" {
+		return c
+	}
+	clone := *c
+	clone.apiPrefix = "/" + strings.TrimLeft(prefix, "/")
+	return &clone
+}
+
+// WithAuthHeaders replaces Bearer authentication with the given headers.
+func (c *Client) WithAuthHeaders(headers map[string]string) *Client {
+	if c == nil || len(headers) == 0 {
+		return c
+	}
+	clone := *c
+	clone.authHeaders = headers
+	return &clone
+}
+
+// WithTransportWrapper routes every request through wrap (e.g. body rewriting).
+func (c *Client) WithTransportWrapper(wrap func(http.RoundTripper) http.RoundTripper) *Client {
+	if c == nil || wrap == nil {
+		return c
+	}
+	clone := *c
+	rewrap := func(client *http.Client) *http.Client {
+		if client == nil {
+			return nil
+		}
+		copied := *client
+		base := copied.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		copied.Transport = wrap(base)
+		return &copied
+	}
+	clone.httpClient = rewrap(c.httpClient)
+	clone.webSearchHTTP = rewrap(c.webSearchHTTP)
+	clone.visionHTTP = rewrap(c.visionHTTP)
+	clone.passthroughHTTP = rewrap(c.passthroughHTTP)
+	return &clone
+}
+
+// endpoint resolves an OpenAI path such as /v1/chat/completions.
+func (c *Client) endpoint(path string) string {
+	if c.apiPrefix != "" && strings.HasPrefix(path, "/v1/") {
+		return c.rawBaseURL + c.apiPrefix + strings.TrimPrefix(path, "/v1")
+	}
+	return c.baseURL + path
+}
+
 func (c *Client) applyAuth(req *http.Request) {
+	if len(c.authHeaders) > 0 {
+		for key, value := range c.authHeaders {
+			req.Header.Set(key, value)
+		}
+		return
+	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	if c.apiKeyHeader != "" {
 		req.Header.Set(c.apiKeyHeader, c.apiKey)
@@ -350,7 +417,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	if !c.Configured() {
 		return nil, errors.New("Sub2API API key is not configured")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/v1/models"), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -682,7 +749,7 @@ func (c *Client) newJSONRequest(ctx context.Context, path string, body any) (*ht
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(path), bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
@@ -1679,7 +1746,7 @@ func (c *Client) PostChatCompletions(ctx context.Context, body []byte) (*http.Re
 	if !c.Configured() {
 		return nil, errors.New("Sub2API API key is not configured")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/v1/chat/completions"), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

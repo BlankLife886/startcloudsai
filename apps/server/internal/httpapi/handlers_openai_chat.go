@@ -17,6 +17,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/providerclient"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
@@ -98,7 +99,7 @@ func (s *Server) openAIChatCompletions(c *gin.Context) {
 		failOpenAI(c, apperr.E("provider_misconfigured", "所选对话模型的上游服务尚未配置好，暂不可调用，请联系平台", http.StatusBadGateway), "model")
 		return
 	}
-	client, err := sub2api.New(selection.Provider.BaseURL, selection.Provider.APIKey, selection.Model.UpstreamModel, "", selection.Provider.TimeoutSecs)
+	client, err := providerclient.ChatForSelection(selection, "")
 	if err != nil {
 		failOpenAI(c, apperr.E("provider_misconfigured", "所选对话模型的上游服务尚未配置好，暂不可调用，请联系平台", http.StatusBadGateway), "model")
 		return

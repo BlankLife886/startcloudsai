@@ -1,0 +1,49 @@
+[
+  {
+    "id": "openai",
+    "name": "OpenAI 标准",
+    "description": "size=宽x高、quality、background、output_format 等原样发送。GPT 生图，以及已经把参数聚合成 OpenAI 格式的中转站用这个。",
+    "rules": {
+      "sizeMode": "size",
+      "qualityMode": "send"
+    },
+    "capabilities": {}
+  },
+  {
+    "id": "grok",
+    "name": "Grok 原生",
+    "description": "xAI Grok Imagine：比例用 aspect_ratio，分辨率用 resolution（1k / 2k，没有真正的 4K）；不接受 quality、background 等 OpenAI 参数。2K 输出为 PNG。",
+    "rules": {
+      "sizeMode": "aspect_tier",
+      "aspectField": "aspect_ratio",
+      "aspectRatios": ["1:1", "3:4", "4:3", "9:16", "16:9", "2:3", "3:2", "9:19.5", "19.5:9", "9:20", "20:9", "1:2", "2:1", "21:9", "5:2"],
+      "tierField": "resolution",
+      "tierValues": { "1K": "1k", "2K": "2k" },
+      "qualityMode": "drop",
+      "drop": ["background", "output_format", "output_compression", "moderation", "style", "input_fidelity"]
+    },
+    "capabilities": {
+      "resolutions": ["1K", "2K"],
+      "qualities": [],
+      "maxReferenceImages": 5
+    }
+  },
+  {
+    "id": "gemini",
+    "name": "Gemini 原生（OpenAI 接口）",
+    "description": "Gemini 图片模型经 OpenAI 生图接口调用、且中转站没有聚合参数时用：比例用 aspect_ratio，分辨率用 image_size（1K / 2K / 4K）。字段名以中转站文档为准，可在这里修改。走 Gemini 原生协议的服务商不需要选。",
+    "rules": {
+      "sizeMode": "aspect_tier",
+      "aspectField": "aspect_ratio",
+      "aspectRatios": ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
+      "tierField": "image_size",
+      "tierValues": { "1K": "1K", "2K": "2K", "4K": "4K" },
+      "qualityMode": "drop",
+      "drop": ["background", "output_format", "output_compression", "moderation", "style", "input_fidelity"]
+    },
+    "capabilities": {
+      "resolutions": ["1K", "2K", "4K"],
+      "qualities": []
+    }
+  }
+]

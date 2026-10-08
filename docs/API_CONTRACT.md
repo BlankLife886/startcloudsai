@@ -467,6 +467,9 @@ JSON 导出格式为 `{schemaVersion,exportedAt,items}`；CSV 使用 UTF-8 BOM�
 | POST         | `/api/v1/admin/providers/{provider}/tests` | provider 为 `c2a`、`sub2api`、`crun` 或 `lanjing-pay`，执行连接测试；蓝鲸支付仅调用 `/getState`，不创建订单 |
 | GET/PUT      | `/api/v1/admin/model-config`              | 获取或保存模型路由配置；保存会让已上线/弃用中的 API 模型无法调用（删除、停用、维护站内模型或线路改为非 OpenAI 协议）时返回 `409 api_model_impact`（`data.models` 列出受影响的 API 模型与原因），带 `?confirmApiImpact=1` 重新提交即保存。保存后立即按新站内价同步跟随价的 API 模型（涨价转为预告） |
 | POST         | `/api/v1/admin/model-config/discoveries`  | 创建一次上游模型发现请求                               |
+| POST         | `/api/v1/admin/model-config/connection-tests` | 用服务商草稿（`?routeId=` 指定线路）检查连接：只读取模型列表，返回 `{ok, checks[]}` |
+| POST         | `/api/v1/admin/model-config/model-tests` | 真实测试一个模型（对话：问答 + 可选工具调用；生图：文生图 + 可选图生图），使用已保存的服务商和请求里的模型类型与兼容规则；详见 [多厂商模型接入](MODEL_PROVIDER_INTEGRATION.md#管理接口) |
+| GET/PUT/DELETE | `/api/v1/admin/model-config/presets`    | 厂商模板（创建服务商时预填 Base URL、`apiPath`、`authStyle`、`imageApi`；`compat` 在导入模型时复制到模型上）；未保存时返回内置模板，PUT 保存整份列表，DELETE 恢复内置模板 |
 
 settings 请求/响应：
 

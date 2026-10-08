@@ -7,6 +7,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/providerclient"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
@@ -94,15 +95,9 @@ func (s *Server) analysisClientForSelection(selection *modelconfig.Selection) (*
 	if strings.TrimSpace(provider.APIKey) == "" {
 		return nil, apperr.E("assistant_unavailable", "图片分析服务商没有可用的 API Key", http.StatusServiceUnavailable)
 	}
-	client, err := sub2api.New(
-		provider.BaseURL, provider.APIKey, selection.Model.UpstreamModel,
-		s.Cfg.Sub2APIImageModel, provider.TimeoutSecs,
-	)
+	client, err := providerclient.ChatForSelection(selection, s.Cfg.Sub2APIImageModel)
 	if err != nil {
 		return nil, apperr.E("assistant_unavailable", "图片分析模型配置无效", http.StatusServiceUnavailable)
-	}
-	if provider.Adapter == modelconfig.AdapterCRUN {
-		client = client.WithAPIKeyHeader("x-api-key")
 	}
 	return client, nil
 }

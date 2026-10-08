@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/providerclient"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
@@ -94,18 +95,7 @@ func NewChatClient(selection *modelconfig.Selection) (*sub2api.Client, error) {
 	if selection == nil || strings.TrimSpace(selection.Provider.APIKey) == "" {
 		return nil, ErrNoModel
 	}
-	baseURL := selection.Provider.BaseURL
-	if selection.Provider.Adapter == modelconfig.AdapterCRUN {
-		baseURL = modelconfig.CRUNOpenAICompatibleBaseURL(baseURL)
-	}
-	client, err := sub2api.New(baseURL, selection.Provider.APIKey, selection.Model.UpstreamModel, "", selection.Provider.TimeoutSecs)
-	if err != nil {
-		return nil, err
-	}
-	if selection.Provider.Adapter == modelconfig.AdapterCRUN {
-		client = client.WithAPIKeyHeader("x-api-key")
-	}
-	return client, nil
+	return providerclient.ChatForSelection(selection, "")
 }
 
 // Candidate is one chat model the admin can pick for an evaluation.

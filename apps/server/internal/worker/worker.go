@@ -34,6 +34,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/prompt"
 	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
+	"github.com/BlankLife886/startcloudsai/server/internal/providerclient"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -97,6 +98,9 @@ const (
 
 var errTaskProviderUnavailable = errors.New("task provider unavailable")
 var errTaskSubmissionUncertain = errors.New("task upstream submission outcome is unknown")
+
+// chatTaskCheckInterval is how often the idle chat pool looks for new runs.
+const chatTaskCheckInterval = 100 * time.Millisecond
 
 type Worker struct {
 	Cfg        *config.Config
@@ -260,6 +264,9 @@ func (w *Worker) Run() error {
 	}
 	chatServer := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency: chatConcurrency, Queues: taskflow.ChatQueueWeights, DelayedTaskCheckInterval: time.Second,
+		// 队列空闲时 asynq 默认 1 秒才看一次新任务，用户发完消息平均白等半秒才开始处理。
+		// 对话要的是首字快，这里 100ms 看一次；只有空闲时才轮询，对 Redis 的压力很小。
+		TaskCheckInterval: chatTaskCheckInterval,
 	})
 	if err := chatServer.Start(mux); err != nil {
 		return fmt.Errorf("start chat worker pool: %w", err)
@@ -1271,8 +1278,8 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 	}
 	timeout := provider.TimeoutSecs
 	switch provider.Adapter {
-	case modelconfig.AdapterOpenAI:
-		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, timeout, w.Cfg.C2APrivateNetworkAllowed()).WithAsyncImageEdits()
+	case modelconfig.AdapterOpenAI, modelconfig.AdapterGemini, modelconfig.AdapterDashScope, modelconfig.AdapterMiniMax:
+		client := providerclient.TaskImageForSelection(selection, w.Cfg.C2APrivateNetworkAllowed())
 		finalPrompt, size := prompt.Compile(task.Type, w.taskPromptWithSkills(ctx, task), task.Params)
 		imageOptions := c2a.ImageOptions{
 			Quality:               taskParamString(task.Params, "quality"),
@@ -2489,17 +2496,25 @@ func (w *Worker) providerForUpstreamAttempt(task *store.Task, fallback *modelcon
 	}
 	timeout, _ := taskParamInt64(task.Params, "_upstreamTimeoutSecs")
 	maxConcurrency, _ := taskParamInt64(task.Params, "_upstreamMaxConcurrency")
-	return &modelconfig.Provider{
+	snapshot := &modelconfig.Provider{
 		ID:      taskParamString(task.Params, "_providerConfigId"),
 		RouteID: taskParamString(task.Params, "_providerRouteId"),
 		Adapter: taskParamString(task.Params, "_serviceProvider"),
 		BaseURL: baseURL, APIKey: apiKey, TimeoutSecs: int(timeout),
 		MaxConcurrency: max(1, int(maxConcurrency)), Enabled: true,
-	}, nil
+	}
+	// The attempt snapshot only pins the route's address and key; how the
+	// vendor is spoken to (path, auth) follows the live provider.
+	if fallback != nil && fallback.ID == snapshot.ID {
+		snapshot.Vendor, snapshot.APIPath, snapshot.AuthStyle = fallback.Vendor, fallback.APIPath, fallback.AuthStyle
+		snapshot.ImageAPI = fallback.ImageAPI
+	}
+	return snapshot, nil
 }
 
 func (w *Worker) pollOpenAIProviderTasks(ctx context.Context, provider *modelconfig.Provider, tasks []*store.Task) {
-	client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, w.Cfg.C2APrivateNetworkAllowed())
+	// Polling only reads task state; per-model request rules do not apply.
+	client := providerclient.Image(*provider, nil, w.Cfg.C2APrivateNetworkAllowed())
 	stopRenew := w.startUpstreamAttemptPollRenewal(ctx, tasks)
 	defer stopRenew()
 	w.forEachOpenAIPollBatch(ctx, tasks, func(batch []*store.Task) {
@@ -2621,7 +2636,7 @@ func (w *Worker) startOpenAIResultFetch(provider *modelconfig.Provider, task *st
 		}
 		defer w.releaseImageFetch()
 		allowPrivate := w.Cfg.C2APrivateNetworkAllowed()
-		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, allowPrivate)
+		client := providerclient.Image(*provider, nil, allowPrivate)
 		fetchFailed := w.applyOpenAIPollResult(ctx, client, provider, task, result, claimID)
 		observeCtx, observeCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		w.observeImageFetch(observeCtx, time.Since(fetchStartedAt), fetchFailed || ctx.Err() != nil)

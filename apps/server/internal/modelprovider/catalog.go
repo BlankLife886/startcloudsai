@@ -14,6 +14,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
+	"github.com/BlankLife886/startcloudsai/server/internal/vendorimage"
 )
 
 type CatalogResult struct {
@@ -51,6 +52,13 @@ func DiscoverModels(ctx context.Context, provider modelconfig.Provider, allowPri
 	if provider.Adapter == modelconfig.AdapterCRUN {
 		return discoverCRUNModels(ctx, provider, allowPrivate)
 	}
+	if provider.Adapter == modelconfig.AdapterGemini {
+		return discoverGeminiModels(ctx, provider, allowPrivate)
+	}
+	if provider.Adapter == modelconfig.AdapterDashScope {
+		// The model list lives under compatible mode, not the native API path.
+		provider.APIPath = vendorimage.DashScopeChatPath
+	}
 	endpoint, err := providerModelsEndpoint(provider)
 	if err != nil {
 		return CatalogResult{}, err
@@ -64,9 +72,8 @@ func DiscoverModels(ctx context.Context, provider modelconfig.Provider, allowPri
 		return CatalogResult{}, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
-	if provider.Adapter == modelconfig.AdapterCRUN {
-		req.Header.Set("x-api-key", provider.APIKey)
+	for key, value := range modelconfig.AuthHeaders(modelconfig.AuthStyleFor(provider), provider.APIKey) {
+		req.Header.Set(key, value)
 	}
 	client := netguard.NewHTTPClient(timeout, allowPrivate, false)
 	resp, err := client.Do(req)
@@ -105,7 +112,9 @@ func DiscoverModels(ctx context.Context, provider modelconfig.Provider, allowPri
 		ID string `json:"id"`
 	}{payload.Data, payload.Models} {
 		for _, item := range list {
-			id := strings.TrimSpace(item.ID)
+			// Gemini's compatible endpoint lists resource names (models/x);
+			// its chat and image endpoints take the bare ID.
+			id := strings.TrimPrefix(strings.TrimSpace(item.ID), "models/")
 			if id == "" || seen[id] {
 				continue
 			}
@@ -336,6 +345,14 @@ func cleanCatalogStrings(values []string) []string {
 }
 
 func providerModelsEndpoint(provider modelconfig.Provider) (string, error) {
+	if provider.APIPath != "" {
+		base, err := parseBaseURL(provider.BaseURL)
+		if err != nil {
+			return "", err
+		}
+		base.Path = strings.TrimRight(base.Path, "/") + provider.APIPath + "/models"
+		return cleanURL(base), nil
+	}
 	if provider.Adapter == modelconfig.AdapterCRUN {
 		return crunModelsEndpoint(provider.BaseURL)
 	}
@@ -413,4 +430,117 @@ func cleanURL(base *url.URL) string {
 	base.RawQuery = ""
 	base.Fragment = ""
 	return base.String()
+}
+
+type geminiModel struct {
+	Name                       string   `json:"name"`
+	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+}
+
+// discoverGeminiModels lists Google's native catalog and classifies each model
+// by the generation methods it supports.
+func discoverGeminiModels(ctx context.Context, provider modelconfig.Provider, allowPrivate bool) (CatalogResult, error) {
+	base, err := parseBaseURL(provider.BaseURL)
+	if err != nil {
+		return CatalogResult{}, err
+	}
+	apiPath := provider.APIPath
+	if apiPath == "" {
+		apiPath = "/v1beta"
+	}
+	timeout := 20 * time.Second
+	client := netguard.NewHTTPClient(timeout, allowPrivate, false)
+	headers := modelconfig.AuthHeaders(modelconfig.AuthStyleFor(provider), provider.APIKey)
+	var all []geminiModel
+	pageToken := ""
+	for page := 0; page < 10; page++ {
+		endpoint := *base
+		endpoint.Path = strings.TrimRight(base.Path, "/") + apiPath + "/models"
+		query := url.Values{"pageSize": {"1000"}}
+		if pageToken != "" {
+			query.Set("pageToken", pageToken)
+		}
+		endpoint.RawQuery = query.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		req.Header.Set("Accept", "application/json")
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close()
+		if err != nil {
+			return CatalogResult{}, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			message := strings.TrimSpace(string(body))
+			if runes := []rune(message); len(runes) > 500 {
+				message = string(runes[:500])
+			}
+			return CatalogResult{}, fmt.Errorf("读取 Gemini 模型失败（HTTP %d）：%s", resp.StatusCode, message)
+		}
+		var payload struct {
+			Models        []geminiModel `json:"models"`
+			NextPageToken string        `json:"nextPageToken"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return CatalogResult{}, fmt.Errorf("Gemini 模型列表响应不是有效 JSON：%w", err)
+		}
+		all = append(all, payload.Models...)
+		if pageToken = payload.NextPageToken; pageToken == "" {
+			break
+		}
+	}
+	entries := make([]CatalogEntry, 0, len(all))
+	models := []string{}
+	seen := map[string]bool{}
+	for _, raw := range all {
+		entry := GeminiCatalogEntry(raw.Name, raw.SupportedGenerationMethods)
+		if entry.ID == "" || seen[entry.ID] {
+			continue
+		}
+		seen[entry.ID] = true
+		entries = append(entries, entry)
+		if entry.Compatible {
+			models = append(models, entry.ID)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	sort.Strings(models)
+	warning := ""
+	if len(models) < len(entries) {
+		warning = fmt.Sprintf("Gemini 返回 %d 个模型，其中 %d 个可用于对话或生图（嵌入、视频等暂不接入）。", len(entries), len(models))
+	}
+	return CatalogResult{
+		Models: models, Entries: entries, CompatibleCount: len(models), Source: "gemini-native", Warning: warning,
+	}, nil
+}
+
+// GeminiCatalogEntry describes one native Gemini model. It never picks chat
+// or image: the admin sets the kind on import. It only rules out models
+// whose capability the platform has not wired up.
+func GeminiCatalogEntry(name string, methods []string) CatalogEntry {
+	id := strings.TrimPrefix(strings.TrimSpace(name), "models/")
+	entry := CatalogEntry{ID: id, Operations: cleanCatalogStrings(methods)}
+	known := len(entry.Operations) > 0
+	supports := map[string]bool{}
+	for _, method := range methods {
+		supports[method] = true
+	}
+	lower := strings.ToLower(id)
+	unsupported := strings.Contains(lower, "embedding") || strings.Contains(lower, "tts") ||
+		strings.Contains(lower, "native-audio") || strings.Contains(lower, "aqa") ||
+		strings.HasPrefix(lower, "veo") || strings.Contains(lower, "-live")
+	if unsupported || (known && !supports["generateContent"] && !supports["predict"]) {
+		entry.Incompatibility = "当前业务尚未接入该模型能力"
+		return entry
+	}
+	entry.Compatible = true
+	return entry
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/contentpolicy"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/providerclient"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 	"github.com/BlankLife886/startcloudsai/server/internal/trialfeature"
@@ -192,7 +193,7 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 		ResponseFormat:        request.ResponseFormat,
 		User:                  request.User,
 	}
-	client := c2a.NewWithPolicy(selection.Provider.BaseURL, selection.Provider.APIKey, selection.Provider.TimeoutSecs, s.Cfg.C2APrivateNetworkAllowed()).WithStandardImages()
+	client := providerclient.Image(selection.Provider, modelconfig.SelectionCompat(selection), s.Cfg.C2APrivateNetworkAllowed()).WithStandardImages()
 	var upstream c2a.StandardImageResponse
 	if editing {
 		upstream, err = client.EditImagesStandardStream(ctx, request.Prompt, selection.Model.UpstreamModel, request.N, images, openAIRequestSize(request), options)
