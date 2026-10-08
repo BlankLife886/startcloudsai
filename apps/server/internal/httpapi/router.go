@@ -112,6 +112,7 @@ type Server struct {
 	enqueueImagePoll  func(context.Context, string, string, string, int, time.Duration) error
 	pageControls      pageControlCache
 	paymentChannel    paymentChannelCache
+	modelStatus       modelStatusCache
 	backgroundCancel  context.CancelFunc
 	backgroundWG      sync.WaitGroup
 }
@@ -278,6 +279,9 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/auth/session", s.authMe)
 	api.DELETE("/auth/session", s.logout)
 	api.GET("/trial-access-campaign", s.trialAccessCampaign)
+
+	// 公开模型状态页：只读、无需登录、进程内缓存 1 小时
+	api.GET("/model-status", s.publicModelStatus)
 
 	// assistant workspace (Sub2API server-side bridge)
 	api.GET("/assistant/config", s.assistantConfig)

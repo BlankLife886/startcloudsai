@@ -23,6 +23,7 @@ const routePreloaders = new Map([
   ["/developer-api", () => import("./views/DeveloperAPIView.jsx")],
   ["/notifications", () => import("./views/NotificationsView.jsx")],
   ["/announcements", () => import("./views/AnnouncementsView.jsx")],
+  ["/status", () => import("./views/ModelStatusView.jsx")],
   ["/assets", () => import("./views/MaterialsLibraryView.jsx")],
   ["/tools/puzzle", () => import("./views/PuzzleView.jsx")],
   ["/tools/image-compress", () => import("./views/ImageCompressView.jsx")],

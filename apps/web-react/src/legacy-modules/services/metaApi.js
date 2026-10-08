@@ -61,3 +61,10 @@ export function openAnnouncementEvents({ onSnapshot, onOpen, onError } = {}) {
   source.onerror = (error) => onError?.(error)
   return source
 }
+
+/** Public model status page: stability, latency and speed per public model. */
+export async function getModelStatus({ signal } = {}) {
+  const data = await apiGet('/model-status', { signal, cache: 'no-store', fallbackMessage: '模型状态读取失败' })
+  if (data && Array.isArray(data.models)) return data
+  throw new Error('模型状态响应格式不正确')
+}

@@ -68,6 +68,7 @@ const (
 	typeRankUserProfiles        = "cron:rank_user_profiles"
 	typeEnqueueAllUserProfiles  = "cron:enqueue_all_user_profiles"
 	typeReclaimDeveloperAPI     = "cron:reclaim_developer_api_reservations"
+	typeRefreshModelHealth      = "cron:refresh_model_health"
 	typeReconcileAPIModels      = "cron:reconcile_developer_api_models"
 
 	taskCompletionLease         = 5 * time.Minute
@@ -222,6 +223,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupObjectJobs, w.handleCleanupObjectJobs)
 	mux.HandleFunc(typeCleanupCanvasRuns, w.handleCleanupCanvasRuns)
 	mux.HandleFunc(typePurgeArchivedChats, w.handlePurgeArchivedAssistantConversations)
+	mux.HandleFunc(typeRefreshModelHealth, w.handleRefreshModelHealth)
 	mux.HandleFunc(typeCleanupTrashedAssets, w.handleCleanupTrashedAssets)
 	mux.HandleFunc(typeEvaluateIncidents, w.handleEvaluateOperationalIncidents)
 	mux.HandleFunc(typeDispatchAssistantOutbox, w.handleDispatchAssistantOutbox)
@@ -336,6 +338,9 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		periodicConfig("@every 24h", typeEnqueueAllUserProfiles, 23*time.Hour+59*time.Minute, 1),
 		periodicConfig("@every 5m", typeReclaimDeveloperAPI, 4*time.Minute+50*time.Second, 0),
 		periodicConfig("@every 1m", typeReconcileAPIModels, 50*time.Second, 0),
+		// Hourly, matching the status page's refresh. No retries: the next run
+		// recomputes from the last stored hour anyway.
+		periodicConfig("@every 1h", typeRefreshModelHealth, 59*time.Minute+50*time.Second, 0, asynq.Timeout(2*time.Minute)),
 	}, nil
 }
 

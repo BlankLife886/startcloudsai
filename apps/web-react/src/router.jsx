@@ -156,6 +156,10 @@ export const router = createBrowserRouter([
         lazy: lazyView(() => import("./views/AnnouncementsView.jsx"), "AnnouncementsView"),
       },
       {
+        path: "/status",
+        lazy: lazyView(() => import("./views/ModelStatusView.jsx"), "ModelStatusView"),
+      },
+      {
         path: "/announcements/:id",
         lazy: lazyView(() => import("./views/AnnouncementDetailView.jsx"), "AnnouncementDetailView"),
       },

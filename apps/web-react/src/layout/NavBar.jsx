@@ -285,7 +285,7 @@ const toolGroups = [
   {
     id: "platform-info",
     label: "平台资讯",
-    description: "关于星空云绘与更新说明",
+    description: "关于星空云绘、更新说明与模型状态",
     items: [
       {
         id: "about",
@@ -304,6 +304,15 @@ const toolGroups = [
         icon: "bi-journal-text",
         tag: "系统演化 · 版本日志",
         desc: "定期迭代发布说明，持续提升多模态图像质量与创作者操作效率。",
+      },
+      {
+        id: "model-status",
+        to: "/status",
+        label: "模型状态",
+        tagline: "各模型稳定性、延迟与速度",
+        icon: "bi-activity",
+        tag: "平台透明 · 实时状态",
+        desc: "基于真实调用统计每个模型的成功率、延迟和速度，提供 24 小时逐时可用状态与 30 天单价。",
       },
       {
         id: "feedback",
@@ -337,6 +346,7 @@ const baseTools = [
   ["/tools/puzzle", "拼图", "bi-puzzle-fill"],
   ["/app-space", "关于我们", "bi-columns-gap"],
   ["/updates", "更新说明", "bi-journal-text"],
+  ["/status", "模型状态", "bi-activity"],
   ["/feedback", "问题反馈", "bi-chat-square-text"],
 ].map(([to, label, icon]) => ({ to, label, icon }));
 
