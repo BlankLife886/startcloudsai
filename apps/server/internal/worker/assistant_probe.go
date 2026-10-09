@@ -56,7 +56,8 @@ func (w *Worker) ProbeAssistantAgent(ctx context.Context, client *sub2api.Client
 	if err != nil {
 		return assistantreview.Action{}, err
 	}
-	payload := []sub2api.Message{{Role: "system", Content: assistantAgentTurnInstructions(run, nil, modelCatalog, withholdProposal, platform)}}
+	static, turnContext := assistantAgentTurnInstructions(run, nil, modelCatalog, withholdProposal, platform)
+	payload := []sub2api.Message{{Role: "system", Content: joinAssistantInstructions(static, turnContext)}}
 	for _, message := range item.Context {
 		if role := strings.TrimSpace(message.Role); (role == "user" || role == "assistant") && strings.TrimSpace(message.Content) != "" {
 			payload = append(payload, sub2api.Message{Role: role, Content: message.Content})
@@ -69,13 +70,29 @@ func (w *Worker) ProbeAssistantAgent(ctx context.Context, client *sub2api.Client
 	payload = append(payload, sub2api.Message{Role: "user", Content: prompt})
 
 	started := time.Now()
-	result, err := client.ChatAgentWithTools(ctx, payload, nil, toolset.tools, "", nil)
-	if err == nil && result.ToolCall != nil && result.ToolCall.Name == toolset.plan.Name {
-		// Writing a to-do list is not a move; ask once more for the real one.
-		steps, planErr := parseAssistantPlan(result.ToolCall.Arguments)
-		observation, _ := assistantAgentToolObservation(result.ToolCall, assistantPlanObservation(steps), planErr, nil)
-		payload = append(payload, canvasAgentToolMessages(result, observation)...)
-		result, err = client.ChatAgentWithTools(ctx, payload, nil, toolset.tools, "", nil)
+	// Tools load on demand exactly as in a real turn (see assistantToolLoader).
+	loader := newAssistantToolLoader(toolset.tools, assistantToolPreloadsFor(item.Prompt))
+	result, err := client.ChatAgentWithTools(ctx, payload, nil, loader.active(toolset.tools), "", nil)
+	for attempt := 0; attempt < 2 && err == nil && result.ToolCall != nil; attempt++ {
+		switch {
+		case result.ToolCall.Name == toolset.plan.Name:
+			// Writing a to-do list is not a move; ask once more for the real one.
+			steps, planErr := parseAssistantPlan(result.ToolCall.Arguments)
+			observation, _ := assistantAgentToolObservation(result.ToolCall, assistantPlanObservation(steps), planErr, nil)
+			payload = append(payload, canvasAgentToolMessages(result, observation)...)
+		case len(loader.loadCalls(result)) > 0:
+			// Loading a tool is not a move either: the next call is.
+			loads := loader.loadCalls(result)
+			observations := make([]string, len(loads))
+			for index, call := range loads {
+				observations[index] = loader.observe(call)
+			}
+			payload = append(payload, assistantAgentBatchToolMessages(result.Text, loads, observations)...)
+		default:
+			attempt = 2
+			continue
+		}
+		result, err = client.ChatAgentWithTools(ctx, payload, nil, loader.active(toolset.tools), "", nil)
 	}
 	if err != nil {
 		return assistantreview.Action{}, err

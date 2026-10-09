@@ -47,6 +47,7 @@ type assistantAgentPlatform struct {
 	tools        []sub2api.FunctionTool
 	permissions  map[assistanttools.Permission]bool
 	instructions string
+	context      string
 	chatOnly     bool
 }
 
@@ -189,36 +190,39 @@ func (w *Worker) assistantAgentPlatformFor(
 		permissions[permission] = true
 	}
 
-	var instructions strings.Builder
+	// instructions 是每轮相同的规则，context 是本轮才有的事实；分开放才能让规则
+	// 留在提示词前部命中上游缓存，见 assistantAgentInstructionParts。
+	var instructions, turnContext strings.Builder
 	instructions.WriteString(assistantv2.PlatformRules)
-	instructions.WriteString("\n\n" + assistantv2.TimeNote(assistantParamString(run.Params, "timezone", "Asia/Shanghai"), time.Now()))
-	instructions.WriteString(assistantv2.MemoryPrompt(recall.Enabled, recall.Block))
+	turnContext.WriteString(assistantv2.TimeNote(assistantParamString(run.Params, "timezone", "Asia/Shanghai"), time.Now()))
+	instructions.WriteString(assistantv2.MemoryRules(recall.Enabled))
+	turnContext.WriteString(assistantv2.MemoryBlock(recall.Enabled, recall.Block))
 	if chatOnly {
 		instructions.WriteString(assistantv2.ChatOnlyPrompt)
 	} else {
 		if recall.Enabled && recall.Block != "" {
-			instructions.WriteString("\n出图方案要遵循记忆里的品牌和风格偏好（写进提示词）；用户本轮另有要求时以本轮为准。")
+			turnContext.WriteString("\n出图方案要遵循记忆里的品牌和风格偏好（写进提示词）；用户本轮另有要求时以本轮为准。")
 		}
-		instructions.WriteString(assistantproactive.HabitNote(w.assistantV2Habits(ctx, run, recall)))
+		turnContext.WriteString(assistantproactive.HabitNote(w.assistantV2Habits(ctx, run, recall)))
 		instructions.WriteString(assistantv2.CompetitorLinkPrompt)
 	}
 	instructions.WriteString(assistantFollowUpsInstructionFor(chatOnly))
 	if commerce.enabled {
 		instructions.WriteString(assistantv2.CommercePrompt)
 		if commerce.open != nil {
-			instructions.WriteString(assistantV2OpenSetNote(commerce.open))
+			turnContext.WriteString(assistantV2OpenSetNote(commerce.open))
 		}
 		if commerce.product != nil {
-			fmt.Fprintf(&instructions, "\n本轮没有上传商品图，用的是记忆里的商品“%s”的 %d 张图；策划时参考这条记忆的内容。", commerce.product.Title, len(commerce.inputKeys))
+			fmt.Fprintf(&turnContext, "\n本轮没有上传商品图，用的是记忆里的商品“%s”的 %d 张图；策划时参考这条记忆的内容。", commerce.product.Title, len(commerce.inputKeys))
 		} else if count := len(commerce.attachments(references)); count > 0 {
-			fmt.Fprintf(&instructions, "\n本轮用户附了 %d 张图，按上传顺序编号 1-%d（与你看到的图片顺序一致）。", count, count)
+			fmt.Fprintf(&turnContext, "\n本轮用户附了 %d 张图，按上传顺序编号 1-%d（与你看到的图片顺序一致）。", count, count)
 		}
-		instructions.WriteString(w.assistantV2CompetitorNote(ctx, run))
+		turnContext.WriteString(w.assistantV2CompetitorNote(ctx, run))
 	}
-	instructions.WriteString(assistanttools.SkillReferencePrompt(referenceSources))
+	turnContext.WriteString(assistanttools.SkillReferencePrompt(referenceSources))
 	return &assistantAgentPlatform{
 		registry: registry, tools: tools, permissions: permissions,
-		instructions: instructions.String(), chatOnly: chatOnly,
+		instructions: instructions.String(), context: turnContext.String(), chatOnly: chatOnly,
 	}, nil
 }
 

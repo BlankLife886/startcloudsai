@@ -1829,26 +1829,54 @@ func assistantAgentInstructions(
 	models []map[string]any,
 	imageWork bool,
 ) string {
+	static, dynamic := assistantAgentInstructionParts(run, catalog, models, imageWork)
+	return joinAssistantInstructions(static, dynamic)
+}
+
+// assistantAgentInstructionParts splits the prompt into the rules, which are
+// the same on every turn, and the per-turn facts (defaults, image catalog,
+// model list). Upstream prompt caches match the longest common prefix, so the
+// rules go first and everything that changes between turns goes last.
+func assistantAgentInstructionParts(
+	run *store.AssistantRun,
+	catalog []assistantCatalogImage,
+	models []map[string]any,
+	imageWork bool,
+) (string, string) {
 	if !imageWork {
-		return assistantAgentBaseInstruction
+		return assistantAgentBaseInstruction, ""
 	}
-	instructions := assistantAgentBaseInstruction + "\n" + assistantAgentImageInstruction
+	static := assistantAgentBaseInstruction + "\n" + assistantAgentImageInstruction
 	defaults := []string{fmt.Sprintf("数量=%d", assistantParamInt(run.Params, "count", 1))}
 	for _, item := range []struct{ label, key string }{{"比例", "ratio"}, {"分辨率", "resolution"}, {"质量", "quality"}, {"图片模型", "_imageModelConfigId"}} {
 		if value := assistantParamString(run.Params, item.key, ""); value != "" {
 			defaults = append(defaults, item.label+"="+value)
 		}
 	}
-	instructions += "\n\n当前默认参数：" + strings.Join(defaults, "，") + "。"
-	if catalogText := renderAssistantImageCatalog(catalog); catalogText != "" {
-		instructions += "\n\n当前可用图片目录：\n" + catalogText
-	} else {
-		instructions += "\n\n当前可用图片目录：空"
-	}
+	dynamic := "当前默认参数：" + strings.Join(defaults, "，") + "。"
 	if modelText := renderAssistantModelCatalog(models); modelText != "" {
-		instructions += "\n\n当前可用图片模型：\n" + modelText
+		dynamic += "\n\n当前可用图片模型：\n" + modelText
 	}
-	return instructions
+	if catalogText := renderAssistantImageCatalog(catalog); catalogText != "" {
+		dynamic += "\n\n当前可用图片目录：\n" + catalogText
+	} else {
+		dynamic += "\n\n当前可用图片目录：空"
+	}
+	return static, dynamic
+}
+
+func joinAssistantInstructions(parts ...string) string {
+	out := ""
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part == "" {
+			continue
+		}
+		if out != "" {
+			out += "\n\n"
+		}
+		out += part
+	}
+	return out
 }
 
 // executeAssistantAgent is the assistant's one agent loop. platform is nil
@@ -1864,12 +1892,13 @@ func assistantAgentTurnInstructions(
 	modelCatalog []map[string]any,
 	withholdProposal bool,
 	platform *assistantAgentPlatform,
-) string {
-	instructions := assistantAgentInstructions(run, imageCatalog, modelCatalog, !withholdProposal)
+) (string, string) {
+	static, dynamic := assistantAgentInstructionParts(run, imageCatalog, modelCatalog, !withholdProposal)
 	if platform != nil {
-		instructions += "\n\n" + platform.instructions
+		static = joinAssistantInstructions(static, platform.instructions)
+		dynamic = joinAssistantInstructions(dynamic, platform.context)
 	}
-	return instructions
+	return static, dynamic
 }
 
 // assistantAgentToolset is what an agent turn may call. The admin probe
@@ -1997,7 +2026,7 @@ func (w *Worker) executeAssistantAgent(
 	// 反方向必须更保守：撤掉工具会让用户想做的事直接做不了，所以只有寒暄、理解类提问和
 	// 明确说了“不要生成图片”这些窄而精确的正则可以撤，模型的判定不足以剥夺调用机会。
 	withholdProposal := (intent.fromFastPath && intent.intent == "chat") || chatOnly
-	instructions := assistantAgentTurnInstructions(run, imageCatalog, modelCatalog, withholdProposal, platform)
+	instructions, turnContext := assistantAgentTurnInstructions(run, imageCatalog, modelCatalog, withholdProposal, platform)
 	if expectProposal {
 		instructions += "\n\n" + assistantAgentProposalExpectedInstruction
 	}
@@ -2012,8 +2041,10 @@ func (w *Worker) executeAssistantAgent(
 		for index, item := range historicalVisionCatalog {
 			mappings = append(mappings, fmt.Sprintf("附加视觉图%d=%s（id=%s）", len(references)+index+1, item.Label, item.ID))
 		}
-		instructions += "\n\n本轮已真实读取这些历史图片像素：" + strings.Join(mappings, "，") + "。只能对这些图片声称已看过。"
+		turnContext += "\n\n本轮已真实读取这些历史图片像素：" + strings.Join(mappings, "，") + "。只能对这些图片声称已看过。"
 	}
+	// 每轮都会变的事实（时间、目录、记忆、本轮附件）放在最后，前面的规则才能命中上游缓存。
+	instructions = joinAssistantInstructions(instructions, turnContext)
 	payload, _, err := w.prepareAssistantContext(ctx, run, "agent",
 		instructions, history, agentReferences, false, nextStage)
 	if err != nil {
@@ -2031,6 +2062,10 @@ func (w *Worker) executeAssistantAgent(
 	}
 	proposalTool, planTool, tools := toolset.proposal, toolset.plan, toolset.tools
 	taskStatusRegistry, taskStatusTool, workspaceToolRegistry := toolset.taskStatusRegistry, toolset.taskStatus, toolset.workspaceRegistry
+	// 低频工具按需加载：本对话用过的、这句话像是要用的、本轮强制要调的先带上。
+	toolLoader := newAssistantToolLoader(tools, assistantToolsUsedInHistory(history),
+		assistantToolPreloadsFor(run.Prompt), []string{forcedWorkspaceTool})
+	var requestedLoads []string
 	var dataViews []map[string]any
 	var result sub2api.AgentChatResult
 	var searches []sub2api.WebSearchResult
@@ -2090,6 +2125,7 @@ func (w *Worker) executeAssistantAgent(
 		attachAssistantReasoning(metadata, reasoning)
 		attachAssistantArtifacts(metadata, artifacts)
 		attachAssistantToolSteps(metadata, toolSteps)
+		attachAssistantLoadedTools(metadata, requestedLoads)
 		attachAssistantPlan(metadata, plan)
 		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "agent", "running", metadata)
 	}
@@ -2114,7 +2150,7 @@ func (w *Worker) executeAssistantAgent(
 			}
 		}
 		turnTools := assistantAgentToolsForFileRequirements(
-			tools, proposalTool.Name, fileIDs, wantsArtifact, successfulFileTools, artifacts,
+			toolLoader.active(tools), proposalTool.Name, fileIDs, wantsArtifact, successfulFileTools, artifacts,
 		)
 		trimAssistantAgentObservations(payload)
 		waitDetail := fmt.Sprintf("第 %d 轮，正在等模型决定下一步", iteration+1)
@@ -2194,6 +2230,25 @@ func (w *Worker) executeAssistantAgent(
 			payload = append(payload, canvasAgentToolMessages(next, observation)...)
 			answering = false
 			w.publishAssistantDebug(ctx, run, "tool_done", "待办已更新")
+			if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
+				return err
+			}
+			continue
+		}
+		// load_tools 只是把工具定义带进下一次请求，没有副作用，和更新计划一样不算开始执行
+		// 工具。同一批里的其他调用先不执行：它们可能正依赖这次加载，模型下一次会重新调用。
+		if loads := toolLoader.loadCalls(next); len(loads) > 0 {
+			observations := make([]string, len(loads))
+			before := len(toolLoader.loaded)
+			for index, call := range loads {
+				observations[index] = toolLoader.observe(call)
+			}
+			for _, name := range toolLoader.loaded[before:] {
+				requestedLoads = append(requestedLoads, name)
+			}
+			payload = append(payload, assistantAgentBatchToolMessages(next.Text, loads, observations)...)
+			answering = false
+			w.publishAssistantDebug(ctx, run, "tool_done", "已加载工具 "+strings.Join(toolLoader.loaded[before:], "、"))
 			if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
 				return err
 			}
@@ -2538,6 +2593,7 @@ func (w *Worker) executeAssistantAgent(
 		attachAssistantWebSearches(metadata, searches)
 		attachAssistantArtifacts(metadata, artifacts)
 		attachAssistantToolSteps(metadata, toolSteps)
+		attachAssistantLoadedTools(metadata, requestedLoads)
 		attachAssistantPlan(metadata, plan)
 		if len(toolActions) > 0 {
 			metadata["toolActions"] = toolActions
@@ -2576,6 +2632,7 @@ func (w *Worker) executeAssistantAgent(
 	attachAssistantWebSearches(metadata, searches)
 	attachAssistantArtifacts(metadata, artifacts)
 	attachAssistantToolSteps(metadata, toolSteps)
+	attachAssistantLoadedTools(metadata, requestedLoads)
 	attachAssistantPlan(metadata, plan)
 	if len(toolActions) > 0 {
 		metadata["toolActions"] = toolActions
@@ -2611,6 +2668,14 @@ func attachAssistantWebSearches(metadata map[string]any, searches []sub2api.WebS
 		return
 	}
 	metadata["webSearches"] = searches
+}
+
+// attachAssistantLoadedTools 记下模型本轮通过 load_tools 加载的工具，下一轮直接带上。
+func attachAssistantLoadedTools(metadata map[string]any, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	metadata["loadedTools"] = names
 }
 
 func attachAssistantToolSteps(metadata map[string]any, steps []map[string]any) {

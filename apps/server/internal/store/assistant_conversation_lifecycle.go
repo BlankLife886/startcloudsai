@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // MaxAssistantConversationBonus 是订阅可追加的 AI 助手对话数上限。
@@ -12,18 +14,24 @@ const MaxAssistantConversationBonus = 10000
 
 // AssistantConversationQuota 是用户在某个工作区的对话额度：保留数 = 基础（后台设置）+ 订阅加成。
 // Used 只算没归档的对话；置顶的也算在内，但不会被自动归档。
+// “助手提醒”对话（InboxID）由系统创建，不算在保留数和今天新建数里，也不会被自动归档。
 type AssistantConversationQuota struct {
-	Base         int `json:"base"`
-	PlanBonus    int `json:"planBonus"`
-	Limit        int `json:"limit"`
-	Used         int `json:"used"`
-	Pinned       int `json:"pinned"`
-	Archived     int `json:"archived"`
-	DailyLimit   int `json:"dailyLimit"`
-	CreatedToday int `json:"createdToday"`
-	ArchiveDays  int `json:"archiveDays"`
-	MaxMessages  int `json:"maxMessages"`
+	Base         int    `json:"base"`
+	PlanBonus    int    `json:"planBonus"`
+	Limit        int    `json:"limit"`
+	Used         int    `json:"used"`
+	Pinned       int    `json:"pinned"`
+	Archived     int    `json:"archived"`
+	DailyLimit   int    `json:"dailyLimit"`
+	CreatedToday int    `json:"createdToday"`
+	ArchiveDays  int    `json:"archiveDays"`
+	MaxMessages  int    `json:"maxMessages"`
+	InboxID      string `json:"inboxId,omitempty"`
 }
+
+// notInboxSQL 排除用户的“助手提醒”对话；$1 是 user_id，c 是 assistant_conversations 的别名。
+const notInboxSQL = `NOT EXISTS (SELECT 1 FROM assistant_proactive_settings inbox
+	WHERE inbox.user_id = $1 AND inbox.inbox_conversation_id = c.id)`
 
 // AssistantConversationQuotaInput 是后台配置的规则，由调用方按设置传入。
 type AssistantConversationQuotaInput struct {
@@ -50,9 +58,18 @@ func GetUserAssistantConversationQuota(ctx context.Context, q Q, userID uuid.UUI
 			count(*) FILTER (WHERE archived_at IS NULL),
 			count(*) FILTER (WHERE archived_at IS NULL AND pinned_at IS NOT NULL),
 			count(*) FILTER (WHERE archived_at IS NOT NULL)
-		FROM assistant_conversations WHERE user_id = $1 AND workspace = $2`, userID, workspace).
+		FROM assistant_conversations c WHERE user_id = $1 AND workspace = $2 AND `+notInboxSQL, userID, workspace).
 		Scan(&quota.Used, &quota.Pinned, &quota.Archived); err != nil {
 		return quota, err
+	}
+	var inbox *uuid.UUID
+	if err := q.QueryRow(ctx, `SELECT c.id FROM assistant_proactive_settings s
+		JOIN assistant_conversations c ON c.id = s.inbox_conversation_id
+		WHERE s.user_id = $1 AND c.workspace = $2 AND c.archived_at IS NULL`, userID, workspace).Scan(&inbox); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return quota, err
+	}
+	if inbox != nil {
+		quota.InboxID = inbox.String()
 	}
 	if err := q.QueryRow(ctx, `SELECT COALESCE((SELECT count FROM assistant_conversation_daily_creations
 		WHERE user_id = $1 AND day = $2::date), 0)`, userID, in.Day.Format("2006-01-02")).Scan(&quota.CreatedToday); err != nil {
@@ -80,8 +97,8 @@ func RecordAssistantConversationCreation(ctx context.Context, q Q, userID uuid.U
 // 置顶的、正在运行任务的、以及 keep 这一个都不会被归档；返回这次归档的对话。
 func ArchiveOverflowAssistantConversations(ctx context.Context, q Q, userID uuid.UUID, workspace string, limit int, keep uuid.UUID, at time.Time) ([]*AssistantConversation, error) {
 	var active int
-	if err := q.QueryRow(ctx, `SELECT count(*) FROM assistant_conversations
-		WHERE user_id = $1 AND workspace = $2 AND archived_at IS NULL`, userID, workspace).Scan(&active); err != nil {
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM assistant_conversations c
+		WHERE user_id = $1 AND workspace = $2 AND archived_at IS NULL AND `+notInboxSQL, userID, workspace).Scan(&active); err != nil {
 		return nil, err
 	}
 	overflow := active - limit
@@ -90,14 +107,14 @@ func ArchiveOverflowAssistantConversations(ctx context.Context, q Q, userID uuid
 	}
 	rows, err := q.Query(ctx, `UPDATE assistant_conversations SET archived_at = $5
 		WHERE id IN (
-			SELECT conversation.id FROM assistant_conversations conversation
-			WHERE conversation.user_id = $1 AND conversation.workspace = $2
-			  AND conversation.archived_at IS NULL AND conversation.pinned_at IS NULL AND conversation.id <> $3
+			SELECT c.id FROM assistant_conversations c
+			WHERE c.user_id = $1 AND c.workspace = $2
+			  AND c.archived_at IS NULL AND c.pinned_at IS NULL AND c.id <> $3 AND `+notInboxSQL+`
 			  AND NOT EXISTS (
 				SELECT 1 FROM assistant_runs run
-				WHERE run.conversation_id = conversation.id AND run.status IN ('queued', 'running')
+				WHERE run.conversation_id = c.id AND run.status IN ('queued', 'running')
 			  )
-			ORDER BY conversation.updated_at ASC, conversation.id ASC
+			ORDER BY c.updated_at ASC, c.id ASC
 			LIMIT $4
 		)
 		RETURNING `+assistantConversationCols, userID, workspace, keep, overflow, at)

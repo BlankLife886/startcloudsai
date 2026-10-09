@@ -26,6 +26,28 @@ func v2ToolNames(body map[string]any) string {
 	return strings.Join(names, ",")
 }
 
+// v2OfferedToolNames is every tool the model can use this request: the full
+// definitions plus the ones listed in load_tools for loading on demand.
+func v2OfferedToolNames(body map[string]any) string {
+	tools, _ := body["tools"].([]any)
+	names := []string{}
+	for _, raw := range tools {
+		function, _ := raw.(map[string]any)["function"].(map[string]any)
+		names = append(names, function["name"].(string))
+		if function["name"] != assistantLoadToolsName {
+			continue
+		}
+		parameters, _ := function["parameters"].(map[string]any)
+		properties, _ := parameters["properties"].(map[string]any)
+		list, _ := properties["names"].(map[string]any)
+		items, _ := list["items"].(map[string]any)
+		for _, name := range items["enum"].([]any) {
+			names = append(names, name.(string))
+		}
+	}
+	return strings.Join(names, ",")
+}
+
 func TestAssistantV2RemembersAndRecallsMemory(t *testing.T) {
 	ctx := context.Background()
 	fixture := newV2Fixture(t, "记住我的品牌色是雾霾蓝，以后做图都用这个色")

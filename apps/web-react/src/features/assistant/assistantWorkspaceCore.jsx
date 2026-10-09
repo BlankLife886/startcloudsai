@@ -740,8 +740,9 @@ function normalizeAssistantUsage(message) {
   }
   const inputTokens = Math.max(0, Number(raw.inputTokens ?? raw.promptTokens) || Number(context.estimatedInputTokens) || 0);
   const outputTokens = Math.max(0, Number(raw.outputTokens ?? raw.completionTokens) || 0) || estimateAssistantTokens(message.content);
+  const cachedInputTokens = Math.min(inputTokens, Math.max(0, Number(raw.cachedInputTokens) || 0));
   if (!inputTokens && !outputTokens && !firstTokenMs && !durationMs) return null;
-  return { inputTokens, outputTokens, firstTokenMs, durationMs };
+  return { inputTokens, cachedInputTokens, outputTokens, firstTokenMs, durationMs };
 }
 
 

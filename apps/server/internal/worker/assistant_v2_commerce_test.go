@@ -17,6 +17,8 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
+	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
+	"github.com/jackc/pgx/v5"
 )
 
 // With a product photo attached, the set tools are offered next to the image
@@ -24,7 +26,79 @@ import (
 // data goes into the message. Nothing is generated without approval.
 func TestAssistantV2PlansACommerceSetWhenAskedForOne(t *testing.T) {
 	ctx := context.Background()
+	fixture, exposed, calls := runV2CommercePlanTurn(t, nil)
+	if !strings.Contains(strings.Join(exposed, ","), "commerce_set_plan") || !strings.Contains(strings.Join(exposed, ","), "commerce_set_generate") {
+		t.Fatalf("exposed = %v", exposed)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream agent calls = %d, want plan + answer", calls)
+	}
+	var sets, tasks int
+	if err := fixture.st.Pool.QueryRow(ctx, `SELECT count(*) FROM assistant_commerce_sets WHERE user_id = $1 AND status = 'planned'`,
+		fixture.user.ID).Scan(&sets); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.st.Pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE user_id = $1`, fixture.user.ID).Scan(&tasks); err != nil {
+		t.Fatal(err)
+	}
+	if sets != 1 || tasks != 0 {
+		t.Fatalf("sets = %d tasks = %d", sets, tasks)
+	}
+	message, err := store.GetAssistantMessage(ctx, fixture.st.Pool, fixture.assistantMessage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	views, _ := message.Metadata["dataViews"].([]any)
+	raw, _ := json.Marshal(views)
+	if len(views) != 1 || !strings.Contains(string(raw), `"view":"commerce_set"`) || !strings.Contains(string(raw), `"quotedCents":10`) {
+		t.Fatalf("dataViews = %s", raw)
+	}
+}
+
+// Within the user's auto-approval budget the plan starts generating at once:
+// the model is not asked a second time just to call commerce_set_generate.
+func TestAssistantV2PlanGeneratesWithinTheAutoApprovalBudget(t *testing.T) {
+	ctx := context.Background()
+	fixture, _, calls := runV2CommercePlanTurn(t, func(fixture v2Fixture) {
+		if err := store.InsertWallet(ctx, fixture.st.Pool, fixture.user.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.st.Tx(ctx, func(tx pgx.Tx) error {
+			_, err := wallet.Grant(ctx, tx, fixture.user.ID, 1000, "grant", "signup_bonus", fixture.user.ID.String(), nil)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.st.Pool.Exec(ctx, `UPDATE users SET assistant_auto_approve = true, assistant_auto_approve_budget_cents = 100 WHERE id = $1`, fixture.user.ID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if calls != 2 {
+		t.Fatalf("upstream agent calls = %d, want plan + answer", calls)
+	}
+	var generating, tasks int
+	if err := fixture.st.Pool.QueryRow(ctx, `SELECT count(*) FROM assistant_commerce_sets WHERE user_id = $1 AND status <> 'planned'`,
+		fixture.user.ID).Scan(&generating); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.st.Pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE user_id = $1`, fixture.user.ID).Scan(&tasks); err != nil {
+		t.Fatal(err)
+	}
+	if generating != 1 || tasks != 1 {
+		t.Fatalf("generating sets = %d tasks = %d", generating, tasks)
+	}
+}
+
+// runV2CommercePlanTurn runs one agent turn in which the model plans a
+// one-shot set and then answers. It returns the tools the model was offered
+// and how many agent (tool-bearing) upstream calls the turn made.
+func runV2CommercePlanTurn(t *testing.T, prepare func(v2Fixture)) (v2Fixture, []string, int) {
+	t.Helper()
+	ctx := context.Background()
 	fixture := newV2Fixture(t, "帮我做一套保温杯的天猫主图")
+	if prepare != nil {
+		prepare(fixture)
+	}
 	if _, err := fixture.st.Pool.Exec(ctx, `UPDATE assistant_runs SET params = params || '{"referenceImages":[{"fileKey":"uploads/cup.png"}]}'::jsonb WHERE id = $1`, fixture.run.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -63,10 +137,14 @@ func TestAssistantV2PlansACommerceSetWhenAskedForOne(t *testing.T) {
 	}
 
 	var exposed []string
+	agentCalls := 0
 	upstream := &fakeUpstream{script: func(index int, body map[string]any) string {
 		tools, _ := body["tools"].([]any)
 		messages, _ := body["messages"].([]any)
 		last, _ := messages[len(messages)-1].(map[string]any)
+		if len(tools) > 0 {
+			agentCalls++
+		}
 		switch {
 		case len(tools) == 0:
 			// The copy planner inside commerce_set_plan.
@@ -96,29 +174,7 @@ func TestAssistantV2PlansACommerceSetWhenAskedForOne(t *testing.T) {
 	if err := worker.runAssistantV2(ctx, run, client); err != nil {
 		t.Fatalf("run v2: %v", err)
 	}
-	if !strings.Contains(strings.Join(exposed, ","), "commerce_set_plan") || !strings.Contains(strings.Join(exposed, ","), "commerce_set_generate") {
-		t.Fatalf("exposed = %v", exposed)
-	}
-	var sets, tasks int
-	if err := fixture.st.Pool.QueryRow(ctx, `SELECT count(*) FROM assistant_commerce_sets WHERE user_id = $1 AND conversation_id = $2 AND status = 'planned'`,
-		fixture.user.ID, run.ConversationID).Scan(&sets); err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.st.Pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE user_id = $1`, fixture.user.ID).Scan(&tasks); err != nil {
-		t.Fatal(err)
-	}
-	if sets != 1 || tasks != 0 {
-		t.Fatalf("sets = %d tasks = %d", sets, tasks)
-	}
-	message, err := store.GetAssistantMessage(ctx, fixture.st.Pool, fixture.assistantMessage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	views, _ := message.Metadata["dataViews"].([]any)
-	raw, _ := json.Marshal(views)
-	if len(views) != 1 || !strings.Contains(string(raw), `"view":"commerce_set"`) || !strings.Contains(string(raw), `"quotedCents":10`) {
-		t.Fatalf("dataViews = %s", raw)
-	}
+	return fixture, exposed, agentCalls
 }
 
 // The note about the conversation's set names its shots and says to act with

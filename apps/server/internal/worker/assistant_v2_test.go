@@ -119,19 +119,20 @@ func TestAssistantV2AnswersPersonalStatsFromTheMetricsTool(t *testing.T) {
 	upstream := &fakeUpstream{script: func(index int, body map[string]any) string {
 		switch index {
 		case 0:
-			tools, _ := body["tools"].([]any)
-			names := []string{}
-			for _, raw := range tools {
-				function, _ := raw.(map[string]any)["function"].(map[string]any)
-				names = append(names, fmt.Sprint(function["name"]))
-			}
+			names := v2OfferedToolNames(body)
 			// One agent, every tool the mode allows: image proposals and web
-			// search sit next to the platform tools, and nothing routes.
-			joined := "," + strings.Join(names, ",") + ","
+			// search sit next to the platform tools, and nothing routes. Rare
+			// tools are offered through load_tools.
+			joined := "," + names + ","
 			for _, want := range []string{"propose_image_action", "web_search", "task_status", "my_stats_query", "my_records_list", "my_account_overview", "explain_charge", "assets_search", "memory_save"} {
 				if !strings.Contains(joined, ","+want+",") {
 					t.Errorf("tool %s not offered: %v", want, names)
 				}
+			}
+			// A question about spending loads the account tools up front.
+			full := "," + v2ToolNames(body) + ","
+			if !strings.Contains(full, ",my_stats_query,") || strings.Contains(full, ",memory_save,") {
+				t.Errorf("full definitions = %s", full)
 			}
 			if strings.Contains(joined, ",hand_over,") {
 				t.Errorf("hand_over must be gone: %v", names)
@@ -366,7 +367,7 @@ func TestAssistantV2ChatModeOffersNoImageOrSiteTools(t *testing.T) {
 	fixture := newV2Fixture(t, "画一只猫")
 	v2ModeRun(t, fixture, "chat")
 	upstream := &fakeUpstream{script: func(index int, body map[string]any) string {
-		names := "," + v2ToolNames(body) + ","
+		names := "," + v2OfferedToolNames(body) + ","
 		for _, banned := range []string{"propose_image_action", "media_action", "send_to_workspace", "delivery_export", "commerce_set_plan"} {
 			if strings.Contains(names, ","+banned+",") {
 				t.Errorf("问答 mode offered %s: %s", banned, names)

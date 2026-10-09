@@ -92,7 +92,7 @@ const CommercePrompt = `
 本轮可以直接为用户生成电商商品套图（主图 + 详情页），出图会花用户的积分：
 - 先调用 commerce_set_plan 出方案：根据用户的平台、语言、风格和想要的图选择出图类型与张数；用户没说清楚时用默认组合，不要反问。卖点、参数只用用户提供的，不要编造。
 - 方案返回后，用一两句话说明这套图包含什么、预计多少积分（数字取自工具结果的 quotedCents）。
-- 只有方案的 autoApprovable 为 true 时才直接调用 commerce_set_generate；否则告诉用户“确认后开始出图”，由用户在方案卡片上确认，不要自己调用。
+- 方案在自动授权预算内时，commerce_set_plan 会直接开始生成（结果里 started 为 true），不要再调用 commerce_set_generate。否则告诉用户“确认后开始出图”，由用户在方案卡片上确认，不要自己调用。用户明确说先只看方案时传 planOnly=true。
 - 生成开始后告诉用户可以在卡片上看每张图的进度，出完会自动检查，不合格的可以一键重做；不要承诺具体完成时间。
 - 套图出好后，用户要在现有成片上统一改某一处、其余效果保持（“瓶子去掉 logo 再做这 5 张”“把瓶盖都换成金色”）时，用 commerce_set_edit：每张以当前成片为底图只改这一处。用户对某几张不满意、要重新设计时才用 commerce_set_redo。两者规则同上；询问进度时用 commerce_set_status。
 - 套图卡片上只有这些按钮：确认生成、单张“重做”、下载、预览详情页、存为满意方案。不要让用户去卡片上找别的按钮；需要整套修改时自己调用工具。
@@ -115,24 +115,34 @@ const CompetitorLinkPrompt = `
 // With memory off it only says so: nothing is recalled and no memory tool is
 // offered.
 func MemoryPrompt(enabled bool, block string) string {
+	return MemoryRules(enabled) + MemoryBlock(enabled, block)
+}
+
+// MemoryRules is the part of MemoryPrompt that is the same on every turn.
+func MemoryRules(enabled bool) string {
 	if !enabled {
 		return "\n\n用户关闭了助手记忆：本轮不能记住、查看或使用任何长期记忆。用户要你记住什么时，告诉他可以在左侧“记忆”里重新开启。"
 	}
-	var builder strings.Builder
-	builder.WriteString(`
+	return `
 
 记忆：
 - 用户明确要你记住某事（“记住…”“以后都…”），或说出明显长期有效的信息（品牌名、品牌色、常用平台、不喜欢的风格）时，调用 memory_save；一次性的要求不要存。存之前不需要再问用户。
 - 用户说“改一下 / 不对”时用 memory_update，说“忘掉 / 别再用”时用 memory_forget；改和删都要用记忆的 id。
 - 用户问“你记得我什么”时，按类型简要列出；需要商品或满意方案的完整内容时用 memory_search。
 - 回答和策划时主动用上记忆（例如按品牌色和常用平台出方案）。用上了哪条，就在回答里点明一次，例如“按你记下的品牌色雾霾蓝……”，让用户知道记忆在起作用。记忆和本轮要求冲突时以本轮为准。
-- 用户可以在左侧“记忆”里查看、修改和删除全部记忆。`)
-	if block != "" {
-		builder.WriteString("\n\n" + block)
-	} else {
-		builder.WriteString("\n\n目前还没有记住任何关于这位用户的信息。")
+- 用户可以在左侧“记忆”里查看、修改和删除全部记忆。`
+}
+
+// MemoryBlock is what is remembered about this user, which changes as
+// memories are saved.
+func MemoryBlock(enabled bool, block string) string {
+	if !enabled {
+		return ""
 	}
-	return builder.String()
+	if block != "" {
+		return "\n\n" + block
+	}
+	return "\n\n目前还没有记住任何关于这位用户的信息。"
 }
 
 // ChatOnlyPrompt is added in 问答 mode, which only answers: the agent gets

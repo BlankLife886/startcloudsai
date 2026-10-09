@@ -168,8 +168,9 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 			competitorAnalyzeDefinition(service, turn),
 			{
 				Name: ToolCommerceSetPlan,
-				Description: "根据用户上传的商品图策划一套电商图：选出图类型和张数、策划每张的标题文案与构图，并报价（预计积分）。只出方案，不花积分。" +
-					"不确定时 shots 留空，使用默认组合（白底图、场景主图、首屏、卖点、场景、工艺、参数）。一套最多 18 张，同一类型最多 4 张。" + commerceTypeCatalogText(),
+				Description: "根据用户上传的商品图策划一套电商图：选出图类型和张数、策划每张的标题文案与构图，并报价（预计积分）。" +
+					"方案在用户的自动授权预算内时会直接开始生成（返回 started=true），不需要再调用 commerce_set_generate；否则只出方案，由用户在卡片上确认。" +
+					"用户明确说先只看方案、暂不出图时传 planOnly=true。不确定时 shots 留空，使用默认组合（白底图、场景主图、首屏、卖点、场景、工艺、参数）。一套最多 18 张，同一类型最多 4 张。" + commerceTypeCatalogText(),
 				InputSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -195,12 +196,15 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 						"mainRatio":   map[string]any{"type": "string", "enum": ratioEnum(), "description": "主图画幅，默认 1:1"},
 						"detailRatio": map[string]any{"type": "string", "enum": ratioEnum(), "description": "详情页画幅，默认 3:4"},
 						"competitorRefId": map[string]any{"type": "string", "description": "照着竞品做时传 competitor_analyze 返回的 competitorRefId；此时 shots 留空即沿用竞品的图片顺序"},
+						"planOnly":        map[string]any{"type": "boolean", "description": "用户明确只要方案、暂不出图时为 true"},
 					},
 					"additionalProperties": false,
 				},
-				Permissions:    []Permission{PermissionCommerceSets},
-				Risk:           RiskRead,
-				Level:          LevelRead,
+				Permissions: []Permission{PermissionCommerceSets},
+				// 在自动授权预算内会直接开始生成，所以和 commerce_set_generate 同级：
+				// 花费仍由 spend 在扣费事务里按预算校验。
+				Risk:           RiskWrite,
+				Level:          LevelSpend,
 				Timeout:        120 * time.Second,
 				MaxResultBytes: 64 << 10,
 				Execute: func(ctx context.Context, invocation Invocation) (Result, error) {
@@ -208,6 +212,10 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 					if err := json.Unmarshal(invocation.Arguments, &brief); err != nil {
 						return Result{}, errors.New("套图参数格式不正确")
 					}
+					var options struct {
+						PlanOnly bool `json:"planOnly"`
+					}
+					_ = json.Unmarshal(invocation.Arguments, &options)
 					in := commerceset.PlanInput{
 						UserID: invocation.UserID, ConversationID: turn.ConversationID, RunID: turn.RunID,
 						InputKeys: turn.InputKeys, Brief: brief, Copy: turn.Copy,
@@ -222,6 +230,11 @@ func NewCommerceSetManifest(service commerceset.Service, turn CommerceSetContext
 					current, err := service.BuildView(ctx, set)
 					if err != nil {
 						return Result{}, err
+					}
+					// 预算内就直接开工：以前要再请求一次模型让它调 commerce_set_generate，
+					// 那一次只是说“开始”，却要把整段上下文重发一遍。
+					if current.AutoApprovable && !options.PlanOnly {
+						return spend(ctx, invocation, set.ID, commerceset.GenerateInput{})
 					}
 					return commerceObservation(current, nil)
 				},

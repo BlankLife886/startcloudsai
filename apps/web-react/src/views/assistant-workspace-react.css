@@ -1118,10 +1118,11 @@
   box-sizing: border-box;
   width: 100%;
   max-width: none;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
+  gap: 12px;
   margin: 0;
-  padding: 10px var(--assistant-stage-gutter);
+  padding: 10px clamp(16px, 2vw, 28px);
   border: 0;
   background: transparent;
   backdrop-filter: none;
@@ -1135,11 +1136,83 @@
   padding-left: 0;
 }
 
-.assistant-workspace .topbar-filters {
+/* 顶栏三段：左搜索，中间“清除上文”，右侧资产库 / 已归档 / 记忆与提醒。 */
+.assistant-workspace .topbar-center {
+  display: flex;
+  justify-content: center;
+}
+
+.assistant-workspace .topbar-tools {
   display: inline-flex;
   min-width: 0;
   align-items: center;
   justify-self: end;
+  gap: 2px;
+}
+
+.assistant-workspace .topbar-tools > button {
+  position: relative;
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--assistant-text-soft);
+  background: transparent;
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease;
+}
+
+.assistant-workspace .topbar-tools > button:hover,
+.assistant-workspace .topbar-tools > button.is-active {
+  color: var(--assistant-text);
+  background: var(--assistant-panel-hover);
+}
+
+.assistant-workspace .topbar-tools-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  color: var(--assistant-muted);
+  background: color-mix(in srgb, var(--assistant-border-strong) 35%, transparent);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 新对话（空状态）没有顶栏这一行：工具浮在右上角，不改变空状态布局。 */
+.assistant-workspace .assistant-topbar.is-floating {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: auto;
+  width: auto;
+  grid-template-columns: auto;
+  padding: 10px 16px;
+  background: transparent;
+}
+
+.assistant-workspace .assistant-topbar.is-floating > .topbar-title,
+.assistant-workspace .assistant-topbar.is-floating > .topbar-center {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .assistant-workspace .topbar-tools > button > span:not(.topbar-tools-count) {
+    display: none;
+  }
+}
+
+.assistant-workspace .topbar-filters {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-self: center;
   gap: 2px;
   padding: 4px;
   border: 1px solid transparent;
@@ -1217,7 +1290,7 @@
   }
 }
 
-.assistant-workspace:not(.is-dark) .assistant-topbar {
+.assistant-workspace:not(.is-dark) .assistant-topbar:not(.is-floating) {
   background: #fff;
   background-image: none;
   backdrop-filter: none;

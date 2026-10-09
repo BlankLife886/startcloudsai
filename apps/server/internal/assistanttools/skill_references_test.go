@@ -59,3 +59,27 @@ func TestSkillReferencePromptListsFilesWithPurpose(t *testing.T) {
 		t.Fatal("no sources should add nothing")
 	}
 }
+
+// 多份资料一次读：每多一次调用就要把整段上下文重发一遍。
+func TestReadSkillReferencePathsAreCheckedTogether(t *testing.T) {
+	registry, err := NewRegistry(NewSkillReferenceManifest(nil, referenceSources()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	execute := func(args map[string]any) error {
+		raw, _ := json.Marshal(args)
+		_, err := registry.Execute(context.Background(), ToolReadSkillReference, Invocation{Arguments: raw, Permissions: map[Permission]bool{}})
+		return err
+	}
+	// One unlisted path rejects the whole read before the store is touched.
+	if err := execute(map[string]any{"skill": "material-illustration", "paths": []string{"references/visual-style.md", "references/secret.md"}}); err == nil || !strings.Contains(err.Error(), "secret.md") {
+		t.Fatalf("err = %v", err)
+	}
+	if err := execute(map[string]any{"skill": "material-illustration", "paths": []string{}}); err == nil {
+		t.Fatal("empty paths should be rejected")
+	}
+	in := readSkillReferenceInput{Path: "a.md", Paths: []string{"b.md", "a.md", " "}}
+	if got := strings.Join(in.paths(), ","); got != "a.md,b.md" {
+		t.Fatalf("paths = %s", got)
+	}
+}

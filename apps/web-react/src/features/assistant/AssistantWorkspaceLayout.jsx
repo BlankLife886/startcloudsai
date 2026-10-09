@@ -234,6 +234,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
     historyGroups,
     historyHasMore,
     railConversations,
+    inboxConversation,
     searchResults,
     searchGroups,
     assetLibraryImages,
@@ -414,19 +415,12 @@ export function AssistantWorkspaceLayout({ workspace }) {
             <LineIcon name="compose" size={20} />
             <span>新对话</span>
           </button>
-          <button className={`sidebar-nav-item${assetLibraryOpen ? " is-active" : ""}`} type="button" data-assistant-tour="assets" onClick={() => setAssetLibraryOpen((value) => !value)}>
-            <LineIcon name="assets" size={20} />
-            <span>资产库</span>
-          </button>
-          <button className={`sidebar-nav-item${archivedOpen ? " is-active" : ""}`} type="button" onClick={() => void openArchived()}>
-            <LineIcon name="archive" size={20} />
-            <span>已归档</span>
-            {conversationQuota?.archived ? <span className="sidebar-nav-count">{conversationQuota.archived}</span> : null}
-          </button>
-          <button className={`sidebar-nav-item${memoryOpen ? " is-active" : ""}`} type="button" onClick={() => { setMemoryTab("memory"); setMemoryOpen(true); }}>
-            <LineIcon name="memory" size={20} />
-            <span>记忆与提醒</span>
-          </button>
+          {inboxConversation ? (
+            <button className={`sidebar-nav-item sidebar-nav-inbox${inboxConversation.id === activeId ? " is-active" : ""}`} type="button" title="异常提醒和定时报告发到这里，不占对话数" onClick={() => selectConversation(inboxConversation.id)}>
+              <LineIcon name="bell" size={20} />
+              <span>助手提醒</span>
+            </button>
+          ) : null}
         </nav>
         <div className="sidebar-history" data-assistant-tour="history">
           <button className={`sidebar-history-toggle${historyOpen ? " is-open" : ""}`} type="button" aria-expanded={historyOpen} onClick={() => { setHistoryOpen((value) => !value); setConversationMenuId(""); }}>
@@ -490,10 +484,8 @@ export function AssistantWorkspaceLayout({ workspace }) {
           {[
             { key: "search", label: "搜索", icon: "search", onClick: () => setSearchOpen(true) },
             { key: "new", label: "新对话", icon: "compose", active: !activeId, tour: "new-chat", onClick: newConversation },
-            { key: "assets", label: "资产库", icon: "assets", active: assetLibraryOpen, tour: "assets", onClick: () => setAssetLibraryOpen((value) => !value) },
-            { key: "archive", label: "已归档", icon: "archive", active: archivedOpen, badge: conversationQuota?.archived || 0, onClick: () => void openArchived() },
-            { key: "memory", label: "记忆与提醒", icon: "memory", active: memoryOpen, onClick: () => { setMemoryTab("memory"); setMemoryOpen(true); } },
-          ].map((entry) => (
+            inboxConversation ? { key: "inbox", label: "助手提醒", icon: "bell", active: inboxConversation.id === activeId, onClick: () => selectConversation(inboxConversation.id) } : null,
+          ].filter(Boolean).map((entry) => (
             <button key={entry.key} className={`assistant-rail-new${entry.active ? " is-active" : ""}`} type="button" aria-label={entry.label} data-assistant-tour={entry.tour}
               onClick={() => { hideRailTip(); entry.onClick(); }} onMouseEnter={(event) => showRailTip(event, entry.label, entry.badge ? `${entry.badge}` : "")} onMouseLeave={hideRailTip}>
               <LineIcon name={entry.icon} size={20} />
@@ -537,7 +529,22 @@ export function AssistantWorkspaceLayout({ workspace }) {
 
       <main className={`assistant-main${messages.length ? "" : " is-empty"}`}>
         <div className="assistant-ambient-stage" aria-hidden="true"><i className="ambient-blob is-a" /><i className="ambient-blob is-b" /><i className="ambient-blob is-c" /></div>
-        {messages.length > 0 && <header className="assistant-topbar"><div className="topbar-title"><label className="thread-search"><i className="bi bi-search" /><input name="assistant-thread-search" value={threadSearch} type="text" placeholder="搜索对话历史" aria-label="搜索对话历史" autoComplete="off" onChange={(event) => { setThreadSearch(event.target.value); setThreadHitIndex(-1); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setThreadSearch(""); setThreadHitIndex(-1); return; } if (event.key !== "Enter" || event.nativeEvent.isComposing) return; event.preventDefault(); jumpToThreadHit(event.shiftKey ? -1 : 1); }} />{threadSearch.trim() ? <span className="thread-search-count" aria-live="polite">{threadSearchHits.length ? (threadHitIndex >= 0 ? `${threadHitIndex + 1}/${threadSearchHits.length}` : `${threadSearchHits.length} 条`) : "无结果"}</span> : null}{threadSearch.trim() ? <button type="button" title="上一条" aria-label="上一条匹配" disabled={!threadSearchHits.length} onClick={() => jumpToThreadHit(-1)}><i className="bi bi-chevron-up" /></button> : null}{threadSearch.trim() ? <button type="button" title="下一条" aria-label="下一条匹配" disabled={!threadSearchHits.length} onClick={() => jumpToThreadHit(1)}><i className="bi bi-chevron-down" /></button> : null}{threadSearch ? <button type="button" title="清空搜索" aria-label="清空搜索" onClick={() => { setThreadSearch(""); setThreadHitIndex(-1); }}><i className="bi bi-x" /></button> : null}</label></div><div className="topbar-filters"><button type="button" className="topbar-context-clear" data-assistant-tour="clear-context" title={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : `${assistantContextMeterTitle(latestContext)}。清除上文并保留可见历史`} aria-label={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} disabled={conversationHasWork || messages.at(-1)?.kind === "context-divider"} onClick={() => void clearConversationContext()}><AssistantContextMeter context={latestContext} /><span>清除上文</span></button></div></header>}
+        <header className={`assistant-topbar${messages.length ? "" : " is-floating"}`}>
+          <div className="topbar-title">{messages.length > 0 ? <label className="thread-search"><i className="bi bi-search" /><input name="assistant-thread-search" value={threadSearch} type="text" placeholder="搜索对话历史" aria-label="搜索对话历史" autoComplete="off" onChange={(event) => { setThreadSearch(event.target.value); setThreadHitIndex(-1); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setThreadSearch(""); setThreadHitIndex(-1); return; } if (event.key !== "Enter" || event.nativeEvent.isComposing) return; event.preventDefault(); jumpToThreadHit(event.shiftKey ? -1 : 1); }} />{threadSearch.trim() ? <span className="thread-search-count" aria-live="polite">{threadSearchHits.length ? (threadHitIndex >= 0 ? `${threadHitIndex + 1}/${threadSearchHits.length}` : `${threadSearchHits.length} 条`) : "无结果"}</span> : null}{threadSearch.trim() ? <button type="button" title="上一条" aria-label="上一条匹配" disabled={!threadSearchHits.length} onClick={() => jumpToThreadHit(-1)}><i className="bi bi-chevron-up" /></button> : null}{threadSearch.trim() ? <button type="button" title="下一条" aria-label="下一条匹配" disabled={!threadSearchHits.length} onClick={() => jumpToThreadHit(1)}><i className="bi bi-chevron-down" /></button> : null}{threadSearch ? <button type="button" title="清空搜索" aria-label="清空搜索" onClick={() => { setThreadSearch(""); setThreadHitIndex(-1); }}><i className="bi bi-x" /></button> : null}</label> : null}</div>
+          <div className="topbar-center">{messages.length > 0 ? <div className="topbar-filters"><button type="button" className="topbar-context-clear" data-assistant-tour="clear-context" title={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : `${assistantContextMeterTitle(latestContext)}。清除上文并保留可见历史`} aria-label={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} disabled={conversationHasWork || messages.at(-1)?.kind === "context-divider"} onClick={() => void clearConversationContext()}><AssistantContextMeter context={latestContext} /><span>清除上文</span></button></div> : null}</div>
+          <nav className="topbar-tools" aria-label="助手工具">
+            <button className={assetLibraryOpen ? "is-active" : ""} type="button" data-assistant-tour="assets" onClick={() => setAssetLibraryOpen((value) => !value)}>
+              <LineIcon name="assets" size={16} /><span>资产库</span>
+            </button>
+            <button className={archivedOpen ? "is-active" : ""} type="button" onClick={() => void openArchived()}>
+              <LineIcon name="archive" size={16} /><span>已归档</span>
+              {conversationQuota?.archived ? <span className="topbar-tools-count">{conversationQuota.archived}</span> : null}
+            </button>
+            <button className={memoryOpen ? "is-active" : ""} type="button" onClick={() => { setMemoryTab("memory"); setMemoryOpen(true); }}>
+              <LineIcon name="memory" size={16} /><span>记忆与提醒</span>
+            </button>
+          </nav>
+        </header>
         <div ref={messageScrollerRef} className="assistant-messages" onScroll={handleMessageScroll}>
           {loading || (activeConversation?.messagesDeferred && !messages.length) ? <section className="assistant-thread-skeleton" aria-label="正在加载"><div className="sk-bubble is-user"><i style={{ width: "46%" }} /></div><div className="sk-bubble"><i style={{ width: "82%" }} /><i style={{ width: "64%" }} /></div><div className="sk-bubble is-user"><i style={{ width: "30%" }} /></div><div className="sk-bubble"><i style={{ width: "74%" }} /><i style={{ width: "40%" }} /></div></section> : messages.length === 0 ? <AssistantEmptyState creation={selectedCreation} editableFilesEnabled={editableFilesEnabled} onPick={(text) => { setDraft(text); textareaRef.current?.focus(); }} onOpenConversation={selectConversation} onUseAgent={() => setCreationType("agent")} /> : <section className="message-thread" aria-live="polite">{(hiddenMessageCount > 0 || activeConversation?.hasMoreMessages) && <button className="load-earlier-messages" type="button" disabled={loadingEarlierRef.current} onClick={() => { if (hiddenMessageCount > 0) { const scroller = messageScrollerRef.current; if (scroller) { scroller.scrollTop = 0; handleMessageScroll(); } } else { void loadEarlierMessages(); } }}><i className="bi bi-clock-history" /><span>{hiddenMessageCount > 0 ? `加载更早的对话（${hiddenMessageCount}）` : "从服务器加载更早对话"}</span></button>}<div className="message-turns">{renderedMessages.map((message, offset) => {
             const originalIndex = firstRenderedMessageIndex + offset;

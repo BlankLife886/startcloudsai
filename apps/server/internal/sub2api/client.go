@@ -122,8 +122,11 @@ type ChatUsage struct {
 	CompletionTokens int64
 	TotalTokens      int64
 	ReasoningTokens  int64
-	FirstTokenMs     int64
-	DurationMs       int64
+	// CachedTokens 是 PromptTokens 里命中上游提示词缓存的部分（按折扣计费），
+	// 用来确认缓存是否真的生效。
+	CachedTokens int64
+	FirstTokenMs int64
+	DurationMs   int64
 }
 
 func (u ChatUsage) Add(other ChatUsage) ChatUsage {
@@ -132,6 +135,7 @@ func (u ChatUsage) Add(other ChatUsage) ChatUsage {
 		CompletionTokens: u.CompletionTokens + other.CompletionTokens,
 		TotalTokens:      u.TotalTokens + other.TotalTokens,
 		ReasoningTokens:  u.ReasoningTokens + other.ReasoningTokens,
+		CachedTokens:     u.CachedTokens + other.CachedTokens,
 		DurationMs:       u.DurationMs + other.DurationMs,
 	}
 	if u.FirstTokenMs > 0 {
@@ -155,6 +159,9 @@ func (u ChatUsage) Map() map[string]any {
 	}
 	if u.ReasoningTokens > 0 {
 		out["reasoningTokens"] = u.ReasoningTokens
+	}
+	if u.CachedTokens > 0 {
+		out["cachedInputTokens"] = u.CachedTokens
 	}
 	if u.FirstTokenMs > 0 {
 		out["firstTokenMs"] = u.FirstTokenMs
@@ -841,11 +848,12 @@ func (c *Client) chatTextWithImages(ctx context.Context, messages []Message, ima
 			}
 			completed = true
 		}
-		if usage := streamUsage(payload); usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0 || usage.ReasoningTokens > 0 {
+		if usage := streamUsage(payload); usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0 || usage.ReasoningTokens > 0 || usage.CachedTokens > 0 {
 			result.Usage.PromptTokens = usage.PromptTokens
 			result.Usage.CompletionTokens = usage.CompletionTokens
 			result.Usage.TotalTokens = usage.TotalTokens
 			result.Usage.ReasoningTokens = usage.ReasoningTokens
+			result.Usage.CachedTokens = usage.CachedTokens
 		}
 		changed := false
 		for _, fragment := range streamTextFragments(payload) {
@@ -1029,11 +1037,12 @@ func (c *Client) chatAgentWithPayload(
 			}
 			completed = true
 		}
-		if usage := streamUsage(event); usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0 || usage.ReasoningTokens > 0 {
+		if usage := streamUsage(event); usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0 || usage.ReasoningTokens > 0 || usage.CachedTokens > 0 {
 			result.Usage.PromptTokens = usage.PromptTokens
 			result.Usage.CompletionTokens = usage.CompletionTokens
 			result.Usage.TotalTokens = usage.TotalTokens
 			result.Usage.ReasoningTokens = usage.ReasoningTokens
+			result.Usage.CachedTokens = usage.CachedTokens
 			result.ReasoningTokens = usage.ReasoningTokens
 		}
 		changed := false
@@ -1305,6 +1314,15 @@ func streamUsage(payload map[string]any) ChatUsage {
 	}
 	details, _ := raw["completion_tokens_details"].(map[string]any)
 	usage.ReasoningTokens = jsonInt64(details, "reasoning_tokens", "reasoningTokens")
+	// 各家把缓存命中放在不同位置：OpenAI Chat 在 prompt_tokens_details，Responses 在
+	// input_tokens_details，Anthropic 风格的中转直接给 cache_read_input_tokens。
+	promptDetails, _ := raw["prompt_tokens_details"].(map[string]any)
+	inputDetails, _ := raw["input_tokens_details"].(map[string]any)
+	usage.CachedTokens = max(
+		jsonInt64(promptDetails, "cached_tokens", "cachedTokens"),
+		jsonInt64(inputDetails, "cached_tokens", "cachedTokens"),
+		jsonInt64(raw, "cache_read_input_tokens", "cached_tokens", "cachedTokens", "cachedContentTokenCount"),
+	)
 	if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}

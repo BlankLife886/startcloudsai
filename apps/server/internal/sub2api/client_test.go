@@ -1256,3 +1256,23 @@ func TestChatWithoutRetrySendsOneRequestOnTransientFailure(t *testing.T) {
 		t.Fatalf("WithoutRetry: err=%v requests=%d, want exactly 1", err, requests)
 	}
 }
+
+func TestStreamUsageReadsCachedTokens(t *testing.T) {
+	cases := []map[string]any{
+		{"usage": map[string]any{"prompt_tokens": 1000.0, "prompt_tokens_details": map[string]any{"cached_tokens": 800.0}}},
+		{"usage": map[string]any{"input_tokens": 1000.0, "input_tokens_details": map[string]any{"cached_tokens": 800.0}}},
+		{"usage": map[string]any{"prompt_tokens": 1000.0, "cache_read_input_tokens": 800.0}},
+	}
+	for index, payload := range cases {
+		usage := streamUsage(payload)
+		if usage.PromptTokens != 1000 || usage.CachedTokens != 800 {
+			t.Fatalf("case %d: usage = %+v", index, usage)
+		}
+		if got := usage.Map()["cachedInputTokens"]; got != int64(800) {
+			t.Fatalf("case %d: map cachedInputTokens = %v", index, got)
+		}
+	}
+	if total := (ChatUsage{CachedTokens: 3}).Add(ChatUsage{CachedTokens: 4}); total.CachedTokens != 7 {
+		t.Fatalf("Add cached = %d", total.CachedTokens)
+	}
+}
