@@ -25,7 +25,7 @@ import {
   COMMERCE_ENTRY_GROUPS,
   ecomToolCover,
 } from "@react/legacy-modules/features/creator-hub/studioTools.js";
-import { displayNotification, notificationHref } from "../utils/notificationDisplay.js";
+import { notificationHref } from "../utils/notificationDisplay.js";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
 import { REFERRALS_ENABLED } from "../config/referrals.js";
 import { useLiveAnnouncements } from "../features/announcements/useLiveAnnouncements.js";
@@ -38,6 +38,8 @@ import {
   useNotificationSound,
 } from "../features/inbox/notificationAlert.js";
 import { NotificationToast } from "./NotificationToast.jsx";
+import { NavNotificationStack } from "./NavNotificationStack.jsx";
+import { NavDrawer } from "./NavDrawer.jsx";
 import { BellGlyph3D, MegaphoneGlyph3D, TicketGlyph3D } from "./NavGlyph3D.jsx";
 import "@react/legacy-styles/generated/components/layout/NavBar.css";
 import "@react/legacy-styles/generated/components/layout/NavNotificationsMenu.css";
@@ -627,6 +629,8 @@ export function NavBar() {
     const onPointerDown = (event) => {
       const target = event.target;
       const root = rootRef.current;
+      // 窄屏侧边栏挂在 body 上，点它不算点到顶栏外面
+      if (target instanceof Element && target.closest(".nav-drawer-root")) return;
       if (!root?.contains(target)) {
         setActiveDropdown("");
         setMobileOpen(false);
@@ -645,6 +649,15 @@ export function NavBar() {
       document.removeEventListener("pointerdown", onPointerDown);
     };
   }, []);
+
+  useEffect(() => {
+    if (!mobileOpen) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setMobileOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [mobileOpen]);
 
   useEffect(() => {
     setActiveDropdown("");
@@ -723,13 +736,8 @@ export function NavBar() {
           );
       };
 
-      if (mobileLayout && mobileOpen) {
-        reveal(
-          root.querySelector("#primary-navigation"),
-          ":scope > .nav-link, .commerce-menu-card, .nav-bento-card, .nav-dropdown-item",
-          { y: -10, scale: 0.99, duration: 0.34, itemY: 6, itemStart: 0.09 },
-        );
-      } else if (!mobileLayout && activeDropdown) {
+      // 窄屏侧边栏（NavDrawer）由 CSS 过渡推入，这里只管桌面下拉
+      if (!mobileLayout && activeDropdown) {
         const panel = root.querySelector(
           `[data-dropdown-menu="${activeDropdown}"]`,
         );
@@ -767,7 +775,7 @@ export function NavBar() {
       if (notificationOpen) {
         reveal(
           root.querySelector(".nav-notify__panel"),
-          ".nav-notify__head, .nav-notify__list > li, .nav-notify__empty, .nav-notify__foot",
+          ".nav-notify__head, .nav-notify__list > li, .nav-notify__empty, .nav-notify__loading, .nav-notify__foot",
           {
             y: -6,
             scale: 0.99,
@@ -1480,11 +1488,6 @@ export function NavBar() {
                 </div>
               ),
             )}
-            <div className="nav-mobile-prefs">
-              <span>外观与语言</span>
-              <ThemeSwitch />
-              <LocaleSwitcher />
-            </div>
           </nav>
 
           <div className="header-tools">
@@ -1581,32 +1584,13 @@ export function NavBar() {
                       >
                         <header className="nav-notify__head">
                           <div>
-                            <strong>最近通知</strong>
+                            <strong>通知</strong>
                             <small>
                               {notificationUnread
                                 ? `${notificationUnread} 条未读`
-                                : "消息已全部读完"}
+                                : "已全部读完"}
                             </small>
                           </div>
-                          <button
-                            type="button"
-                            className="nav-notify__sound"
-                            aria-pressed={notificationSoundOn}
-                            aria-label={notificationSoundOn ? "关闭新通知提示音" : "开启新通知提示音"}
-                            title={notificationSoundOn ? "提示音已开启" : "提示音已关闭"}
-                            onClick={() => setNotificationSound(!notificationSoundOn)}
-                          >
-                            <i className={`bi ${notificationSoundOn ? "bi-volume-up" : "bi-volume-mute"}`} aria-hidden="true" />
-                          </button>
-                          <Link
-                            to="/account#notification-preferences"
-                            className="nav-notify__sound"
-                            aria-label="提醒设置"
-                            title="提醒设置"
-                            onClick={closeMenu}
-                          >
-                            <i className="bi bi-gear" aria-hidden="true" />
-                          </Link>
                           <button
                             type="button"
                             className="nav-notify__read-all"
@@ -1617,64 +1601,50 @@ export function NavBar() {
                             }
                             onClick={markAllNotificationsRead}
                           >
-                            <i
-                              className={`bi ${notificationMarking ? "bi-arrow-repeat spin" : "bi-check2-all"}`}
-                              aria-hidden="true"
-                            />
-                            <span>{notificationMarking ? "处理中" : "全部已读"}</span>
+                            {notificationMarking ? "处理中…" : "全部已读"}
                           </button>
                         </header>
                         {notificationLoading ? (
                           <div className="nav-notify__loading">
-                            <i className="bi bi-arrow-repeat spin" />
                             <span>正在读取通知…</span>
                           </div>
                         ) : notificationItems.length ? (
-                          <ol className="nav-notify__list">
-                            {notificationItems.map((item) => {
-                              const { title, body } = displayNotification(item);
-                              return (
-                                <li
-                                  key={item.id}
-                                  className={item.readAt ? "" : "is-unread"}
-                                >
-                                  <Link
-                                    className="nav-notify__item"
-                                    to={notificationLinkOf(item)}
-                                    onClick={() => {
-                                      closeMenu();
-                                      openNotificationPreview(item);
-                                    }}
-                                  >
-                                    <span className="nav-notify__copy">
-                                      <strong>{title}</strong>
-                                      {body ? <p>{body}</p> : null}
-                                    </span>
-                                    <span className="nav-notify__meta">
-                                      <small>
-                                        {notificationTime(item.createdAt)}
-                                      </small>
-                                      {!item.readAt && (
-                                        <i
-                                          className="nav-notify__dot"
-                                          aria-label="未读"
-                                        />
-                                      )}
-                                    </span>
-                                  </Link>
-                                </li>
-                              );
-                            })}
-                          </ol>
+                          <NavNotificationStack
+                            items={notificationItems}
+                            linkOf={notificationLinkOf}
+                            formatTime={notificationTime}
+                            onOpen={(item) => {
+                              closeMenu();
+                              openNotificationPreview(item);
+                            }}
+                          />
                         ) : (
                           <div className="nav-notify__empty">
-                            <i className="bi bi-bell-slash" />
-                            <span>暂无通知</span>
+                            <strong>暂无通知</strong>
+                            <span>任务完成、积分变动和审核结果会出现在这里</span>
                           </div>
                         )}
                         <footer className="nav-notify__foot">
-                          <Link to="/notifications" onClick={closeMenu}>
-                            查看全部通知 <i className="bi bi-arrow-right" />
+                          <button
+                            type="button"
+                            className="nav-notify__sound"
+                            aria-pressed={notificationSoundOn}
+                            aria-label={notificationSoundOn ? "关闭新通知提示音" : "开启新通知提示音"}
+                            onClick={() => setNotificationSound(!notificationSoundOn)}
+                          >
+                            提示音
+                            <span className="nav-notify__switch" aria-hidden="true" />
+                          </button>
+                          <Link
+                            to="/account#notification-preferences"
+                            className="nav-notify__foot-link"
+                            aria-label="提醒设置"
+                            onClick={closeMenu}
+                          >
+                            设置
+                          </Link>
+                          <Link to="/notifications" className="nav-notify__all" onClick={closeMenu}>
+                            查看全部
                           </Link>
                         </footer>
                       </aside>
@@ -1907,6 +1877,15 @@ export function NavBar() {
         isDark={isDark}
         onClose={() => !loggingOut && setLogoutOpen(false)}
         onConfirm={confirmLogout}
+      />
+      <NavDrawer
+        open={mobileOpen}
+        onClose={closeMenu}
+        isDark={isDark}
+        items={visibleNavItems}
+        isActive={isActive}
+        isPending={isPending}
+        onNavigate={openNavLink}
       />
     </header>
   );

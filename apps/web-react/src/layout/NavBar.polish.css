@@ -107,137 +107,10 @@
   animation: nav-preview-fade 180ms ease-out both;
 }
 
-/* 移动端面板里的外观与语言（顶栏这两个按钮在窄屏会隐藏） */
-.nav-mobile-prefs {
-  display: none;
-}
-
+/* 窄屏（≤1180）主导航改由 NavDrawer 侧边栏承载，顶栏里的横排菜单不再展开 */
 @media (max-width: 1180px) {
-  /* 窄屏菜单按分组展示：首页等一级入口在上，AI 电商 / 图片设计 / 工具各自成组带标题 */
-  .site-header .main-nav > .nav-dropdown {
-    grid-column: 1 / -1;
-    display: grid !important;
-    grid-template-columns: repeat(var(--nav-mobile-cols, 4), minmax(0, 1fr));
-    gap: 6px;
-    margin-top: 6px;
-  }
-  .site-header .main-nav > .nav-dropdown > .nav-dropdown-trigger {
-    grid-column: 1 / -1;
-    display: flex !important;
-    justify-content: flex-start;
-    padding: 0;
-    background: none;
-    min-height: 26px;
-    pointer-events: none;
-  }
-  .site-header .main-nav > .nav-dropdown .nav-dropdown-label {
-    width: auto;
-    min-height: 26px;
-    padding: 0 2px;
-    color: var(--nav-muted) !important;
-    background: none !important;
-    font-size: 0.74rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-  }
-  .site-header .main-nav > .nav-dropdown .nav-dropdown-label > i.bi:first-child {
-    display: none;
-  }
-  .site-header .main-nav > .nav-dropdown .nav-dropdown-label .nav-caret,
-  .site-header .main-nav > .nav-dropdown .nav-dropdown-label::after {
+  .site-header .header-row .main-nav {
     display: none !important;
-  }
-  .site-header .main-nav > .nav-dropdown .nav-dropdown-chevron-btn {
-    display: none !important;
-  }
-  .site-header .main-nav :is(.commerce-menu-card, .nav-bento-card, .nav-dropdown-item) {
-    display: flex !important;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 9px;
-    color: var(--nav-text) !important;
-    font-size: 0.82rem;
-    font-weight: 600;
-  }
-  .site-header .main-nav .commerce-menu-card__icon {
-    display: inline-grid !important;
-    place-items: center;
-    flex: 0 0 auto;
-    width: auto;
-    height: auto;
-    color: var(--nav-accent);
-    background: none;
-    border: 0;
-  }
-  .site-header .main-nav :is(.commerce-menu-card__copy, .nav-bento-card__copy) {
-    display: flex !important;
-    min-height: 0 !important;
-    padding: 0 !important;
-  }
-  .site-header .main-nav :is(.commerce-menu-card__copy, .nav-bento-card__copy) strong {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    color: inherit;
-    font-size: inherit;
-    font-weight: inherit;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .site-header .main-nav .nav-bento-card__copy strong i,
-  .site-header .main-nav .nav-dropdown-item > i {
-    display: inline-block;
-    width: auto;
-    height: auto;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    color: var(--nav-accent);
-    background: none;
-    font-size: 0.95rem;
-  }
-  .site-header .main-nav :is(.commerce-menu-card, .nav-bento-card, .nav-dropdown-item).active {
-    color: var(--nav-accent) !important;
-  }
-
-  .nav-mobile-prefs {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-top: 8px;
-    padding: 10px 4px 2px;
-    border-top: 1px solid var(--nav-line);
-    color: var(--nav-muted);
-    font-size: 0.78rem;
-  }
-  .nav-mobile-prefs > span {
-    margin-right: auto;
-  }
-  .site-header .nav-mobile-prefs :is(.nav-theme-switch, .nav-locale-switch) {
-    display: inline-block !important;
-  }
-  /* 一级入口排在前面，分组依次在后，外观与语言放最底 */
-  .site-header .main-nav > .nav-dropdown {
-    order: 1;
-  }
-  .site-header .main-nav > .nav-mobile-prefs {
-    order: 2;
-  }
-  .nav-mobile-prefs .locale-switcher__menu {
-    top: auto;
-    bottom: calc(100% + 8px);
-  }
-}
-@media (max-width: 900px) {
-  .site-header .main-nav > .nav-dropdown {
-    --nav-mobile-cols: 3;
-  }
-}
-@media (max-width: 700px) {
-  .site-header .main-nav > .nav-dropdown {
-    --nav-mobile-cols: 2;
   }
 }
 
@@ -1362,16 +1235,18 @@
 
 
 /*
- * 兑换 / 语言 / 公告 / 通知：果冻糖果风格，每个按钮用自己图标的颜色。
+ * 兑换 / 亮暗 / 语言 / 公告 / 通知：果冻糖果风格，每个按钮用自己图标的颜色。
  * 底座是按图标色调的浅色圆钮；悬停只让图标弹一下，按钮本身不位移，避免带动整条菜单栏。
  */
 .site-header .nav-redeem-btn { --jelly-deep: #a855f7; }
 .site-header .locale-switcher__trigger { --jelly-deep: #2563eb; }
 .site-header .nav-announce { --jelly-deep: #059669; }
 .site-header .nav-notify__btn { --jelly-deep: #7c3aed; }
+.site-header .theme-key { --jelly-deep: #f59e0b; }
+.site-header .theme-key.is-night { --jelly-deep: #6366f1; }
 
-.site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger),
-.site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger):hover,
+.site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger, .theme-key),
+.site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger, .theme-key):hover,
 .site-header .nav-announce.active,
 .site-header .nav-notify.open .nav-notify__btn,
 .site-header .locale-switcher.is-open .locale-switcher__trigger {
@@ -1386,13 +1261,13 @@
   transform: none;
   transition: transform 160ms ease, box-shadow 180ms ease;
 }
-.site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger):hover {
+.site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger, .theme-key):hover {
   box-shadow:
     0 8px 18px -5px var(--jelly-deep),
     inset 0 -3px 6px color-mix(in srgb, var(--jelly-deep) 50%, transparent),
     inset 0 2px 1px #ffffff;
 }
-.site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger):active {
+.site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger, .theme-key):active {
   transform: scale(0.9, 0.86);
 }
 .site-header .nav-redeem-btn__label {
@@ -1415,7 +1290,8 @@
   width: 26px;
   height: 26px;
 }
-.site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger):hover .nav-glyph3d {
+.site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger):hover .nav-glyph3d,
+.site-header .theme-key:hover .theme-key__cap {
   animation: nav-jelly 600ms ease;
 }
 @keyframes nav-jelly {
@@ -1449,8 +1325,8 @@
   box-sizing: border-box;
 }
 
-.site-header.is-dark :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger),
-.site-header.is-dark :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger):hover,
+.site-header.is-dark :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger, .theme-key),
+.site-header.is-dark :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger, .theme-key):hover,
 .site-header.is-dark .nav-announce.active,
 .site-header.is-dark .nav-notify.open .nav-notify__btn,
 .site-header.is-dark .locale-switcher.is-open .locale-switcher__trigger {
@@ -1472,8 +1348,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger),
-  .site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger) .nav-glyph3d {
+  .site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger, .theme-key),
+  .site-header :is(.nav-announce, .nav-notify__btn, .nav-redeem-btn, .locale-switcher__trigger) .nav-glyph3d,
+  .site-header .theme-key .theme-key__cap {
     transition: none;
     animation: none !important;
   }

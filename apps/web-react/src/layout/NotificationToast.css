@@ -152,29 +152,6 @@
   100% { transform: scale(1); }
 }
 
-.nav-notify__sound {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  margin-left: auto;
-  margin-right: 6px;
-  border: 0;
-  border-radius: 8px;
-  background: none;
-  color: inherit;
-  opacity: 0.7;
-  cursor: pointer;
-}
-.nav-notify__sound + .nav-notify__sound {
-  margin-left: -4px;
-}
-.nav-notify__sound:hover {
-  opacity: 1;
-  background: rgba(127, 127, 127, 0.12);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .notify-toast,
   .notify-toast__timer,
