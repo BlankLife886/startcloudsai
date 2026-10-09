@@ -225,6 +225,7 @@ func (s *Server) Router() *gin.Engine {
 	}
 	r.HandleMethodNotAllowed = true
 	r.Use(s.platformLoggingMiddleware)
+	r.Use(openAICORSMiddleware)
 	r.Use(openAICompatRequestMiddleware)
 	r.Use(s.requestMetricsMiddleware)
 	legacyRecovery := gin.CustomRecovery(func(c *gin.Context, err any) {

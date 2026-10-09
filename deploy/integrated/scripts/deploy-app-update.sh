@@ -15,7 +15,7 @@ if [[ ! "$release_id" =~ ^[0-9a-f]{12}$ ]]; then
   exit 2
 fi
 
-for command in curl docker flock grep gzip readlink; do
+for command in curl docker flock grep gzip install readlink sed; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "Missing required command: $command" >&2
     exit 1
@@ -36,7 +36,7 @@ if [[ "$production_dir" == "$release_dir" ]]; then
   echo "Release directory must be separate from the current production directory." >&2
   exit 1
 fi
-for file in "$production_env" "$release_env" "$production_compose" "$release_compose"; do
+for file in "$production_env" "$production_compose" "$release_compose"; do
   if [[ ! -f "$file" ]]; then
     echo "Required deployment file does not exist: $file" >&2
     exit 1
@@ -48,6 +48,14 @@ if ! flock -n 9; then
   echo "Another StartCloud app deployment is already running." >&2
   exit 1
 fi
+
+# Shell overrides must not silently select another project or env file.
+unset COMPOSE_PROJECT_NAME COMPOSE_FILE STARCLOUD_RELEASE_TAG INTEGRATED_APP_ENV_FILE
+# The release uses a copy of the production env with its own image tag, so the
+# running images keep their tag and stay available for rollback.
+install -m 600 "$production_env" "$release_env"
+sed -i '/^[[:space:]]*STARCLOUD_RELEASE_TAG=/d; /^[[:space:]]*INTEGRATED_APP_ENV_FILE=/d' "$release_env"
+printf '\nSTARCLOUD_RELEASE_TAG=%s\nINTEGRATED_APP_ENV_FILE=.env.integrated\n' "$release_id" >>"$release_env"
 
 production_dc() {
   docker compose --env-file "$production_env" -f "$production_compose" "$@"
