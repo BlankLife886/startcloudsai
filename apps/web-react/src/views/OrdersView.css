@@ -1311,3 +1311,10 @@
 @media (max-width: 640px) {
   .order-dialog__payment { grid-template-columns: 1fr; gap: 20px; padding: 18px 16px 20px; }
 }
+
+/* "I have paid" check inside the order dialog. */
+.order-dialog__paycheck { display: grid; justify-items: start; gap: 6px; margin: 0 24px 20px; }
+.order-dialog__paycheck button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 14px; border: 1px solid var(--line, rgb(127 127 127 / 30%)); border-radius: 999px; background: var(--surface, transparent); color: var(--ink, inherit); font-size: 13px; font-weight: 600; cursor: pointer; }
+.order-dialog__paycheck button:disabled { cursor: wait; opacity: 0.7; }
+.order-dialog__paycheck p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.order-sheet > .order-dialog__paycheck { grid-column: 1 / -1; margin: 0; }

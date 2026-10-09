@@ -674,6 +674,7 @@ func orderDict(o *store.Order) gin.H {
 		"subscriptionStartsAt":   iso(o.SubscriptionStartsAt),
 		"status":                 o.Status,
 		"paymentState":           orderPaymentState(o, now),
+		"paymentCheckAvailable":  paymentCheckAvailable(o, now),
 		"checkError":             checkError,
 		"amountCents":            o.AmountCents,
 		"grantCents":             o.GrantCents,

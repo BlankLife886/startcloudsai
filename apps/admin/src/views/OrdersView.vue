@@ -17,7 +17,7 @@ import { formatPoints, formatTime } from "@/utils";
 type AdminOrder = BillingOrder;
 const route = useRoute();
 const router = useRouter();
-const defaults = () => ({ planId:String(route.query.planId || ''),planRevision:String(route.query.planRevision || ''),status:'',search:String(route.query.search || ''),userId:String(route.query.userId || ''),kind:'',paymentMethod:'',refundState:'',delivery:'',createdFrom:'',createdTo:'',minAmount:'',maxAmount:'' });
+const defaults = () => ({ planId:String(route.query.planId || ''),planRevision:String(route.query.planRevision || ''),status:String(route.query.status || ''),search:String(route.query.search || ''),userId:String(route.query.userId || ''),kind:'',paymentMethod:'',refundState:'',delivery:String(route.query.delivery || ''),createdFrom:'',createdTo:'',minAmount:'',maxAmount:'' });
 const filters = reactive(defaults());
 const summary = ref<AccountingSummary | null>(null);
 const appliedFilters = ref<Record<string,string> | null>(null);
@@ -167,7 +167,7 @@ watch(() => route.query.orderId, async id => {
   try { const order = await request<AdminOrder>(`/api/v1/admin/orders/${encodeURIComponent(id)}`); if (route.query.orderId === id) openDetail(order); }
   catch { /* The request layer reports invalid or missing order IDs. */ }
 }, { immediate:true });
-watch(() => [route.query.search, route.query.userId, route.query.planId, route.query.planRevision], () => { Object.assign(filters,defaults()); reset(); });
+watch(() => [route.query.search, route.query.userId, route.query.planId, route.query.planRevision, route.query.status, route.query.delivery], () => { Object.assign(filters,defaults()); reset(); });
 
 async function runReconciliation() {
   if (reconciling.value) return;

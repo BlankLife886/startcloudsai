@@ -135,6 +135,34 @@ interface OperationalIncident {
 	lastSeenAt: string
 }
 
+interface OrderPeriodStats {
+	createdOrders: number
+	createdPaidOrders: number
+	paidOrders: number
+	payingUsers: number
+	receivedCents: number
+	topupCents: number
+	subscriptionCents: number
+	alipayCents: number
+	wechatCents: number
+	latePaidOrders: number
+	medianPaySeconds: number
+	p95PaySeconds: number
+	refundedCents: number
+}
+
+interface DashboardOrderStats {
+	today: OrderPeriodStats
+	last7Days: OrderPeriodStats
+	last30Days: OrderPeriodStats
+	awaitingPayment: number
+	confirming: number
+	closedToday: number
+	totalPaidOrders: number
+	totalReceivedCents: number
+	daily: Array<{ date: string; createdOrders: number; paidOrders: number; receivedCents: number }>
+}
+
 interface AdminStats {
   totalUsers?: number
   newUsersToday?: number
@@ -150,6 +178,7 @@ interface AdminStats {
 	creditTotals?: CreditTotals
 	quality?: DashboardQualitySummary
 	operationalIncidents?: OperationalIncident[]
+	orderStats?: DashboardOrderStats
 }
 
 interface RuntimeMemoryMetrics {
@@ -704,6 +733,86 @@ function providerSuccessRate(row: Partial<ProviderPerformance>) {
 /** 服务商近 24h 表现，按任务量排序 */
 const providerRows = computed(() => [...providers.value].sort((a, b) => b.total - a.total))
 
+/** 订单与收款 */
+const orderStats = computed(() => stats.value?.orderStats)
+
+function formatYuan(cents: number | null | undefined) {
+	if (cents == null || !Number.isFinite(Number(cents))) return '—'
+	const yuan = Number(cents) / 100
+	return `¥${yuan.toLocaleString('zh-CN', { minimumFractionDigits: yuan % 1 ? 2 : 0, maximumFractionDigits: 2 })}`
+}
+
+function conversion(period?: OrderPeriodStats) {
+	return period && period.createdOrders > 0 ? `${percent(period.createdPaidOrders, period.createdOrders)}%` : '—'
+}
+
+const orderNow = computed(() => {
+	const o = orderStats.value
+	return [
+		{ label: '待支付', value: o?.awaitingPayment, link: { path: '/orders', query: { status: 'pending' } }, tone: '' },
+		{ label: '已付待到账', value: o?.confirming, link: { path: '/orders', query: { delivery: 'pending' } }, tone: (o?.confirming || 0) > 0 ? 'is-warn' : '' },
+		{ label: '今日关闭', value: o?.closedToday, link: { path: '/orders', query: { status: 'expired' } }, tone: '' },
+	]
+})
+
+const orderPeriods = computed(() => {
+	const o = orderStats.value
+	return ([['今日', o?.today], ['近 7 日', o?.last7Days], ['近 30 日', o?.last30Days]] as const).map(([label, p]) => ({
+		label,
+		received: formatYuan(p?.receivedCents),
+		paid: formatCount(p?.paidOrders),
+		users: formatCount(p?.payingUsers),
+		conversion: conversion(p),
+		refunded: p?.refundedCents ? formatYuan(p.refundedCents) : '—',
+		late: formatCount(p?.latePaidOrders),
+	}))
+})
+
+/** 近 30 日收款构成：支付方式与套餐类型 */
+const orderMix = computed(() => {
+	const p = orderStats.value?.last30Days
+	const share = (part: number, total: number) => (total > 0 ? (part / total) * 100 : 0)
+	const methodTotal = (p?.alipayCents || 0) + (p?.wechatCents || 0)
+	const kindTotal = (p?.topupCents || 0) + (p?.subscriptionCents || 0)
+	return [
+		{ label: '支付方式', parts: [
+			{ name: '支付宝', cents: p?.alipayCents || 0, share: share(p?.alipayCents || 0, methodTotal), color: '--info' },
+			{ name: '微信', cents: p?.wechatCents || 0, share: share(p?.wechatCents || 0, methodTotal), color: '--success' },
+		] },
+		{ label: '套餐类型', parts: [
+			{ name: '充值', cents: p?.topupCents || 0, share: share(p?.topupCents || 0, kindTotal), color: '--accent' },
+			{ name: '订阅', cents: p?.subscriptionCents || 0, share: share(p?.subscriptionCents || 0, kindTotal), color: '--violet' },
+		] },
+	]
+})
+
+const orderChartOption = computed<EChartOption>(() => {
+	const base = chartBase()
+	const days = orderStats.value?.daily ?? []
+	const accent = cssToken('--accent')
+	const info = cssToken('--info')
+	const muted = cssToken('--ink-3')
+	return {
+		tooltip: {
+			trigger: 'axis',
+			...base.tooltip,
+			valueFormatter: (value: unknown) => String(value ?? ''),
+		},
+		legend: { top: 0, right: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 6, itemGap: 12, textStyle: { ...base.legendText, fontSize: 11 } },
+		grid: { left: 2, right: 2, top: 26, bottom: 0, containLabel: true },
+		xAxis: { type: 'category', data: days.map((d) => d.date.slice(5)), axisLabel: { ...base.axisLabel, fontSize: 10, hideOverlap: true }, axisLine: base.axisLine, axisTick: { show: false } },
+		yAxis: [
+			{ type: 'value', axisLabel: { ...base.axisLabel, fontSize: 10, formatter: (v: number) => `¥${v}` }, splitLine: base.splitLine },
+			{ type: 'value', minInterval: 1, axisLabel: { show: false }, splitLine: { show: false } },
+		],
+		series: [
+			{ name: '收款（元）', type: 'bar', barMaxWidth: 18, itemStyle: { color: accent, borderRadius: [4, 4, 0, 0] }, data: days.map((d) => Number((d.receivedCents / 100).toFixed(2))) },
+			{ name: '付款单', type: 'line', yAxisIndex: 1, smooth: 0.3, smoothMonotone: 'x', symbol: 'circle', symbolSize: 5, lineStyle: { width: 2, color: info }, itemStyle: { color: info }, data: days.map((d) => d.paidOrders) },
+			{ name: '下单', type: 'line', yAxisIndex: 1, smooth: 0.3, smoothMonotone: 'x', symbol: 'none', lineStyle: { width: 1.5, type: 'dashed', color: muted }, itemStyle: { color: muted }, data: days.map((d) => d.createdOrders) },
+		],
+	}
+})
+
 const opsTab = ref<'capacity' | 'performance' | 'workers'>('capacity')
 
 const qualityMetrics = computed(() => {
@@ -867,6 +976,16 @@ onBeforeUnmount(() => {
     >
       <div class="help-doc">
         <section class="help-section"><h3>新版阅读顺序</h3><p>首屏横幅是今日快照：大数字为今日交付图片，右侧为近 7 日任务曲线，下方四项可点击的今日指标。下面的网格依次是实时生产、系统容量三环、积分总账、任务类型、AI 用量、质量与风险、运行时资源、API 流量、服务商与 Worker、任务耗时和运行明细。</p><p>创作差额为积分口径，不是人民币净利润；真实收款和退款请去财务中心。当前值、累计值和时间窗口不能直接混算。</p><p>读取失败会提示并保留上次数据。尚未成功读取时显示「—」，不能当作 0 或运行正常。悬停指标可查看口径。</p></section>
+        <section class="help-section">
+          <h3>订单与收款</h3>
+          <p>收款按付款被确认的时间（北京时间）计入，二维码过期后才补单到账的付款计入到账当天；金额为渠道实付人民币。后台移除的失效订单不计入。</p>
+          <dl>
+            <div><dt>转化</dt><dd>周期内新建订单中，目前已付款的比例。</dd></div>
+            <div><dt>待支付 / 已付待到账 / 今日关闭</dt><dd>当前状态，点击进入订单列表对应筛选。「已付待到账」大于 0 说明收款已确认但权益未发放，系统会自动重试。</dd></div>
+            <div><dt>付款用时 / 超时补单</dt><dd>近 7 日从下单到确认收款的中位与 P95。超时补单多，说明用户付款慢或监听端推送延迟。</dd></div>
+            <div><dt>退款</dt><dd>周期内已完成的订阅退款金额。精确的净收入请看财务中心。</dd></div>
+          </dl>
+        </section>
         <section class="help-section">
           <h3>这个页面做什么</h3>
           <p>
@@ -1113,6 +1232,69 @@ onBeforeUnmount(() => {
 
     <!-- Bento 网格 -->
     <div class="bento">
+      <!-- 订单与收款 -->
+      <section class="tile o-orders">
+        <header class="tile__head">
+          <h3>订单与收款</h3>
+          <span class="tile__aside">按付款确认时间统计 · 累计 <b class="tnum">{{ stats ? formatCount(orderStats?.totalPaidOrders) : '—' }}</b> 单 <b class="tnum">{{ stats ? formatYuan(orderStats?.totalReceivedCents) : '—' }}</b></span>
+        </header>
+        <div class="orders">
+          <div class="orders__today">
+            <small>今日收款</small>
+            <b class="orders__big tnum">{{ stats ? formatYuan(orderStats?.today.receivedCents) : '—' }}</b>
+            <span class="orders__sub">
+              付款 <b class="tnum">{{ stats ? formatCount(orderStats?.today.paidOrders) : '—' }}</b> 单
+              · 付费用户 <b class="tnum">{{ stats ? formatCount(orderStats?.today.payingUsers) : '—' }}</b>
+              · 转化 <b class="tnum" :title="'今日新建订单中已付款的比例'">{{ stats ? conversion(orderStats?.today) : '—' }}</b>
+            </span>
+            <div class="orders__now">
+              <button
+                v-for="item in orderNow"
+                :key="item.label"
+                type="button"
+                class="live-num"
+                @click="router.push(item.link)"
+              >
+                <small>{{ item.label }}</small><b class="tnum" :class="item.tone">{{ stats ? formatCount(item.value) : '—' }}</b>
+              </button>
+            </div>
+            <span class="orders__timing" title="从下单到确认收款的时间（近 7 日）；超时补单 = 二维码过期后才确认的付款">
+              近 7 日付款用时 中位 <b class="tnum">{{ stats && orderStats?.last7Days.paidOrders ? formatDuration(orderStats.last7Days.medianPaySeconds * 1000) : '—' }}</b>
+              · P95 <b class="tnum">{{ stats && orderStats?.last7Days.paidOrders ? formatDuration(orderStats.last7Days.p95PaySeconds * 1000) : '—' }}</b>
+              · 超时补单 <b class="tnum" :class="{ 'is-warn': (orderStats?.last7Days.latePaidOrders || 0) > 0 }">{{ stats ? formatCount(orderStats?.last7Days.latePaidOrders) : '—' }}</b>
+            </span>
+          </div>
+          <div class="orders__chart">
+            <span class="eyebrow">近 14 日</span>
+            <div class="orders__plot"><EChart v-if="orderStats?.daily.length" :option="orderChartOption" height="100%" /></div>
+          </div>
+          <div class="orders__side">
+            <table class="orders__periods">
+              <thead><tr><th /><th>收款</th><th>付款单</th><th>付费用户</th><th title="周期内新建订单中已付款的比例">转化</th><th title="已完成的订阅退款">退款</th></tr></thead>
+              <tbody>
+                <tr v-for="row in orderPeriods" :key="row.label">
+                  <th>{{ row.label }}</th>
+                  <td class="tnum strong">{{ stats ? row.received : '—' }}</td>
+                  <td class="tnum">{{ stats ? row.paid : '—' }}</td>
+                  <td class="tnum">{{ stats ? row.users : '—' }}</td>
+                  <td class="tnum">{{ stats ? row.conversion : '—' }}</td>
+                  <td class="tnum muted">{{ stats ? row.refunded : '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-for="mix in orderMix" :key="mix.label" class="orders__mix">
+              <span class="orders__mix-label">{{ mix.label }}<small>近 30 日</small></span>
+              <div class="usage__bar">
+                <i v-for="part in mix.parts" :key="part.name" :style="{ flex: part.cents, background: `var(${part.color})` }" />
+              </div>
+              <span class="orders__mix-legend">
+                <span v-for="part in mix.parts" :key="part.name"><i :style="{ background: `var(${part.color})` }" />{{ part.name }} <b class="tnum">{{ formatYuan(part.cents) }}</b><small class="tnum">{{ part.share.toFixed(0) }}%</small></span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- 实时生产 -->
       <section class="tile tile--live o-live">
         <header class="tile__head"><h3>实时生产</h3><span class="state" :class="`is-${queueState.tone}`"><i />{{ queueState.label }}</span></header>
@@ -1405,6 +1587,45 @@ html.dark .hero { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 20px 44px
   .dash .bento .o-types, .dash .bento .o-ops, .dash .bento .o-credit, .dash .bento .o-specs, .dash .bento .o-latency { grid-column: span 2; }
   .tile .mix-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tile .specs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* 订单与收款：整行，三栏（今日 / 14 日走势 / 周期对比与构成） */
+.bento .o-orders { grid-column: 1 / -1; order: 0; }
+.orders { display: grid; grid-template-columns: minmax(230px, 1fr) minmax(0, 1.5fr) minmax(320px, 1.3fr); gap: 20px; align-items: stretch; }
+.orders__today { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.orders__today > small { color: var(--ink-3); font-size: 12px; }
+.orders__big { color: var(--ink); font-size: 30px; font-weight: 800; line-height: 1.1; letter-spacing: -0.03em; }
+.orders__sub, .orders__timing { color: var(--ink-3); font-size: 12px; line-height: 1.6; }
+.orders__sub b, .orders__timing b { color: var(--ink); font-weight: 650; }
+.orders__timing b.is-warn { color: var(--warning); }
+.orders__now { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 6px 0 2px; }
+.orders__now .live-num b { font-size: 20px; }
+.orders__now .live-num b.is-warn { color: var(--warning); }
+.orders__chart { display: flex; flex-direction: column; min-width: 0; }
+.orders__plot { flex: 1; min-height: 190px; margin-top: -14px; }
+.orders__side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.orders__periods { width: 100%; border-collapse: collapse; font-size: 12px; }
+.orders__periods th, .orders__periods td { padding: 5px 6px; text-align: right; white-space: nowrap; }
+.orders__periods thead th { color: var(--ink-3); font-weight: 500; }
+.orders__periods tbody th { color: var(--ink-2); font-weight: 600; text-align: left; }
+.orders__periods tbody tr + tr { border-top: 1px solid color-mix(in srgb, var(--ink-3) 15%, transparent); }
+.orders__periods td { color: var(--ink); }
+.orders__periods td.strong { font-weight: 700; }
+.orders__mix { display: grid; gap: 4px; }
+.orders__mix-label { color: var(--ink-2); font-size: 12px; font-weight: 600; }
+.orders__mix-label small { margin-left: 6px; color: var(--ink-3); font-weight: 400; }
+.orders__mix .usage__bar { margin: 0; }
+.orders__mix-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-3); font-size: 11px; }
+.orders__mix-legend > span { display: inline-flex; align-items: center; gap: 4px; }
+.orders__mix-legend i { width: 8px; height: 8px; border-radius: 2px; }
+.orders__mix-legend b { color: var(--ink); font-weight: 650; }
+@container dash (max-width: 1240px) {
+  .orders { grid-template-columns: minmax(220px, 1fr) minmax(0, 1.6fr); }
+  .orders__side { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 16px; }
+}
+@container dash (max-width: 900px) {
+  .orders { grid-template-columns: minmax(0, 1fr); }
+  .orders__side { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* 入场与悬停 */

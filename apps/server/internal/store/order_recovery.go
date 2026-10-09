@@ -81,3 +81,26 @@ func ResolveOrderReconciliationRisks(ctx context.Context, q Q, id uuid.UUID) err
 	 WHERE category='payment_reconciliation' AND metadata->>'orderId'=$1 AND resolved_at IS NULL`, id.String())
 	return err
 }
+
+// ExpediteRecentLanjingOrders makes every unpaid order created since the given
+// time due for reconciliation now, so payments a listener reported late are
+// picked up immediately. It returns how many orders were rescheduled.
+func ExpediteRecentLanjingOrders(ctx context.Context, q Q, since time.Time) (int64, error) {
+	tag, err := q.Exec(ctx, `UPDATE orders SET reconcile_after=now()
+ WHERE provider='lanjing' AND provider_order_id IS NOT NULL AND paid_at IS NULL
+ AND status IN ('pending','expired','cancelled','failed') AND created_at>=GREATEST($1,now()-interval '25 hours')
+ AND (reconcile_after IS NULL OR reconcile_after>now())`, since)
+	return tag.RowsAffected(), err
+}
+
+// ExpediteOrderReconciliation makes one order due for reconciliation now.
+func ExpediteOrderReconciliation(ctx context.Context, q Q, id uuid.UUID) error {
+	_, err := q.Exec(ctx, `UPDATE orders SET reconcile_after=LEAST(reconcile_after,now()) WHERE id=$1`, id)
+	return err
+}
+
+func ResolvePaymentListenerRisks(ctx context.Context, q Q) error {
+	_, err := q.Exec(ctx, `UPDATE security_risk_events SET resolved_at=now(),resolution_note='Payment listener recovered'
+	 WHERE category='payment_listener' AND resolved_at IS NULL`)
+	return err
+}

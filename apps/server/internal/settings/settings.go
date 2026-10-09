@@ -728,3 +728,39 @@ func ResolveCRUN(ctx context.Context, q store.Q, env CRUNConfig, masterKey strin
 	}
 	return cfg, nil
 }
+
+// PaymentAlertConfig controls how payment listener and payment issues reach
+// administrators.
+type PaymentAlertConfig struct {
+	Emails []string
+	// StaleAfterSecs treats an "online" listener whose last heartbeat is older
+	// than this as offline. 0 trusts the provider's online flag alone.
+	StaleAfterSecs int
+}
+
+const DefaultPaymentListenerStaleSecs = 120
+
+func ResolvePaymentAlerts(ctx context.Context, q store.Q) (PaymentAlertConfig, error) {
+	cfg := PaymentAlertConfig{StaleAfterSecs: DefaultPaymentListenerStaleSecs}
+	raw, err := Get(ctx, q, "payment_alert_emails")
+	if err != nil {
+		return cfg, err
+	}
+	if raw != nil {
+		_ = json.Unmarshal(raw, &cfg.Emails)
+	}
+	if cfg.Emails == nil {
+		cfg.Emails = []string{}
+	}
+	raw, err = Get(ctx, q, "payment_listener_stale_secs")
+	if err != nil {
+		return cfg, err
+	}
+	if raw != nil {
+		var secs int
+		if json.Unmarshal(raw, &secs) == nil && secs >= 0 {
+			cfg.StaleAfterSecs = secs
+		}
+	}
+	return cfg, nil
+}

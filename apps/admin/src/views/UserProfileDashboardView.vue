@@ -13,7 +13,8 @@ import type { UserAnalyticsData, WatchUser } from '@/userAnalytics'
 
 /**
  * 用户画像：跟随后台明暗主题，不另铺背景。
- * 自上而下：核心指标 → 活跃趋势 + 生命周期 → 风险 / 价值 / 留存 → 重点用户 + 热门业务。
+ * 自上而下：核心指标 → 活跃趋势 + 生命周期 → 每日生图 / 增长 / 费用 → 任务时间分布
+ * → 风险 / 价值 / 留存 → 重点用户 + 热门业务。
  * 每个面板标题下一句结论；图表颜色取自主题令牌。
  */
 
@@ -213,6 +214,49 @@ const dailyTotals = computed(() => {
     revenue, cost, profit: revenue - cost,
   }
 })
+
+// ---------- 任务时间分布 ----------
+const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const HOURS = Array.from({ length: 24 }, (_, hour) => hour)
+/** 7×24 矩阵 + 按小时 / 按星期的合计 */
+const taskHeat = computed(() => {
+  const cells = WEEKDAYS.map(() => HOURS.map(() => ({ tasks: 0, users: 0 })))
+  for (const slot of data.value?.taskHeatmap || []) {
+    const row = cells[slot.weekday - 1]
+    if (row && row[slot.hour]) row[slot.hour] = { tasks: slot.tasks, users: slot.users }
+  }
+  const byHour = HOURS.map(hour => cells.reduce((sum, row) => sum + row[hour].tasks, 0))
+  const byDay = cells.map(row => row.reduce((sum, cell) => sum + cell.tasks, 0))
+  const total = byDay.reduce((sum, value) => sum + value, 0)
+  return {
+    cells, byHour, byDay, total,
+    max: Math.max(1, ...cells.flat().map(cell => cell.tasks)),
+    hourMax: Math.max(1, ...byHour), dayMax: Math.max(1, ...byDay),
+  }
+})
+const taskHeatStats = computed(() => {
+  const { cells, byHour, byDay, total } = taskHeat.value
+  if (!total) return null
+  const peakHour = byHour.indexOf(Math.max(...byHour))
+  const peakDay = byDay.indexOf(Math.max(...byDay))
+  let peak = { day: 0, hour: 0, tasks: -1 }
+  cells.forEach((row, day) => row.forEach((cell, hour) => { if (cell.tasks > peak.tasks) peak = { day, hour, tasks: cell.tasks } }))
+  const night = byHour.slice(0, 6).reduce((sum, value) => sum + value, 0)
+  const weekend = byDay[5] + byDay[6]
+  return {
+    peakHour: `${peakHour}–${peakHour + 1} 时`, peakDay: WEEKDAYS[peakDay],
+    peakSlot: `${WEEKDAYS[peak.day]} ${peak.hour} 时`, peakSlotTasks: peak.tasks,
+    night: pct(night, total, 0), weekend: pct(weekend, total, 0),
+  }
+})
+function heatCell(tasks: number) {
+  if (!tasks) return {}
+  const ratio = tasks / taskHeat.value.max
+  return {
+    background: `color-mix(in srgb, var(--accent) ${Math.round(14 + ratio * 80)}%, var(--surface-2))`,
+    color: ratio > 0.45 ? 'var(--accent-on)' : 'var(--ink-2)',
+  }
+}
 
 // ---------- 生命周期 ----------
 const lifecycleItems = computed(() =>
@@ -487,6 +531,43 @@ onBeforeUnmount(() => {
         </section>
       </div>
 
+      <!-- 任务时间分布 -->
+      <section class="card card-tasktime">
+        <header class="card-head">
+          <div>
+            <h3>任务时间分布</h3>
+            <p v-if="taskHeatStats">近 30 天 · 北京时间 · 最忙的时段是{{ taskHeatStats.peakSlot }}（{{ number(taskHeatStats.peakSlotTasks) }} 次），周末占 {{ taskHeatStats.weekend }}</p>
+            <p v-else>近 30 天还没有创作任务</p>
+          </div>
+          <dl v-if="taskHeatStats" class="mini-stats">
+            <div><dt>30 天任务</dt><dd class="tnum">{{ number(taskHeat.total) }}</dd></div>
+            <div><dt>高峰小时</dt><dd class="tnum">{{ taskHeatStats.peakHour }}</dd></div>
+            <div><dt>最忙一天</dt><dd>{{ taskHeatStats.peakDay }}</dd></div>
+            <div><dt>深夜 0–6 时</dt><dd class="tnum">{{ taskHeatStats.night }}</dd></div>
+          </dl>
+        </header>
+        <div class="tasktime" role="img" :aria-label="taskHeatStats ? `任务时间分布，高峰 ${taskHeatStats.peakSlot}` : '暂无任务'">
+          <span />
+          <div class="tt-hourbars">
+            <i v-for="hour in HOURS" :key="hour" :style="{ height: `${(taskHeat.byHour[hour] / taskHeat.hourMax) * 100}%` }" :title="`${hour}–${hour + 1} 时 · ${number(taskHeat.byHour[hour])} 次`" />
+          </div>
+          <span />
+          <template v-for="(row, day) in taskHeat.cells" :key="day">
+            <span class="tt-day" :class="{ weekend: day >= 5 }">{{ WEEKDAYS[day] }}</span>
+            <div class="tt-row">
+              <span
+                v-for="(cell, hour) in row" :key="hour" class="tt-cell tnum" :style="heatCell(cell.tasks)"
+                :title="`${WEEKDAYS[day]} ${hour}–${hour + 1} 时 · ${number(cell.tasks)} 次任务 · ${number(cell.users)} 人`"
+              >{{ cell.tasks || '' }}</span>
+            </div>
+            <span class="tt-daybar"><u :style="{ width: `${(taskHeat.byDay[day] / taskHeat.dayMax) * 100}%` }" /><b class="tnum">{{ number(taskHeat.byDay[day]) }}</b></span>
+          </template>
+          <span />
+          <div class="tt-hours"><span v-for="hour in HOURS" :key="hour" class="tnum">{{ hour % 3 === 0 ? hour : '' }}</span></div>
+          <span />
+        </div>
+      </section>
+
       <!-- 风险 / 价值 / 留存 -->
       <div class="grid grid-three">
         <section class="card">
@@ -704,6 +785,20 @@ html.dark .kpi {
 .mini-stats dd { margin: 0; color: var(--ink); font-size: 16px; font-weight: 700; }
 .chart-fill { height: 210px; }
 .chart-mini { height: 170px; }
+
+/* 任务时间分布：左侧星期、中间 24 小时格子、上方每小时合计、右侧每天合计 */
+.card-tasktime { flex: 0 0 auto; }
+.tasktime { display: grid; grid-template-columns: 34px minmax(0, 1fr) 110px; align-items: center; gap: 3px 10px; }
+.tt-hourbars, .tt-row, .tt-hours { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 3px; }
+.tt-hourbars { align-items: end; height: 34px; }
+.tt-hourbars i { min-height: 2px; border-radius: 3px 3px 1px 1px; background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.tt-day { color: var(--ink-2); font-size: 11px; }
+.tt-day.weekend { color: var(--violet); font-weight: 600; }
+.tt-cell { display: grid; place-items: center; height: 22px; overflow: hidden; border-radius: 4px; background: var(--surface-2); font-size: 10px; font-weight: 650; }
+.tt-daybar { display: flex; align-items: center; gap: 6px; }
+.tt-daybar u { display: block; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.tt-daybar b { color: var(--ink-2); font-size: 11px; font-weight: 600; }
+.tt-hours span { color: var(--ink-3); font-size: 10px; text-align: left; }
 
 /* 生命周期 */
 .life { display: grid; grid-template-columns: 132px minmax(0, 1fr); align-items: center; gap: 16px; }

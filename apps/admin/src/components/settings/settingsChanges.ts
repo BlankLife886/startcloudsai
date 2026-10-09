@@ -31,6 +31,8 @@ const FIELDS: Record<string, FieldMeta> = {
   lanjingPayTimeoutSecs: { label: '支付请求超时', section: 'payment', unit: '秒' },
   lanjingPayAlipayEnabled: { label: '支付宝', section: 'payment' },
   lanjingPayWechatEnabled: { label: '微信支付', section: 'payment' },
+  paymentAlertEmails: { label: '支付告警邮箱', section: 'payment' },
+  paymentListenerStaleSecs: { label: '监听心跳超时', section: 'payment', unit: '秒' },
 
   adminImageAnalysisProviderId: { label: '图片分析服务商', section: 'image-ai' },
   adminImageAnalysisModelId: { label: '图片理解模型', section: 'image-ai' },
@@ -129,6 +131,7 @@ function formatValue(key: string, value: unknown, meta: FieldMeta): string {
   if (meta.secret) return value ? '已设置' : '未设置'
   if (typeof value === 'boolean') return value ? '开启' : '关闭'
   if (key === 'growthUsageMilestones' && Array.isArray(value)) return `${value.length} 个档位`
+  if (Array.isArray(value)) return value.length ? value.join('、') : '未设置'
   if (value === '' || value === null || value === undefined) return '未设置'
   if (typeof value === 'number') return `${value.toLocaleString('zh-CN')}${meta.unit ? ` ${meta.unit}` : ''}`
   return String(value)
@@ -192,6 +195,9 @@ export interface SettingsWarning {
 export function findWarnings(f: SettingsSnapshot): SettingsWarning[] {
   const n = (key: string) => Number(f[key]) || 0
   const warnings: SettingsWarning[] = []
+  if (f.lanjingPayEnabled === true && Array.isArray(f.paymentAlertEmails) && f.paymentAlertEmails.length === 0) {
+    warnings.push({ section: 'payment', text: '未填写支付告警邮箱，监听端掉线或支付异常时无法通知到人' })
+  }
   if (n('userMaxConcurrentTasks') > n('globalMaxConcurrentTasks')) {
     warnings.push({ section: 'concurrency', text: '个人基础图片并发大于全站图片并发，个人上限实际不会生效' })
   }

@@ -27,6 +27,20 @@ func (s *Server) startBackgroundSecurityJobs() {
 			timer.Reset(10 * time.Second)
 		}
 	}()
+	s.backgroundWG.Add(1)
+	go func() {
+		defer s.backgroundWG.Done()
+		ticker := time.NewTicker(paymentListenerCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			s.monitorPaymentListener(ctx)
+		}
+	}()
 }
 
 func (s *Server) runScheduledPaymentReconciliation(parent context.Context) {

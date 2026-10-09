@@ -128,6 +128,11 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	orderStats, err := store.GetDashboardOrderStats(ctx, s.St.Pool, todayStart, last7DaysStart, last30DaysStart, dashboardDayLocation, 14)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	incidents, err := store.ListOpenOperationalIncidents(ctx, s.St.Pool, 20)
 	if err != nil {
 		fail(c, err)
@@ -157,6 +162,7 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		"creditTotals":         creditTotals,
 		"typeDistribution":     typeDistribution,
 		"operationalIncidents": incidents,
+		"orderStats":           orderStats,
 	})
 }
 
@@ -2281,6 +2287,8 @@ var settingsCamel = map[string]string{
 	"lanjing_pay_timeout_secs":                    "lanjingPayTimeoutSecs",
 	"lanjing_pay_alipay_enabled":                  "lanjingPayAlipayEnabled",
 	"lanjing_pay_wechat_enabled":                  "lanjingPayWechatEnabled",
+	"payment_alert_emails":                        "paymentAlertEmails",
+	"payment_listener_stale_secs":                 "paymentListenerStaleSecs",
 }
 
 // maskSecret 敏感值掩码：保留末 4 位，返回 "****abcd"；空值原样。
@@ -2841,6 +2849,39 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 1800 {
 				fail(c, apperr.E("validation_error", camel+": 须在 0-1800 之间（0 = 使用默认）", 422))
+				return
+			}
+		case "payment_alert_emails":
+			var v []string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
+				return
+			}
+			cleaned := []string{}
+			seen := map[string]bool{}
+			for _, item := range v {
+				if strings.TrimSpace(item) == "" {
+					continue
+				}
+				address, err := mailEnvelopeAddress(item)
+				if err != nil {
+					fail(c, apperr.E("validation_error", camel+": 邮箱格式不正确："+item, 422))
+					return
+				}
+				if key := strings.ToLower(address); !seen[key] {
+					seen[key] = true
+					cleaned = append(cleaned, address)
+				}
+			}
+			if len(cleaned) > 10 {
+				fail(c, apperr.E("validation_error", camel+": 最多 10 个邮箱", 422))
+				return
+			}
+			raw, _ = json.Marshal(cleaned)
+		case "payment_listener_stale_secs":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || (v != 0 && (v < 30 || v > 900)) {
+				fail(c, apperr.E("validation_error", camel+": 须为 0 或 30-900 秒", 422))
 				return
 			}
 		case "lanjing_pay_timeout_secs":

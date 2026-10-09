@@ -38,6 +38,28 @@ interface PaymentSettings {
   lanjingPayTimeoutSecs?: number;
   lanjingPayAlipayEnabled?: boolean;
   lanjingPayWechatEnabled?: boolean;
+  paymentAlertEmails?: string[];
+  paymentListenerStaleSecs?: number;
+}
+
+interface PaymentListenerStatus {
+  monitoring: boolean;
+  checkedAt?: string | null;
+  healthy: boolean;
+  reason?: string;
+  lookupError?: string;
+  alertActive: boolean;
+  downSince?: string | null;
+  lastAlertAt?: string | null;
+  alertEmails: string[];
+  staleAfterSecs: number;
+  smtpConfigured: boolean;
+  checkIntervalSecs: number;
+}
+
+interface PaymentAlertTestResult {
+  sent: number;
+  results: { email: string; ok: boolean; error?: string }[];
 }
 
 interface PaymentTestResult {
@@ -147,7 +169,16 @@ const form = reactive({
   lanjingPayTimeoutSecs: 10,
   lanjingPayAlipayEnabled: true,
   lanjingPayWechatEnabled: true,
+  paymentAlertEmailsText: "",
+  paymentListenerStaleSecs: 120 as number | null,
 });
+
+function parseAlertEmails(text: string) {
+  return text
+    .split(/[\s,，;；]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
 const canvasProjectMaxKbLabel = computed(() => {
   const kb = Number(form.canvasProjectMaxKb) || 0;
@@ -210,6 +241,8 @@ const settingsSignature = () =>
     lanjingPayTimeoutSecs: form.lanjingPayTimeoutSecs,
     lanjingPayAlipayEnabled: form.lanjingPayAlipayEnabled,
     lanjingPayWechatEnabled: form.lanjingPayWechatEnabled,
+    paymentAlertEmails: parseAlertEmails(form.paymentAlertEmailsText),
+    paymentListenerStaleSecs: form.paymentListenerStaleSecs,
   });
 
 const isDirty = computed(
@@ -580,6 +613,8 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.lanjingPayTimeoutSecs = settings.lanjingPayTimeoutSecs ?? 10;
   form.lanjingPayAlipayEnabled = settings.lanjingPayAlipayEnabled ?? true;
   form.lanjingPayWechatEnabled = settings.lanjingPayWechatEnabled ?? true;
+  form.paymentAlertEmailsText = (settings.paymentAlertEmails ?? []).join(", ");
+  form.paymentListenerStaleSecs = settings.paymentListenerStaleSecs ?? 120;
   savedSignature.value = settingsSignature();
 }
 
@@ -597,6 +632,71 @@ async function load() {
     hydrate(settings);
   } finally {
     loading.value = false;
+  }
+  void loadListenerStatus();
+}
+
+const listenerStatus = ref<PaymentListenerStatus | null>(null);
+const loadingListener = ref(false);
+const sendingAlertTest = ref(false);
+
+async function loadListenerStatus() {
+  loadingListener.value = true;
+  try {
+    listenerStatus.value = await request<PaymentListenerStatus>(
+      "/api/v1/admin/payment-listener",
+    );
+  } catch {
+    listenerStatus.value = null;
+  } finally {
+    loadingListener.value = false;
+  }
+}
+
+const listenerSummary = computed(() => {
+  const status = listenerStatus.value;
+  if (!status) return { tone: "", title: "监控状态未知", detail: "" };
+  if (!status.monitoring) {
+    return { tone: "", title: "后台监控未运行", detail: "仅生产环境每 15 秒巡检监听端" };
+  }
+  if (!status.checkedAt) {
+    return { tone: "", title: "等待首次巡检", detail: `每 ${status.checkIntervalSecs} 秒巡检一次` };
+  }
+  if (status.healthy) {
+    return { tone: "is-on", title: "监听端正常", detail: `最近巡检 ${formatPaymentTime(status.checkedAt)}` };
+  }
+  const since = status.downSince ? `，${formatPaymentTime(status.downSince)} 起` : "";
+  return { tone: "is-bad", title: `监听端异常${since}`, detail: status.reason || status.lookupError || "" };
+});
+
+const alertDelivery = computed(() => {
+  const status = listenerStatus.value;
+  if (!status) return "";
+  if (!status.smtpConfigured) return "服务器未配置 SMTP，告警邮件无法发出";
+  if (!status.alertEmails?.length) return "未保存告警邮箱";
+  return `告警发送至 ${status.alertEmails.join("、")}`;
+});
+
+async function sendAlertTest() {
+  const emails = parseAlertEmails(form.paymentAlertEmailsText);
+  if (!emails.length) {
+    ElMessage.warning("请先填写告警邮箱");
+    return;
+  }
+  sendingAlertTest.value = true;
+  try {
+    const result = await request<PaymentAlertTestResult>(
+      "/api/v1/admin/payment-listener/test-alert",
+      { method: "POST", body: { emails } },
+    );
+    const failed = result.results.filter((item) => !item.ok);
+    if (!failed.length) ElMessage.success(`测试邮件已发送到 ${result.sent} 个邮箱`);
+    else
+      ElMessage.error(
+        `${failed.length} 个邮箱发送失败：${failed.map((item) => `${item.email}（${item.error}）`).join("；")}`,
+      );
+  } finally {
+    sendingAlertTest.value = false;
   }
 }
 
@@ -729,11 +829,14 @@ async function commitSave() {
           lanjingPayTimeoutSecs: form.lanjingPayTimeoutSecs,
           lanjingPayAlipayEnabled: form.lanjingPayAlipayEnabled,
           lanjingPayWechatEnabled: form.lanjingPayWechatEnabled,
+          paymentAlertEmails: parseAlertEmails(form.paymentAlertEmailsText),
+          paymentListenerStaleSecs: form.paymentListenerStaleSecs,
         },
       }),
     );
     confirmOpen.value = false;
     ElMessage.success("系统设置已生效");
+    void loadListenerStatus();
   } finally {
     saving.value = false;
   }
@@ -946,6 +1049,51 @@ onMounted(() => {
                 <el-checkbox v-model="form.lanjingPayWechatEnabled">微信</el-checkbox>
               </label>
             </div>
+          </div>
+          <label class="field-row is-wide">
+            <span>
+              <strong>告警邮箱</strong>
+              <small>监听端掉线、恢复和支付异常时通知，多个用逗号分隔</small>
+            </span>
+            <el-input
+              v-model="form.paymentAlertEmailsText"
+              placeholder="ops@example.com, boss@example.com"
+            />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>心跳超时</strong>
+              <small>超过即判定掉线；0 = 只看渠道在线标志</small>
+            </span>
+            <div class="field-unit">
+              <el-input-number
+                v-model="form.paymentListenerStaleSecs"
+                :min="0"
+                :max="900"
+                :step="30"
+                :precision="0"
+              />
+              <em>秒</em>
+            </div>
+          </label>
+        </div>
+
+        <div class="listener-monitor" :class="listenerSummary.tone">
+          <span class="listener-monitor__dot" />
+          <div class="listener-monitor__copy">
+            <strong>{{ listenerSummary.title }}</strong>
+            <p v-if="listenerSummary.detail">{{ listenerSummary.detail }}</p>
+            <p v-if="alertDelivery" :class="{ 'is-warn': listenerStatus && (!listenerStatus.smtpConfigured || !listenerStatus.alertEmails?.length) }">
+              {{ alertDelivery }}
+            </p>
+          </div>
+          <div class="listener-monitor__actions">
+            <el-button :icon="Refresh" :loading="loadingListener" @click="loadListenerStatus">
+              刷新
+            </el-button>
+            <el-button :loading="sendingAlertTest" @click="sendAlertTest">
+              发送测试邮件
+            </el-button>
           </div>
         </div>
 
@@ -1850,6 +1998,15 @@ html.dark .settings-card { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 
 .method-pill :deep(.el-checkbox__label) { color: inherit; font-weight: 600; }
 
 /* 支付测试 */
+.listener-monitor { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 14px; background: var(--surface-2); --tone: var(--ink-3); }
+.listener-monitor.is-on { --tone: var(--success); }
+.listener-monitor.is-bad { --tone: var(--danger); background: var(--danger-soft); }
+.listener-monitor__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--tone); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone) 20%, transparent); }
+.listener-monitor__copy { flex: 1; min-width: 0; }
+.listener-monitor__copy strong { color: var(--ink); font-size: 13px; font-weight: 700; }
+.listener-monitor__copy p { margin: 2px 0 0; color: var(--ink-3); font-size: 12px; overflow-wrap: anywhere; }
+.listener-monitor__copy p.is-warn { color: var(--warning); font-weight: 600; }
+.listener-monitor__actions { display: flex; flex: none; gap: 8px; }
 .pay-test { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; border-radius: 14px; background: var(--surface-2); color: var(--ink-3); font-size: 12px; }
 .pay-test p { margin: 0; }
 .pay-test__meta { display: flex; gap: 20px; }

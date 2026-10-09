@@ -4,13 +4,40 @@ import { QRCode } from "antd";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { CheckCircle2, Clock3, LoaderCircle, RefreshCw, Sparkles } from "lucide-react";
-import { formatCents, formatPoints } from "../legacy-modules/services/billingApi.js";
+import { checkOrderPayment, formatCents, formatPoints } from "../legacy-modules/services/billingApi.js";
 
 gsap.registerPlugin(useGSAP);
 
 function motionDisabled() {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
     || document.documentElement.classList.contains("settings-no-animations");
+}
+
+// "I have paid" for an order whose QR code closed: asks the provider now
+// instead of waiting for the next scheduled check.
+export function PaymentCheckButton({ order, onOrder, className = "", t }) {
+  const [state, setState] = useState({ busy: false, message: "" });
+  if (!order?.paymentCheckAvailable) return null;
+  const check = async () => {
+    setState({ busy: true, message: "" });
+    try {
+      const current = await checkOrderPayment(order.id);
+      onOrder?.(current);
+      const paid = current?.status === "completed" || isConfirmingOrder(current);
+      setState({ busy: false, message: paid ? "" : "渠道暂未查到这笔付款。若已付款，系统会在接下来 30 分钟内持续核实并自动到账。" });
+    } catch (error) {
+      setState({ busy: false, message: error?.message || "付款核实失败，请稍后再试" });
+    }
+  };
+  return (
+    <div className={`pp-checkout__paycheck ${className}`.trim()}>
+      <button type="button" className="pp-checkout__link" onClick={check} disabled={state.busy}>
+        {state.busy ? <LoaderCircle className="is-spinning" size={15} aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
+        {t(state.busy ? "正在向支付渠道核实" : "我已付款，立即核实")}
+      </button>
+      {state.message && <p role="status">{t(state.message)}</p>}
+    </div>
+  );
 }
 
 export function checkoutCountdown(expiresAt, now) {
@@ -53,7 +80,7 @@ function successGrant(plan) {
   return total > 0 ? { caption: "共入账", points: formatPoints(total, { withUnit: false }) } : null;
 }
 
-export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel, onRequestCancel, onKeepPaying, onRetry, onClaimPaid, upgradeReturnLabel = '返回订阅管理', t }) {
+export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel, onRequestCancel, onKeepPaying, onRetry, onClaimPaid, onOrderUpdate, upgradeReturnLabel = '返回订阅管理', t }) {
   const order = checkout.order;
   const status = order.status;
   const completed = status === "completed";
@@ -143,6 +170,7 @@ export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel
         <Clock3 size={38} aria-hidden="true" />
         <strong>{t(order.status === "cancelled" ? "支付订单已取消" : order.status === "failed" ? "支付订单创建失败" : "支付订单已过期")}</strong>
         {order.status !== "failed" && <span>{t("如果你已经付款，请勿重复支付，系统会自动补单到账；长时间未到账请联系客服并提供订单号。")}</span>}
+        <PaymentCheckButton order={order} onOrder={onOrderUpdate} t={t} />
         <button type="button" onClick={onRetry}>
           <RefreshCw size={17} aria-hidden="true" />
           {t(order.subscriptionChangeId ? upgradeReturnLabel : "重新创建")}
@@ -193,6 +221,7 @@ export function CheckoutOrderStage({ checkout, now, quotaText, onClose, onCancel
           <strong>{t(order.paymentState === "creating" ? "正在创建支付订单" : "正在向支付渠道确认付款结果")}</strong>
           <span>{t("如果你已经付款，请勿重复支付，到账通常在 1 分钟内完成。")}</span>
           {order.checkError && <p className="pp-checkout__error">{t("支付渠道暂时无法确认，系统会自动重试。")}</p>}
+          {order.paymentState === "timed_out" && <PaymentCheckButton order={order} onOrder={onOrderUpdate} t={t} />}
           {checkout.claimedPaid && order.paymentState === "awaiting_payment" && !checkoutCountdown(order.expiresAt, now).expired && (
             <button type="button" className="pp-checkout__link" onClick={() => onClaimPaid?.(false)}>{t("还没付款，返回二维码")}</button>
           )}

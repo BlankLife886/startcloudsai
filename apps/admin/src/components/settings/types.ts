@@ -98,4 +98,6 @@ export interface AdminSettings {
   lanjingPayTimeoutSecs?: number
   lanjingPayAlipayEnabled?: boolean
   lanjingPayWechatEnabled?: boolean
+  paymentAlertEmails?: string[]
+  paymentListenerStaleSecs?: number
 }

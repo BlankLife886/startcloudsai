@@ -73,6 +73,28 @@ func TestUserAnalyticsAggregatesProfilesRetentionAndFunnel(t *testing.T) {
 	if analytics.Summary.ActiveUsers7 != 1 || analytics.Summary.ActiveUsers30 != 1 {
 		t.Fatalf("active summary = %#v", analytics.Summary)
 	}
+	var slotTasks int64
+	for _, slot := range analytics.TaskHeatmap {
+		if slot.Weekday < 1 || slot.Weekday > 7 || slot.Hour < 0 || slot.Hour > 23 || slot.Users != 1 {
+			t.Fatalf("task heatmap slot = %#v", slot)
+		}
+		slotTasks += slot.Tasks
+	}
+	if slotTasks != 3 {
+		t.Fatalf("task heatmap = %#v", analytics.TaskHeatmap)
+	}
+	latest := now.Add(-30 * time.Minute).In(time.FixedZone("CST", 8*3600))
+	latestWeekday := int(latest.Weekday())
+	if latestWeekday == 0 {
+		latestWeekday = 7
+	}
+	foundLatest := false
+	for _, slot := range analytics.TaskHeatmap {
+		foundLatest = foundLatest || (slot.Weekday == latestWeekday && slot.Hour == latest.Hour())
+	}
+	if !foundLatest {
+		t.Fatalf("task heatmap misses Beijing slot %d/%d: %#v", latestWeekday, latest.Hour(), analytics.TaskHeatmap)
+	}
 	if analytics.Funnel.TrackingSince == nil || len(analytics.Funnel.Features) != 1 {
 		t.Fatalf("funnel = %#v", analytics.Funnel)
 	}

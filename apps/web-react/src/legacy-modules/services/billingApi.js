@@ -37,6 +37,14 @@ export function closeOrder(id) {
   })
 }
 
+// Asks the provider about the order right away ("I have paid"), including an
+// order that already closed locally.
+export function checkOrderPayment(id) {
+  return apiPost(`/orders/${encodeURIComponent(id)}/payment-check`, null, {
+    fallbackMessage: '付款核实失败，请稍后再试',
+  })
+}
+
 export function formatCents(cents, { withSymbol = true } = {}) {
   const value = Number(cents || 0) / 100
   const text = value.toLocaleString('zh-CN', {

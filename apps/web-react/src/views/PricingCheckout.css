@@ -800,3 +800,15 @@
 .settings-no-animations .pp-checkout-backdrop .pp-checkout__laser { display: none; }
 .settings-no-animations .pp-checkout-backdrop .pp-pay-methods__thumb,
 .settings-no-animations .pp-checkout-backdrop .pp-pay-methods button { transition: none; }
+
+/* "I have paid" check: a secondary action next to the primary one. */
+.pp-checkout__paycheck { display: grid; justify-items: center; gap: 6px; max-width: 320px; }
+.pp-checkout__paycheck p { margin: 0; color: var(--checkout-muted, var(--muted)); font-size: 12px; line-height: 1.6; text-align: center; }
+.pp-checkout-backdrop .pp-checkout__paycheck .pp-checkout__link,
+.pp-checkout-backdrop .pp-checkout__expired .pp-checkout__paycheck button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  width: auto; min-height: 36px; margin: 0; padding: 6px 16px;
+  border: 1px solid color-mix(in srgb, var(--checkout-muted) 35%, transparent); border-radius: 999px;
+  background: none; color: var(--checkout-ink); font-size: 13px; font-weight: 600; text-decoration: none;
+}
+.pp-checkout-backdrop .pp-checkout__paycheck button:disabled { cursor: wait; opacity: 0.7; }

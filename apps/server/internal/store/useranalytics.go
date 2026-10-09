@@ -44,6 +44,15 @@ type UserAnalyticsDailyPoint struct {
 	UpstreamCostCents int64 `json:"upstreamCostCents"`
 }
 
+// UserAnalyticsTaskSlot 是近 30 天创作任务（创作任务 + 助手运行）在北京时间
+// 星期 × 小时上的分布；只返回有任务的格子。Weekday 取 ISO 星期（1=周一 … 7=周日）。
+type UserAnalyticsTaskSlot struct {
+	Weekday int   `json:"weekday"`
+	Hour    int   `json:"hour"`
+	Tasks   int64 `json:"tasks"`
+	Users   int64 `json:"users"`
+}
+
 type UserRetentionCohort struct {
 	Week      string `json:"week"`
 	Users     int64  `json:"users"`
@@ -74,6 +83,7 @@ type UserAnalytics struct {
 	Summary       UserAnalyticsSummary       `json:"summary"`
 	Distributions UserAnalyticsDistributions `json:"distributions"`
 	DailyTrend    []UserAnalyticsDailyPoint  `json:"dailyTrend"`
+	TaskHeatmap   []UserAnalyticsTaskSlot    `json:"taskHeatmap"`
 	Retention     []UserRetentionCohort      `json:"retention"`
 	Funnel        UserAnalyticsFunnel        `json:"funnel"`
 	UserAnalyticsInsights
@@ -88,6 +98,7 @@ func GetUserAnalytics(ctx context.Context, q Q, now time.Time) (*UserAnalytics, 
 			Value:     []UserAnalyticsDistributionItem{},
 		},
 		DailyTrend:   []UserAnalyticsDailyPoint{},
+		TaskHeatmap:  []UserAnalyticsTaskSlot{},
 		Retention:    []UserRetentionCohort{},
 		Funnel:       UserAnalyticsFunnel{Features: []UserAnalyticsFeatureFunnel{}},
 		CalculatedAt: now,
@@ -209,6 +220,33 @@ func GetUserAnalytics(ctx context.Context, q Q, now time.Time) (*UserAnalytics, 
 		return nil, err
 	}
 	trendRows.Close()
+
+	slotRows, err := q.Query(ctx, `WITH runs AS (
+		SELECT user_id, created_at AT TIME ZONE 'Asia/Shanghai' AS local_at
+		FROM tasks WHERE created_at >= $1::timestamptz-interval '30 days'
+		UNION ALL
+		SELECT user_id, created_at AT TIME ZONE 'Asia/Shanghai'
+		FROM assistant_runs WHERE created_at >= $1::timestamptz-interval '30 days'
+	)
+	SELECT extract(isodow FROM local_at)::int AS weekday, extract(hour FROM local_at)::int AS hour,
+		count(*), count(DISTINCT user_id)
+	FROM runs GROUP BY weekday, hour ORDER BY weekday, hour`, now)
+	if err != nil {
+		return nil, err
+	}
+	for slotRows.Next() {
+		var item UserAnalyticsTaskSlot
+		if err := slotRows.Scan(&item.Weekday, &item.Hour, &item.Tasks, &item.Users); err != nil {
+			slotRows.Close()
+			return nil, err
+		}
+		result.TaskHeatmap = append(result.TaskHeatmap, item)
+	}
+	if err := slotRows.Err(); err != nil {
+		slotRows.Close()
+		return nil, err
+	}
+	slotRows.Close()
 
 	retentionRows, err := q.Query(ctx, `WITH accounts AS (
 		SELECT id, (created_at AT TIME ZONE 'Asia/Shanghai')::date AS created_day,

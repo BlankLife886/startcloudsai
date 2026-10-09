@@ -32,7 +32,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -157,41 +156,6 @@ func orderPaymentState(order *store.Order, now time.Time) string {
 		// order expired or report a payment made just before the deadline.
 		return "timed_out"
 	}
-}
-
-// ---------- payment channel health ----------
-
-type paymentChannelCache struct {
-	mu        sync.Mutex
-	checkedAt time.Time
-	online    bool
-}
-
-const paymentChannelCacheTTL = 20 * time.Second
-
-// paymentChannelOnline asks the provider whether the phone listener is online.
-// A listener that is offline cannot observe payments, so checkout is refused.
-// A failed health lookup does not block checkout; the order flow itself
-// reports provider failures.
-func (s *Server) paymentChannelOnline(ctx context.Context, client *lanjingpay.Client) bool {
-	cache := &s.paymentChannel
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	if !cache.checkedAt.IsZero() && time.Since(cache.checkedAt) < paymentChannelCacheTTL {
-		return cache.online
-	}
-	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	state, err := client.GetServerState(lookupCtx)
-	if err != nil {
-		log.Printf("lanjing pay listener state unavailable: %v", err)
-		return true
-	}
-	cache.checkedAt, cache.online = time.Now(), state.State == 1
-	if !cache.online {
-		log.Printf("lanjing pay listener offline: state=%d lastHeartbeat=%s", state.State, state.LastHeartbeat)
-	}
-	return cache.online
 }
 
 // ---------- opening a payment ----------
@@ -395,6 +359,93 @@ func (s *Server) saveCheckResult(ctx context.Context, orderID uuid.UUID, syncErr
 	}
 }
 
+// paymentCheckAvailable reports whether the user may ask for an immediate
+// provider check: an unpaid provider order that could still receive a late
+// payment.
+func paymentCheckAvailable(order *store.Order, now time.Time) bool {
+	if order.Provider != "lanjing" || order.PaidAt != nil || order.ProviderOrderID == nil ||
+		!now.Before(order.CreatedAt.Add(latePaymentWindow)) {
+		return false
+	}
+	switch order.Status {
+	case "pending", "expired", "cancelled", "failed":
+		return true
+	}
+	return false
+}
+
+// userPaymentCheckInterval limits "I have paid" checks per order.
+const userPaymentCheckInterval = 10 * time.Second
+
+// checkOrderPayment handles "I have paid": it asks the provider about the
+// order right away, including orders already closed locally, and schedules
+// the reconciler to keep looking soon.
+func (s *Server) checkOrderPayment(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	orderID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	order, err := store.GetUserOrder(ctx, s.St.Pool, user.ID, orderID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if order == nil {
+		fail(c, apperr.E("order_not_found", "订单不存在", 404))
+		return
+	}
+	if order.PaidAt != nil && order.Status != "completed" {
+		ok(c, orderDict(s.refreshUserOrder(ctx, order)))
+		return
+	}
+	if !paymentCheckAvailable(order, time.Now()) {
+		ok(c, orderDict(order))
+		return
+	}
+	if s.UsageLimiter != nil {
+		wait, allowed, err := s.UsageLimiter.Take(ctx, "payment-check", order.ID.String(), 1, 1, userPaymentCheckInterval)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		if !allowed {
+			c.Header("Retry-After", strconv.Itoa(max(1, int(wait.Seconds()))))
+			fail(c, apperr.E("payment_check_too_frequent", "刚刚已核实过，请稍后再试", 429))
+			return
+		}
+	}
+	client, _, err := s.resolveLanjingPay(ctx)
+	if err != nil || client == nil {
+		fail(c, apperr.E("payment_unavailable", "支付渠道暂不可用，请稍后重试", 503))
+		return
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	_, _, syncErr := s.syncLanjingOrder(lookupCtx, client, order)
+	if order.Status != "pending" && lanjingpay.IsOrderNotFound(syncErr) {
+		syncErr = nil // the provider already purged a closed, unpaid order
+	}
+	persistCtx := context.WithoutCancel(ctx)
+	s.saveCheckResult(persistCtx, order.ID, syncErr)
+	if err := store.ExpediteOrderReconciliation(persistCtx, s.St.Pool, order.ID); err != nil {
+		log.Printf("expedite order %s after user payment check: %v", order.ID, err)
+	}
+	latest, err := store.GetOrder(ctx, s.St.Pool, order.ID)
+	if err != nil || latest == nil {
+		latest = order
+	}
+	out := orderDict(latest)
+	out["checked"] = true
+	ok(c, out)
+}
+
 // ---------- user cancellation ----------
 
 // cancelLanjingOrder closes an unpaid order at the provider first, so a QR
@@ -532,6 +583,8 @@ func (s *Server) lanjingPaymentNotify(c *gin.Context) {
 		s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, ClientIP: c.ClientIP(),
 			Category: "payment_callback_mismatch", Severity: "critical", Score: 100, Action: "blocked",
 			Reason: mismatch, Metadata: map[string]any{"orderId": order.ID.String(), "price": price, "reallyPrice": reallyPrice, "type": paymentType}})
+		s.notifyPaymentAdmins("callback_mismatch:"+order.ID.String(), "【告警】支付回调与订单不一致",
+			paymentIssueBody(order, "收到验签通过的支付回调，但金额或支付方式与订单不一致，未自动入账，需要人工核查。", mismatch))
 		acknowledge("order_mismatch", mismatch)
 		return
 	}
@@ -628,6 +681,11 @@ func (s *Server) reconcilePaymentOrder(ctx context.Context, order *store.Order, 
 		_ = store.ResolveOrderReconciliationRisks(ctx, s.St.Pool, order.ID)
 	case "identity_or_amount_mismatch", "repair_failed":
 		if order.ReconcileAttempts%10 == 0 {
+			lead := "渠道已确认收款，但本站发放权益失败，系统会继续重试。"
+			if result.Outcome == "identity_or_amount_mismatch" {
+				lead = "渠道订单与本站订单不一致，未自动处理，需要人工核查。"
+			}
+			s.notifyPaymentAdmins(result.Outcome+":"+order.ID.String(), "【告警】支付对账异常", paymentIssueBody(order, lead, *result.Detail))
 			s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, Category: "payment_reconciliation",
 				Severity: "high", Score: 60, Action: "observed", Reason: *result.Detail,
 				Metadata: map[string]any{"orderId": order.ID.String(), "outcome": result.Outcome}})
@@ -656,7 +714,20 @@ func reconciliationDelay(order *store.Order, failed bool, now time.Time) time.Du
 		}
 		return 10 * time.Second
 	case order.ProviderOrderID != nil && now.Before(order.CreatedAt.Add(latePaymentWindow)):
-		return 10 * time.Minute
+		// Late payments are most likely right after the QR code closes (slow
+		// users, delayed listener notifications), so check those often.
+		closedFor := now.Sub(order.CreatedAt)
+		if order.ProviderExpiresAt != nil {
+			closedFor = now.Sub(*order.ProviderExpiresAt)
+		}
+		switch {
+		case closedFor < 30*time.Minute:
+			return 30 * time.Second
+		case closedFor < 2*time.Hour:
+			return 2 * time.Minute
+		default:
+			return 10 * time.Minute
+		}
 	default:
 		return 0
 	}
@@ -727,4 +798,15 @@ func (s *Server) recordPaymentIssue(ctx context.Context, order *store.Order, out
 		log.Printf("payment issue audit order=%s outcome=%s: %v", order.ID, outcome, err)
 	}
 	s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, Category: "payment_reconciliation", Severity: "high", Score: 60, Action: "observed", Reason: detail, Metadata: map[string]any{"orderId": order.ID.String(), "providerOrderId": providerID, "outcome": outcome}})
+	s.notifyPaymentAdmins(outcome+":"+order.ID.String(), "【告警】支付下单异常", paymentIssueBody(order, "创建支付订单时出现需要关注的问题。", detail))
+}
+
+func paymentIssueBody(order *store.Order, lead, detail string) string {
+	lines := []string{lead, "", "本站订单：" + order.ID.String(),
+		fmt.Sprintf("金额：%.2f 元", float64(order.AmountCents)/100)}
+	if order.ProviderOrderID != nil {
+		lines = append(lines, "渠道订单："+*order.ProviderOrderID)
+	}
+	lines = append(lines, "详情："+detail, "", "请到管理后台「支付对账」查看并处理。")
+	return strings.Join(lines, "\n")
 }

@@ -103,7 +103,7 @@ func TestCancellationRemainsDistinctAndVerifiedReconciliationRecovers(t *testing
 	if err != nil || wallet.BalanceCents != 0 {
 		t.Fatalf("cancel granted credit: %+v %v", wallet, err)
 	}
-	if delay := reconciliationDelay(fresh, false, time.Now()); delay != 10*time.Minute {
+	if delay := reconciliationDelay(fresh, false, time.Now()); delay != 30*time.Second {
 		t.Fatalf("cancelled audit delay: %s", delay)
 	}
 	state.Store(1)

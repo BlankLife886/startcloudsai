@@ -1221,6 +1221,24 @@ export function PricingView() {
     });
   }
 
+  // Applies the answer of an "I have paid" check to the open checkout.
+  function applyCheckedOrder(current) {
+    if (!current?.id) return;
+    rememberOrder(current);
+    setCheckout((value) =>
+      value?.order?.id === current.id
+        ? { ...value, order: mergePaymentOrder(value.order, current), error: "" }
+        : value,
+    );
+    if (current.status === "completed") {
+      apiGet("/me/wallet")
+        .then((wallet) => {
+          if (wallet) window.dispatchEvent(new CustomEvent("starclouds:wallet-updated", { detail: wallet }));
+        })
+        .catch(() => {});
+    }
+  }
+
   function resumeUnpaidOrder() {
     const order = unsettledOrders.find((item) => item.status === "pending") || unsettledOrders[0];
     if (!order) return;
@@ -1634,6 +1652,7 @@ export function PricingView() {
                 onRequestCancel={() => setCheckout((value) => ({ ...value, cancelConfirm: true, error: "" }))}
                 onKeepPaying={() => setCheckout((value) => ({ ...value, cancelConfirm: false }))}
                 onClaimPaid={(claimed) => setCheckout((value) => ({ ...value, claimedPaid: claimed }))}
+                onOrderUpdate={applyCheckedOrder}
                 onRetry={() =>
                   checkout.order?.subscriptionChangeId ? navigate("/subscriptions") : startCheckout(checkout.plan)
                 }

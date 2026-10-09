@@ -26,7 +26,7 @@ import {
   listOrders,
 } from "@react/legacy-modules/services/billingApi.js";
 import { refreshWalletSnapshot } from "@react/legacy-modules/services/walletSync.js";
-import { isConfirmingOrder, isUnsettledOrder } from "./CheckoutOrderStage.jsx";
+import { PaymentCheckButton, isConfirmingOrder, isUnsettledOrder } from "./CheckoutOrderStage.jsx";
 import "./OrdersView.css";
 
 const PAGE_SIZE = 12;
@@ -640,6 +640,14 @@ export function OrdersView() {
     }
   }
 
+  // Applies the answer of an "I have paid" check to the open order.
+  function applyCheckedOrder(current) {
+    if (!current?.id) return;
+    setSelected((value) => value?.id === current.id ? mergeOrderDetails(value, current) : value);
+    if (current.status === "completed") void refreshWalletSnapshot().catch(() => null);
+    void load(cursor, { quiet: true });
+  }
+
   async function copyText(event, value) {
     event.stopPropagation();
     try {
@@ -983,6 +991,7 @@ export function OrdersView() {
             {!detailLoading && selected.paymentState === "creating" && <div className="order-dialog__state" role="status">支付订单正在创建，请稍后刷新。</div>}
             {!detailLoading && selected.checkError && !canShowPaymentQR(selected, now) && isUnsettledOrder(selected) && <div className="order-dialog__state" role="status">支付渠道暂时无法确认结果，系统会自动重试。如长时间未到账，请联系客服并提供订单号。</div>}
             {["cancelled", "expired", "failed"].includes(selected.status) && !isConfirmingOrder(selected) && <div className="order-dialog__state">如果你在订单关闭前已经付款，系统会自动补单到账，请勿重复支付。<Link to="/pricing">重新选择套餐</Link></div>}
+            {!detailLoading && !isConfirmingOrder(selected) && (isPaymentExpired(selected, now) || ["cancelled", "expired", "failed"].includes(selected.status)) && <PaymentCheckButton order={selected} onOrder={applyCheckedOrder} className="order-dialog__paycheck" t={(text) => text} />}
             {detailError && <div className="order-dialog__error" role="alert">{detailError}<button type="button" disabled={detailRefreshing || closing} onClick={() => void refreshDetails(selected.id)}>重试</button></div>}
             </div>
             {!detailLoading && selected.status === "completed" && <footer className="order-dialog__footer">

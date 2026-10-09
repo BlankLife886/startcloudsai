@@ -111,7 +111,8 @@ type Server struct {
 	c2aCallbackRoutes func(context.Context, uuid.UUID) ([]store.AsyncPendingRoute, error)
 	enqueueImagePoll  func(context.Context, string, string, string, int, time.Duration) error
 	pageControls      pageControlCache
-	paymentChannel    paymentChannelCache
+	paymentListener   paymentListenerTracker
+	paymentAlerts     paymentAlertMailer
 	modelStatus       modelStatusCache
 	backgroundCancel  context.CancelFunc
 	backgroundWG      sync.WaitGroup
@@ -488,6 +489,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/orders", s.listOrders)
 	api.GET("/orders/:id", s.getOrder)
 	api.POST("/orders/:id/close", s.closeOrder)
+	api.POST("/orders/:id/payment-check", s.checkOrderPayment)
 	api.GET("/payments/lanjing/notify", s.lanjingPaymentNotify)
 
 	// meta
@@ -710,6 +712,8 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/providers/sub2api/tests", s.adminOnly(s.adminTestSub2API))
 	admin.POST("/providers/crun/tests", s.adminOnly(s.adminTestCRUN))
 	admin.POST("/providers/lanjing-pay/tests", s.adminOnly(s.adminTestLanjingPay))
+	admin.GET("/payment-listener", s.adminOnly(s.adminPaymentListenerStatus))
+	admin.POST("/payment-listener/test-alert", s.adminOnly(s.adminTestPaymentAlertEmail))
 	admin.GET("/assistant/quality", s.adminOnly(s.adminAssistantQuality))
 	admin.GET("/assistant/quality/cases", s.adminOnly(s.adminAssistantQualityCases))
 	admin.PATCH("/assistant/quality/cases/:id", s.adminOnly(s.adminPatchAssistantQualityCase))

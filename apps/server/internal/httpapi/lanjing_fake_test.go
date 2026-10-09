@@ -30,6 +30,7 @@ type fakeLanjing struct {
 
 	// Knobs a test may change before the call it wants to influence.
 	ListenerState int    // /getState state; 1 = online
+	StateFailure  bool   // /getState answers with a transport error
 	IsAuto        int    // isAuto returned by /createOrder
 	CreateFailure string // "", "transport" or an API error message
 	CloseFailure  string // API error message returned by /closeOrder
@@ -81,6 +82,12 @@ func (f *fakeLanjing) order(id string) fakeLanjingOrder {
 	return *o
 }
 
+func (f *fakeLanjing) setListener(state int, failing bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ListenerState, f.StateFailure = state, failing
+}
+
 func (f *fakeLanjing) setState(id string, state int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -128,6 +135,10 @@ func (f *fakeLanjing) serve(w http.ResponseWriter, r *http.Request) {
 	form := r.Form
 	switch r.URL.Path {
 	case "/getState":
+		if f.StateFailure {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
 		if form.Get("sign") != lanjingpay.MD5(form.Get("t"), f.secret) {
 			f.reply(w, -1, "签名校验不通过", nil)
 			return

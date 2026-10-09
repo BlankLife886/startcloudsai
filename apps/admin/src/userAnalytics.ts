@@ -27,6 +27,14 @@ export interface DailyPoint {
   upstreamCostCents?: number
 }
 
+/** 近 30 天任务在北京时间 星期 × 小时 的分布；weekday 1=周一 … 7=周日，只含有任务的格子 */
+export interface TaskSlot {
+  weekday: number
+  hour: number
+  tasks: number
+  users: number
+}
+
 export interface FeatureFunnel {
   feature: string
   opens: number
@@ -92,6 +100,7 @@ export interface UserAnalyticsData {
     value: DistributionItem[]
   }
   dailyTrend: DailyPoint[]
+  taskHeatmap?: TaskSlot[]
   retention: RetentionCohort[]
   funnel: {
     trackingSince?: string | null
