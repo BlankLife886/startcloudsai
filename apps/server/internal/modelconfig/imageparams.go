@@ -27,7 +27,7 @@ const (
 
 // Quality modes of an image parameter profile.
 const (
-	ImageQualitySend = "send" // pass the platform value (low/medium/high/auto)
+	ImageQualitySend = "send" // pass the platform value (low/medium/high/xhigh/max/auto)
 	ImageQualityMap  = "map"  // translate through QualityMap; unmapped values are dropped
 	ImageQualityDrop = "drop" // never send quality
 )

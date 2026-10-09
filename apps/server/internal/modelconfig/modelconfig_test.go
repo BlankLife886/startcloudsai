@@ -402,7 +402,7 @@ func TestLegacyImageModelReceivesDefaultCapabilities(t *testing.T) {
 	}
 	normalize(&cfg)
 	model := cfg.Models[0]
-	if len(model.AspectRatios) != len(ImageAspectRatios) || len(model.Qualities) != len(ImageQualities) {
+	if len(model.AspectRatios) != len(ImageAspectRatios) || len(model.Qualities) != len(DefaultImageQualities) {
 		t.Fatalf("legacy capabilities were not populated: %#v", model)
 	}
 	if !model.TransparentBackground || model.MaxReferenceImages != 4 || model.MaxImages != 4 {

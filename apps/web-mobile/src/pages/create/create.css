@@ -369,6 +369,18 @@ html[data-editing="true"] .m-composer {
   color: var(--m-text-3);
 }
 
+/* 动态调价时模型名后的「限时降 20%」标签；图标不套用上面的分隔点样式。 */
+.m-dock-items .m-dock-tag {
+  align-self: center;
+  margin-left: 8px;
+}
+
+.m-dock-items .m-dock-tag i {
+  margin: 0;
+  font-weight: inherit;
+  color: inherit;
+}
+
 .m-composer-card {
   margin-top: 8px;
   padding: 8px 8px 8px 4px;

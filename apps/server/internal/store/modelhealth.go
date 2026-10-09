@@ -45,7 +45,8 @@ type ModelHealthAgg struct {
 
 // modelHealthSamplesSQL yields one row per finished generation in
 // [$1, $2): image tasks attribute to the public model that served them
-// (params._modelConfigId), assistant chat/agent turns to their chat model.
+// (params._modelConfigId, or the public model of a resolution slot when a
+// backup member served it), assistant chat/agent turns to their chat model.
 // Assistant mirror tasks (type 'assistant') and image-mode assistant runs are
 // left out so nothing is counted twice.
 var modelHealthSamplesSQL = strings.NewReplacer(
@@ -53,7 +54,7 @@ var modelHealthSamplesSQL = strings.NewReplacer(
 	"{{run_user_caused}}", modelHealthUserCausedSQL("run.error_code"),
 ).Replace(`
 WITH samples AS (
-	SELECT params->>'_modelConfigId' AS model_id, finished_at,
+	SELECT COALESCE(params->>'_slotModelId', params->>'_modelConfigId') AS model_id, finished_at,
 		CASE
 			WHEN status = 'succeeded' THEN 's'
 			WHEN status = 'canceled' OR {{task_user_caused}} THEN 'x'

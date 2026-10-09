@@ -28,8 +28,10 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/commerceset"
 	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
 	"github.com/BlankLife886/startcloudsai/server/internal/executionconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/imageslots"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/pricerules"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -1080,7 +1082,8 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	modelCfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
+	// Prices follow the dynamic-pricing rules in force now (Beijing time).
+	modelCfg, err := pricerules.LoadSiteConfig(c.Request.Context(), s.St.Pool, time.Now())
 	if err != nil {
 		fail(c, err)
 		return
@@ -1534,8 +1537,38 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			imageSelection.Model, body.Resolution,
 		)
 	}
+	// A direct image run is priced and routed at its resolution × quality
+	// tier; agent runs only carry the catalog for later proposals.
+	var imageTierParams map[string]any
+	if imageSelection != nil && body.Mode == "image" {
+		imageTierParams = assistantImageTierParams(&body)
+	}
 	if imageSelection != nil {
 		imageWorkspacePrice := modelconfig.ResolveWorkspacePrice(modelCfg, workspace, imageSelection.Model)
+		imageUpstreamUnitCost := imageSelection.Model.UpstreamCostCents
+		if imageTierParams != nil {
+			tier := modelconfig.ImageBillingTier(imageSelection.Model, imageTierParams)
+			if modelconfig.HasImagePricing(imageSelection.Model) {
+				imageWorkspacePrice = modelconfig.ResolveImageTierPrice(imageSelection.Model, tier)
+				imageUpstreamUnitCost = modelconfig.ImageTierUpstreamCost(imageSelection.Model, tier)
+				params["_billingResolution"] = tier.Resolution
+				params["_billingQuality"] = tier.Quality
+			}
+			plan, planErr := imageslots.PlanFor(c.Request.Context(), s.St.Pool, imageSelection.Model, tier.Resolution)
+			if planErr != nil {
+				fail(c, planErr)
+				return
+			}
+			if plan.Unavailable {
+				fail(c, apperr.E("resolution_unavailable", fmt.Sprintf("%s 分辨率的生图服务暂时不可用，请稍后再试或换一个分辨率", tier.Resolution), 503))
+				return
+			}
+			if plan.Configured {
+				params["_imageSlotModelId"] = imageSelection.Model.ID
+				params["_imageSlotResolution"] = tier.Resolution
+				params["_imageSlotModelIds"] = plan.Candidates
+			}
+		}
 		params["_imageModelConfigId"] = imageSelection.Model.ID
 		params["_imageProviderConfigId"] = imageSelection.Provider.ID
 		params["_imageProviderDisplayName"] = imageSelection.Provider.Name
@@ -1554,7 +1587,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		params["_unitPriceCents"] = imageWorkspacePrice.EffectiveCents
 		params["_billingUnitPriceCents"] = imageWorkspacePrice.EffectiveCents
 		params["_modelEffectivePriceCents"] = modelconfig.EffectivePrice(imageSelection.Model)
-		params["_imageUpstreamUnitCostCents"] = imageSelection.Model.UpstreamCostCents
+		params["_imageUpstreamUnitCostCents"] = imageUpstreamUnitCost
 		params["_pricingWorkspace"] = workspace
 	}
 	if chatSelection != nil {
@@ -1590,7 +1623,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	if imageSelection != nil {
 		// 定价与零价/倒挂两道闸走 assistantprice，Agent 执行中创建出图任务时用的是同一段代码，
 		// 避免同一张图在两个入口算出两个价格。
-		imagePrice, priceErr := assistantprice.GuardImageModel(modelCfg, workspace, imageSelection, body.Count)
+		imagePrice, priceErr := assistantprice.GuardImageModel(modelCfg, workspace, imageSelection, body.Count, imageTierParams)
 		if priceErr != nil {
 			fail(c, priceErr)
 			return
@@ -1664,7 +1697,12 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		var billingDecision *store.BillingDecision
 		if pricingModel != nil {
 			feature, _ := trialfeature.ForAssistantParams(params)
-			billingDecision, err = contractpricing.Resolve(c.Request.Context(), tx, contractpricing.Request{UserID: user.ID, Feature: feature.Key, Workspace: workspace, ModelID: pricingModel.Model.ID, Channel: "web", PublicUnitPoints: pricingUnit, Count: pricingCount, ReasoningScope: pricingScope, ReasoningEffort: body.ReasoningEffort})
+			billingResolution, _ := params["_billingResolution"].(string)
+			billingQuality, _ := params["_billingQuality"].(string)
+			if body.Mode != "image" {
+				billingResolution, billingQuality = "", ""
+			}
+			billingDecision, err = contractpricing.Resolve(c.Request.Context(), tx, contractpricing.Request{UserID: user.ID, Feature: feature.Key, Workspace: workspace, ModelID: pricingModel.Model.ID, Channel: "web", PublicUnitPoints: pricingUnit, Count: pricingCount, ReasoningScope: pricingScope, ReasoningEffort: body.ReasoningEffort, Resolution: billingResolution, Quality: billingQuality, Site: true})
 			if err != nil {
 				return err
 			}
@@ -2608,6 +2646,16 @@ func normalizeAssistantReferenceMode(value string) (string, error) {
 	default:
 		return "", apperr.E("validation_error", "referenceMode: 仅支持 shared 或 individual", 422)
 	}
+}
+
+// assistantImageTierParams are the normalized size and quality of a direct
+// image run, in the shape modelconfig.ImageBillingTier reads.
+func assistantImageTierParams(body *assistantRunIn) map[string]any {
+	params := map[string]any{"resolution": body.Resolution, "quality": body.Quality}
+	if body.SizeMode == "exact" {
+		params["sizeMode"], params["exactWidth"], params["exactHeight"] = "exact", body.ExactWidth, body.ExactHeight
+	}
+	return params
 }
 
 func normalizeAssistantConfiguredImageParameters(body *assistantRunIn, model modelconfig.Model) (bool, error) {

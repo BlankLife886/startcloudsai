@@ -8,6 +8,7 @@ import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
+import { PriceAdjustmentTag } from "../components/common/PriceAdjustmentTag.jsx";
 import {
   PAGE_TYPES,
   VISUAL_STYLES,
@@ -30,6 +31,7 @@ import {
 } from "../features/design-workshop/designSystem.js";
 import { resolveTaskMedia } from "../features/task-media/taskMediaResults.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { useSitePriceRefresh } from "../hooks/useSitePriceRefresh.js";
 import {
   getModelAspectRatiosForResolution,
   normalizeImageModelCapabilities,
@@ -501,7 +503,15 @@ function WorkshopSelect({
               ) : (
                 <i className={`bi ${item.icon || icon}`} />
               )}
-              <span>{item.label}</span>
+              {/* 限时调价标签放在名称这一格里，不占勾选那一列。 */}
+              {item.model ? (
+                <span className="dws-option-label">
+                  <span>{item.label}</span>
+                  <PriceAdjustmentTag model={item.model} compact />
+                </span>
+              ) : (
+                <span>{item.label}</span>
+              )}
               {item.model ? <ModelMaintenanceBadge model={item.model} /> : null}
               {item.value === value && <i className="bi bi-check2" />}
             </button>
@@ -1039,6 +1049,8 @@ function DesignWorkshopWorkspace() {
   const regionContinueLockRef = useRef(false);
   const manualStartRef = useRef(null);
   const [models, setModels] = useState([]);
+  // 动态调价到点只换模型列表（价格），已选模型不变。
+  useSitePriceRefresh((config) => setModels(featureModels(config)));
   const [modelId, setModelId] = useState("");
   const [brief, setBrief] = useState("");
   const [iterationBrief, setIterationBrief] = useState("");

@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { ModelCatalogIcon, ModelMaintenanceBadge } from "@react/components/common/ModelCatalogIcon.jsx";
+import { PriceAdjustmentTag } from "@react/components/common/PriceAdjustmentTag.jsx";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -70,9 +71,10 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                         <span className="min-w-0 flex-1 truncate text-[14px] font-semibold tracking-tight">{current ? modelOptionLabel(config, current) : placeholder}</span>
                         {current ? (
                             <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: colorWash(accent, 0.12), color: accent }}>
-                                {[formatModelPrice(currentMeta), formatModelDiscount(currentMeta)].filter(Boolean).join(" · ")}
+                                {[formatModelPrice(currentMeta), currentMeta?.priceAdjustment ? "" : formatModelDiscount(currentMeta)].filter(Boolean).join(" · ")}
                             </span>
                         ) : null}
+                        {current ? <PriceAdjustmentTag model={currentMeta} /> : null}
                     </span>
                 ) : (
                     <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{current ? modelOptionLabel(config, current) : placeholder}</span>
@@ -120,7 +122,8 @@ function ModelLabel({ config, model, capability }: { config: AiConfig; model: st
             <span className="min-w-0 flex-1 truncate">{modelOptionLabel(config, model)}</span>
             <ModelMaintenanceBadge model={meta} />
             {!maintenance ? <span className="shrink-0 text-xs text-muted-foreground">{formatModelPrice(meta)}</span> : null}
-            {!maintenance && formatModelDiscount(meta) ? <span className="shrink-0 rounded bg-red-50 px-1 py-0.5 text-[11px] font-medium text-red-600 dark:bg-red-950/40 dark:text-red-300">{formatModelDiscount(meta)}</span> : null}
+            {!maintenance && meta?.priceAdjustment ? <PriceAdjustmentTag model={meta} /> : null}
+            {!maintenance && !meta?.priceAdjustment && formatModelDiscount(meta) ? <span className="shrink-0 rounded bg-red-50 px-1 py-0.5 text-[11px] font-medium text-red-600 dark:bg-red-950/40 dark:text-red-300">{formatModelDiscount(meta)}</span> : null}
         </span>
     );
 }

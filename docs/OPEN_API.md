@@ -104,7 +104,7 @@ curl -sS --max-time 270 "$STAR_CLOUD_BASE_URL/images/generations" \
 | `prompt` | 必填 |
 | `n` | 默认 1，1–10，且不超过模型的单次张数上限 |
 | `size` | 默认 `auto`（模型原生尺寸）。`宽x高` 需模型支持精确尺寸，否则返回 400，不会偷偷缩放 |
-| `quality` | 默认 `auto`；`low`、`medium`、`high`，`standard`/`hd` 分别视为 `medium`/`high` |
+| `quality` | 默认 `auto`；`low`、`medium`、`high`、`xhigh`、`max`（后两档需模型支持），`standard`/`hd` 分别视为 `medium`/`high`。开发者 API 按 API 模型目录价计费，不使用站内的分辨率 × 质量分档价 |
 | `response_format` | `b64_json`（默认）或 `url` |
 | `output_format` | `png`、`jpeg`、`webp`。模型支持指定格式时生效；模型只输出原生格式时忽略此字段 |
 | `background` | `auto`（默认）、`opaque`、`transparent`；透明背景需模型支持，且不能搭配 JPEG |

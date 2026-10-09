@@ -14,6 +14,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/contentpolicy"
 	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/pricerules"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/trialfeature"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
@@ -578,7 +579,7 @@ func Requeue(ctx context.Context, q store.Q, run *store.AssistantRun) (bool, err
 	nextGeneration := run.BillingGeneration + 1
 	modelID := paramString(run.Params, "_modelConfigId")
 	if modelID != "" {
-		cfg, err := modelconfig.Load(ctx, q)
+		cfg, err := pricerules.LoadSiteConfig(ctx, q, store.BillingTime(ctx))
 		if err != nil {
 			return false, err
 		}
@@ -606,7 +607,7 @@ func Requeue(ctx context.Context, q store.Q, run *store.AssistantRun) (bool, err
 				unit = modelconfig.ResolveReasoningPrice(*model, paramString(run.Params, "reasoningEffort"), scope).EffectiveCents
 			}
 		}
-		d, err := contractpricing.Resolve(ctx, q, contractpricing.Request{UserID: run.UserID, Feature: trialFeatureKey(run), Workspace: workspace, ModelID: modelID, Channel: "web", PublicUnitPoints: unit, Count: count, ReasoningScope: scope, ReasoningEffort: paramString(run.Params, "reasoningEffort")})
+		d, err := contractpricing.Resolve(ctx, q, contractpricing.Request{UserID: run.UserID, Feature: trialFeatureKey(run), Workspace: workspace, ModelID: modelID, Channel: "web", PublicUnitPoints: unit, Count: count, ReasoningScope: scope, ReasoningEffort: paramString(run.Params, "reasoningEffort"), Site: true})
 		if err != nil {
 			return false, err
 		}

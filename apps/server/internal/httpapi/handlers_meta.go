@@ -6,7 +6,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/imageslots"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/pricerules"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
@@ -21,7 +23,7 @@ func (s *Server) pricing(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	modelCfg, err := modelconfig.Load(ctx, s.St.Pool)
+	modelCfg, err := pricerules.LoadSiteConfig(ctx, s.St.Pool, time.Now())
 	if err != nil {
 		fail(c, err)
 		return
@@ -49,7 +51,21 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	cfg, err := modelconfig.Load(ctx, s.St.Pool)
+	// Site prices follow the dynamic-pricing rules in force now (Beijing
+	// time); nextChangeAt tells clients when to fetch prices again.
+	site, err := pricerules.LoadSite(ctx, s.St.Pool, time.Now())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	cfg := site.Config
+	decorate := func(item gin.H, modelID string) gin.H {
+		for key, value := range sitePricingMeta(site, modelID) {
+			item[key] = value
+		}
+		return item
+	}
+	unavailableResolutions, err := imageslots.UnavailableResolutions(ctx, s.St.Pool, cfg)
 	if err != nil {
 		fail(c, err)
 		return
@@ -62,7 +78,16 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 	imageItem := func(selection modelconfig.Selection, isDefault bool, workspace string) gin.H {
 		model := selection.Model
 		price := modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
-		return gin.H{
+		low, high := modelconfig.WorkspacePriceBounds(cfg, workspace, model)
+		if modelconfig.HasImagePricing(model) {
+			// Tiered models list from their cheapest cell; the exact price
+			// comes from the quote for the chosen resolution and quality.
+			price = modelconfig.ResolvedWorkspacePrice{PriceCents: low, EffectiveCents: low}
+		}
+		return decorate(gin.H{
+			"imagePricing": modelconfig.PublicImagePricing(model), "defaultQuality": modelconfig.DefaultImageQuality(model),
+			"unavailableResolutions": nonNilStrings(unavailableResolutions[model.ID]),
+			"minPricePoints":         low, "maxPricePoints": high,
 			"id": model.ID, "publicModelKey": model.ID, "label": model.Name, "name": model.Name,
 			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
 			"kind":         model.Kind,
@@ -78,13 +103,13 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
 			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
 			"maxImages": model.GenerationMaxImages(),
-		}
+		}, model.ID)
 	}
 	chatItem := func(selection modelconfig.Selection, isDefault bool, workspace string) gin.H {
 		model := selection.Model
 		price := modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
 		reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems := reasoningModelPayload(model, &cfg)
-		return gin.H{
+		return decorate(gin.H{
 			"id": model.ID, "model": model.ID, "label": model.Name, "name": model.Name,
 			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
 			"kind":        model.Kind,
@@ -94,7 +119,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"default":                   isDefault,
 			"supportedReasoningEfforts": reasoningEfforts, "defaultReasoningEffort": defaultReasoningEffort,
 			"reasoningPrices": reasoningPrices, "reasoningEfforts": reasoningEffortItems,
-		}
+		}, model.ID)
 	}
 	toolItem := func(selection modelconfig.Selection) gin.H {
 		model := selection.Model
@@ -125,7 +150,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 				"highPricePoints":         highPrice,
 			}
 		}
-		return item
+		return decorate(item, model.ID)
 	}
 	for _, selection := range allModels {
 		model := selection.Model
@@ -142,7 +167,9 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			capabilities = []string{"textToImage", "imageToImage", "image.generate", "image.edit"}
 		}
 		price := modelconfig.EffectivePrice(model)
+		low, high := modelconfig.ImagePriceBounds(model)
 		item := gin.H{
+			"imagePricing": modelconfig.PublicImagePricing(model), "minPricePoints": low, "maxPricePoints": high,
 			"id": model.ID, "label": model.Name, "name": model.Name,
 			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
 			"kind": model.Kind, "tool": model.Tool, "description": model.Description, "capabilities": capabilities,
@@ -159,7 +186,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 				"unit":           map[bool]string{true: "image", false: "token"}[model.Kind != modelconfig.ModelKindChat],
 			},
 		}
-		catalogModels = append(catalogModels, item)
+		catalogModels = append(catalogModels, decorate(item, model.ID))
 		if model.Kind == modelconfig.ModelKindImage {
 			allImageModels = append(allImageModels, imageItem(selection, model.Default, ""))
 		}
@@ -234,7 +261,34 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"featurePublicModels": []any{}, "updatedAt": time.Now().UTC().Format(time.RFC3339),
 		},
 		"blacklist": gin.H{"blocked": false, "reason": ""}, "mqtt": nil,
+		"priceSchedule": gin.H{"timezone": "Asia/Shanghai", "nextChangeAt": optionalTime(site.NextChange)},
 	})
+}
+
+// sitePricingMeta tells the client why a model's price differs from usual:
+// the dynamic-pricing rule in force and the subscriber discount.
+func sitePricingMeta(site pricerules.SitePricing, modelID string) gin.H {
+	meta := gin.H{"priceAdjustment": nil, "subscriberDiscount": nil}
+	if active, ok := site.Active[modelID]; ok {
+		meta["priceAdjustment"] = gin.H{
+			"ruleName": active.RuleName, "kind": active.Kind,
+			"mode": active.Adjustment.Mode, "value": active.Adjustment.Value,
+			"endsAt": active.EndsAt.UTC().Format(time.RFC3339),
+		}
+	}
+	if site.Schedule.Subscriber.Enabled {
+		if discount, ok := site.Schedule.Subscriber.Models[modelID]; ok && discount.Value > 0 {
+			meta["subscriberDiscount"] = gin.H{"mode": discount.Mode, "value": discount.Value}
+		}
+	}
+	return meta
+}
+
+func optionalTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func (s *Server) metaChangelog(c *gin.Context) {

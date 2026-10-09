@@ -76,6 +76,42 @@ export function normalizeRuntimeConfig(config = {}) {
   }
 }
 
+// 动态调价：服务端在 priceSchedule.nextChangeAt 给出下一次有规则开始或结束的时刻。
+// 到点后清掉缓存并广播 SITE_PRICES_CHANGED，页面监听后重新拉取配置，价格和「限时调价」
+// 标签随之更新。只保留一个定时器；稍微错开几秒，避免所有标签页同时请求。
+export const SITE_PRICES_CHANGED = 'sc:site-prices-changed'
+const MAX_PRICE_TIMER_MS = 6 * 3600_000
+let priceTimer = null
+let priceTimerAt = 0
+
+export function schedulePriceRefresh(nextChangeAt) {
+  if (typeof window === 'undefined') return
+  const at = Date.parse(nextChangeAt || '')
+  if (!Number.isFinite(at)) return
+  if (priceTimer && priceTimerAt === at) return
+  if (priceTimer) window.clearTimeout(priceTimer)
+  priceTimerAt = at
+  const delay = Math.max(0, at - Date.now()) + 1000 + Math.floor(Math.random() * 3000)
+  priceTimer = window.setTimeout(() => {
+    priceTimer = null
+    if (delay > MAX_PRICE_TIMER_MS) {
+      // 很久以后的变化：先醒一次重新拉配置，再按最新时间安排。
+      priceTimerAt = 0
+      fetchRuntimeConfig({ force: true }).catch(() => null)
+      return
+    }
+    priceTimerAt = 0
+    clearRuntimeConfigCache()
+    window.dispatchEvent(new CustomEvent(SITE_PRICES_CHANGED))
+  }, Math.min(delay, MAX_PRICE_TIMER_MS))
+}
+
+export function onSitePricesChanged(handler) {
+  if (typeof window === 'undefined') return () => {}
+  window.addEventListener(SITE_PRICES_CHANGED, handler)
+  return () => window.removeEventListener(SITE_PRICES_CHANGED, handler)
+}
+
 export function clearRuntimeConfigCache() {
   cachedRuntimeConfig = null
   cachedRuntimeConfigAt = 0
@@ -94,6 +130,7 @@ export async function fetchRuntimeConfig({ force = false } = {}) {
   }).then((config) => {
     cachedRuntimeConfig = normalizeRuntimeConfig(config)
     cachedRuntimeConfigAt = Date.now()
+    schedulePriceRefresh(cachedRuntimeConfig.priceSchedule?.nextChangeAt)
     return cachedRuntimeConfig
   })
   runtimeConfigRequest = request

@@ -199,8 +199,8 @@ func normalizeOpenAIImageRequest(request openAIImageRequest) (openAIImageRequest
 	if !imageStringIn([]string{"auto", "opaque", "transparent"}, request.Background) {
 		return request, imageParameterError("background", "background 只支持 auto、opaque、transparent")
 	}
-	if !imageStringIn([]string{"auto", "low", "medium", "high", "standard", "hd"}, request.Quality) {
-		return request, imageParameterError("quality", "quality 只支持 auto、low、medium、high（standard、hd 分别视为 medium、high）")
+	if !imageStringIn([]string{"auto", "low", "medium", "high", "xhigh", "max", "standard", "hd"}, request.Quality) {
+		return request, imageParameterError("quality", "quality 只支持 auto、low、medium、high、xhigh、max（standard、hd 分别视为 medium、high）")
 	}
 	if request.OutputFormat != "" && !imageStringIn(modelconfig.ImageOutputFormats, request.OutputFormat) {
 		return request, imageParameterError("output_format", "output_format 只支持 png、jpeg、webp")

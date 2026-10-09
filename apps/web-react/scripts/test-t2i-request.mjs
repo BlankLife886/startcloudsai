@@ -70,3 +70,23 @@ test("feature models read the public catalog from runtime config", () => {
   const models = featureModels({ features: { "ai.wallpaperGeneration": { config: { publicModels: [{ id: "a" }, {}] } } } });
   assert.deepEqual(models.map((item) => item.id), ["a"]);
 });
+
+const { modelPointPriceRange, resolveModelTierPointPricing } = await import("../src/legacy-modules/features/ai-shared/modelPointPricing.js");
+
+test("tiered models price by resolution and quality", () => {
+  const tiered = {
+    pricePoints: 10, resolutions: ["1K", "4K"], defaultQuality: "medium",
+    imagePricing: {
+      "1K": { low: { priceCents: 5, discountPriceCents: null }, medium: { priceCents: 10, discountPriceCents: 8 } },
+      "4K": { low: { priceCents: 40, discountPriceCents: null }, medium: { priceCents: 60, discountPriceCents: null } },
+    },
+  };
+  assert.equal(resolveModelTierPointPricing(tiered, { resolution: "4K", quality: "low" }).effective, 40);
+  const discounted = resolveModelTierPointPricing(tiered, { resolution: "1K" });
+  assert.equal(discounted.effective, 8);
+  assert.equal(discounted.standard, 10);
+  assert.equal(discounted.hasDiscount, true);
+  assert.deepEqual(modelPointPriceRange(tiered), { min: 5, max: 60 });
+  assert.equal(modelPointPriceRange({ pricePoints: 10 }), null);
+  assert.equal(resolveModelTierPointPricing({ pricePoints: 12 }, { resolution: "4K", quality: "high" }).effective, 12);
+});

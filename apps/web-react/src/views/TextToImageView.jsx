@@ -31,6 +31,7 @@ import {
   fetchRuntimeConfig,
   getDefaultRuntimeConfig,
 } from "@react/legacy-modules/services/runtimeConfig.js";
+import { useSitePriceRefresh } from "../hooks/useSitePriceRefresh.js";
 import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
 import { getFeatureUnitPriceCents } from "@react/legacy-modules/services/pricing.js";
 import { quoteServerAiJob, registerUploadedUrl } from "@react/legacy-modules/services/aiWallpaper.js";
@@ -43,7 +44,7 @@ import {
 } from "@react/legacy-modules/services/promptLibrary.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { AI_WALLPAPER_STUDIO_DRAFT_KEY } from "@react/legacy-modules/services/aiWallpaperState.js";
-import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
+import { hasTimedPrice, modelPointPriceRange, resolveModelPointPricing, resolveModelTierPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import { resolveModelDisplayName } from "@react/legacy-modules/features/ai-shared/modelDisplay.js";
 import {
   getScopedLocalItem,
@@ -89,6 +90,7 @@ import { ExactImageSizeControl } from "../components/ExactImageSizeControl.jsx";
 import { validateExactImageSize } from "../config/exactImageSize.js";
 import { backgroundRemovalModelsOf, buildT2iPayload, featureModels, wallpaperFeature } from "../features/text-to-image/t2iRequest.js";
 import "./TextToImageView.css";
+import { PriceAdjustmentTag } from "../components/common/PriceAdjustmentTag.jsx";
 
 gsap.registerPlugin(useGSAP);
 
@@ -878,15 +880,17 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     if (!trigger) return;
     const rect = trigger.getBoundingClientRect();
     const viewportPadding = 12;
-    const desiredWidth = Math.max(rect.width, hasPricedModels ? 342 : 96);
-    const width = Math.min(
-      desiredWidth,
+    // 菜单至少和按钮一样宽，模型名较长时按内容向右展开（最多 520px，不超出窗口），
+    // 名称完整显示，不再被价格和「限时」标签挤成省略号。
+    const minWidth = Math.min(
+      Math.max(rect.width, hasPricedModels ? 342 : 96),
       Math.max(96, window.innerWidth - viewportPadding * 2),
     );
     const left = Math.min(
       Math.max(rect.left, viewportPadding),
-      Math.max(viewportPadding, window.innerWidth - width - viewportPadding),
+      Math.max(viewportPadding, window.innerWidth - minWidth - viewportPadding),
     );
+    const maxWidth = Math.max(minWidth, Math.min(520, window.innerWidth - left - viewportPadding));
     const spaceBelow = Math.max(
       96,
       window.innerHeight - rect.bottom - viewportPadding - 10,
@@ -894,7 +898,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     setModelMenuStyle({
       left: `${Math.round(left)}px`,
       top: `${Math.round(rect.bottom + 8)}px`,
-      width: `${Math.round(width)}px`,
+      width: "max-content",
+      minWidth: `${Math.round(minWidth)}px`,
+      maxWidth: `${Math.round(maxWidth)}px`,
       maxHeight: `${Math.min(360, Math.round(spaceBelow))}px`,
       zIndex: 1300,
     });
@@ -1035,6 +1041,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     { scope: rootRef, dependencies: [] },
   );
 
+  useSitePriceRefresh(setRuntime);
+
   useEffect(() => {
     let disposed = false;
     fetchRuntimeConfig()
@@ -1070,7 +1078,12 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
 
   const resolutionOptions = useMemo(() => {
     const supported = normalizeImageModelCapabilities(currentModel || {}).resolutions;
-    return T2I_RESOLUTION_OPTIONS.filter((option) => supported.includes(option.value));
+    const unavailable = new Set(currentModel?.unavailableResolutions || []);
+    return T2I_RESOLUTION_OPTIONS.filter((option) => supported.includes(option.value)).map((option) => (
+      unavailable.has(option.value)
+        ? { ...option, disabled: true, title: `${option.value} 的生图服务暂时不可用，请稍后再试` }
+        : option
+    ));
   }, [currentModel]);
 
   const qualityOptions = useMemo(() => {
@@ -1082,8 +1095,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     if (loading) return;
     if (!resolutionOptions.length) {
       if (resolution) setResolution("");
-    } else if (!resolutionOptions.some((item) => item.value === resolution)) {
-      setResolution(resolutionOptions[0].value);
+    } else if (!resolutionOptions.some((item) => item.value === resolution && !item.disabled)) {
+      setResolution((resolutionOptions.find((item) => !item.disabled) || resolutionOptions[0]).value);
     }
   }, [loading, resolution, resolutionOptions]);
 
@@ -1406,7 +1419,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
           hasAuthoritativeQuote
             ? quotedGenerationUnit
             : modelPriceConfigured
-            ? currentModel.creditCost
+            ? resolveModelTierPointPricing(currentModel, {
+                resolution, quality,
+                ...(imageSize.sizeMode === "exact" ? { exactWidth: imageSize.exactWidth, exactHeight: imageSize.exactHeight } : {}),
+              }).effective
             : serverPriceAvailable
               ? featurePrice.value
               : feature.creditCost,
@@ -1440,7 +1456,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         if (workspaceActiveRef.current) setQuotingCost(false);
       }
     }
-  }, [autoRemove, backgroundRemovalModel, backgroundRemovalModels, buildPayload, count, currentModel, feature.creditCost]);
+  }, [autoRemove, backgroundRemovalModel, backgroundRemovalModels, buildPayload, count, currentModel, feature.creditCost, imageSize, quality, resolution]);
 
   const submitGeneration = useCallback(async ({ retryBatch = jobs.pendingBatch, confirmedUnitPrice = null } = {}) => {
     if (!workspaceActiveRef.current || (!retryBatch && !prompt.trim())) return;
@@ -1736,15 +1752,15 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const previewDisplaySources = Object.fromEntries(
     previewItems.map((item) => [item.url, item.displayUrl || ""]),
   );
+  // 分档定价模型按当前分辨率和质量估价；提交前仍以服务端报价为准。
+  const tierUnitPrice = currentModel?.pointPricing?.configured
+    ? resolveModelTierPointPricing(currentModel, {
+        resolution, quality,
+        ...(imageSize.sizeMode === "exact" ? { exactWidth: imageSize.exactWidth, exactHeight: imageSize.exactHeight } : {}),
+      }).effective
+    : feature.creditCost;
   const generationCost = (
-    Math.max(
-      0,
-      Number(
-        currentModel?.pointPricing?.configured
-          ? currentModel.creditCost
-          : feature.creditCost,
-      ) || 0,
-    ) +
+    Math.max(0, Number(tierUnitPrice) || 0) +
     (autoRemove ? Math.max(0, Number(backgroundRemovalModel?.pricePoints || 0)) : 0)
   ) * count;
   const generationButton = generationButtonState({
@@ -1752,7 +1768,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     invalidSize: Boolean(exactSize && !exactSize.valid), quoting: quotingCost, confirmation: cost,
     submitting: jobs.submitting, submissionPhase: jobs.submissionPhase, pendingBatch: jobs.pendingBatch,
     taskCounts,
-    generationCost: (currentModel?.pointPricing?.configured ? currentModel.creditCost : feature.creditCost) == null ? null : generationCost,
+    generationCost: tierUnitPrice == null ? null : generationCost,
     count,
   });
   const qualityLabel =
@@ -2700,6 +2716,8 @@ function CompactSegments({ label, value, options, onChange }) {
             type="button"
             className={String(value) === String(option.value) ? "is-selected" : ""}
             aria-pressed={String(value) === String(option.value)}
+            disabled={option.disabled === true}
+            title={option.title}
             onClick={(event) => {
               onChange(option.value);
               if (event.detail > 0) event.currentTarget.blur();
@@ -2723,12 +2741,22 @@ function ModelPointPrice({ model, compact = false, prominent = false, light = fa
     prominent ? "is-prominent" : "",
     light ? "is-light" : "",
   ].filter(Boolean).join(" ");
+  const range = modelPointPriceRange(model);
+  if (range && range.max > range.min) {
+    // 分档定价：按分辨率和质量收费，列表展示区间，具体价格以提交前的报价为准。
+    return (
+      <span className={classes} title="按分辨率和质量分档计费">
+        {prominent ? <strong><b>{range.min}–{range.max}</b><span>积分/张</span></strong> : <strong>{range.min}–{range.max} 积分/张</strong>}
+        <PriceAdjustmentTag model={model} />
+      </span>
+    );
+  }
   return (
     <span className={classes}>
       {price.hasDiscount ? (
         <>
-          {prominent ? <strong><b>{price.discount}</b><span>积分/张</span></strong> : <strong>折扣 {price.discount} 积分/张</strong>}
-          <del>标准 {price.standard} 积分/张</del>
+          {prominent ? <strong><b>{price.discount}</b><span>积分/张</span></strong> : <strong>{hasTimedPrice(model) ? "" : "折扣 "}{price.discount} 积分/张</strong>}
+          <del>{hasTimedPrice(model) ? "" : "标准 "}{price.standard} 积分/张</del>
         </>
       ) : price.effective === 0 ? (
         <strong>免费</strong>
@@ -2737,6 +2765,7 @@ function ModelPointPrice({ model, compact = false, prominent = false, light = fa
       ) : (
         <strong>{price.effective} 积分/张</strong>
       )}
+      <PriceAdjustmentTag model={model} />
     </span>
   );
 }

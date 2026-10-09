@@ -8,7 +8,7 @@ import {
 import { createPortal } from "react-dom";
 import "./assistant-auto-approve.css";
 import { conversationTitle } from "./domain/assistantMessages.js";
-import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
+import { hasTimedPrice, modelPointPriceRange, resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import { DialogMotion } from "../../components/motion/DialogMotion.jsx";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
 import copyToClipboard from "copy-to-clipboard";
@@ -26,6 +26,7 @@ import {
   preferenceMotionDisabled,
   sameAssetReference,
 } from "./assistantWorkspaceCore.jsx";
+import { PriceAdjustmentTag } from "../../components/common/PriceAdjustmentTag.jsx";
 
 
 // 文件的类型色：PDF 红、表格绿、演示橙、文档蓝、设计稿紫，其余灰。
@@ -309,17 +310,29 @@ function ModelMenuPrice({ model, perImage, unitSuffix }) {
   const price = resolveModelPointPricing(model);
   if (!price.configured) return <span className="model-menu-price is-empty">未定价</span>;
   const suffix = unitSuffix ?? (perImage ? "/张" : "");
+  const range = modelPointPriceRange(model);
+  if (range && range.max > range.min) {
+    // 分档定价：按分辨率和质量收费，菜单里展示区间。
+    return (
+      <span className="model-menu-price" title="按分辨率和质量分档计费">
+        <strong>{range.min}–{range.max} 积分{suffix}</strong>
+        <PriceAdjustmentTag model={model} />
+      </span>
+    );
+  }
   if (price.hasDiscount) {
     return (
       <span className="model-menu-price has-discount">
-        <strong>折扣 {price.discount} 积分{suffix}</strong>
+        <strong>{hasTimedPrice(model) ? "" : "折扣 "}{price.discount} 积分{suffix}</strong>
         <del>{price.standard} 积分{suffix}</del>
+        <PriceAdjustmentTag model={model} />
       </span>
     );
   }
   return (
     <span className="model-menu-price">
       <strong>{price.effective === 0 ? "免费" : `${price.effective} 积分${suffix}`}</strong>
+      <PriceAdjustmentTag model={model} />
     </span>
   );
 }
@@ -621,6 +634,7 @@ const LINE_ICONS = {
   compose: "M11.5 4.75H6.75a2 2 0 0 0-2 2v10.5a2 2 0 0 0 2 2h10.5a2 2 0 0 0 2-2V12.5M17.3 4.2a1.7 1.7 0 0 1 2.45 2.4L12.4 14 9.25 14.75 10 11.6l7.3-7.4Z",
   assets: "M5.75 4.5h3.5A1.25 1.25 0 0 1 10.5 5.75v3.5a1.25 1.25 0 0 1-1.25 1.25h-3.5A1.25 1.25 0 0 1 4.5 9.25v-3.5A1.25 1.25 0 0 1 5.75 4.5ZM14.75 4.5h3.5a1.25 1.25 0 0 1 1.25 1.25v3.5a1.25 1.25 0 0 1-1.25 1.25h-3.5a1.25 1.25 0 0 1-1.25-1.25v-3.5a1.25 1.25 0 0 1 1.25-1.25ZM5.75 13.5h3.5a1.25 1.25 0 0 1 1.25 1.25v3.5a1.25 1.25 0 0 1-1.25 1.25h-3.5a1.25 1.25 0 0 1-1.25-1.25v-3.5a1.25 1.25 0 0 1 1.25-1.25ZM14.75 13.5h3.5a1.25 1.25 0 0 1 1.25 1.25v3.5a1.25 1.25 0 0 1-1.25 1.25h-3.5a1.25 1.25 0 0 1-1.25-1.25v-3.5a1.25 1.25 0 0 1 1.25-1.25Z",
   memory: "M7 4.5h10a1.5 1.5 0 0 1 1.5 1.5v14l-6.5-4-6.5 4V6A1.5 1.5 0 0 1 7 4.5Z",
+  bell: "M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 1.75H5l1.5-1.75ZM10 20.25a2.1 2.1 0 0 0 4 0",
   history: "M4.75 12a7.25 7.25 0 1 0 2.13-5.13M4.75 4.75v3.5h3.5M12 8.5v3.75l2.5 1.5",
   // 资产库
   image: "M6.25 4.5h11.5a1.75 1.75 0 0 1 1.75 1.75v11.5a1.75 1.75 0 0 1-1.75 1.75H6.25a1.75 1.75 0 0 1-1.75-1.75V6.25A1.75 1.75 0 0 1 6.25 4.5ZM4.5 15.5l4-4 3.5 3.5 2.25-2.25 5.25 5.25M15 9.25h.01",
@@ -651,7 +665,7 @@ function archivedWhen(value) {
   return `${day} ${time}`;
 }
 
-// 侧栏底部：对话保留数和今天新建数（“已归档”入口在上方导航里，资产库下面）。
+// 侧栏底部：对话保留数和今天新建数（“已归档”入口在对话顶栏右侧；“助手提醒”不计入）。
 function AssistantConversationUsage({ quota }) {
   if (!quota) return null;
   const nearLimit = quota.limit > 0 && quota.used >= quota.limit;

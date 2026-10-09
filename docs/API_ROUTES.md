@@ -1,6 +1,6 @@
 # HTTP 路由清单
 
-核对日期：2026-09-22（2026-09-29 移除旧任务 API 与 Webhook 路由）。由当前工作区 [router.go](../apps/server/internal/httpapi/router.go) 中实际启用的路由注册整理，共 353 条方法/路径组合；不含已注释端点、NoRoute/NoMethod 或前端 SPA 路由。接口请求体、业务状态和示例见 [API 契约](API_CONTRACT.md)，开放模型接口见 [OPEN_API.md](OPEN_API.md)。
+核对日期：2026-09-22（2026-09-29 移除旧任务 API 与 Webhook 路由）。由当前工作区 [router.go](../apps/server/internal/httpapi/router.go) 中实际启用的路由注册整理，共 353 条方法/路径组合；不含已注释端点、NoRoute/NoMethod 或前端 SPA 路由。2026-10-08 补入分辨率槽位的 5 条管理接口；此时 `router.go` 共注册 441 条，本清单其余部分尚未按 09-22 之后的新增路由全量更新，缺漏以源码为准。接口请求体、业务状态和示例见 [API 契约](API_CONTRACT.md)，开放模型接口见 [OPEN_API.md](OPEN_API.md)。
 
 表中保留 Gin 的 `:id` 和 `*key` 参数语法。注册表达式展示直接包装器，不等于完整权限契约：Server 全局中间件、组级审计以及 handler 内的鉴权、页面开关、账户/模型权限和额度检查仍生效。接口注册不代表线上可用。`/internal/` 被公网网关拒绝，图片技能 OAuth 不是用户第三方登录，
 
@@ -364,6 +364,11 @@
 | POST | `/api/v1/admin/model-config/discoveries` | `s.adminOnly(s.adminDiscoverProviderModels)` |
 | POST | `/api/v1/admin/model-config/connection-tests` | `s.adminOnly(s.adminTestProviderConnection)` |
 | POST | `/api/v1/admin/model-config/model-tests` | `s.adminOnly(s.adminTestModel)` |
+| GET | `/api/v1/admin/model-config/image-slots` | `s.adminOnly(s.adminGetImageSlots)` |
+| PUT | `/api/v1/admin/model-config/image-slots/settings` | `s.adminOnly(s.adminPutImageSlotSettings)` |
+| POST | `/api/v1/admin/model-config/image-slots/switch` | `s.adminOnly(s.adminSwitchImageSlot)` |
+| POST | `/api/v1/admin/model-config/image-slots/reset` | `s.adminOnly(s.adminResetImageSlotMember)` |
+| POST | `/api/v1/admin/model-config/image-slots/probe` | `s.adminOnly(s.adminProbeImageSlotMember)` |
 | GET | `/api/v1/admin/model-config/presets` | `s.adminOnly(s.adminGetModelPresets)` |
 | PUT | `/api/v1/admin/model-config/presets` | `s.adminOnly(s.adminPutModelPresets)` |
 | DELETE | `/api/v1/admin/model-config/presets` | `s.adminOnly(s.adminResetModelPresets)` |

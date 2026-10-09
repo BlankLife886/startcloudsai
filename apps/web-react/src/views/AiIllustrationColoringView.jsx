@@ -14,6 +14,7 @@ import { useDownloadAction } from "../hooks/useDownloadAction.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
+import { PriceAdjustmentTag } from "../components/common/PriceAdjustmentTag.jsx";
 import { RegenerateIcon } from "../components/common/RegenerateIcon.jsx";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
@@ -44,6 +45,7 @@ import {
 } from "@react/legacy-modules/features/ai-illustration-coloring/domain/mapColoringJobToHistory.js";
 import { formatColoringErrorText } from "@react/legacy-modules/features/ai-illustration-coloring/domain/coloringStability.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { useSitePriceRefresh } from "../hooks/useSitePriceRefresh.js";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import { getWallet } from "@react/legacy-modules/services/meApi.js";
 import { downloadAuthenticatedMedia, fetchAuthenticatedMediaBlob } from "@react/legacy-modules/services/authenticatedMedia.js";
@@ -185,6 +187,7 @@ function ColoringSelect({ value, options, onChange, label, disabled, className =
         {icon && <ModelCatalogIcon model={option.model} size="sm" />}
         <span className="ratio-select__option-content"><span className="ratio-select__option-label">{option.label}</span></span>
         {icon && <ModelMaintenanceBadge model={option.model} />}
+        {!isCatalogModelMaintenance(option.model) && <PriceAdjustmentTag model={option.model} />}
         {!isCatalogModelMaintenance(option.model) && option.creditCost != null && <small className="coloring-react-model-price">{option.creditCost} 积分/张</small>}
       </button>)}
     </div>, document.body)}
@@ -308,6 +311,8 @@ export function AiIllustrationColoringView() {
       else notificationService.error(error?.message || "取消失败，任务仍在跟踪中");
     } finally { setCancelBusy(false); }
   };
+
+  useSitePriceRefresh((config) => setModels(modelOptions(config)));
 
   useEffect(() => {
     let disposed = false;

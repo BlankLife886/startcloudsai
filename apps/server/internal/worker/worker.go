@@ -228,6 +228,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupCanvasRuns, w.handleCleanupCanvasRuns)
 	mux.HandleFunc(typePurgeArchivedChats, w.handlePurgeArchivedAssistantConversations)
 	mux.HandleFunc(typeRefreshModelHealth, w.handleRefreshModelHealth)
+	mux.HandleFunc(typeProbeImageSlots, w.handleProbeImageSlots)
 	mux.HandleFunc(typeCleanupTrashedAssets, w.handleCleanupTrashedAssets)
 	mux.HandleFunc(typeEvaluateIncidents, w.handleEvaluateOperationalIncidents)
 	mux.HandleFunc(typeDispatchAssistantOutbox, w.handleDispatchAssistantOutbox)
@@ -348,6 +349,8 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		// Hourly, matching the status page's refresh. No retries: the next run
 		// recomputes from the last stored hour anyway.
 		periodicConfig("@every 1h", typeRefreshModelHealth, 59*time.Minute+50*time.Second, 0, asynq.Timeout(2*time.Minute)),
+		// Each run probes only the down slot members whose interval elapsed.
+		periodicConfig("@every 10m", typeProbeImageSlots, 9*time.Minute+50*time.Second, 0, asynq.Timeout(9*time.Minute)),
 	}, nil
 }
 
@@ -575,7 +578,8 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 				key := taskParamString(queued.Params, "_providerRouteKey")
 				runningByProvider[key] = max(runningByProvider[key]-reservedUnits, 0)
 			}
-			selected, ok := selectExecutionCandidateExcluding(candidates, runningByProvider, excluded, requestedUnits)
+			pool := slotPriorityCandidates(candidates, taskParamStrings(queued.Params, "_slotModelIds"), excluded)
+			selected, ok := selectExecutionCandidateExcluding(pool, runningByProvider, excluded, requestedUnits)
 			if resumeKnown {
 				selected, ok = &candidates[0], true
 			}
@@ -607,6 +611,12 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 				"_predictedCompleteAtMs": now.Add(predictedGenerationDuration(selected.Model)).UnixMilli(),
 				"_predictedImageUnits":   max(queued.WorkUnits, queued.Count),
 			}
+			if resolution := taskParamString(queued.Params, "_slotResolution"); resolution != "" {
+				// Profit accounting charges the member that actually runs.
+				route["_upstreamUnitCostCents"] = modelconfig.ImageTierUpstreamCost(selected.Model, modelconfig.ImageTier{
+					Resolution: resolution, Quality: modelconfig.ImageBillingTier(selected.Model, queued.Params).Quality,
+				})
+			}
 			updated, err := store.SetQueuedTaskExecutionRoute(ctx, tx, taskID, selected.Model.UpstreamModel, route)
 			if err != nil || !updated {
 				return err
@@ -631,6 +641,30 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 		}
 	}
 	return claimedTask, deferReason, err
+}
+
+// slotPriorityCandidates keeps a resolution-slot task on the first member
+// (in failover order) that still has an untried route. Backups take over on
+// failure only, never to spill load: a busy member makes the task wait.
+func slotPriorityCandidates(candidates []modelconfig.Selection, order []string, excluded map[string]bool) []modelconfig.Selection {
+	if len(order) == 0 {
+		return candidates
+	}
+	for _, memberID := range order {
+		member := []modelconfig.Selection{}
+		untried := false
+		for _, candidate := range candidates {
+			if candidate.Model.ID != memberID {
+				continue
+			}
+			member = append(member, candidate)
+			untried = untried || !excluded[modelconfig.ExecutionRouteKey(candidate.Provider)]
+		}
+		if untried {
+			return member
+		}
+	}
+	return candidates
 }
 
 func selectExecutionCandidate(candidates []modelconfig.Selection, running map[string]int64) (*modelconfig.Selection, bool) {
@@ -2249,9 +2283,10 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 			}
 		}
 		log.Printf("task %s upstream call failed (%s): %v", taskID, errorCode, callErr)
+		w.recordSlotFailure(ctx, task, errorCode, errorMessage)
 	}
 	configuredProvider := taskParamString(task.Params, "_providerConfigId") != ""
-	if callErr != nil && isRetryableTaskError(callErr) && len(outputKeys) == 0 &&
+	if callErr != nil && (isRetryableTaskError(callErr) || slotMemberRejected(task, callErr)) && len(outputKeys) == 0 &&
 		(configuredProvider || provider == "c2a" || provider == "crun") && (taskRetryIsIdempotent(task, provider) || isCRUNPreflightError(callErr)) {
 		recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelRecovery()
@@ -2295,6 +2330,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 			taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, len(outputKeys))
 			w.enqueueAutomaticBackgroundRemoval(ctx, succeeded, outputKeys)
 			w.persistProfileStudioFigure(ctx, succeeded, outputKeys)
+			w.recordSlotSuccess(ctx, task)
 			w.recordTimeline(ctx, taskID, "succeeded", "success",
 				fmt.Sprintf("任务完成，%d 张图片已保存，费用已结算", len(outputKeys)),
 				time.Since(task.CreatedAt).Milliseconds(), map[string]any{"images": len(outputKeys)})
@@ -3304,6 +3340,7 @@ func (w *Worker) finishFailedUpstreamAttempt(ctx context.Context, task *store.Ta
 	}
 	w.recordTimeline(ctx, task.ID, "upstream_error", "warning",
 		"上游返回错误："+errorMessage, -1, map[string]any{"errorCode": errorCode})
+	w.recordSlotFailure(ctx, task, errorCode, errorMessage)
 	current, getErr := store.GetTask(ctx, w.St.Pool, task.ID)
 	if getErr == nil && current != nil && current.Status == "running" && taskUsesAttemptRoute(current, task) {
 		if retryableTerminalTaskFailure(errorCode) {
@@ -3417,6 +3454,7 @@ func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, 
 		taskflow.NotifyTaskSucceeded(ctx, w.St.Pool, succeeded, len(outputKeys))
 		w.enqueueAutomaticBackgroundRemoval(ctx, succeeded, outputKeys)
 		w.persistProfileStudioFigure(ctx, succeeded, outputKeys)
+		w.recordSlotSuccess(ctx, task)
 		// 覆盖“上游完成后”的全部本地处理：解码、变换、缩略图、R2 上传、结算。
 		// 上游结果图的下载耗时见 c2a image download 日志。
 		logTaskStage(task.ID.String(), "async_complete", completeStartedAt, "images=%d", len(outputKeys))

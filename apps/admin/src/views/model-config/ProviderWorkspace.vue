@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { Connection, Delete, Plus, Refresh, Search } from "@element-plus/icons-vue";
 import { request } from "@/request";
 import ProviderPresetDialog from "./ProviderPresetDialog.vue";
+import HelpTip from "@/components/HelpTip.vue";
 import {
   ADAPTER_OPTIONS,
   apiRoot,
@@ -376,11 +377,6 @@ function importSelected() {
           <span class="pw-item__avatar" :class="`is-${item.adapter}`" aria-hidden="true">{{ (item.name || "?").slice(0, 1).toUpperCase() }}</span>
           <span class="pw-item__copy">
             <strong>{{ item.name || "未命名服务商" }}</strong>
-            <small class="mono">{{ apiRoot(item, item.routes[0]?.baseUrl || "") || "未填写地址" }}</small>
-            <small>
-              {{ providerModelCount(item.id) }} 个模型 · {{ item.routes.length }} 条线路
-              <template v-if="item.discoveredModels?.length"> · 目录 {{ item.discoveredModels.length }}</template>
-            </small>
           </span>
           <span class="pw-item__state" :class="item.enabled ? 'is-on' : 'is-off'">{{ item.enabled ? "启用" : "停用" }}</span>
         </button>
@@ -395,6 +391,14 @@ function importSelected() {
         <span v-if="provider.vendor" class="pw-chip">{{ vendorPreset?.name || provider.vendor }}</span>
         <a v-if="vendorPreset?.keyUrl" class="pw-chip is-link" :href="vendorPreset.keyUrl" target="_blank" rel="noopener noreferrer">获取 API Key ↗</a>
         <div class="pw-detail__head-actions">
+          <el-button
+            size="small"
+            :icon="Connection"
+            :loading="testing === provider.routes[0]?.id"
+            :disabled="!provider.routes.length || Boolean(testing)"
+            @click="testRoute(provider.routes.find((route) => route.enabled) || provider.routes[0])"
+          >检查主线路</el-button>
+          <HelpTip content="只检查地址、路径和 Key 能否读取模型列表；对话和出图请在「模型目录」里按模型测试。新服务商建议先检查再启用。" />
           <label class="pw-switch"><span>启用</span><el-switch v-model="provider.enabled" aria-label="启用服务商" /></label>
           <el-tooltip content="删除服务商" placement="top">
             <button type="button" class="pw-icon-btn is-danger" aria-label="删除服务商" @click="removeProvider"><Delete /></button>
@@ -403,17 +407,35 @@ function importSelected() {
       </header>
 
       <div class="pw-grid">
+        <div v-if="testResults[provider.id]" class="pw-checks" role="status">
+          <span class="pw-checks__title" :class="testResults[provider.id].ok ? 'is-ok' : 'is-fail'">
+            {{ testResults[provider.id].ok ? "✓ 连接检查通过" : "✕ 连接检查未通过" }}
+            <small>{{ testResults[provider.id].routeName }} · {{ testResults[provider.id].at }}</small>
+          </span>
+          <span
+            v-for="check in testResults[provider.id].checks"
+            :key="check.name"
+            class="pw-check"
+            :class="check.ok ? 'is-ok' : 'is-fail'"
+            :title="check.ok ? check.detail : check.error"
+          >
+            <strong>{{ check.ok ? "✓" : "✕" }} {{ CHECK_LABELS[check.name] || check.name }}</strong>
+            <span class="tnum">{{ check.latencyMs }} ms</span>
+            <em>{{ check.ok ? check.detail : check.error }}</em>
+          </span>
+        </div>
+
         <section class="pw-card">
-          <header><strong>连接方式</strong><small>决定请求发到哪里、怎么带 Key</small></header>
+          <header><strong>连接方式</strong><HelpTip content="决定请求发到哪里、怎么带 Key。协议对应上游的接口规范；接口路径前缀接在每条线路的 Base URL 后面。" /></header>
           <div class="pw-fields">
             <label class="pw-field">
-              <span>调用协议</span>
-              <el-radio-group v-model="provider.adapter" size="small" @change="onAdapterChange">
-                <el-radio-button v-for="option in ADAPTER_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</el-radio-button>
-              </el-radio-group>
+              <span>调用协议<HelpTip content="OpenAI 兼容适用于大多数中转；Gemini、百炼、MiniMax 走各自原生接口；CRUN 为 CRUN 任务协议。切换会清空已读取的模型目录。" /></span>
+              <el-select v-model="provider.adapter" aria-label="调用协议" @change="onAdapterChange">
+                <el-option v-for="option in ADAPTER_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
+              </el-select>
             </label>
             <label class="pw-field">
-              <span>接口路径前缀</span>
+              <span>接口路径前缀<HelpTip content="留空使用协议默认值：OpenAI 兼容 /v1，Gemini /v1beta，CRUN 与百炼 /api/v1。有的中转需要额外前缀，例如 /v1beta/openai。" /></span>
               <el-input
                 v-model="apiPathInput"
                 :placeholder="provider.adapter === 'crun' || provider.adapter === 'dashscope' ? '留空：/api/v1' : provider.adapter === 'gemini' ? '留空：/v1beta' : '留空：自动 /v1'"
@@ -422,7 +444,7 @@ function importSelected() {
               />
             </label>
             <label class="pw-field">
-              <span>鉴权方式</span>
+              <span>鉴权方式<HelpTip content="Key 放在哪个请求头里；协议默认通常即可，个别中转要求特定写法。" /></span>
               <el-select
                 :model-value="provider.authStyle || 'default'"
                 aria-label="鉴权方式"
@@ -432,7 +454,7 @@ function importSelected() {
               </el-select>
             </label>
             <label v-if="provider.adapter === 'openai'" class="pw-field">
-              <span>生图接口</span>
+              <span>生图接口<HelpTip :content="IMAGE_API_OPTIONS.map((option) => `${option.label}：${option.hint}`).join('；')" /></span>
               <el-select
                 :model-value="provider.imageApi || 'auto'"
                 aria-label="生图接口"
@@ -454,39 +476,10 @@ function importSelected() {
           </div>
         </section>
 
-        <section class="pw-card">
-          <header>
-            <strong>连接检查</strong>
-            <small>只检查地址、路径和 Key 能否读取模型列表；对话和出图请在「模型目录」里按模型测试</small>
-          </header>
-          <div class="pw-test">
-            <el-button
-              type="primary"
-              plain
-              :icon="Connection"
-              :loading="testing === provider.routes[0]?.id"
-              :disabled="!provider.routes.length || Boolean(testing)"
-              @click="testRoute(provider.routes.find((route) => route.enabled) || provider.routes[0])"
-            >检查主线路</el-button>
-          </div>
-          <div v-if="testResults[provider.id]" class="pw-checks" role="status">
-            <div class="pw-checks__title">
-              <span :class="testResults[provider.id].ok ? 'is-ok' : 'is-fail'">{{ testResults[provider.id].ok ? "全部通过" : "未通过" }}</span>
-              <small>{{ testResults[provider.id].routeName }} · {{ testResults[provider.id].at }}</small>
-            </div>
-            <div v-for="check in testResults[provider.id].checks" :key="check.name" class="pw-check" :class="check.ok ? 'is-ok' : 'is-fail'">
-              <strong>{{ check.ok ? "✓" : "✕" }} {{ CHECK_LABELS[check.name] || check.name }}</strong>
-              <span class="tnum">{{ check.latencyMs }} ms</span>
-              <em>{{ check.ok ? check.detail : check.error }}</em>
-            </div>
-          </div>
-          <p v-else class="pw-muted">还没有检查。新服务商建议先检查再启用。</p>
-        </section>
-
         <section class="pw-card is-wide">
           <header>
-            <strong>线路</strong>
-            <small>已启用 {{ provider.routes.filter((route) => route.enabled).length }} 条 · 总并发 {{ capacity(provider) }}；按顺序优先使用第一条启用线路</small>
+            <strong>线路</strong><HelpTip content="按顺序优先使用第一条启用线路，失败或满载时换下一条。超时不含排队，0 使用默认值（OpenAI 300 秒，CRUN 图片 1200 秒）。Key 保存后只显示末四位，留空表示沿用已保存的 Key。" />
+            <small>已启用 {{ provider.routes.filter((route) => route.enabled).length }} 条 · 总并发 {{ capacity(provider) }}</small>
             <el-button size="small" :icon="Plus" class="pw-card__action" @click="addRoute">添加线路</el-button>
           </header>
           <table class="pw-table">
@@ -525,15 +518,14 @@ function importSelected() {
               </tr>
             </tbody>
           </table>
-          <p class="pw-muted">超时不含排队；0 使用默认值（OpenAI 300 秒，CRUN 图片 1200 秒）。Key 保存后只显示末四位，留空表示沿用已保存的 Key。</p>
         </section>
 
 
         <section class="pw-card is-wide">
           <header>
-            <strong>模型目录</strong>
+            <strong>上游模型</strong><HelpTip content="读取上游 /models，勾选后批量导入为站内模型；导入后默认停用，设置积分后再开放。对话或生图类型由你在这里选定。" />
             <small>
-              {{ catalogRows.length ? `共 ${catalogCounts.all} 个，未配置 ${catalogCounts.unconfigured} 个` : "读取上游 /models，勾选后批量导入为站内模型（导入后默认停用，设置积分后再开放）" }}
+              {{ catalogRows.length ? `共 ${catalogCounts.all} 个，未配置 ${catalogCounts.unconfigured} 个` : "还没有读取" }}
               <template v-if="catalogWarning[provider.id]"> · {{ catalogWarning[provider.id] }}</template>
             </small>
             <div class="pw-card__action">
@@ -617,7 +609,7 @@ function importSelected() {
     </section>
 
     <section v-else class="pw-detail is-empty">
-      <el-empty description="选择左侧服务商，或点「添加」从厂商模板创建" :image-size="80" />
+      <el-empty description="选择左侧服务商，或点「添加」从厂商模板创建" :image-size="64" />
     </section>
 
     <ProviderPresetDialog v-model="presetDialogVisible" @pick="addFromPreset" />
@@ -627,7 +619,7 @@ function importSelected() {
 <style scoped>
 .pw {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: 260px minmax(0, 1fr);
   gap: 14px;
   min-height: 0;
   height: 100%;
@@ -659,10 +651,10 @@ function importSelected() {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
+  gap: 8px;
+  padding: 6px 8px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: var(--ink);
   font: inherit;
@@ -686,9 +678,9 @@ function importSelected() {
 .pw-item__avatar {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
   color: var(--accent-ink);
   background: var(--accent-soft);
   font-size: 13px;
@@ -825,9 +817,9 @@ function importSelected() {
 
 .pw-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
-  gap: 12px;
+  gap: 10px;
   overflow-y: auto;
   min-height: 0;
   padding-right: 2px;
@@ -836,9 +828,9 @@ function importSelected() {
 .pw-card {
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
@@ -851,7 +843,7 @@ function importSelected() {
 .pw-card > header {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 4px 10px;
 }
 
@@ -873,17 +865,19 @@ function importSelected() {
 
 .pw-fields {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px 12px;
 }
 
 .pw-field {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
 }
 
 .pw-field > span {
+  display: inline-flex;
+  align-items: center;
   color: var(--ink-2);
   font-size: 12px;
   font-weight: 600;
@@ -896,9 +890,11 @@ function importSelected() {
 }
 
 .pw-endpoint {
-  display: grid;
-  gap: 3px;
-  padding: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  padding: 6px 10px;
   border-radius: 8px;
   background: var(--surface-2);
   font-size: 12px;
@@ -918,30 +914,25 @@ function importSelected() {
   color: var(--ink-3);
 }
 
-.pw-test {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-}
-
 .pw-checks {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .pw-checks__title {
-  display: flex;
+  display: inline-flex;
   align-items: baseline;
   gap: 8px;
   font-size: 12px;
-}
-
-.pw-checks__title span {
   font-weight: 700;
 }
 
 .pw-checks__title small {
   color: var(--ink-3);
+  font-weight: 400;
 }
 
 .is-ok {
@@ -953,11 +944,13 @@ function importSelected() {
 }
 
 .pw-check {
-  display: grid;
-  grid-template-columns: 140px 70px minmax(0, 1fr);
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 8px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 420px;
+  min-width: 0;
+  padding: 3px 8px;
+  border-radius: 6px;
   font-size: 12px;
 }
 
@@ -973,10 +966,19 @@ function importSelected() {
   color: var(--ink-3);
 }
 
+.pw-check strong,
+.pw-check span {
+  flex: none;
+  white-space: nowrap;
+}
+
 .pw-check em {
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
   color: var(--ink);
   font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pw-muted {
@@ -1161,9 +1163,9 @@ function importSelected() {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-@media (max-width: 1200px) {
-  .pw-grid {
-    grid-template-columns: 1fr;
+@media (max-width: 1280px) {
+  .pw-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

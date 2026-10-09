@@ -19,19 +19,21 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/executionconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/imageslots"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/pricerules"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
 const (
-	maxAssistantMessages    = 60
+	maxAssistantMessages     = 60
 	maxAssistantMessageRunes = settings.DefaultAssistantMessageMaxChars
-	maxAssistantTotalRunes  = 80000
-	maxAssistantReferences  = 4
-	maxAssistantImageBytes  = 8 << 20
-	maxAssistantImagesBytes = 12 << 20
+	maxAssistantTotalRunes   = 80000
+	maxAssistantReferences   = 4
+	maxAssistantImageBytes   = 8 << 20
+	maxAssistantImagesBytes  = 12 << 20
 )
 
 type assistantChatIn struct {
@@ -160,11 +162,12 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	modelCfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
+	site, err := pricerules.LoadSite(c.Request.Context(), s.St.Pool, time.Now())
 	if err != nil {
 		fail(c, err)
 		return
 	}
+	modelCfg := site.Config
 	globalLimits, err := store.GetGlobalExecutionLimits(c.Request.Context(), s.St.Pool)
 	if err != nil {
 		fail(c, err)
@@ -228,6 +231,18 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		ReasoningEfforts          []gin.H                      `json:"reasoningEfforts,omitempty"`
 		// ToolCalling is false for chat models that cannot drive Agent mode.
 		ToolCalling *bool `json:"toolCalling,omitempty"`
+		// Tiered image models: public cell prices and the resolutions whose
+		// slots cannot take work right now.
+		ImagePricing           map[string]map[string]modelconfig.ImageTierPrice `json:"imagePricing,omitempty"`
+		DefaultQuality         string                                           `json:"defaultQuality,omitempty"`
+		UnavailableResolutions []string                                         `json:"unavailableResolutions,omitempty"`
+		PriceAdjustment        any                                              `json:"priceAdjustment"`
+		SubscriberDiscount     any                                              `json:"subscriberDiscount"`
+	}
+	unavailableResolutions, err := imageslots.UnavailableResolutions(c.Request.Context(), s.St.Pool, modelCfg)
+	if err != nil {
+		fail(c, err)
+		return
 	}
 	reasoningOptions := func(model string) ([]string, string) {
 		efforts := modelconfig.ReasoningEffortsForModel(model)
@@ -263,6 +278,11 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			standardPrice = workspacePrice.PriceCents
 			effectivePrice = workspacePrice.EffectiveCents
 			discountPrice = workspacePrice.DiscountPriceCents
+			if kind == modelconfig.ModelKindImage && modelconfig.HasImagePricing(selection.Model) {
+				// Listed from the cheapest cell; the run is priced at its tier.
+				low, _ := modelconfig.ImagePriceBounds(selection.Model)
+				standardPrice, effectivePrice, discountPrice = low, low, nil
+			}
 			description := selection.Model.Description
 			if description == "" {
 				if kind == modelconfig.ModelKindImage {
@@ -300,8 +320,14 @@ func (s *Server) assistantConfig(c *gin.Context) {
 				ImageBatchLimit:           batchLimit,
 				SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort,
 				ReasoningPrices: reasoningPrices, ReasoningEfforts: reasoningEffortItems,
-				ToolCalling: toolCalling,
+				ToolCalling:            toolCalling,
+				ImagePricing:           modelconfig.PublicImagePricing(selection.Model),
+				DefaultQuality:         defaultQualityFor(kind, selection.Model),
+				UnavailableResolutions: unavailableResolutions[selection.Model.ID],
 			})
+			meta := sitePricingMeta(site, selection.Model.ID)
+			options[len(options)-1].PriceAdjustment = meta["priceAdjustment"]
+			options[len(options)-1].SubscriberDiscount = meta["subscriberDiscount"]
 		}
 		return options
 	}
@@ -321,6 +347,7 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			"modelDiscoveryAvailable": true, "conversationModelMode": "configured",
 			"editableFilesEnabled": editableFilesEnabled,
 			"concurrency":          concurrency, "imageBatchLimit": imageBatchLimit,
+			"priceSchedule": gin.H{"timezone": "Asia/Shanghai", "nextChangeAt": optionalTime(site.NextChange)},
 		})
 		return
 	}
@@ -648,4 +675,12 @@ func containsString(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+// defaultQualityFor is the quality a tiered image model bills when none is chosen.
+func defaultQualityFor(kind string, model modelconfig.Model) string {
+	if kind != modelconfig.ModelKindImage || !modelconfig.HasImagePricing(model) {
+		return ""
+	}
+	return modelconfig.DefaultImageQuality(model)
 }

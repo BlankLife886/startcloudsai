@@ -30,6 +30,7 @@ export type ChannelModel = {
     pricePoints?: number;
     standardPricePoints?: number;
     discountPricePoints?: number;
+    priceAdjustment?: { ruleName: string; mode: "percent" | "points"; value: number; endsAt: string };
     capability: ModelCapability;
     resolutions?: string[];
     aspectRatios?: string[];
@@ -141,6 +142,8 @@ type ConfigStore = {
     isConfigOpen: boolean;
     shouldPromptContinue: boolean;
     installSiteCatalog: (channel: ModelChannel, defaults: Partial<Record<ModelCapability, string>>, agentPricing?: Partial<CanvasAgentPricing>, batchMaxCount?: number) => void;
+    /** 动态调价到点后换上新的模型目录（价格），已选模型不变。 */
+    refreshSiteCatalog: (channel: ModelChannel) => void;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
     openConfigDialog: (shouldPromptContinue?: boolean) => void;
@@ -276,6 +279,11 @@ export const useConfigStore = create<ConfigStore>()(
                             model: exactModel || imageModel || textModel,
                         },
                     };
+                }),
+            refreshSiteCatalog: (channel) =>
+                set((state) => {
+                    const channels = [channel];
+                    return { config: { ...state.config, channels, models: modelOptionsFromChannels(channels) } };
                 }),
             updateConfig: (key, value) => set((state) => {
                 const config = { ...state.config, [key]: value };

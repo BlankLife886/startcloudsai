@@ -10,8 +10,9 @@ import {
 } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Check, Close, Connection, Cpu, EditPen, Loading, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
+import { Check, Connection, Cpu, EditPen, Loading, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
+import HelpTip from "@/components/HelpTip.vue";
 import PageCard from "@/components/PageCard.vue";
 import { ApiError, request } from "@/request";
 import { useClientPagination } from "@/useClientPagination";
@@ -21,6 +22,12 @@ import CompatRulesEditor from "./model-config/CompatRulesEditor.vue";
 import ModelTestDialog, { type ModelTestTarget } from "./model-config/ModelTestDialog.vue";
 import ImageParamProfileDialog from "./model-config/ImageParamProfileDialog.vue";
 import ProviderWorkspace from "./model-config/ProviderWorkspace.vue";
+import PriceScheduleWorkspace from "./model-config/PriceScheduleWorkspace.vue";
+import ImageTierPricingEditor from "./model-config/ImageTierPricingEditor.vue";
+import PointsInput from "./model-config/PointsInput.vue";
+import ResolutionSlotsEditor, { type SlotCandidateModel } from "./model-config/ResolutionSlotsEditor.vue";
+import ImageSlotStatusDialog from "./model-config/ImageSlotStatusDialog.vue";
+import { cleanResolutionSlots, effectiveTierPrice, fitImagePricing, type ImagePricingMatrix, type ResolutionSlots } from "./model-config/imageTiers";
 import type { ImageParamProfile, ModelImport, ModelProvider, RequestCompat } from "./model-config/providerTypes";
 
 type ModelKind = "image" | "chat" | "image_tool";
@@ -78,6 +85,12 @@ interface ModelItem {
   allowZeroPrice: boolean;
   allowLossLeader: boolean;
   imageUpscalePricing: ImageUpscalePricing | null;
+  /** Resolution × quality prices; null bills the flat price above. */
+  imagePricing?: ImagePricingMatrix | null;
+  /** Quality used when a request leaves it out. */
+  defaultQuality?: string;
+  /** Per-resolution primary/backup routing. */
+  resolutionSlots?: ResolutionSlots | null;
   fastMode: boolean;
   minSeconds: number;
   maxSeconds: number;
@@ -197,8 +210,12 @@ function cloneJSON<T>(value: T): T {
 
 interface ModelDraft extends Omit<
   ModelItem,
-  "priceCents" | "discountPriceCents" | "upstreamCostCents" | "imageUpscalePricing"
+  "priceCents" | "discountPriceCents" | "upstreamCostCents" | "imageUpscalePricing" | "imagePricing" | "defaultQuality" | "resolutionSlots"
 > {
+  imagePricingEnabled: boolean;
+  imagePricing: ImagePricingMatrix;
+  defaultQuality: string;
+  resolutionSlots: ResolutionSlots;
   pricePoints: number;
   discountEnabled: boolean;
   discountPoints: number;
@@ -225,11 +242,17 @@ const IMAGE_ASPECT_RATIOS = [
   "21:9",
   "9:21",
 ];
+// Every quality GPT Image accepts; xhigh/max exist only on newer models and
+// auto lets the upstream pick. New models start with the first three.
 const IMAGE_QUALITIES = [
   { value: "low", label: "低" },
   { value: "medium", label: "中" },
   { value: "high", label: "高" },
+  { value: "xhigh", label: "超高" },
+  { value: "max", label: "最高" },
+  { value: "auto", label: "自动" },
 ];
+const DEFAULT_IMAGE_QUALITIES = ["low", "medium", "high"];
 const IMAGE_OUTPUT_FORMATS = ["png", "jpeg", "webp"];
 const IMAGE_MODERATION_LEVELS = ["auto", "low"];
 const EXACT_SIZE_FIELDS: Array<{
@@ -472,7 +495,7 @@ const workspaceMeta: Array<{
 
 const loading = ref(false);
 const saving = ref(false);
-const activeView = ref<"models" | "workspaces" | "providers">("models");
+const activeView = ref<"models" | "workspaces" | "providers" | "pricing">("models");
 const activeWorkspaceKey = ref<WorkspaceKey>("assistant");
 const kindFilter = ref<"all" | ModelKind>("all");
 const modelSearch = ref("");
@@ -506,7 +529,7 @@ const filteredModels = computed(() => {
   });
 });
 
-const modelPagination = useClientPagination(() => filteredModels.value, 12);
+const modelPagination = useClientPagination(() => filteredModels.value, 50);
 
 const isDirty = computed(
   () => configLoaded.value && signature() !== savedSignature.value,
@@ -572,6 +595,7 @@ const viewTabs = computed(() => [
     label: "服务商",
     count: config.providers.length,
   },
+  { value: "pricing" as const, label: "动态调价", count: null },
 ]);
 
 watch([kindFilter, modelSearch], modelPagination.reset);
@@ -632,7 +656,7 @@ function hydrate(value: ModelConfig) {
     qualities:
       model.kind !== "image"
         ? []
-        : model.qualities || IMAGE_QUALITIES.map((item) => item.value),
+        : model.qualities || [...DEFAULT_IMAGE_QUALITIES],
     transparentBackground:
       model.kind === "image" && model.transparentBackground !== false,
     outputFormats: model.kind === "image" ? model.outputFormats || [] : [],
@@ -1407,6 +1431,21 @@ function modelCardPrice(model: ModelItem) {
       defaultLabel: defaultRow?.label || "",
     };
   }
+  const tierPrices = model.kind === "image" && model.imagePricing
+    ? Object.values(model.imagePricing).flatMap((row) => Object.values(row).map(effectiveTierPrice))
+    : [];
+  if (tierPrices.length) {
+    return {
+      amount: formatPointRange(tierPrices),
+      label: "分档积分",
+      meta: `${Object.keys(model.imagePricing || {}).length} 种分辨率 × ${model.qualities.length} 档质量`,
+      was: "",
+      off: "",
+      rows: [],
+      countLabel: "",
+      defaultLabel: "",
+    };
+  }
   return {
     amount: formatPoints(
       hasDiscountPrice(model) ? Number(model.discountPriceCents) : model.priceCents,
@@ -1435,13 +1474,6 @@ function workspaceDefaultLabel(
   return `默认${kindName(kind)}`;
 }
 
-function modelWorkspaceNames(modelId: string) {
-  return workspaceMeta
-    .filter((workspace) =>
-      config.workspaces[workspace.key]?.modelIds.includes(modelId),
-    )
-    .map((workspace) => workspace.name);
-}
 
 function providerAdapterLabel(providerId: string) {
   const adapter = config.providers.find((item) => item.id === providerId)?.adapter;
@@ -1472,13 +1504,6 @@ function aspectByResolutionParts(model: ModelItem) {
     }));
 }
 
-type ModelCardCell = {
-  label: string;
-  value: string;
-  tags?: string[];
-  parts?: Array<{ label: string; text: string }>;
-  muted?: boolean;
-};
 
 function formatTokens(value: number) {
   if (!value) return "—";
@@ -1487,11 +1512,6 @@ function formatTokens(value: number) {
   return String(value);
 }
 
-function tagCell(label: string, tags: string[], empty = "—"): ModelCardCell {
-  return tags.length
-    ? { label, value: tags.join(" · "), tags }
-    : { label, value: empty, muted: true };
-}
 
 function reasoningPriceTags(model: ModelItem, scope: ReasoningPriceScope) {
   if (!model.reasoningPricing) return [];
@@ -1505,74 +1525,74 @@ function reasoningPriceTags(model: ModelItem, scope: ReasoningPriceScope) {
   });
 }
 
-// 每类模型固定 4 格概要 + 2 行明细，同类卡片高度一致、字段逐行对齐。
-function modelCardStats(model: ModelItem): ModelCardCell[] {
-  const seconds = model.maxSeconds ? `${model.minSeconds}-${model.maxSeconds}s` : "—";
+type ModelCapability = {
+  tags: Array<{ text: string; tone?: string }>;
+  detail: string;
+  title: string;
+};
+
+// 目录表格的「能力」列：第一行是主要能力标签，第二行把其余参数压成一行小字，
+// 悬停显示完整内容，卡片时代展示过的字段一个不少。
+function modelCapability(model: ModelItem): ModelCapability {
+  const seconds = model.maxSeconds ? `${model.minSeconds}-${model.maxSeconds}s` : "";
   if (model.kind === "image") {
-    return [
-      tagCell("质量", (model.qualities || []).map(qualityLabel)),
-      tagCell("格式", (model.outputFormats || []).map((item) => item.toUpperCase())),
-      { label: "参考图 / 单次", value: `${model.maxReferenceImages} / ${model.maxImages} 张` },
-      { label: "耗时", value: seconds },
+    const ratios = aspectByResolutionParts(model)
+      .map((part) => `${part.label} ${part.text.split("/").length}`)
+      .join(" / ");
+    const exact = model.supportsExactSize
+      ? `精确 宽 ${model.exactSizeLimits.minWidth}–${model.exactSizeLimits.maxWidth} 高 ${model.exactSizeLimits.minHeight}–${model.exactSizeLimits.maxHeight}`
+      : "不支持精确尺寸";
+    const parts = [
+      ratios ? `比例 ${ratios}` : "比例 —",
+      exact,
+      `格式 ${joinList((model.outputFormats || []).map((item) => item.toUpperCase()), "内置")}`,
+      `参考 ${model.maxReferenceImages} · 单次 ${model.maxImages}`,
+      `审核 ${modelModerationLine(model)}`,
+      ...(seconds ? [`耗时 ${seconds}`] : []),
     ];
+    return {
+      tags: [
+        ...(model.resolutions || []).map((item) => ({ text: String(item) })),
+        ...(model.qualities || []).map((item) => ({ text: qualityLabel(item), tone: "soft" })),
+      ],
+      detail: parts.join(" · "),
+      title: [`画幅 ${formatAspectByResolution(model)}`, ...parts.slice(1)].join("\n"),
+    };
   }
   if (model.kind === "chat") {
     const efforts = enabledReasoningEfforts(model);
     const defaultEffort = model.reasoningPricing?.defaultEffort;
-    return [
-      { label: "上下文", value: formatTokens(model.contextWindowTokens) },
-      { label: "最大输出", value: formatTokens(model.maxOutputTokens) },
-      tagCell("推理档位", efforts.map((effort) => REASONING_EFFORT_LABELS[effort] || effort), "未启用"),
-      {
-        label: "默认档位",
-        value: efforts.length && defaultEffort ? REASONING_EFFORT_LABELS[defaultEffort] || defaultEffort : "—",
-        muted: !efforts.length,
-      },
-    ];
+    const reasoning = efforts.length
+      ? `推理 ${efforts.map((effort) => REASONING_EFFORT_LABELS[effort] || effort).join("/")} · 默认 ${defaultEffort ? REASONING_EFFORT_LABELS[defaultEffort] || defaultEffort : "—"}`
+      : "推理未启用 · 按基础积分";
+    const assistant = reasoningPriceTags(model, "assistant");
+    const canvas = reasoningPriceTags(model, "canvas_agent");
+    return {
+      tags: [
+        { text: `上下文 ${formatTokens(model.contextWindowTokens)}` },
+        { text: `输出 ${formatTokens(model.maxOutputTokens)}` },
+        ...(model.toolCallingDisabled ? [{ text: "无工具调用", tone: "warn" }] : []),
+      ],
+      detail: reasoning,
+      title: [reasoning, `助手积分 ${joinList(assistant, "按基础积分")}`, `画布积分 ${joinList(canvas, "按基础积分")}`].join("\n"),
+    };
   }
-  return [
-    { label: "工具", value: model.tool === "background_remove" ? "背景移除" : model.tool || "—" },
-    { label: "耗时", value: seconds },
-    { label: "协议", value: providerAdapterLabel(model.providerId) },
-    { label: "输入字段", value: `${model.upstreamInputFields?.length || 0} 个` },
-  ];
+  const inputs = joinList(model.upstreamInputFields);
+  const required = joinList(model.upstreamRequiredInputFields);
+  const detail = [`输入 ${inputs}`, `必填 ${required}`, ...(seconds ? [`耗时 ${seconds}`] : [])].join(" · ");
+  return {
+    tags: [
+      { text: model.tool === "background_remove" ? "背景移除" : model.tool || "工具" },
+      { text: providerAdapterLabel(model.providerId), tone: "soft" },
+    ],
+    detail,
+    title: detail,
+  };
 }
 
-function modelCardRows(model: ModelItem): ModelCardCell[] {
-  const rows: ModelCardCell[] = [];
-  if (model.kind === "image") {
-    const parts = aspectByResolutionParts(model).map((part) => ({
-      label: part.label,
-      text: `${part.text.split("/").length} 种比例`,
-    }));
-    rows.push(
-      parts.length
-        ? { label: "画幅", value: formatAspectByResolution(model), parts }
-        : { label: "画幅", value: "—", muted: true },
-      model.supportsExactSize
-        ? {
-            label: "精确尺寸",
-            value: `宽 ${model.exactSizeLimits.minWidth}–${model.exactSizeLimits.maxWidth} · 高 ${model.exactSizeLimits.minHeight}–${model.exactSizeLimits.maxHeight} px`,
-          }
-        : { label: "精确尺寸", value: "不支持", muted: true },
-    );
-  } else if (model.kind === "chat") {
-    rows.push(
-      tagCell("助手积分", reasoningPriceTags(model, "assistant"), "按基础积分"),
-      tagCell("画布积分", reasoningPriceTags(model, "canvas_agent"), "按基础积分"),
-    );
-  } else {
-    rows.push(
-      tagCell("输入", model.upstreamInputFields || []),
-      tagCell("必填", model.upstreamRequiredInputFields || []),
-    );
-  }
-  const pages = modelWorkspaceNames(model.id);
-  rows.push(
-    { label: "分配", value: pages.length ? pages.join(" · ") : "尚未分配", muted: !pages.length },
-    { label: "说明", value: model.description || "暂无说明", muted: !model.description },
-  );
-  return rows;
+/** Resolutions of the model routed through primary/backup slots. */
+function slotResolutions(model: ModelItem) {
+  return Object.keys(model.resolutionSlots || {}).sort();
 }
 
 function modelModerationLine(model: ModelItem) {
@@ -1666,7 +1686,7 @@ function importCatalogModels(items: ModelImport[]) {
       resolutions: chat ? [] : ["1K"], supportsExactSize: false, exactSizeLimits: exactSizeLimits(),
       aspectRatios: chat ? [] : [...IMAGE_ASPECT_RATIOS],
       aspectRatiosByResolution: chat ? {} : { "1K": [...IMAGE_ASPECT_RATIOS] },
-      qualities: chat ? [] : IMAGE_QUALITIES.map((quality) => quality.value),
+      qualities: chat ? [] : [...DEFAULT_IMAGE_QUALITIES],
       transparentBackground: !chat, outputFormats: chat ? [] : [...IMAGE_OUTPUT_FORMATS],
       moderationLevels: chat ? [] : [...IMAGE_MODERATION_LEVELS],
       maxReferenceImages: chat ? 0 : 4, maxImages: chat ? 0 : 4,
@@ -1779,7 +1799,7 @@ function chooseModelType(kind: ModelKind) {
   selectModelKind(kind);
   modelEditorTab.value = 'basic';
 }
-type ModelEditorTab = 'basic' | 'pricing' | 'capabilities' | 'publishing';
+type ModelEditorTab = 'basic' | 'pricing' | 'capabilities' | 'slots' | 'publishing';
 const modelEditorTab = ref<ModelEditorTab>('basic');
 const modelEditorForm = ref<{ $el: HTMLElement } | null>(null);
 watch(modelEditorTab, async () => {
@@ -1790,9 +1810,54 @@ const modelEditorTabs = computed(() => [
   { id: 'basic' as const, label: '基本信息', hint: '类型、服务商与模型映射' },
   { id: 'pricing' as const, label: '计费设置', hint: modelDraft.kind === 'chat' ? '基础积分与推理档位' : '积分、成本与预计耗时' },
   { id: 'capabilities' as const, label: modelDraft.kind === 'chat' ? '对话能力' : modelDraft.kind === 'image_tool' ? '媒体能力' : '生图能力', hint: modelDraft.kind === 'chat' ? '上下文与输出上限' : modelDraft.kind === 'image_tool' ? '上游声明的参数' : '尺寸、质量与输出选项' },
+  ...(modelDraft.kind === 'image'
+    ? [{ id: 'slots' as const, label: '分辨率槽位', hint: '主模型、备用与自动切换' }]
+    : []),
   { id: 'publishing' as const, label: '发布设置', hint: '可见性、默认与启用' },
 ]);
 const modelEditIndex = ref(-1);
+const imageSlotStatusVisible = ref(false);
+const profilePromptDialogVisible = ref(false);
+/** The draft's resolutions in 1K/2K/4K order, as tiers and slots use them. */
+const tierResolutions = computed(() =>
+  ["1K", "2K", "4K"].filter((resolution) => modelDraft.resolutions.some((item) => String(item).toUpperCase() === resolution)),
+);
+/** The draft's qualities in the canonical low → max → auto order. */
+const orderedDraftQualities = computed(() =>
+  IMAGE_QUALITIES.map((item) => item.value).filter((value) => modelDraft.qualities.includes(value)),
+);
+function draftFlatTier() {
+  return {
+    priceCents: normalizePoints(modelDraft.pricePoints),
+    discountPriceCents: modelDraft.discountEnabled ? normalizePoints(modelDraft.discountPoints) : null,
+    upstreamCostCents: normalizePoints(modelDraft.upstreamCostPoints),
+  };
+}
+const draftImagePricing = computed<ImagePricingMatrix>({
+  get: () => fitImagePricing(modelDraft.imagePricing, tierResolutions.value, orderedDraftQualities.value, draftFlatTier()),
+  set: (value) => { modelDraft.imagePricing = value; },
+});
+function enableImagePricing(enabled: boolean) {
+  modelDraft.imagePricingEnabled = enabled;
+  if (enabled) modelDraft.imagePricing = draftImagePricing.value;
+}
+const slotCandidateModels = computed<SlotCandidateModel[]>(() => {
+  const providers = new Map(config.providers.map((provider) => [provider.id, provider.name]));
+  const others = config.models
+    .filter((model) => model.kind === "image" && model.id !== modelDraft.id)
+    .map((model) => ({
+      id: model.id, name: model.name, upstreamModel: model.upstreamModel,
+      providerName: providers.get(model.providerId) || model.providerId,
+      resolutions: (model.resolutions || []).map((item) => String(item).toUpperCase()),
+      enabled: model.enabled,
+    }));
+  const self: SlotCandidateModel = {
+    id: modelDraft.id, name: modelDraft.name || "本模型", upstreamModel: modelDraft.upstreamModel,
+    providerName: providers.get(modelDraft.providerId) || modelDraft.providerId,
+    resolutions: tierResolutions.value, enabled: true,
+  };
+  return [self, ...others];
+});
 const discoveringModelOptions = ref(false);
 const modelIconInputRef = ref<HTMLInputElement | null>(null);
 const modelIconUploading = ref(false);
@@ -1821,6 +1886,10 @@ const modelDraft = reactive<ModelDraft>({
   upscaleHighDiscountEnabled: false,
   upscaleHighDiscountPoints: 20,
   upscaleHighUpstreamCostPoints: 0,
+  imagePricingEnabled: false,
+  imagePricing: {},
+  defaultQuality: "",
+  resolutionSlots: {},
   fastMode: false,
   minSeconds: 30,
   maxSeconds: 90,
@@ -1829,7 +1898,7 @@ const modelDraft = reactive<ModelDraft>({
   exactSizeLimits: exactSizeLimits(),
   aspectRatios: [...IMAGE_ASPECT_RATIOS],
   aspectRatiosByResolution: { "1K": [...IMAGE_ASPECT_RATIOS] },
-  qualities: IMAGE_QUALITIES.map((item) => item.value),
+  qualities: [...DEFAULT_IMAGE_QUALITIES],
   transparentBackground: true,
   outputFormats: [...IMAGE_OUTPUT_FORMATS],
   outputFormatsEnabled: true,
@@ -1886,7 +1955,7 @@ function openModel(index = -1) {
             source.autoAspectRatios || {},
           ),
           qualities: [
-            ...(source.qualities || IMAGE_QUALITIES.map((item) => item.value)),
+            ...(source.qualities || DEFAULT_IMAGE_QUALITIES),
           ],
           transparentBackground: source.transparentBackground !== false,
           outputFormats: [...(source.outputFormats || [])],
@@ -1934,6 +2003,10 @@ function openModel(index = -1) {
           upscaleHighUpstreamCostPoints: normalizePoints(
             source.imageUpscalePricing?.highUpstreamCostCents ?? source.upstreamCostCents ?? 0,
           ),
+          imagePricingEnabled: Boolean(source.imagePricing && Object.keys(source.imagePricing).length),
+          imagePricing: cloneJSON(source.imagePricing || {}),
+          defaultQuality: source.defaultQuality || "",
+          resolutionSlots: cloneJSON(source.resolutionSlots || {}),
         }
       : {
           id: createId("model"),
@@ -1965,6 +2038,10 @@ function openModel(index = -1) {
           upscaleHighDiscountEnabled: false,
           upscaleHighDiscountPoints: 20,
           upscaleHighUpstreamCostPoints: 0,
+          imagePricingEnabled: false,
+          imagePricing: {},
+          defaultQuality: "",
+          resolutionSlots: {},
           fastMode: false,
           minSeconds: 30,
           maxSeconds: 90,
@@ -1973,7 +2050,7 @@ function openModel(index = -1) {
           exactSizeLimits: exactSizeLimits(),
           aspectRatios: [...IMAGE_ASPECT_RATIOS],
           aspectRatiosByResolution: { "1K": [...IMAGE_ASPECT_RATIOS] },
-          qualities: IMAGE_QUALITIES.map((item) => item.value),
+          qualities: [...DEFAULT_IMAGE_QUALITIES],
           transparentBackground: true,
           outputFormats: [...IMAGE_OUTPUT_FORMATS],
           outputFormatsEnabled: true,
@@ -2679,6 +2756,14 @@ async function saveModelDraft() {
           )
         : {},
     qualities: modelDraft.kind === "image" ? [...modelDraft.qualities] : [],
+    imagePricing:
+      modelDraft.kind === "image" && modelDraft.imagePricingEnabled
+        ? fitImagePricing(modelDraft.imagePricing, tierResolutions.value, orderedDraftQualities.value, draftFlatTier())
+        : null,
+    defaultQuality:
+      modelDraft.kind === "image" && modelDraft.qualities.includes(modelDraft.defaultQuality) ? modelDraft.defaultQuality : "",
+    resolutionSlots:
+      modelDraft.kind === "image" ? cleanResolutionSlots(modelDraft.resolutionSlots, tierResolutions.value) : null,
     transparentBackground:
       modelDraft.kind === "image" && modelDraft.transparentBackground,
     outputFormats:
@@ -2841,7 +2926,7 @@ onBeforeUnmount(() => {
               @click="activeView = tab.value"
             >
               {{ tab.label }}
-              <em class="tnum">{{ tab.count }}</em>
+              <em v-if="tab.count !== null" class="tnum">{{ tab.count }}</em>
             </button>
           </div>
 
@@ -2865,11 +2950,13 @@ onBeforeUnmount(() => {
               PPT / PSD 导出
               <em>{{ config.editableFiles.enabled ? "已开放" : "未开放" }}</em>
             </button>
-            <el-tooltip content="从服务器重新加载配置" placement="bottom">
+            <el-tooltip v-if="activeView !== 'pricing'" content="从服务器重新加载配置" placement="bottom">
               <el-button class="toolbar-icon-button" :icon="Refresh" :loading="loading" aria-label="刷新" @click="load" />
             </el-tooltip>
             <el-button v-if="loadFailed" :disabled="loading" @click="load">重新加载</el-button>
+            <!-- 动态调价有自己的保存按钮；模型配置有未保存改动时这里仍然显示。 -->
             <button
+              v-if="activeView !== 'pricing' || isDirty"
               type="button"
               class="save-button"
               :class="{ 'is-dirty': isDirty || saving, 'is-failed': loadFailed }"
@@ -2922,6 +3009,7 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <div class="config-toolbar__buttons">
+            <el-button @click="imageSlotStatusVisible = true">分辨率槽位状态</el-button>
             <el-tooltip content="请先添加服务商" placement="bottom" :disabled="!!config.providers.length">
               <span class="toolbar-button-wrap">
                 <el-button class="toolbar-add" :icon="Plus" :disabled="!config.providers.length" @click="openModel()">
@@ -2945,292 +3033,218 @@ onBeforeUnmount(() => {
           :count="modelPagination.items.value.length"
           :total="modelPagination.total.value"
           :page-size="modelPagination.pageSize.value"
+          :page-sizes="[20, 50, 100]"
           @update:page="modelPagination.goToPage"
           @update:page-size="modelPagination.setPageSize"
         >
-          <div
-            v-if="modelPagination.items.value.length"
-            class="model-card-grid"
-          >
-            <article
-              v-for="row in modelPagination.items.value"
-              :key="row.id"
-              class="model-card"
-              :class="{ 'is-disabled': !row.enabled }"
-            >
-              <header class="model-card__head">
-                <div class="model-card__identity">
-                  <span class="model-card__icon" aria-hidden="true">
-                    <img v-if="row.iconUrl" :src="row.iconUrl" alt="" />
-                    <Cpu v-else />
-                  </span>
-                  <div class="model-card__identity-copy">
-                    <div class="model-card__title">
-                      <strong :title="row.name">{{ row.name }}</strong>
-                      <span class="kind-badge" :class="`is-${row.kind}`">{{
-                        kindName(row.kind)
-                      }}</span>
+          <div v-if="modelPagination.items.value.length" class="catalog-table-wrap">
+            <table class="catalog-table">
+              <colgroup>
+                <col class="col-model" />
+                <col class="col-upstream" />
+                <col class="col-provider" />
+                <col class="col-price" />
+                <col class="col-caps" />
+                <col class="col-switch" />
+                <col class="col-switch" />
+                <col class="col-switch" />
+                <col class="col-actions" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>上游模型</th>
+                  <th>服务商</th>
+                  <th>价格<HelpTip content="用户每次调用支付的积分。分档模型显示最低–最高价；有推理档位的对话模型点击价格，查看各档位在 AI 助手和无限画布里的积分。" /></th>
+                  <th>能力<HelpTip content="生图模型为可选分辨率与质量，对话模型为上下文与输出上限，媒体工具为工具类型。悬停可看比例、精确尺寸、格式、参考图、审核和耗时等完整参数。" /></th>
+                  <th class="is-center">可选<HelpTip content="对用户开放，能被分配到页面；媒体工具表示在前台展示。" /></th>
+                  <th class="is-center">启用<HelpTip content="关闭后模型不再接新任务，已分配的页面也不会再选到它。" /></th>
+                  <th class="is-center">去背景<HelpTip content="仅生图模型：允许用户要求透明背景输出。" /></th>
+                  <th class="is-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="row in modelPagination.items.value"
+                  :key="row.id"
+                  :class="{ 'is-disabled': !row.enabled }"
+                >
+                  <td>
+                    <div class="cell-model">
+                      <span class="kind-badge cell-kind" :class="`is-${row.kind}`">{{ kindName(row.kind) }}</span>
+                      <span class="cell-model__icon" aria-hidden="true">
+                        <img v-if="row.iconUrl" :src="row.iconUrl" alt="" />
+                        <Cpu v-else />
+                      </span>
+                      <strong class="cell-model__name" :title="row.description ? `${row.name}：${row.description}` : row.name">{{ row.name }}</strong>
                       <span v-if="row.default" class="default-badge">默认</span>
                       <span v-if="row.status === 'maintenance'" class="maintenance-badge">维护中</span>
                       <span v-if="apiReferences[row.id]?.length" class="api-ref-badge" :title="`API 调用模型：${apiReferences[row.id].map(item => item.apiName).join('、')}`">API {{ apiReferences[row.id].length }}</span>
+                      <span v-if="slotResolutions(row as ModelItem).length" class="slot-badge" :title="`这些分辨率配置了主模型和备用：${slotResolutions(row as ModelItem).join('、')}`">槽位 {{ slotResolutions(row as ModelItem).join(" ") }}</span>
                     </div>
-                    <div
-                      class="model-card__line"
-                      :title="`${providerName(row.providerId)} · ${row.upstreamModel} · ${providerAdapterLabel(row.providerId)}`"
+                  </td>
+                  <td><span class="cell-upstream mono" :title="row.upstreamModel">{{ row.upstreamModel || "—" }}</span></td>
+                  <td><span class="cell-provider" :title="providerName(row.providerId)">{{ providerName(row.providerId) }}</span></td>
+                  <td>
+                    <el-popover
+                      v-for="price in [modelCardPrice(row as ModelItem)]"
+                      :key="`${row.id}-price`"
+                      :disabled="!price.rows.length"
+                      placement="bottom-start"
+                      :width="280"
+                      trigger="click"
+                      :show-arrow="false"
                     >
-                      <span>{{ providerName(row.providerId) }}</span>
-                      <span class="mono">{{ row.upstreamModel || "—" }}</span>
-                      <span>{{ providerAdapterLabel(row.providerId) }}</span>
-                    </div>
-                  </div>
-                </div>
-                <el-popover
-                  v-for="price in [modelCardPrice(row as ModelItem)]"
-                  :key="`${row.id}-price`"
-                  :disabled="!price.rows.length"
-                  placement="bottom-end"
-                  :width="280"
-                  trigger="click"
-                  :show-arrow="false"
-                >
-                  <template #reference>
-                    <button
-                      type="button"
-                      class="model-card__price"
-                      :class="{ 'is-interactive': price.rows.length }"
-                      :tabindex="price.rows.length ? 0 : -1"
-                      :aria-label="
-                        price.rows.length
-                          ? `查看 ${price.countLabel}${price.label}`
-                          : undefined
-                      "
-                    >
-                      <div class="price-now">
-                        <strong class="tnum">{{ price.amount }}</strong>
-                        <span>{{ price.label }}</span>
-                      </div>
-                      <div
-                        v-if="price.meta || price.was || price.countLabel"
-                        class="price-meta"
-                      >
-                        <span v-if="price.countLabel" class="price-count">{{
-                          price.countLabel
-                        }}</span>
-                        <span v-if="price.meta" class="price-scope tnum">{{
-                          price.meta
-                        }}</span>
-                        <span v-if="price.was" class="price-was tnum">{{
-                          price.was
-                        }}</span>
-                        <span v-if="price.off" class="price-off">{{
-                          price.off
-                        }}</span>
-                      </div>
-                    </button>
-                  </template>
-                  <div class="model-price-pop">
-                    <header class="model-price-pop__head">
-                      <strong>{{ price.countLabel }}推理</strong>
-                      <span v-if="price.defaultLabel">默认 {{ price.defaultLabel }}</span>
-                    </header>
-                    <div
-                      class="price-scope-switch"
-                      role="tablist"
-                      aria-label="积分渠道"
-                    >
-                      <button
-                        type="button"
-                        role="tab"
-                        :class="{
-                          'is-active': reasoningPriceScope === 'assistant',
-                        }"
-                        @click="reasoningPriceScope = 'assistant'"
-                      >
-                        AI 助手
-                      </button>
-                      <button
-                        type="button"
-                        role="tab"
-                        :class="{
-                          'is-active': reasoningPriceScope === 'canvas_agent',
-                        }"
-                        @click="reasoningPriceScope = 'canvas_agent'"
-                      >
-                        无限画布
-                      </button>
-                    </div>
-                    <table class="model-price-pop__table">
-                      <thead>
-                        <tr>
-                          <th>档位</th>
-                          <th
+                      <template #reference>
+                        <button
+                          type="button"
+                          class="cell-price"
+                          :class="{ 'is-interactive': price.rows.length }"
+                          :tabindex="price.rows.length ? 0 : -1"
+                          :title="[price.countLabel, price.meta, price.was].filter(Boolean).join(' · ') || undefined"
+                          :aria-label="price.rows.length ? `查看 ${price.countLabel}${price.label}` : undefined"
+                        >
+                          <strong class="tnum">{{ price.amount }}</strong>
+                          <span class="cell-price__unit">{{ price.label }}</span>
+                          <s v-if="price.was" class="cell-price__was tnum">{{ price.was.replace("原价 ", "") }}</s>
+                        </button>
+                      </template>
+                      <div class="model-price-pop">
+                        <header class="model-price-pop__head">
+                          <strong>{{ price.countLabel }}推理</strong>
+                          <span v-if="price.defaultLabel">默认 {{ price.defaultLabel }}</span>
+                        </header>
+                        <div
+                          class="price-scope-switch"
+                          role="tablist"
+                          aria-label="积分渠道"
+                        >
+                          <button
+                            type="button"
+                            role="tab"
                             :class="{
                               'is-active': reasoningPriceScope === 'assistant',
                             }"
+                            @click="reasoningPriceScope = 'assistant'"
                           >
-                            助手
-                          </th>
-                          <th
+                            AI 助手
+                          </button>
+                          <button
+                            type="button"
+                            role="tab"
                             :class="{
-                              'is-active':
-                                reasoningPriceScope === 'canvas_agent',
+                              'is-active': reasoningPriceScope === 'canvas_agent',
                             }"
+                            @click="reasoningPriceScope = 'canvas_agent'"
                           >
-                            画布
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr
-                          v-for="item in price.rows"
-                          :key="item.effort"
-                          :class="{ 'is-default': item.default }"
-                        >
-                          <td>
-                            {{ item.label }}
-                            <em v-if="item.default">默认</em>
-                          </td>
-                          <td
-                            class="tnum"
-                            :class="{
-                              'is-muted': reasoningPriceScope !== 'assistant',
-                            }"
-                          >
-                            <s v-if="item.assistantWas">{{
-                              item.assistantWas
-                            }}</s>
-                            {{ item.assistant }}
-                          </td>
-                          <td
-                            class="tnum"
-                            :class="{
-                              'is-muted':
-                                reasoningPriceScope !== 'canvas_agent',
-                            }"
-                          >
-                            <s v-if="item.canvasWas">{{ item.canvasWas }}</s>
-                            {{ item.canvas }}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </el-popover>
-              </header>
-
-              <dl class="model-card__stats">
-                <div
-                  v-for="cell in modelCardStats(row as ModelItem)"
-                  :key="cell.label"
-                  class="model-card__stat"
-                >
-                  <dt>{{ cell.label }}</dt>
-                  <dd :title="cell.value" :class="{ 'is-muted': cell.muted }">
-                    <span v-if="cell.tags" class="model-card__tags">
-                      <span v-for="tag in cell.tags" :key="tag" class="res-badge">{{ tag }}</span>
+                            无限画布
+                          </button>
+                        </div>
+                        <table class="model-price-pop__table">
+                          <thead>
+                            <tr>
+                              <th>档位</th>
+                              <th
+                                :class="{
+                                  'is-active': reasoningPriceScope === 'assistant',
+                                }"
+                              >
+                                助手
+                              </th>
+                              <th
+                                :class="{
+                                  'is-active':
+                                    reasoningPriceScope === 'canvas_agent',
+                                }"
+                              >
+                                画布
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr
+                              v-for="item in price.rows"
+                              :key="item.effort"
+                              :class="{ 'is-default': item.default }"
+                            >
+                              <td>
+                                {{ item.label }}
+                                <em v-if="item.default">默认</em>
+                              </td>
+                              <td
+                                class="tnum"
+                                :class="{
+                                  'is-muted': reasoningPriceScope !== 'assistant',
+                                }"
+                              >
+                                <s v-if="item.assistantWas">{{
+                                  item.assistantWas
+                                }}</s>
+                                {{ item.assistant }}
+                              </td>
+                              <td
+                                class="tnum"
+                                :class="{
+                                  'is-muted':
+                                    reasoningPriceScope !== 'canvas_agent',
+                                }"
+                              >
+                                <s v-if="item.canvasWas">{{ item.canvasWas }}</s>
+                                {{ item.canvas }}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </el-popover>
+                  </td>
+                  <td>
+                    <span v-for="caps in [modelCapability(row as ModelItem)]" :key="`${row.id}-caps`" class="cell-line cell-tags" :title="caps.title">
+                      <span v-for="tag in caps.tags" :key="tag.text" class="res-badge" :class="tag.tone ? `is-${tag.tone}` : ''">{{ tag.text }}</span>
+                      <span v-if="!caps.tags.length" class="cell-na">—</span>
                     </span>
-                    <span v-else class="model-card__text">{{ cell.value }}</span>
-                  </dd>
-                </div>
-              </dl>
-
-              <dl class="model-card__rows">
-                <div
-                  v-for="cell in modelCardRows(row as ModelItem)"
-                  :key="cell.label"
-                  class="model-card__row"
-                >
-                  <dt>{{ cell.label }}</dt>
-                  <dd :title="cell.value" :class="{ 'is-muted': cell.muted }">
-                    <span v-if="cell.parts" class="model-card__aspects">
-                      <span v-for="part in cell.parts" :key="part.label" class="model-card__aspect">
-                        <span class="res-badge">{{ part.label }}</span>{{ part.text }}
-                      </span>
-                    </span>
-                    <span v-else-if="cell.tags" class="model-card__tags">
-                      <span v-for="tag in cell.tags" :key="tag" class="res-badge">{{ tag }}</span>
-                    </span>
-                    <span v-else class="model-card__text">{{ cell.value }}</span>
-                  </dd>
-                </div>
-              </dl>
-
-              <footer class="model-card__foot">
-                <div
-                  v-if="row.kind === 'image'"
-                  class="model-card__foot-meta"
-                  :title="modelModerationLine(row as ModelItem)"
-                >
-                  <span>审核</span>
-                  <strong>{{ modelModerationLine(row as ModelItem) }}</strong>
-                </div>
-                <label class="model-card__switch">
-                  <span>{{ row.kind === "image_tool" ? "前台展示" : "可选" }}</span>
-                  <el-switch
-                    v-model="row.public"
-                    size="small"
-                    @change="onCatalogModelStateChange(row)"
-                  />
-                </label>
-                <label class="model-card__switch">
-                  <span>启用</span>
-                  <el-switch
-                    v-model="row.enabled"
-                    size="small"
-                    @change="onCatalogModelStateChange(row)"
-                  />
-                </label>
-                <label v-if="row.kind === 'image'" class="model-card__switch">
-                  <span>移除背景</span>
-                  <el-switch v-model="row.transparentBackground" size="small" />
-                </label>
-                <div class="model-card__actions">
-                  <el-button
-                    v-if="
-                      row.kind === 'image_tool' &&
-                      row.tool !== 'background_remove' &&
-                      row.public &&
-                      row.enabled
-                    "
-                    link
-                    type="primary"
-                    @click="openFrontendTool(row)"
-                  >
-                    前台使用
-                  </el-button>
-                  <el-button
-                    v-if="row.kind === 'chat' && row.supportedReasoningEfforts.length"
-                    link
-                    type="primary"
-                    @click="openReasoningPricing(row as ModelItem)"
-                  >
-                    推理定价
-                  </el-button>
-                  <el-button
-                    v-if="row.kind === 'chat' || row.kind === 'image'"
-                    link
-                    type="primary"
-                    @click="openModelTest(row as ModelItem)"
-                  >
-                    测试
-                  </el-button>
-                  <el-button
-                    link
-                    type="primary"
-                    @click="openModel(modelOriginalIndex(row))"
-                  >
-                    编辑
-                  </el-button>
-                  <el-button
-                    link
-                    type="danger"
-                    @click="removeModel(modelOriginalIndex(row))"
-                  >
-                    删除
-                  </el-button>
-                </div>
-              </footer>
-            </article>
+                  </td>
+                  <td class="is-center">
+                    <el-switch
+                      v-model="row.public"
+                      size="small"
+                      :aria-label="row.kind === 'image_tool' ? '前台展示' : '对用户开放'"
+                      @change="onCatalogModelStateChange(row)"
+                    />
+                  </td>
+                  <td class="is-center">
+                    <el-switch v-model="row.enabled" size="small" aria-label="启用" @change="onCatalogModelStateChange(row)" />
+                  </td>
+                  <td class="is-center">
+                    <el-switch v-if="row.kind === 'image'" v-model="row.transparentBackground" size="small" aria-label="允许透明背景" />
+                    <span v-else class="cell-na">—</span>
+                  </td>
+                  <td class="is-right">
+                    <div class="cell-actions">
+                      <el-button v-if="row.kind === 'chat' || row.kind === 'image'" link type="primary" @click="openModelTest(row as ModelItem)">测试</el-button>
+                      <span v-else aria-hidden="true" />
+                      <el-button link type="primary" @click="openModel(modelOriginalIndex(row))">编辑</el-button>
+                      <el-button
+                        v-if="row.kind === 'chat' && row.supportedReasoningEfforts.length"
+                        link
+                        type="primary"
+                        title="推理档位定价"
+                        @click="openReasoningPricing(row as ModelItem)"
+                      >定价</el-button>
+                      <el-button
+                        v-else-if="row.kind === 'image_tool' && row.tool !== 'background_remove' && row.public && row.enabled"
+                        link
+                        type="primary"
+                        title="在前台打开这个工具"
+                        @click="openFrontendTool(row)"
+                      >前台</el-button>
+                      <span v-else aria-hidden="true" />
+                      <el-button link type="danger" @click="removeModel(modelOriginalIndex(row))">删除</el-button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
           <el-empty
             v-else
@@ -3270,7 +3284,6 @@ onBeforeUnmount(() => {
             <header class="assignment-main__head">
               <div class="assignment-main__title">
                 <strong>{{ activeWorkspace.name }}</strong>
-                <small>{{ activeWorkspace.detail }}</small>
               </div>
               <div v-if="activeWorkspace.kinds.length" class="assignment-defaults">
                 <label
@@ -3321,57 +3334,22 @@ onBeforeUnmount(() => {
                     />
                   </el-select>
                 </label>
+                <button
+                  v-if="activeWorkspace.key === 't2i'"
+                  type="button"
+                  class="profile-prompt-trigger"
+                  @click="profilePromptDialogVisible = true"
+                >个人中心提示词</button>
               </div>
             </header>
-
-            <section
-              v-if="activeWorkspace.key === 't2i'"
-              class="profile-figure-prompt"
-              aria-label="个人中心参考生成提示词"
-            >
-              <span>个人中心参考生成提示词</span>
-              <el-input
-                v-model="config.workspaces.t2i.profileFigurePrompt"
-                type="textarea"
-                :autosize="{ minRows: 3, maxRows: 10 }"
-                maxlength="4000"
-                show-word-limit
-                placeholder="清空则恢复内置默认提示词。不要描述场景或背景，否则会覆盖透明背景效果。"
-              />
-              <span>个人中心装扮提示词模板</span>
-              <el-input
-                v-model="config.workspaces.t2i.profileOutfitPrompt"
-                type="textarea"
-                :autosize="{ minRows: 3, maxRows: 10 }"
-                maxlength="4000"
-                show-word-limit
-                placeholder="清空则恢复内置默认模板。必须保留一个 {{items}}，用户选的部位会插到这里。"
-              />
-            </section>
-
-            <section
+            <p
               v-if="activeWorkspace.key === 'ui_design'"
               class="workspace-billing-note"
-              aria-label="UI 设计稿计费说明"
             >
-              <header>
-                <strong>框选优化与素材重建计费</strong>
-                <small
-                  ><code>ui_design_asset</code>
-                  与整稿共用本工作区图片模型单价；请将图片价设为非 0，否则前端会显示费用但服务端冻结为
-                  0。</small
-                >
-              </header>
-              <ul>
-                <li v-for="route in uiDesignServiceRoutes" :key="route.key">
-                  <code>{{ route.key }}</code>
-                  <span>
-                    <b>{{ route.label }}</b>
-                    <small>{{ route.detail }}</small>
-                  </span>
-                </li>
-              </ul>
-            </section>
+              <strong>框选优化与素材重建计费</strong>
+              <HelpTip :content="uiDesignServiceRoutes.map((route) => `${route.key}：${route.label}，${route.detail}`).join('；')" />
+              <span><code>ui_design_asset</code> 与整稿共用本页面图片模型单价，图片价须设为非 0，否则前端显示费用但服务端冻结为 0。</span>
+            </p>
 
             <div class="assignment-toolbar">
               <el-input
@@ -3415,26 +3393,18 @@ onBeforeUnmount(() => {
                   <em class="tnum">{{ group.assigned.length }}</em>
                   <small v-if="group.defaultName">默认：{{ group.defaultName }}</small>
                 </header>
-
-                <div class="assign-grid">
+                <div class="assign-cards">
                   <article
                     v-for="model in group.assigned"
                     :key="model.id"
                     class="assign-card"
                     :class="{ 'is-default': isWorkspaceDefaultModel(activeWorkspace, model) }"
                   >
-                    <header class="assign-card__head">
-                      <span class="assign-card__title">
-                        <strong :title="model.name">{{ model.name }}</strong>
-                        <small>
-                          {{ providerName(model.providerId) }}
-                          <em v-if="model.status === 'maintenance'" class="assignment-maintenance">维护中</em>
-                        </small>
-                      </span>
+                    <div class="assign-card__top">
                       <button
                         type="button"
                         role="radio"
-                        class="assignment-default-radio"
+                        class="assign-radio"
                         :class="{ 'is-on': isWorkspaceDefaultModel(activeWorkspace, model) }"
                         :aria-checked="isWorkspaceDefaultModel(activeWorkspace, model)"
                         :disabled="model.status === 'maintenance' && !isWorkspaceDefaultModel(activeWorkspace, model)"
@@ -3445,237 +3415,237 @@ onBeforeUnmount(() => {
                               ? '维护中的模型不能设为默认'
                               : `设为${workspaceDefaultLabel(activeWorkspace, model.kind)}`
                         "
+                        :aria-label="`设为${workspaceDefaultLabel(activeWorkspace, model.kind)}`"
                         @click="setWorkspaceDefaultModel(activeWorkspace, model)"
                       >
                         <i aria-hidden="true" />
-                        <span>{{ isWorkspaceDefaultModel(activeWorkspace, model) ? "默认" : "设为默认" }}</span>
                       </button>
-                    </header>
-                    <div class="assign-card__controls">
-                    <el-popover
-                      v-if="model.kind === 'image'"
-                      placement="bottom-end"
-                      :width="320"
-                      trigger="click"
-                      :show-arrow="false"
-                    >
-                      <template #reference>
+                      <strong class="assign-card__name" :title="model.name">{{ model.name }}</strong>
+                      <span v-if="isWorkspaceDefaultModel(activeWorkspace, model)" class="default-badge">默认</span>
+                      <em v-if="model.status === 'maintenance'" class="assignment-maintenance">维护中</em>
+                      <button
+                        type="button"
+                        class="assign-card__remove"
+                        title="移出此页面"
+                        aria-label="移出此页面"
+                        @click="removeWorkspaceModel(activeWorkspace, model.id)"
+                      >
+                        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
+                      </button>
+                    </div>
+                    <div class="assign-card__meta">
+                      <span class="assign-card__provider" :title="providerName(model.providerId)">{{ providerName(model.providerId) }}</span>
+                      <el-popover
+                        placement="bottom-end"
+                        :width="300"
+                        trigger="click"
+                        :show-arrow="false"
+                      >
+                        <template #reference>
                         <button
-                          v-for="limit in [workspaceLimitSummary(activeWorkspace, model)]"
-                          :key="`${model.id}-limit`"
                           type="button"
-                          class="assignment-limit-chip"
-                          :class="{ 'is-extended': limit.extended }"
-                          :title="`本页面：参考图最多 ${limit.references} 张，单次最多生成 ${limit.images} 张（点击调整追加额度）`"
+                          class="assign-chip"
+                          :class="{ 'is-override': workspacePriceOverride(activeWorkspace, model) }"
+                          :title="workspacePriceOverride(activeWorkspace, model) ? '本页面单独定价，点击修改' : `继承模型目录价格，点击设置「${activeWorkspace.name}」里的页面价格`"
                         >
-                          <span><em>参考</em><b class="tnum">{{ limit.references }}</b></span>
-                          <span><em>生成</em><b class="tnum">{{ limit.images }}</b></span>
+                          <b class="tnum">{{ formatPoints(workspaceEffectivePrice(activeWorkspace, model)) }}</b>积分
+                          <em v-if="workspacePriceOverride(activeWorkspace, model)">页面价</em>
                         </button>
                       </template>
-                      <div class="assignment-limit-pop">
-                        <header>
-                          <strong>页面追加额度</strong>
-                          <small>只对「{{ activeWorkspace.name }}」里的 {{ model.name }} 生效</small>
-                        </header>
-                        <section
-                          v-for="field in workspaceLimitFields(activeWorkspace, model)"
-                          :key="field.key"
-                          class="assignment-limit-field"
-                        >
-                          <div class="assignment-limit-field__head">
-                            <span>{{ field.label }}</span>
-                            <strong class="tnum" :class="{ 'is-extended': field.extra > 0 }">
-                              {{ field.total }}<small>{{ field.unit }}</small>
-                            </strong>
+                        <div class="assignment-price-pop">
+                          <header>
+                            <strong>页面价格</strong>
+                            <small>只对「{{ activeWorkspace.name }}」里的 {{ model.name }} 生效</small>
+                          </header>
+                          <div class="price-mode" role="radiogroup" aria-label="定价方式">
+                            <button
+                              type="button"
+                              role="radio"
+                              :aria-checked="!workspacePriceOverride(activeWorkspace, model)"
+                              :class="{ 'is-on': !workspacePriceOverride(activeWorkspace, model) }"
+                              @click="setWorkspacePriceOverride(activeWorkspace, model, false)"
+                            >继承目录价</button>
+                            <button
+                              type="button"
+                              role="radio"
+                              :aria-checked="Boolean(workspacePriceOverride(activeWorkspace, model))"
+                              :class="{ 'is-on': workspacePriceOverride(activeWorkspace, model) }"
+                              @click="setWorkspacePriceOverride(activeWorkspace, model, true)"
+                            >页面单独定价</button>
                           </div>
-                          <div class="assignment-limit-field__body">
-                            <div class="limit-stepper">
-                              <button
-                                type="button"
-                                :disabled="field.extra <= 0"
-                                :aria-label="`${field.label}追加减 1`"
-                                @click="setWorkspaceModelLimit(activeWorkspace, model, field.key, field.extra - 1)"
-                              >−</button>
-                              <label>
-                                <span>+</span>
+
+                          <div v-if="!workspacePriceOverride(activeWorkspace, model)" class="price-inherit">
+                            <span>用户支付</span>
+                            <strong class="tnum">{{ formatPoints(effectivePrice(model)) }}<small>{{ workspacePriceUnit(model) }}</small></strong>
+                            <em v-if="hasDiscountPrice(model)" class="tnum">原价 {{ formatPoints(model.priceCents) }}</em>
+                          </div>
+
+                          <template v-else>
+                            <label class="price-field">
+                              <span>标准价格</span>
+                              <span class="price-input">
                                 <input
                                   class="tnum"
                                   type="number"
                                   inputmode="numeric"
                                   min="0"
-                                  :max="field.maxExtra"
-                                  :value="field.extra"
-                                  :aria-label="`${field.label}追加数量`"
-                                  @change="setWorkspaceModelLimit(activeWorkspace, model, field.key, Number(($event.target as HTMLInputElement).value)); ($event.target as HTMLInputElement).value = String(workspaceModelLimits(activeWorkspace, model)[field.key])"
+                                  step="1"
+                                  :value="workspacePriceOverride(activeWorkspace, model)?.priceCents"
+                                  aria-label="标准价格"
+                                  @change="setWorkspacePriceField(activeWorkspace, model, 'priceCents', ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).value = String(workspacePriceOverride(activeWorkspace, model)?.priceCents ?? '')"
                                 />
-                              </label>
-                              <button
-                                type="button"
-                                :disabled="field.extra >= field.maxExtra"
-                                :aria-label="`${field.label}追加加 1`"
-                                @click="setWorkspaceModelLimit(activeWorkspace, model, field.key, field.extra + 1)"
-                              >+</button>
+                                <em>{{ workspacePriceUnit(model) }}</em>
+                              </span>
+                            </label>
+                            <div class="price-field">
+                              <span class="price-field__switch">
+                                活动价格
+                                <el-switch
+                                  size="small"
+                                  :model-value="workspacePriceOverride(activeWorkspace, model)?.discountPriceCents != null"
+                                  @change="setWorkspaceDiscountEnabled(activeWorkspace, model, $event === true)"
+                                />
+                              </span>
+                              <span
+                                v-if="workspacePriceOverride(activeWorkspace, model)?.discountPriceCents != null"
+                                class="price-input"
+                              >
+                                <input
+                                  class="tnum"
+                                  type="number"
+                                  inputmode="numeric"
+                                  min="0"
+                                  :max="workspacePriceOverride(activeWorkspace, model)?.priceCents"
+                                  step="1"
+                                  :value="workspacePriceOverride(activeWorkspace, model)?.discountPriceCents"
+                                  aria-label="活动价格"
+                                  @change="setWorkspacePriceField(activeWorkspace, model, 'discountPriceCents', ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).value = String(workspacePriceOverride(activeWorkspace, model)?.discountPriceCents ?? '')"
+                                />
+                                <em>{{ workspacePriceUnit(model) }}</em>
+                              </span>
+                              <small v-else>开启后按活动价结算</small>
                             </div>
-                            <div class="limit-quick">
-                              <button
-                                v-for="step in field.steps"
-                                :key="step"
-                                type="button"
-                                :disabled="field.extra >= field.maxExtra"
-                                @click="setWorkspaceModelLimit(activeWorkspace, model, field.key, field.extra + step)"
-                              >+{{ step }}</button>
-                            </div>
-                          </div>
-                          <small class="assignment-limit-field__hint tnum">
-                            模型 {{ field.base }} 张{{ field.extra ? ` + 页面追加 ${field.extra} 张` : "" }} · 最多 {{ field.cap }} 张
-                          </small>
-                        </section>
-                        <footer>
-                          <p>追加前请确认上游模型支持这么多输入图，否则任务会在上游失败。</p>
-                          <button
-                            type="button"
-                            class="assignment-link"
-                            :disabled="!workspaceLimitSummary(activeWorkspace, model).extended"
-                            @click="resetWorkspaceModelLimits(activeWorkspace, model)"
-                          >恢复模型默认</button>
-                        </footer>
-                      </div>
-                    </el-popover>
-                    <el-popover
-                      placement="bottom-end"
-                      :width="300"
-                      trigger="click"
-                      :show-arrow="false"
-                    >
-                      <template #reference>
-                        <button
-                          type="button"
-                          class="price-tag"
-                          :class="{ 'is-override': workspacePriceOverride(activeWorkspace, model) }"
-                          :title="`点击设置「${activeWorkspace.name}」里的页面价格`"
+                            <p v-if="workspacePriceWarning(activeWorkspace, model)" class="price-warn">
+                              {{ workspacePriceWarning(activeWorkspace, model) }}
+                            </p>
+                          </template>
+
+                          <footer class="tnum">
+                            目录价 {{ formatPoints(effectivePrice(model)) }} {{ workspacePriceUnit(model) }}
+                            <template v-if="model.upstreamCostCents"> · 上游成本 {{ formatPoints(model.upstreamCostCents) }}</template>
+                          </footer>
+                        </div>
+                      </el-popover>
+                      <template v-if="model.kind === 'image'">
+                        <el-popover
+                                                placement="bottom-end"
+                          :width="320"
+                          trigger="click"
+                          :show-arrow="false"
                         >
-                          <b class="tnum">{{ formatPoints(workspaceEffectivePrice(activeWorkspace, model)) }}</b>
-                          <span class="price-tag__unit">积分</span>
-                          <span class="price-tag__source">
-                            {{ workspacePriceOverride(activeWorkspace, model) ? "页面价" : "继承" }}
-                          </span>
-                          <EditPen class="price-tag__edit" aria-hidden="true" />
-                        </button>
-                      </template>
-                      <div class="assignment-price-pop">
-                        <header>
-                          <strong>页面价格</strong>
-                          <small>只对「{{ activeWorkspace.name }}」里的 {{ model.name }} 生效</small>
-                        </header>
-                        <div class="price-mode" role="radiogroup" aria-label="定价方式">
+                          <template #reference>
                           <button
+                            v-for="limit in [workspaceLimitSummary(activeWorkspace, model)]"
+                            :key="`${model.id}-limit`"
                             type="button"
-                            role="radio"
-                            :aria-checked="!workspacePriceOverride(activeWorkspace, model)"
-                            :class="{ 'is-on': !workspacePriceOverride(activeWorkspace, model) }"
-                            @click="setWorkspacePriceOverride(activeWorkspace, model, false)"
-                          >继承目录价</button>
-                          <button
-                            type="button"
-                            role="radio"
-                            :aria-checked="Boolean(workspacePriceOverride(activeWorkspace, model))"
-                            :class="{ 'is-on': workspacePriceOverride(activeWorkspace, model) }"
-                            @click="setWorkspacePriceOverride(activeWorkspace, model, true)"
-                          >页面单独定价</button>
-                        </div>
-
-                        <div v-if="!workspacePriceOverride(activeWorkspace, model)" class="price-inherit">
-                          <span>用户支付</span>
-                          <strong class="tnum">{{ formatPoints(effectivePrice(model)) }}<small>{{ workspacePriceUnit(model) }}</small></strong>
-                          <em v-if="hasDiscountPrice(model)" class="tnum">原价 {{ formatPoints(model.priceCents) }}</em>
-                        </div>
-
-                        <template v-else>
-                          <label class="price-field">
-                            <span>标准价格</span>
-                            <span class="price-input">
-                              <input
-                                class="tnum"
-                                type="number"
-                                inputmode="numeric"
-                                min="0"
-                                step="1"
-                                :value="workspacePriceOverride(activeWorkspace, model)?.priceCents"
-                                aria-label="标准价格"
-                                @change="setWorkspacePriceField(activeWorkspace, model, 'priceCents', ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).value = String(workspacePriceOverride(activeWorkspace, model)?.priceCents ?? '')"
-                              />
-                              <em>{{ workspacePriceUnit(model) }}</em>
-                            </span>
-                          </label>
-                          <div class="price-field">
-                            <span class="price-field__switch">
-                              活动价格
-                              <el-switch
-                                size="small"
-                                :model-value="workspacePriceOverride(activeWorkspace, model)?.discountPriceCents != null"
-                                @change="setWorkspaceDiscountEnabled(activeWorkspace, model, $event === true)"
-                              />
-                            </span>
-                            <span
-                              v-if="workspacePriceOverride(activeWorkspace, model)?.discountPriceCents != null"
-                              class="price-input"
-                            >
-                              <input
-                                class="tnum"
-                                type="number"
-                                inputmode="numeric"
-                                min="0"
-                                :max="workspacePriceOverride(activeWorkspace, model)?.priceCents"
-                                step="1"
-                                :value="workspacePriceOverride(activeWorkspace, model)?.discountPriceCents"
-                                aria-label="活动价格"
-                                @change="setWorkspacePriceField(activeWorkspace, model, 'discountPriceCents', ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).value = String(workspacePriceOverride(activeWorkspace, model)?.discountPriceCents ?? '')"
-                              />
-                              <em>{{ workspacePriceUnit(model) }}</em>
-                            </span>
-                            <small v-else>开启后按活动价结算</small>
-                          </div>
-                          <p v-if="workspacePriceWarning(activeWorkspace, model)" class="price-warn">
-                            {{ workspacePriceWarning(activeWorkspace, model) }}
-                          </p>
+                            class="assign-chip"
+                            :class="{ 'is-override': limit.extended }"
+                            :title="`本页面：参考图最多 ${limit.references} 张，单次最多生成 ${limit.images} 张（点击调整追加额度）`"
+                          >
+                            参考 <b class="tnum">{{ limit.references }}</b> · 生成 <b class="tnum">{{ limit.images }}</b>
+                          </button>
                         </template>
-
-                        <footer class="tnum">
-                          目录价 {{ formatPoints(effectivePrice(model)) }} {{ workspacePriceUnit(model) }}
-                          <template v-if="model.upstreamCostCents"> · 上游成本 {{ formatPoints(model.upstreamCostCents) }}</template>
-                        </footer>
-                      </div>
-                    </el-popover>
-                      <el-tooltip content="移出此页面" placement="top">
-                        <button
-                          type="button"
-                          class="assignment-icon-btn is-danger assign-card__remove"
-                          aria-label="移出此页面"
-                          @click="removeWorkspaceModel(activeWorkspace, model.id)"
-                        >
-                          <Close aria-hidden="true" />
-                        </button>
-                      </el-tooltip>
+                          <div class="assignment-limit-pop">
+                            <header>
+                              <strong>页面追加额度</strong>
+                              <small>只对「{{ activeWorkspace.name }}」里的 {{ model.name }} 生效</small>
+                            </header>
+                            <section
+                              v-for="field in workspaceLimitFields(activeWorkspace, model)"
+                              :key="field.key"
+                              class="assignment-limit-field"
+                            >
+                              <div class="assignment-limit-field__head">
+                                <span>{{ field.label }}</span>
+                                <strong class="tnum" :class="{ 'is-extended': field.extra > 0 }">
+                                  {{ field.total }}<small>{{ field.unit }}</small>
+                                </strong>
+                              </div>
+                              <div class="assignment-limit-field__body">
+                                <div class="limit-stepper">
+                                  <button
+                                    type="button"
+                                    :disabled="field.extra <= 0"
+                                    :aria-label="`${field.label}追加减 1`"
+                                    @click="setWorkspaceModelLimit(activeWorkspace, model, field.key, field.extra - 1)"
+                                  >−</button>
+                                  <label>
+                                    <span>+</span>
+                                    <input
+                                      class="tnum"
+                                      type="number"
+                                      inputmode="numeric"
+                                      min="0"
+                                      :max="field.maxExtra"
+                                      :value="field.extra"
+                                      :aria-label="`${field.label}追加数量`"
+                                      @change="setWorkspaceModelLimit(activeWorkspace, model, field.key, Number(($event.target as HTMLInputElement).value)); ($event.target as HTMLInputElement).value = String(workspaceModelLimits(activeWorkspace, model)[field.key])"
+                                    />
+                                  </label>
+                                  <button
+                                    type="button"
+                                    :disabled="field.extra >= field.maxExtra"
+                                    :aria-label="`${field.label}追加加 1`"
+                                    @click="setWorkspaceModelLimit(activeWorkspace, model, field.key, field.extra + 1)"
+                                  >+</button>
+                                </div>
+                                <div class="limit-quick">
+                                  <button
+                                    v-for="step in field.steps"
+                                    :key="step"
+                                    type="button"
+                                    :disabled="field.extra >= field.maxExtra"
+                                    @click="setWorkspaceModelLimit(activeWorkspace, model, field.key, field.extra + step)"
+                                  >+{{ step }}</button>
+                                </div>
+                              </div>
+                              <small class="assignment-limit-field__hint tnum">
+                                模型 {{ field.base }} 张{{ field.extra ? ` + 页面追加 ${field.extra} 张` : "" }} · 最多 {{ field.cap }} 张
+                              </small>
+                            </section>
+                            <footer>
+                              <p>追加前请确认上游模型支持这么多输入图，否则任务会在上游失败。</p>
+                              <button
+                                type="button"
+                                class="assignment-link"
+                                :disabled="!workspaceLimitSummary(activeWorkspace, model).extended"
+                                @click="resetWorkspaceModelLimits(activeWorkspace, model)"
+                              >恢复模型默认</button>
+                            </footer>
+                          </div>
+                        </el-popover>
+                      </template>
                     </div>
                   </article>
-
                   <button
                     v-for="model in group.pool"
-                    :key="model.id"
+                    :key="`pool-${model.id}`"
                     type="button"
-                    class="assign-card is-ghost"
+                    class="assign-card is-pool"
                     :title="`加入「${activeWorkspace.name}」`"
                     @click="addWorkspaceModel(activeWorkspace, model.id)"
                   >
-                    <span class="assign-card__plus"><Plus aria-hidden="true" /></span>
-                    <span class="assign-card__title">
-                      <strong>{{ model.name }}</strong>
-                      <small class="tnum">{{ providerName(model.providerId) }} · {{ formatPoints(effectivePrice(model)) }} 积分</small>
+                    <span class="assign-card__top">
+                      <svg class="assign-card__plus" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" /></svg>
+                      <strong class="assign-card__name">{{ model.name }}</strong>
+                      <em class="assign-card__join">加入</em>
                     </span>
-                    <em>加入</em>
+                    <span class="assign-card__meta">
+                      <span class="assign-card__provider">{{ providerName(model.providerId) }}</span>
+                      <span class="tnum">{{ formatPoints(effectivePrice(model)) }} 积分</span>
+                    </span>
                   </button>
-
-                  <p v-if="!group.assigned.length && !group.pool.length" class="assign-grid__empty">
+                  <p v-if="!group.assigned.length && !group.pool.length" class="assign-empty">
                     {{ poolSearch.trim() ? "没有匹配的模型" : `还没有可用的${kindName(group.kind)}（需在模型目录中启用并对用户开放）` }}
                   </p>
                 </div>
@@ -3683,6 +3653,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
+      </section>
+
+      <section v-else-if="activeView === 'pricing'" class="config-panel">
+        <PriceScheduleWorkspace />
       </section>
 
       <section v-else class="config-panel">
@@ -3756,15 +3730,17 @@ onBeforeUnmount(() => {
       footer-hint="确认后加入页面待保存配置，点击页面「保存」后生效"
       @confirm="saveModelDraft"
     >
-      <div class="model-type-tabs" role="group" aria-label="模型类型">
-        <button v-for="item in kindFilters.filter(entry => entry.id !== 'all')" :key="item.id" type="button" :aria-pressed="modelDraft.kind === item.id" :class="{ 'is-active': modelDraft.kind === item.id }" @click="chooseModelType(item.id as ModelKind)">{{ item.label }}</button>
-      </div>
       <div class="model-editor-layout">
-      <nav class="model-editor-nav" aria-label="模型配置分组">
-        <button v-for="tab in modelEditorTabs" :key="tab.id" type="button" :class="{ 'is-active': modelEditorTab === tab.id }" :aria-current="modelEditorTab === tab.id ? 'page' : undefined" @click="modelEditorTab = tab.id">
-          <span><strong>{{ tab.label }}</strong><small>{{ tab.hint }}</small></span>
-        </button>
-      </nav>
+      <div class="model-editor-top">
+        <nav class="model-editor-nav" aria-label="模型配置分组">
+          <button v-for="tab in modelEditorTabs" :key="tab.id" type="button" :title="tab.hint" :class="{ 'is-active': modelEditorTab === tab.id }" :aria-current="modelEditorTab === tab.id ? 'page' : undefined" @click="modelEditorTab = tab.id">
+            <strong>{{ tab.label }}</strong>
+          </button>
+        </nav>
+        <div class="model-type-tabs" role="group" aria-label="模型类型">
+          <button v-for="item in kindFilters.filter(entry => entry.id !== 'all')" :key="item.id" type="button" :aria-pressed="modelDraft.kind === item.id" :class="{ 'is-active': modelDraft.kind === item.id }" @click="chooseModelType(item.id as ModelKind)">{{ item.label }}</button>
+        </div>
+      </div>
       <el-form ref="modelEditorForm" label-position="top" class="dialog-form model-editor">
 
         <section v-if="modelDraft.kind === 'chat'" v-show="modelEditorTab === 'pricing'" class="model-section">
@@ -3832,8 +3808,8 @@ onBeforeUnmount(() => {
             <div class="reasoning-price-table__head">
               <span>启用</span>
               <span>档位</span>
-              <span>AI 助手</span>
-              <span>无限画布 Agent</span>
+              <span class="reasoning-head-channel"><b>AI 助手</b><em>标准积分</em><em>折扣积分</em></span>
+              <span class="reasoning-head-channel"><b>无限画布 Agent</b><em>标准积分</em><em>折扣积分</em></span>
             </div>
             <div
               v-for="effort in modelDraft.supportedReasoningEfforts"
@@ -3932,7 +3908,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-          <div class="model-field-grid">
+          <div class="model-field-grid is-dense">
             <el-form-item label="上游成本/次">
               <el-input-number
                 v-model="modelDraft.upstreamCostPoints"
@@ -4073,98 +4049,102 @@ onBeforeUnmount(() => {
             <strong>计费与耗时</strong>
             <small>积分定价与预计等待时间</small>
           </header>
-          <div class="model-field-grid">
+          <!-- 一行四列：标准 / 折扣 / 成本 / 耗时；放大工具的高分辨率档另起一行对齐前三列。 -->
+          <div class="billing-grid">
             <el-form-item :label="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale' ? '≤ 2048px 标准积分' : '标准积分'">
-              <el-input-number
-                v-model="modelDraft.pricePoints"
-                :min="0"
-                :precision="0"
-                :step="1"
-                style="width: 100%"
-              />
+              <PointsInput v-model="modelDraft.pricePoints" />
             </el-form-item>
-            <el-form-item :label="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale' ? '≤ 2048px 折扣积分' : '折扣积分'">
-              <div class="discount-input">
-                <el-switch v-model="modelDraft.discountEnabled" />
-                <el-input-number
-                  v-model="modelDraft.discountPoints"
-                  :disabled="!modelDraft.discountEnabled"
-                  :min="0"
-                  :precision="0"
-                  :step="1"
-                />
-              </div>
+            <el-form-item class="billing-discount">
+              <template #label>
+                <span>{{ modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale' ? '≤ 2048px 折扣积分' : '折扣积分' }}</span>
+                <el-switch v-model="modelDraft.discountEnabled" size="small" />
+              </template>
+              <PointsInput
+                v-model="modelDraft.discountPoints"
+                :disabled="!modelDraft.discountEnabled"
+              />
             </el-form-item>
             <el-form-item :label="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale' ? '≤ 2048px 上游成本' : '上游成本/次'">
-              <el-input-number
-                v-model="modelDraft.upstreamCostPoints"
-                :min="0"
-                :precision="0"
-                :step="1"
-                style="width: 100%"
-              />
+              <PointsInput v-model="modelDraft.upstreamCostPoints" />
             </el-form-item>
-            <el-form-item
-              v-if="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale'"
-              label="2049–4096px 标准积分"
-            >
-              <el-input-number
-                v-model="modelDraft.upscaleHighPricePoints"
-                :min="0"
-                :precision="0"
-                :step="1"
-                style="width: 100%"
-              />
-            </el-form-item>
-            <el-form-item
-              v-if="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale'"
-              label="2049–4096px 折扣积分"
-            >
-              <div class="discount-input">
-                <el-switch v-model="modelDraft.upscaleHighDiscountEnabled" />
-                <el-input-number
-                  v-model="modelDraft.upscaleHighDiscountPoints"
-                  :disabled="!modelDraft.upscaleHighDiscountEnabled"
-                  :min="0"
-                  :precision="0"
-                  :step="1"
-                />
-              </div>
-            </el-form-item>
-            <el-form-item
-              v-if="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale'"
-              label="2049–4096px 上游成本"
-            >
-              <el-input-number
-                v-model="modelDraft.upscaleHighUpstreamCostPoints"
-                :min="0"
-                :precision="0"
-                :step="1"
-                style="width: 100%"
-              />
-            </el-form-item>
-            <el-form-item
-              v-if="modelDraft.kind !== 'chat'"
-              label="预计生成耗时"
-              :class="{ 'is-wide': modelDraft.kind !== 'image' }"
-            >
-              <div class="eta-input">
-                <el-input-number
+            <el-form-item v-if="modelDraft.kind !== 'chat'" class="billing-eta">
+              <template #label>预计生成耗时<HelpTip content="用于调度估算完成时间、比较线路；不包含排队，不会到时中断任务。未知可填 0，调度默认按 45 秒估算。" /></template>
+              <div class="eta-range">
+                <PointsInput
                   v-model="modelDraft.minSeconds"
                   :min="0"
                   :max="3600"
+                  aria-label="最短耗时（秒）"
                 />
-                <span>至</span>
-                <el-input-number
+                <span class="eta-range__sep">–</span>
+                <PointsInput
                   v-model="modelDraft.maxSeconds"
                   :min="modelDraft.minSeconds"
                   :max="3600"
+                  aria-label="最长耗时（秒）"
                 />
-                <span>秒</span>
+                <span class="eta-range__unit">秒</span>
               </div>
-              <small>用于调度估算完成时间、比较线路；不包含排队，不会到时中断任务。未知可填 0，调度默认按 45 秒估算。</small>
             </el-form-item>
+            <template v-if="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale'">
+              <el-form-item label="2049–4096px 标准积分" class="billing-row-start">
+                <PointsInput v-model="modelDraft.upscaleHighPricePoints" />
+              </el-form-item>
+              <el-form-item class="billing-discount">
+                <template #label>
+                  <span>2049–4096px 折扣积分</span>
+                  <el-switch v-model="modelDraft.upscaleHighDiscountEnabled" size="small" />
+                </template>
+                <PointsInput
+                  v-model="modelDraft.upscaleHighDiscountPoints"
+                  :disabled="!modelDraft.upscaleHighDiscountEnabled"
+                />
+              </el-form-item>
+              <el-form-item label="2049–4096px 上游成本">
+                <PointsInput v-model="modelDraft.upscaleHighUpstreamCostPoints" />
+              </el-form-item>
+            </template>
           </div>
+        </section>
+
+        <section v-if="modelDraft.kind === 'image'" v-show="modelEditorTab === 'pricing'" class="model-section">
+          <header class="model-section__head">
+            <strong>按分辨率和质量分档</strong>
+            <small>开启后站内生图和 AI 助手出图按所选分辨率 × 质量收费；开发者 API 不使用分档价</small>
+          </header>
+          <div class="model-price-policy">
+            <label>
+              <span><strong>启用分档定价</strong><small>上面的标准积分仅作为列表兜底展示</small></span>
+              <el-switch :model-value="modelDraft.imagePricingEnabled" @update:model-value="(value) => enableImagePricing(Boolean(value))" />
+            </label>
+            <label v-if="modelDraft.imagePricingEnabled">
+              <span><strong>默认质量</strong><small>请求未指定质量时按此档出图和计费</small></span>
+              <el-select v-model="modelDraft.defaultQuality" clearable placeholder="自动（优先中质量）" style="width: 180px">
+                <el-option v-for="quality in orderedDraftQualities" :key="quality" :label="qualityLabel(quality)" :value="quality" />
+              </el-select>
+            </label>
+          </div>
+          <ImageTierPricingEditor
+            v-if="modelDraft.imagePricingEnabled"
+            v-model="draftImagePricing"
+            :resolutions="tierResolutions"
+            :qualities="orderedDraftQualities"
+            :allow-loss-leader="modelDraft.allowLossLeader"
+            :allow-zero-price="modelDraft.allowZeroPrice"
+          />
+        </section>
+
+        <section v-if="modelDraft.kind === 'image'" v-show="modelEditorTab === 'slots'" class="model-section">
+          <header class="model-section__head">
+            <strong>分辨率槽位</strong>
+            <small>每个分辨率指定一个主模型和 0 到多个备用模型；用户始终按本模型的价格付费</small>
+          </header>
+          <ResolutionSlotsEditor
+            v-model="modelDraft.resolutionSlots"
+            :resolutions="tierResolutions"
+            :owner-id="modelDraft.id"
+            :models="slotCandidateModels"
+          />
         </section>
 
         <section v-show="modelEditorTab === 'pricing'" class="model-section">
@@ -4371,7 +4351,7 @@ onBeforeUnmount(() => {
             </p>
             <div v-if="modelDraft.supportsExactSize" class="exact-size-settings">
               <p class="exact-size-hint">按模型实际支持的范围填写；精确模式将使用用户输入的尺寸，超出限制时提示修改。</p>
-              <div class="model-capability-tiles">
+              <div class="model-capability-tiles is-exact">
                 <div v-for="field in EXACT_SIZE_FIELDS" :key="field.key" class="model-capability-tile">
                   <div class="model-capability-copy">
                     <strong>{{ field.label }}</strong>
@@ -4536,6 +4516,49 @@ onBeforeUnmount(() => {
       </div>
     </AdminDialog>
     <ModelTestDialog v-model="modelTestOpen" :target="modelTestTarget" />
+    <ImageSlotStatusDialog v-model="imageSlotStatusVisible" />
+    <AdminDialog
+      v-model="profilePromptDialogVisible"
+      title="个人中心提示词"
+      subtitle="文生图页面 · 个人中心「参考生成」与「装扮」"
+      :icon="EditPen"
+      width="min(1100px, calc(100% - 32px))"
+      :show-cancel="false"
+      confirm-text="完成"
+      footer-hint="修改后点击页面「保存」生效；清空即恢复内置默认"
+      @confirm="profilePromptDialogVisible = false"
+    >
+      <section
+        class="profile-figure-prompt"
+        aria-label="个人中心提示词"
+      >
+        <label>
+          <span>个人中心参考生成提示词<HelpTip content="个人中心「参考生成」把用户照片转成全身立绘时使用。清空则恢复内置默认提示词；不要描述场景或背景，否则会覆盖透明背景效果。" /></span>
+          <el-input
+            v-model="config.workspaces.t2i.profileFigurePrompt"
+            type="textarea"
+            :rows="16"
+            resize="none"
+            maxlength="4000"
+            show-word-limit
+            placeholder="留空使用内置默认提示词"
+          />
+        </label>
+        <label>
+          <span>个人中心装扮提示词模板<HelpTip content="个人中心「装扮」使用。清空则恢复内置默认模板；必须保留一个 {{items}}，用户选的部位会插到这里。" /></span>
+          <el-input
+            v-model="config.workspaces.t2i.profileOutfitPrompt"
+            type="textarea"
+            :rows="16"
+            resize="none"
+            maxlength="4000"
+            show-word-limit
+            placeholder="留空使用内置默认模板"
+          />
+        </label>
+      </section>
+    </AdminDialog>
+
     <ImageParamProfileDialog v-model="imageParamProfilesOpen" :models="config.models" :providers="config.providers" />
   </div>
 </template>
@@ -4738,7 +4761,7 @@ onBeforeUnmount(() => {
 .reasoning-price-table__head,
 .reasoning-price-row {
   display: grid;
-  grid-template-columns: 56px 84px repeat(2, minmax(250px, 1fr));
+  grid-template-columns: 52px 108px repeat(2, minmax(250px, 1fr));
   min-width: 680px;
 }
 
@@ -4894,8 +4917,7 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
-.model-icon-editor__preview,
-.model-card__icon {
+.model-icon-editor__preview {
   display: grid;
   flex: 0 0 auto;
   overflow: hidden;
@@ -4911,8 +4933,7 @@ onBeforeUnmount(() => {
   height: 54px;
 }
 
-.model-icon-editor__preview img,
-.model-card__icon img {
+.model-icon-editor__preview img {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -5439,162 +5460,9 @@ html.dark .status-tab.is-active em {
   overflow: hidden;
 }
 
-.model-card-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-content: start;
-  gap: 12px;
-  padding: 2px 2px 8px;
-}
-
-@media (max-width: 1180px) {
-  .model-card-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-.model-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
-}
-
-.model-card:hover {
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
-  box-shadow: var(--shadow-md);
-}
-
-.model-card.is-disabled {
-  opacity: 0.72;
-}
-
-.model-card__head {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.model-card__head .model-card__price {
-  position: static;
-  flex: 0 0 auto;
-  margin: -4px -4px 0 0;
-}
-
-.model-card__identity {
-  display: flex;
-  min-width: 0;
-  flex: 1 1 auto;
-  align-items: center;
-  gap: 10px;
-}
-
-.model-card__identity-copy {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.model-card__icon {
-  width: 38px;
-  height: 38px;
-}
-
-.model-card__icon svg {
-  width: 17px;
-  height: 17px;
-}
-
-.model-card__title {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-}
-
-.model-card__title strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 15px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-card__title > span {
-  flex: 0 0 auto;
-}
-
-.model-card__line {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.model-card__line span {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink-2);
-  font-size: 12px;
-  text-overflow: ellipsis;
-}
-
-.model-card__line span.mono {
-  color: var(--ink-3);
-}
-
-.model-card__line span + span::before {
-  content: "·";
-  margin: 0 7px;
-  color: var(--ink-3);
-}
-
 .meta-badge {
   flex: 0 0 auto;
   align-self: center;
-}
-
-.model-card__line > .kind-badge + .default-badge,
-.model-card__line > .kind-badge + .maintenance-badge,
-.model-card__line > .kind-badge + .meta-badge,
-.model-card__line > .default-badge + .maintenance-badge,
-.model-card__line > .default-badge + .meta-badge,
-.model-card__line > .maintenance-badge + .meta-badge {
-  margin-left: 4px;
-}
-
-.model-card__line > .kind-badge + strong,
-.model-card__line > .default-badge + strong,
-.model-card__line > .maintenance-badge + strong,
-.model-card__line > .meta-badge + strong {
-  margin-left: 8px;
-}
-
-.model-card__line > .kind-badge + *::before,
-.model-card__line > .default-badge + *::before,
-.model-card__line > .maintenance-badge + *::before,
-.model-card__line > .meta-badge + *::before {
-  content: none;
-}
-
-.model-card__line > :not(.kind-badge):not(.default-badge):not(.maintenance-badge):not(.meta-badge)
-  + :not(.kind-badge):not(.default-badge):not(.maintenance-badge):not(.meta-badge)::before {
-  content: "·";
-  margin: 0 8px;
-  color: var(--ink-3);
 }
 
 .meta-badge {
@@ -5622,117 +5490,6 @@ html.dark .maintenance-badge,
 html.dark .assignment-maintenance {
   color: #fed7aa;
   background: rgb(154 52 18 / 32%);
-}
-
-.model-card__price {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 1;
-  display: grid;
-  min-width: 88px;
-  justify-items: end;
-  gap: 2px;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: var(--ink);
-  color: #fff;
-  font: inherit;
-  text-align: right;
-}
-
-.model-card__price.is-interactive {
-  cursor: pointer;
-}
-
-.model-card__price.is-interactive:hover,
-.model-card__price.is-interactive:focus-visible {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
-.model-card__price .price-now {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 3px;
-  color: #fff;
-  line-height: 1;
-}
-
-.model-card__price .price-now strong {
-  font-size: 18px;
-  font-weight: 750;
-  letter-spacing: -0.02em;
-}
-
-.model-card__price .price-now span {
-  color: rgb(255 255 255 / 0.72);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.model-card__price .price-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.model-card__price .price-was {
-  color: rgb(255 255 255 / 0.55);
-  font-size: 11px;
-  text-decoration: line-through;
-}
-
-.model-card__price .price-scope {
-  color: rgb(255 255 255 / 0.72);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.model-card__price .price-count {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 5px;
-  border-radius: 4px;
-  color: var(--accent-on);
-  background: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.3;
-}
-
-.model-card__price .price-off {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 5px;
-  border-radius: 4px;
-  color: #fff;
-  background: var(--danger);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.3;
-}
-
-html.dark .model-card__price {
-  background: #f4f6fa;
-  color: #12141a;
-}
-
-html.dark .model-card__price .price-now {
-  color: #12141a;
-}
-
-html.dark .model-card__price .price-now span {
-  color: rgb(18 20 26 / 0.55);
-}
-
-html.dark .model-card__price .price-was {
-  color: rgb(18 20 26 / 0.45);
-}
-
-html.dark .model-card__price .price-scope {
-  color: rgb(18 20 26 / 0.55);
 }
 
 .model-price-pop {
@@ -5841,111 +5598,6 @@ html.dark .model-card__price .price-scope {
   color: var(--ink-3);
 }
 
-.model-card__stats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 0;
-  padding: 10px 0;
-  border-radius: 10px;
-  background: var(--surface-2);
-}
-
-.model-card__stat {
-  display: grid;
-  min-width: 0;
-  align-content: start;
-  gap: 5px;
-  padding: 0 12px;
-}
-
-.model-card__stat + .model-card__stat {
-  border-left: 1px solid var(--border);
-}
-
-.model-card__stat dt,
-.model-card__row dt {
-  color: var(--ink-3);
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.model-card__stat dd {
-  display: flex;
-  min-width: 0;
-  height: 20px;
-  align-items: center;
-  margin: 0;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-card__rows {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding: 0 2px;
-}
-
-.model-card__row {
-  display: grid;
-  grid-template-columns: 56px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  min-height: 20px;
-}
-
-.model-card__row dd {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  margin: 0;
-  overflow: hidden;
-  color: var(--ink-2);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-card__text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-card__stat dd.is-muted,
-.model-card__row dd.is-muted {
-  color: var(--ink-3);
-  font-weight: 500;
-}
-
-.model-card__tags,
-.model-card__aspects {
-  display: flex;
-  min-width: 0;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 4px;
-  overflow: hidden;
-}
-
-.model-card__aspects {
-  gap: 12px;
-}
-
-.model-card__aspect {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink-2);
-}
-
 .res-badge {
   display: inline-flex;
   flex: 0 0 auto;
@@ -5965,52 +5617,6 @@ html.dark .model-card__price .price-scope {
 html.dark .res-badge {
   color: var(--bg);
   background: var(--ink);
-}
-
-.model-card__foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-top: auto;
-  padding-top: 10px;
-  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
-}
-
-.model-card__foot-meta {
-  display: inline-flex;
-  min-width: 0;
-  max-width: 160px;
-  align-items: baseline;
-  gap: 6px;
-  margin-right: 4px;
-  color: var(--ink-3);
-  font-size: 12px;
-}
-
-.model-card__foot-meta strong {
-  overflow: hidden;
-  color: var(--ink-2);
-  font-size: 12px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-card__switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink-3);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.model-card__actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: auto;
 }
 
 .row-actions {
@@ -6456,71 +6062,6 @@ html.dark .kind-filter button.active {
   font-size: 12px;
 }
 
-.workspace-billing-note {
-  display: grid;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--brand, #7568f4) 28%, var(--line, #e6e8ee));
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--brand, #7568f4) 8%, var(--surface, #fff));
-}
-
-.workspace-billing-note > header {
-  display: grid;
-  gap: 4px;
-}
-
-.workspace-billing-note > header strong {
-  font-size: 13px;
-}
-
-.workspace-billing-note > header small {
-  color: var(--ink-3);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.workspace-billing-note ul {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.workspace-billing-note li {
-  display: grid;
-  grid-template-columns: minmax(140px, 180px) minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-}
-
-.workspace-billing-note code {
-  display: inline-flex;
-  min-height: 24px;
-  align-items: center;
-  padding: 0 8px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--ink, #111) 6%, transparent);
-  font-size: 11px;
-}
-
-.workspace-billing-note li span {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.workspace-billing-note li b {
-  font-size: 12px;
-}
-
-.workspace-billing-note li small {
-  color: var(--ink-3);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
 .assignment-defaults {
   display: flex;
   flex-wrap: wrap;
@@ -6608,249 +6149,6 @@ html.dark .kind-filter button.active {
   gap: 10px;
 }
 
-.assign-group__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  color: var(--ink);
-  font-size: 13px;
-}
-
-.assign-group__head strong {
-  font-weight: 700;
-}
-
-.assign-group__head em {
-  display: inline-grid;
-  min-width: 22px;
-  height: 20px;
-  padding: 0 6px;
-  place-items: center;
-  border-radius: var(--radius-pill);
-  background: var(--surface-3);
-  color: var(--ink-2);
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 700;
-}
-
-.assign-group__head small {
-  overflow: hidden;
-  color: var(--ink-3);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.assign-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
-  gap: 10px;
-}
-
-.assign-grid__empty {
-  grid-column: 1 / -1;
-  margin: 0;
-  padding: 18px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface) 55%, transparent);
-  color: var(--ink-3);
-  font-size: 12px;
-  text-align: center;
-}
-
-.assign-card {
-  position: relative;
-  display: grid;
-  align-content: space-between;
-  gap: 12px;
-  min-width: 0;
-  min-height: 100px;
-  padding: 14px 14px 12px 16px;
-  border: 0;
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow:
-    0 1px 2px rgb(16 24 40 / 0.06),
-    0 2px 8px rgb(16 24 40 / 0.04);
-  transition: box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease;
-}
-
-.assign-card:hover {
-  box-shadow:
-    0 2px 4px rgb(16 24 40 / 0.06),
-    0 10px 24px rgb(16 24 40 / 0.08);
-  transform: translateY(-1px);
-}
-
-.assign-card.is-default {
-  background: color-mix(in srgb, var(--accent-soft) 75%, var(--surface));
-}
-
-html.dark .assign-card:not(.is-ghost) {
-  background: var(--surface-3);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
-}
-
-html.dark .assign-card:not(.is-ghost):hover {
-  box-shadow: 0 8px 22px rgb(0 0 0 / 0.35);
-}
-
-html.dark .assign-card.is-default {
-  background: color-mix(in srgb, var(--accent) 9%, var(--surface-3));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
-.assign-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.assign-card__title {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.assign-card__title strong {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.assign-card__title small {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  color: var(--ink-3);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.assign-card__controls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.assign-card__controls .assignment-limit-chip {
-  width: auto;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 10px;
-}
-
-.assign-card.is-default .assignment-limit-chip:not(.is-extended),
-.assign-card.is-default .price-tag:not(.is-override) {
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
-}
-
-html.dark .assign-card .assignment-limit-chip:not(.is-extended),
-html.dark .assign-card .price-tag:not(.is-override) {
-  background: var(--surface-2);
-}
-
-.assign-card__remove {
-  margin-left: auto;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-.assign-card:hover .assign-card__remove,
-.assign-card__remove:focus-visible {
-  opacity: 1;
-}
-
-.assign-card .assignment-default-radio {
-  flex: 0 0 auto;
-  margin: -2px -4px 0 0;
-}
-
-.assign-card .assignment-default-radio span {
-  display: inline;
-}
-
-/* 可加入的模型：虚线卡片，整张可点 */
-.assign-card.is-ghost {
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-self: start;
-  min-height: 60px;
-  padding: 10px 12px;
-  align-content: center;
-  align-items: center;
-  background: color-mix(in srgb, var(--surface) 45%, transparent);
-  box-shadow: none;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.assign-card.is-ghost .assign-card__title strong {
-  color: var(--ink-2);
-  font-weight: 650;
-}
-
-.assign-card.is-ghost:hover {
-  background: var(--surface);
-  box-shadow:
-    0 1px 2px rgb(16 24 40 / 0.06),
-    0 2px 8px rgb(16 24 40 / 0.04);
-  transform: none;
-}
-
-.assign-card.is-ghost:hover .assign-card__title strong {
-  color: var(--ink);
-}
-
-html.dark .assign-card.is-ghost {
-  background: color-mix(in srgb, var(--surface-3) 28%, transparent);
-}
-
-html.dark .assign-card.is-ghost:hover {
-  background: var(--surface-3);
-}
-
-.assign-card__plus {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--ink-2);
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.assign-card__plus svg {
-  width: 15px;
-  height: 15px;
-}
-
-.assign-card.is-ghost:hover .assign-card__plus {
-  background: var(--accent);
-  color: var(--accent-on);
-}
-
-.assign-card.is-ghost > em {
-  color: var(--ink-3);
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 650;
-}
-
-.assign-card.is-ghost:hover > em {
-  color: var(--accent-ink);
-}
-
 .assignment-link {
   height: 26px;
   padding: 0 8px;
@@ -6900,56 +6198,6 @@ html.dark .assign-card.is-ghost:hover {
 
 .kind-dot.is-image_tool {
   background: var(--warning);
-}
-
-/* 价格列按整列最宽值对齐：同一分组内的行共用最小宽度 */
-
-.assignment-limit-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  width: 112px;
-  height: 26px;
-  justify-content: center;
-  padding: 0 8px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  color: var(--ink-2);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
-}
-
-.assignment-limit-chip span {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 3px;
-}
-
-.assignment-limit-chip em {
-  color: var(--ink-3);
-  font-style: normal;
-}
-
-.assignment-limit-chip b {
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.assignment-limit-chip:hover {
-  background: var(--surface-3);
-}
-
-.assignment-limit-chip.is-extended {
-  background: var(--info-soft);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--info) 30%, transparent);
-}
-
-.assignment-limit-chip.is-extended b {
-  color: var(--info);
 }
 
 .assignment-limit-pop {
@@ -7138,94 +6386,6 @@ html.dark .assign-card.is-ghost:hover {
 
 .assignment-limit-pop footer .assignment-link {
   flex: 0 0 auto;
-}
-
-/* 页面价格胶囊：价格为主，来源（继承 / 页面价）为辅，末尾的笔形图标提示可编辑 */
-.price-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 8px 0 10px;
-  border: 0;
-  border-radius: 10px;
-  background: var(--surface-2);
-  color: var(--ink-3);
-  font: inherit;
-  font-size: 11px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background 0.12s ease, box-shadow 0.12s ease, color 0.12s ease;
-}
-
-.price-tag b {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 750;
-  letter-spacing: -0.01em;
-}
-
-.price-tag__unit {
-  color: var(--ink-3);
-}
-
-.price-tag__source {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 2px;
-  color: var(--ink-3);
-}
-
-.price-tag__source::before {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: currentColor;
-  content: "";
-  opacity: 0.6;
-}
-
-.price-tag__edit {
-  width: 12px;
-  height: 12px;
-  margin-left: 2px;
-  color: var(--ink-3);
-  opacity: 0.45;
-  transition: opacity 0.12s ease, color 0.12s ease;
-}
-
-.price-tag:hover {
-  background: var(--surface-3);
-}
-
-.price-tag:hover .price-tag__edit,
-.price-tag:focus-visible .price-tag__edit {
-  color: var(--ink);
-  opacity: 1;
-}
-
-.price-tag:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.price-tag.is-override {
-  background: var(--warning-soft);
-}
-
-.price-tag.is-override b,
-.price-tag.is-override .price-tag__source,
-.price-tag.is-override .price-tag__edit {
-  color: var(--warning);
-}
-
-.price-tag.is-override .price-tag__source {
-  font-weight: 700;
-}
-
-.price-tag.is-override:hover {
-  background: color-mix(in srgb, var(--warning) 18%, var(--surface));
 }
 
 .assignment-price-pop {
@@ -7455,29 +6615,6 @@ html.dark .assign-card.is-ghost:hover {
 .assignment-default-radio:disabled {
   opacity: 0.4;
   cursor: not-allowed;
-}
-
-.assignment-icon-btn {
-  display: inline-grid;
-  width: 26px;
-  height: 26px;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--ink-3);
-  cursor: pointer;
-}
-
-.assignment-icon-btn svg {
-  width: 13px;
-  height: 13px;
-}
-
-.assignment-icon-btn.is-danger:hover {
-  color: var(--danger);
-  background: var(--danger-soft);
 }
 
 .price-plain {
@@ -7718,23 +6855,38 @@ html.dark .assign-card.is-ghost:hover {
   color: var(--ink-3);
   font-size: 11px;
 }
-.discount-input,
-.eta-input {
+.billing-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 16px;
+}
+.billing-grid :deep(.el-form-item) { margin-bottom: 0; }
+.billing-grid .billing-row-start { grid-column: 1; }
+.billing-grid .billing-row-start,
+.billing-grid .billing-row-start ~ .el-form-item { margin-top: 10px; }
+.billing-grid .el-input { width: 100%; }
+/* 四列标题统一成 20px 高的一行（与 small 开关同高），开关不再把折扣那一列的输入框顶下去。 */
+.model-section .billing-grid :deep(.el-form-item__label) { display: flex; height: 20px; align-items: center; gap: 4px; margin-bottom: 4px; line-height: 20px; }
+.model-section .billing-discount :deep(.el-form-item__label) { width: 100%; justify-content: space-between; gap: 8px; }
+.billing-discount :deep(.el-form-item__label .el-switch) { height: 20px; }
+.eta-range {
   display: flex;
+  box-sizing: border-box;
   width: 100%;
+  height: var(--el-component-size, 32px);
   align-items: center;
-  gap: 8px;
+  border-radius: var(--el-border-radius-base);
+  background: var(--el-fill-color-blank);
+  box-shadow: 0 0 0 1px var(--el-border-color) inset;
+  transition: box-shadow 0.15s;
 }
-.discount-input .el-input-number {
-  flex: 1;
-}
-.eta-input .el-input-number {
-  width: 108px;
-}
-.eta-input span {
-  color: var(--ink-3);
-  font-size: 11px;
-}
+.eta-range:hover { box-shadow: 0 0 0 1px var(--el-border-color-hover) inset; }
+.eta-range:focus-within { box-shadow: 0 0 0 1px var(--el-color-primary) inset; }
+.eta-range .el-input { flex: 1; min-width: 0; height: 100%; }
+.eta-range :deep(.el-input__wrapper) { height: 100%; padding: 0 6px; box-shadow: none !important; background: transparent; }
+.eta-range :deep(.el-input__inner) { text-align: center; }
+.eta-range__sep { color: var(--ink-3); }
+.eta-range__unit { flex: none; padding: 0 12px 0 4px; color: var(--ink-3); font-size: 12px; }
 @media (max-width: 1100px) {
   .config-toolbar__row--sub {
     flex-wrap: wrap;
@@ -7762,12 +6914,211 @@ html.dark .assign-card.is-ghost:hover {
 
 .profile-figure-prompt {
   display: grid;
-  gap: 6px;
-  margin: 0 0 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
-.profile-figure-prompt > span {
+.profile-prompt-trigger {
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.profile-prompt-trigger:hover,
+.profile-prompt-trigger:focus-visible {
+  background: var(--surface-3);
+  color: var(--accent-ink);
+}
+
+.profile-figure-prompt label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.profile-figure-prompt :deep(.el-textarea) {
+  position: relative;
+}
+
+.profile-figure-prompt :deep(.el-textarea__inner) {
+  height: 320px;
+  padding: 10px 12px 26px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.profile-figure-prompt :deep(.el-input__count) {
+  position: absolute;
+  right: 12px;
+  bottom: 6px;
+  line-height: 1;
+  background: transparent;
+}
+
+.profile-figure-prompt label > span {
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }
+
+/* ---- 模型目录：紧凑表格 ---- */
+.catalog-table-wrap { min-width: 0; }
+.catalog-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; color: var(--ink-2); }
+.catalog-table .col-model { width: 24%; }
+.catalog-table .col-provider { width: 10%; }
+.catalog-table .col-upstream { width: 13%; }
+.catalog-table .col-price { width: 9%; }
+.catalog-table .col-caps { width: auto; }
+.catalog-table .col-switch { width: 60px; }
+.catalog-table .col-actions { width: 150px; }
+.catalog-table .is-center { text-align: center; }
+.cell-na { color: var(--ink-3); opacity: 0.6; }
+.catalog-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  padding: 7px 10px; border-bottom: 1px solid var(--border);
+  background: var(--surface-2); color: var(--ink-3);
+  font-size: 12px; font-weight: 600; text-align: left; white-space: nowrap;
+}
+.catalog-table tbody td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; min-width: 0; }
+.catalog-table tbody tr:hover td { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.catalog-table tbody tr.is-disabled td { color: var(--ink-3); }
+.catalog-table tbody tr.is-disabled .cell-model__name { color: var(--ink-3); }
+.catalog-table .is-right { text-align: right; }
+.cell-stack { display: grid; gap: 2px; min-width: 0; }
+.cell-line { display: flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; overflow: hidden; }
+.cell-ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cell-sub { display: block; min-width: 0; overflow: hidden; color: var(--ink-3); font-size: 11px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.cell-sub.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.cell-sub.is-muted,
+.cell-tags .is-muted { color: var(--ink-3); opacity: 0.75; }
+.cell-model { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cell-model__icon { display: grid; flex: none; width: 26px; height: 26px; overflow: hidden; place-items: center; border: 1px solid var(--border); border-radius: 7px; color: var(--accent-ink); background: var(--surface-2); }
+.cell-model__icon img { width: 100%; height: 100%; object-fit: contain; }
+.cell-model__icon svg { width: 15px; height: 15px; }
+.cell-model__name { min-width: 0; overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 650; text-overflow: ellipsis; }
+.cell-line > .kind-badge, .cell-line > .default-badge, .cell-line > .maintenance-badge, .cell-line > .api-ref-badge, .cell-line > .slot-badge { flex: none; }
+.slot-badge { padding: 0 6px; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); border-radius: 999px; color: var(--warning); font-size: 11px; line-height: 18px; }
+.cell-price { display: grid; gap: 2px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: default; }
+.cell-price strong { color: var(--ink); font-size: 14px; font-weight: 700; }
+.cell-price__unit { color: var(--ink-3); font-size: 11px; }
+.cell-price.is-interactive { cursor: pointer; }
+.cell-price.is-interactive:hover strong, .cell-price.is-interactive:focus-visible strong { color: var(--accent-ink); text-decoration: underline dotted; text-underline-offset: 3px; }
+.cell-tags { gap: 3px; }
+.cell-tags .res-badge { flex: none; }
+.res-badge.is-soft { background: var(--surface-2); color: var(--ink-2); }
+.res-badge.is-warn { background: var(--warning-soft); color: var(--warning); }
+.cell-actions { display: inline-grid; grid-template-columns: repeat(4, 26px); justify-content: end; gap: 0 8px; white-space: nowrap; }
+.cell-actions .el-button + .el-button { margin-left: 0; }
+.cell-actions .el-button { justify-content: flex-start; height: 22px; padding: 0; font-size: 12px; }
+
+/* ---- 页面分配：紧凑表格 ---- */
+.assign-group + .assign-group { margin-top: 10px; }
+.assign-radio { display: grid; width: 16px; height: 16px; padding: 0; place-items: center; border: 1.5px solid var(--border-strong, var(--border)); border-radius: 50%; background: var(--surface); cursor: pointer; }
+.assign-radio i { width: 8px; height: 8px; border-radius: 50%; background: transparent; }
+.assign-radio.is-on { border-color: var(--accent); }
+.assign-radio.is-on i { background: var(--accent); }
+.assign-radio:hover:not(:disabled) { border-color: var(--accent); }
+.assign-radio:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.workspace-billing-note { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 0 0 10px; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); color: var(--ink-3); font-size: 12px; }
+.workspace-billing-note strong { flex: none; color: var(--ink-2); font-weight: 600; }
+.workspace-billing-note span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-billing-note code { padding: 0 4px; border-radius: 4px; background: var(--surface); font-size: 11px; }
+
+/* ---- 模型编辑弹窗：紧凑排版 ---- */
+.model-editor-layout { gap: 10px; }
+.model-editor-top { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.model-editor-top .model-editor-nav { display: flex; flex: 1; gap: 4px; min-width: 0; padding: 3px; border-radius: 10px; }
+.model-editor-top .model-editor-nav button { flex: 1; min-width: 0; padding: 6px 10px; border-radius: 8px; }
+.model-editor-top .model-editor-nav strong { font-size: 13px; white-space: nowrap; }
+.model-editor-top .model-type-tabs { flex: none; align-self: center; margin-bottom: 0; }
+.model-editor { gap: 10px; }
+.model-section { gap: 10px; padding: 12px 16px; }
+.model-section__head { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; row-gap: 2px; }
+.model-section__head strong { font-size: 13px; }
+.model-section__head small { font-size: 11px; line-height: 1.5; }
+.model-support-toggle > span { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; row-gap: 2px; }
+.model-field-grid { gap: 0 16px; }
+.model-field-grid.is-dense { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0 12px; }
+.model-field-grid :deep(.el-form-item) { margin-bottom: 10px; }
+.model-editor :deep(.el-form-item__label) { margin-bottom: 2px; font-size: 12px; line-height: 18px; }
+.model-price-policy label { padding: 10px 12px; }
+
+.model-capability-tile { padding: 8px 12px; }
+.model-capability-tiles.is-exact { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.model-capability-tiles.is-exact .model-capability-tile { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; gap: 6px; padding: 8px 10px; }
+.model-capability-tiles.is-exact .model-capability-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-capability-tiles.is-exact .model-capability-tile > .el-input-number { width: 100%; }
+.exact-size-hint { margin: 0; font-size: 11px; }
+
+.reasoning-head-channel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 8px; row-gap: 2px; }
+.reasoning-head-channel b { grid-column: 1 / -1; color: var(--ink-2); font-weight: 650; }
+.reasoning-head-channel em { font-style: normal; font-weight: 500; }
+.reasoning-price-row .reasoning-price-field > span { display: none; }
+.reasoning-price-table__head > span, .reasoning-price-row > div { padding: 5px 10px; }
+.reasoning-effort-name { grid-auto-flow: column; justify-content: start; align-items: baseline; gap: 6px; white-space: nowrap; }
+
+/* ---- 页面分配：轻量卡片 ---- */
+.assign-group + .assign-group { margin-top: 14px; }
+.assign-group__head { display: flex; align-items: baseline; gap: 6px; margin: 0 2px 8px; }
+.assign-group__head strong { color: var(--ink); font-size: 13px; font-weight: 650; }
+.assign-group__head em { color: var(--ink-3); font-size: 12px; font-style: normal; font-weight: 600; }
+.assign-group__head small { color: var(--ink-3); font-size: 11px; }
+.assign-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px; }
+.assign-card {
+  display: grid; gap: 6px; min-width: 0; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.assign-card:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); box-shadow: 0 2px 8px rgb(15 23 42 / 6%); }
+.assign-card.is-default { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
+.assign-card__top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.assign-card__name { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.assign-card__top > .default-badge, .assign-card__top > .assignment-maintenance { flex: none; }
+.assign-card__remove {
+  display: grid; flex: none; width: 22px; height: 22px; margin-left: auto; padding: 0; place-items: center;
+  border: 0; border-radius: 6px; background: transparent; color: var(--ink-3); cursor: pointer;
+  opacity: 0; transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.assign-card:hover .assign-card__remove, .assign-card__remove:focus-visible { opacity: 1; }
+.assign-card__remove:hover { background: var(--danger-soft); color: var(--danger); }
+.assign-card__remove svg, .assign-card__plus { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.assign-card__meta { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 6px; min-width: 0; padding-left: 22px; color: var(--ink-3); font-size: 11px; }
+.assign-card__provider { flex: 1 0 auto; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assign-chip {
+  display: inline-flex; flex: none; align-items: baseline; gap: 3px; height: 22px; padding: 0 8px;
+  border: 0; border-radius: 999px; background: var(--surface-2); color: var(--ink-3);
+  font: inherit; font-size: 11px; line-height: 22px; white-space: nowrap; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.assign-chip b { color: var(--ink); font-size: 12px; font-weight: 700; }
+.assign-chip em { font-style: normal; }
+.assign-chip:hover, .assign-chip:focus-visible { background: color-mix(in srgb, var(--accent) 12%, var(--surface-2)); color: var(--accent-ink); }
+.assign-chip.is-override { background: var(--warning-soft); color: var(--warning); }
+.assign-chip.is-override b { color: var(--warning); }
+.assign-card.is-pool { border-style: dashed; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.assign-card.is-pool .assign-card__name { color: var(--ink-2); font-weight: 600; }
+.assign-card.is-pool:hover { border-style: solid; background: var(--surface); }
+.assign-card__plus { flex: none; width: 16px; height: 16px; color: var(--ink-3); }
+.assign-card.is-pool:hover .assign-card__plus, .assign-card.is-pool:hover .assign-card__join { color: var(--accent-ink); }
+.assign-card__join { flex: none; margin-left: auto; color: var(--ink-3); font-size: 11px; font-style: normal; }
+.assign-empty { grid-column: 1 / -1; margin: 0; padding: 10px; color: var(--ink-3); font-size: 12px; text-align: center; }
+.assign-card__top > .assign-radio { flex: none; }
+
+.catalog-table tbody td { padding-top: 6px; padding-bottom: 6px; height: 42px; }
+.cell-model { white-space: nowrap; }
+.cell-model > .default-badge, .cell-model > .maintenance-badge, .cell-model > .api-ref-badge, .cell-model > .slot-badge { flex: none; }
+.cell-kind { flex: none; min-width: 58px; justify-content: center; text-align: center; }
+.cell-provider { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-upstream { display: block; overflow: hidden; color: var(--ink-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.cell-upstream.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.cell-price { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+.cell-price__was { color: var(--ink-3); font-size: 11px; }
 </style>

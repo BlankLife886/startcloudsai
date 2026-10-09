@@ -24,6 +24,11 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// ImageSizeFor is the output size the compiler sends for a ratio and tier.
+func ImageSizeFor(aspectRatio, resolution string) string {
+	return deriveImageSize(aspectRatio, resolution)
+}
+
 func deriveImageSize(aspectRatio, resolution string) string {
 	ratio := strings.TrimSpace(aspectRatio)
 	if ratio == "" {

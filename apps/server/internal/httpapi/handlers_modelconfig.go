@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/imageslots"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelprovider"
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
@@ -79,6 +81,13 @@ func (s *Server) adminPutModelConfig(c *gin.Context, _ *store.User) {
 	if err := modelconfig.Save(c.Request.Context(), s.St.Pool, prepared); err != nil {
 		fail(c, err)
 		return
+	}
+	s.invalidateModelStatus()
+	// Slot states follow the saved layout now rather than at the next probe run.
+	if err := s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+		return imageslots.Reconcile(c.Request.Context(), tx, prepared, time.Now().UTC())
+	}); err != nil {
+		log.Printf("reconcile image slots after model config save: %v", err)
 	}
 	// Site price changes reach following API models now rather than at the
 	// next sweep, so increases are announced right away.

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { availableCatalogModels } from "../../components/common/ModelCatalogIcon.jsx";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { useSitePriceRefresh } from "../../hooks/useSitePriceRefresh.js";
 
 // AI 电商唯一跨模块共享的状态：顶部“生成模型”。模型列表与能力（画幅、清晰度、参考图上限）
 // 来自后台模型配置；用户选中的模型按设备记住，切换侧栏模块、刷新页面都沿用。
@@ -38,6 +39,12 @@ export function useCommerceModels() {
   const [modelId, setModelIdState] = useState("");
   const [defaultUnitPrice, setDefaultUnitPrice] = useState(3);
   const [ready, setReady] = useState(false);
+
+  // 动态调价到点只换模型列表（价格），已选模型不变。
+  useSitePriceRefresh((runtime) => {
+    const feature = runtime.features?.["ai.ecommerceDesign"] || {};
+    setModels(feature.config?.publicModels || feature.publicModels || runtime.aiModelCatalog?.featurePublicModels || []);
+  });
 
   useEffect(() => {
     const controller = new AbortController();

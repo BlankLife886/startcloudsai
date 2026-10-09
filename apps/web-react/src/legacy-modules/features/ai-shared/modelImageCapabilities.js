@@ -15,7 +15,9 @@ export const IMAGE_ASPECT_RATIOS = [
   '9:21',
 ]
 
-export const IMAGE_QUALITIES = ['low', 'medium', 'high']
+// 全部可选质量（xhigh、max 仅较新的模型支持，auto 由上游自选）；未配置时默认前三档。
+export const IMAGE_QUALITIES = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
+export const DEFAULT_IMAGE_QUALITIES = ['low', 'medium', 'high']
 export const IMAGE_OUTPUT_FORMATS = ['png', 'jpeg', 'webp']
 export const IMAGE_MODERATION_LEVELS = ['auto', 'low']
 export const IMAGE_RESOLUTIONS = ['1K', '2K', '4K']
@@ -59,7 +61,7 @@ export function normalizeImageModelCapabilities(model = {}) {
     IMAGE_ASPECT_RATIOS,
     IMAGE_ASPECT_RATIOS,
   )
-  const qualities = normalizeEnumList(safeModel.qualities, IMAGE_QUALITIES, IMAGE_QUALITIES)
+  const qualities = normalizeEnumList(safeModel.qualities, IMAGE_QUALITIES, DEFAULT_IMAGE_QUALITIES)
   const outputFormats = normalizeEnumList(
     safeModel.outputFormats,
     IMAGE_OUTPUT_FORMATS,

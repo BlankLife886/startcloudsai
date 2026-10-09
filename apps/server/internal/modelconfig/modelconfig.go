@@ -68,7 +68,11 @@ var ImageAspectRatios = []string{
 	"auto", "16:9", "9:16", "1:1", "3:2", "2:3", "5:4", "4:5", "4:3", "3:4", "21:9", "9:21",
 }
 
-var ImageQualities = []string{"low", "medium", "high"}
+// ImageQualities are every quality GPT Image accepts (xhigh and max are newer
+// models only; auto lets the upstream choose). New and legacy models start
+// with DefaultImageQualities; the admin opts into the rest per model.
+var ImageQualities = []string{"low", "medium", "high", "xhigh", "max", "auto"}
+var DefaultImageQualities = []string{"low", "medium", "high"}
 var ImageOutputFormats = []string{"png", "jpeg", "webp"}
 var ImageModerationLevels = []string{"auto", "low"}
 
@@ -192,24 +196,32 @@ type Model struct {
 	AllowZeroPrice              bool                 `json:"allowZeroPrice"`
 	AllowLossLeader             bool                 `json:"allowLossLeader"`
 	ImageUpscalePricing         *ImageUpscalePricing `json:"imageUpscalePricing,omitempty"`
-	FastMode                    bool                 `json:"fastMode"`
-	MinSeconds                  int                  `json:"minSeconds"`
-	MaxSeconds                  int                  `json:"maxSeconds"`
-	Resolutions                 []string             `json:"resolutions"`
-	AspectRatios                []string             `json:"aspectRatios"`
-	AspectRatiosByResolution    map[string][]string  `json:"aspectRatiosByResolution"`
-	SupportsExactSize           bool                 `json:"supportsExactSize"`
-	ExactSizeLimits             *ExactSizeLimits     `json:"exactSizeLimits,omitempty"`
-	Qualities                   []string             `json:"qualities"`
-	TransparentBackground       bool                 `json:"transparentBackground"`
-	OutputFormats               []string             `json:"outputFormats"`
-	ModerationLevels            []string             `json:"moderationLevels"`
-	MaxReferenceImages          int                  `json:"maxReferenceImages"`
-	MaxImages                   int                  `json:"maxImages"`
-	ContextWindowTokens         int                  `json:"contextWindowTokens,omitempty"`
-	MaxOutputTokens             int                  `json:"maxOutputTokens,omitempty"`
-	SupportedReasoningEfforts   []string             `json:"supportedReasoningEfforts"`
-	ReasoningEnabled            *bool                `json:"reasoningEnabled,omitempty"`
+	// ImagePricing bills an image model by resolution × quality
+	// (resolution → quality → cell); empty keeps the flat price above.
+	ImagePricing map[string]map[string]ImageTierPrice `json:"imagePricing,omitempty"`
+	// DefaultQuality is used when a request leaves quality out or asks for auto.
+	DefaultQuality string `json:"defaultQuality,omitempty"`
+	// ResolutionSlots route each resolution to a primary model and ordered
+	// backups (resolution → slot); a resolution without one runs on this model.
+	ResolutionSlots           map[string]ResolutionSlot `json:"resolutionSlots,omitempty"`
+	FastMode                  bool                      `json:"fastMode"`
+	MinSeconds                int                       `json:"minSeconds"`
+	MaxSeconds                int                       `json:"maxSeconds"`
+	Resolutions               []string                  `json:"resolutions"`
+	AspectRatios              []string                  `json:"aspectRatios"`
+	AspectRatiosByResolution  map[string][]string       `json:"aspectRatiosByResolution"`
+	SupportsExactSize         bool                      `json:"supportsExactSize"`
+	ExactSizeLimits           *ExactSizeLimits          `json:"exactSizeLimits,omitempty"`
+	Qualities                 []string                  `json:"qualities"`
+	TransparentBackground     bool                      `json:"transparentBackground"`
+	OutputFormats             []string                  `json:"outputFormats"`
+	ModerationLevels          []string                  `json:"moderationLevels"`
+	MaxReferenceImages        int                       `json:"maxReferenceImages"`
+	MaxImages                 int                       `json:"maxImages"`
+	ContextWindowTokens       int                       `json:"contextWindowTokens,omitempty"`
+	MaxOutputTokens           int                       `json:"maxOutputTokens,omitempty"`
+	SupportedReasoningEfforts []string                  `json:"supportedReasoningEfforts"`
+	ReasoningEnabled          *bool                     `json:"reasoningEnabled,omitempty"`
 	// ToolCallingDisabled marks a chat model whose upstream ignores function
 	// tools (some web-session proxies answer in text instead). It can answer
 	// questions but cannot drive Agent mode.
@@ -567,7 +579,7 @@ func normalize(cfg *Config) {
 				model.AspectRatios = append([]string(nil), ImageAspectRatios...)
 			}
 			if model.Qualities == nil {
-				model.Qualities = append([]string(nil), ImageQualities...)
+				model.Qualities = append([]string(nil), DefaultImageQualities...)
 			}
 			if model.OutputFormats == nil {
 				model.OutputFormats = append([]string(nil), ImageOutputFormats...)
@@ -584,6 +596,8 @@ func normalize(cfg *Config) {
 			model.OutputFormats = cleanEnum(model.OutputFormats, ImageOutputFormats)
 			model.ModerationLevels = cleanEnum(model.ModerationLevels, ImageModerationLevels)
 		}
+		normalizeImagePricing(model)
+		normalizeResolutionSlots(model)
 		if model.Default {
 			switch {
 			case !model.Enabled || !model.Public || !model.Available():
@@ -972,6 +986,9 @@ func Validate(cfg Config) error {
 				return fmt.Errorf("高清放大模型 %s 的 4096px 档折扣价不能高于标准价", model.Name)
 			}
 		}
+		if err := validateImagePricing(model); err != nil {
+			return err
+		}
 		if model.MinSeconds < 0 || model.MaxSeconds < model.MinSeconds || model.MaxSeconds > 3600 {
 			return fmt.Errorf("模型 %s 的预计耗时无效", model.Name)
 		}
@@ -1044,6 +1061,9 @@ func Validate(cfg Config) error {
 		}
 		models[model.ID] = model
 	}
+	if err := validateResolutionSlots(cfg.Models, models); err != nil {
+		return err
+	}
 	for workspace, binding := range cfg.Workspaces {
 		if !ValidWorkspace(workspace) {
 			return fmt.Errorf("页面模型分配包含未知页面：%s", workspace)
@@ -1104,6 +1124,9 @@ func Validate(cfg Config) error {
 			model, exists := models[modelID]
 			if !exists || !assigned[modelID] {
 				return fmt.Errorf("页面 %s 的价格模型必须包含在该页面的可选模型中：%s", workspace, modelID)
+			}
+			if HasImagePricing(model) {
+				return fmt.Errorf("页面 %s 的模型 %s 已按分辨率和质量分档定价，不能再设页面单价", workspace, model.Name)
 			}
 			if pricing.PriceCents < 0 || (pricing.DiscountPriceCents != nil && *pricing.DiscountPriceCents < 0) {
 				return fmt.Errorf("页面 %s 的模型 %s 价格不能为负", workspace, model.Name)
@@ -1364,6 +1387,16 @@ func WorkspaceGenerationMaxImages(cfg Config, workspace string, model Model) int
 		return base
 	}
 	return min(base+max(0, workspaceModelLimits(cfg, workspace, model).ExtraImages), MaxImagesLimit)
+}
+
+// WorkspacePriceBounds is the price range of one image on a page: the
+// matrix bounds for a tiered model, else the page price.
+func WorkspacePriceBounds(cfg Config, workspace string, model Model) (int64, int64) {
+	if HasImagePricing(model) {
+		return ImagePriceBounds(model)
+	}
+	price := EffectiveWorkspacePrice(cfg, workspace, model)
+	return price, price
 }
 
 func EffectiveWorkspacePrice(cfg Config, workspace string, model Model) int64 {
@@ -1738,15 +1771,14 @@ func OverlayTaskPrices(cfg Config, legacy map[string]int64) (map[string]int64, m
 		if len(models) == 0 {
 			continue
 		}
-		firstPrice := EffectiveWorkspacePrice(cfg, workspace, models[0].Model)
-		rangeValue := PriceRange{MinCents: firstPrice, MaxCents: firstPrice}
-		for _, selection := range models[1:] {
-			price := EffectiveWorkspacePrice(cfg, workspace, selection.Model)
-			if price < rangeValue.MinCents {
-				rangeValue.MinCents = price
+		var rangeValue PriceRange
+		for index, selection := range models {
+			low, high := WorkspacePriceBounds(cfg, workspace, selection.Model)
+			if index == 0 || low < rangeValue.MinCents {
+				rangeValue.MinCents = low
 			}
-			if price > rangeValue.MaxCents {
-				rangeValue.MaxCents = price
+			if index == 0 || high > rangeValue.MaxCents {
+				rangeValue.MaxCents = high
 			}
 		}
 		prices[taskType] = rangeValue.MaxCents

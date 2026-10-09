@@ -7,6 +7,7 @@ import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { useSitePriceRefresh } from "../hooks/useSitePriceRefresh.js";
 import { createTask, quoteTaskPrice, uploadFile, waitForTask } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import "./MediaToolsView.css";
@@ -323,6 +324,11 @@ export function MediaToolsView() {
   const pageRef = useRef(null);
   const runButtonRef = useRef(null);
   const { contextSafe } = useGSAP({ scope: pageRef });
+
+  useSitePriceRefresh((config) => {
+    const values = config?.features?.["ai.mediaTools"]?.config?.tools;
+    setTools(Array.isArray(values) ? values.filter((item) => item?.id) : []);
+  });
 
   useEffect(() => {
     let active = true;

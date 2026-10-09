@@ -4,7 +4,8 @@ import "@react/legacy-styles/generated/features/ecommerce/CommerceSelect.css";
 import "./CommerceSelect.override.css";
 import { useLocale } from "../../i18n/index.js";
 import { ModelCatalogIcon, ModelMaintenanceBadge, isCatalogModelMaintenance } from "../../components/common/ModelCatalogIcon.jsx";
-import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
+import { hasTimedPrice, resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
+import { PriceAdjustmentTag } from "../../components/common/PriceAdjustmentTag.jsx";
 
 function CommerceSelectPrice({ model, hint }) {
   if (model && !isCatalogModelMaintenance(model)) {
@@ -12,8 +13,9 @@ function CommerceSelectPrice({ model, hint }) {
     if (price.hasDiscount) {
       return (
         <span className="commerce-select-price has-discount">
-          <strong>折扣 {price.discount} 积分/张</strong>
+          <strong>{hasTimedPrice(model) ? "" : "折扣 "}{price.discount} 积分/张</strong>
           <del>{price.standard} 积分/张</del>
+          <PriceAdjustmentTag model={model} />
         </span>
       );
     }
@@ -21,6 +23,7 @@ function CommerceSelectPrice({ model, hint }) {
       return (
         <small className="commerce-select-hint">
           {price.effective === 0 ? "免费" : `${price.effective} 积分/张`}
+          <PriceAdjustmentTag model={model} />
         </small>
       );
     }
@@ -70,19 +73,22 @@ export function CommerceSelect({
     const rect = triggerRef.current.getBoundingClientRect();
     const gap = 7;
     const padding = 10;
-    const estimated = Math.min(normalized.length * 36 + 10, 264);
+    // 每行 36px 加 3px 行间距（见 CommerceSelect.override.css）。
+    const estimated = Math.min(normalized.length * 39 + 10, 290);
     const below = window.innerHeight - rect.bottom - padding;
     const above = rect.top - padding;
     const placeAbove = below < Math.min(estimated, 180) && above > below;
     const maxHeight = Math.max(
       110,
-      Math.min(264, (placeAbove ? above : below) - gap),
+      Math.min(290, (placeAbove ? above : below) - gap),
     );
     const availableWidth = Math.max(160, window.innerWidth - padding * 2);
     const hasModels = normalized.some((item) => item.model);
     const hasHint = normalized.some((item) => item.hint || item.hasPrice);
     const requested = Number(menuMinWidth) || 0;
-    const floor = hasModels ? Math.max(requested, 360) : requested > 0 ? requested : hasHint ? 220 : 160;
+    // 价格旁有「限时调价」标签时多留 60px，模型名不被挤成省略号。
+    const timed = normalized.some((item) => item.model && hasTimedPrice(item.model));
+    const floor = hasModels ? Math.max(requested, timed ? 420 : 360) : requested > 0 ? requested : hasHint ? 220 : 160;
     const menuWidth = Math.min(availableWidth, Math.max(rect.width, floor));
     setStyle({
       left: Math.min(

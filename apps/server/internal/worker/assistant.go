@@ -4078,6 +4078,7 @@ func (w *Worker) completeAssistantImageRun(ctx context.Context, run *store.Assis
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(),
 		assistantstream.Event{Kind: "image", Done: true, Status: "succeeded", ImageTotal: expected, Usage: assistantUsageFromStartedAt(run).Map()})
 	w.recordAssistantImageFinish(ctx, settled, "succeeded", "success", "生图任务完成，图片已保存")
+	w.recordAssistantSlotOutcome(ctx, settled, true, "")
 	return nil
 }
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchRuntimeConfig, getDefaultRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { useSitePriceRefresh } from "@react/hooks/useSitePriceRefresh.js";
 import {
   T2I_ASPECT_OPTIONS,
   T2I_QUALITY_OPTIONS,
@@ -11,6 +12,7 @@ import {
   imageCountChoices,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import { resolveModelTierPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import { availableCatalogModels } from "@react/components/common/ModelCatalogIcon.jsx";
 import {
   backgroundRemovalModelsOf,
@@ -50,6 +52,9 @@ export function useCreateSettings(userId) {
   const [runtime, setRuntime] = useState(() => getDefaultRuntimeConfig());
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState(() => ({ ...DEFAULTS, ...readDraft(userId) }));
+
+  // 动态调价到点重新读取价格，已选参数不变。
+  useSitePriceRefresh(setRuntime);
 
   useEffect(() => {
     let disposed = false;
@@ -95,10 +100,11 @@ export function useCreateSettings(userId) {
     || backgroundRemovalModels[0]
     || null;
 
-  const resolutionOptions = useMemo(
-    () => T2I_RESOLUTION_OPTIONS.filter((option) => capabilities.resolutions.includes(option.value)),
-    [capabilities],
-  );
+  // 分辨率槽位全部故障时服务端会拒单，这里直接不提供该分辨率。
+  const resolutionOptions = useMemo(() => {
+    const unavailable = new Set(model?.unavailableResolutions || []);
+    return T2I_RESOLUTION_OPTIONS.filter((option) => capabilities.resolutions.includes(option.value) && !unavailable.has(option.value));
+  }, [capabilities, model]);
   const qualityOptions = useMemo(
     () => T2I_QUALITY_OPTIONS.filter((option) => capabilities.qualities.includes(option.value)),
     [capabilities],
@@ -132,7 +138,9 @@ export function useCreateSettings(userId) {
   }, [backgroundRemovalModel, capabilities, loading, model, qualityOptions, ratioOptions, resolutionOptions]);
 
   const unitCost = Math.max(0, Number(
-    model?.pointPricing?.configured ? model.creditCost : feature.creditCost,
+    model?.pointPricing?.configured
+      ? resolveModelTierPointPricing(model, { resolution: settings.resolution, quality: settings.quality }).effective
+      : feature.creditCost,
   ) || 0) + (settings.autoRemove ? Math.max(0, Number(backgroundRemovalModel?.pricePoints || 0)) : 0);
 
   return {

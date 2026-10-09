@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/pricerules"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
@@ -54,6 +55,9 @@ type modelStatusResponse struct {
 	GeneratedAt time.Time         `json:"generatedAt"`
 	Overall     string            `json:"overall"`
 	Models      []modelStatusItem `json:"models"`
+	// PriceNextChangeAt is when a dynamic-pricing rule next starts or ends;
+	// the cached response expires then so the shown price stays current.
+	PriceNextChangeAt *time.Time `json:"priceNextChangeAt,omitempty"`
 }
 
 type modelStatusItem struct {
@@ -76,10 +80,25 @@ type modelStatusItem struct {
 // recorded on each hour's calls, ending with the price configured right now.
 // Hours without calls are omitted; the client carries the last price forward.
 type modelStatusPrice struct {
-	CurrentCents int64                   `json:"currentCents"`
-	Unit         string                  `json:"unit"`
-	Points       []modelStatusPricePoint `json:"points"`
-	Days         []modelStatusPriceDay   `json:"days"`
+	// CurrentCents is what a site user pays now, dynamic pricing included.
+	CurrentCents int64 `json:"currentCents"`
+	// StandardCents is the list price and DiscountCents the admin discount,
+	// both before dynamic pricing; BaseCents is what users pay without it.
+	StandardCents int64  `json:"standardCents"`
+	DiscountCents *int64 `json:"discountCents,omitempty"`
+	BaseCents     int64  `json:"baseCents"`
+	// Adjustment is the dynamic-pricing rule in force, if any.
+	Adjustment *modelStatusAdjustment  `json:"adjustment,omitempty"`
+	Unit       string                  `json:"unit"`
+	Points     []modelStatusPricePoint `json:"points"`
+	Days       []modelStatusPriceDay   `json:"days"`
+}
+
+type modelStatusAdjustment struct {
+	RuleName string    `json:"ruleName"`
+	Mode     string    `json:"mode"`
+	Value    int64     `json:"value"`
+	EndsAt   time.Time `json:"endsAt"`
 }
 
 // modelStatusPriceDay is the price in effect at the end of a China calendar
@@ -129,6 +148,14 @@ func (s *Server) publicModelStatus(c *gin.Context) {
 	ok(c, body)
 }
 
+// invalidateModelStatus drops the cached status page after an admin changes
+// models or prices, so the next visitor sees the new price at once.
+func (s *Server) invalidateModelStatus() {
+	s.modelStatus.mu.Lock()
+	defer s.modelStatus.mu.Unlock()
+	s.modelStatus.body = nil
+}
+
 func (s *Server) resolveModelStatus(ctx context.Context) (*modelStatusResponse, error) {
 	now := time.Now()
 	s.modelStatus.mu.Lock()
@@ -142,6 +169,9 @@ func (s *Server) resolveModelStatus(ctx context.Context) (*modelStatusResponse, 
 	}
 	s.modelStatus.body = body
 	s.modelStatus.expiresAt = now.Add(modelStatusCacheTTL)
+	if next := body.PriceNextChangeAt; next != nil && next.Before(s.modelStatus.expiresAt) {
+		s.modelStatus.expiresAt = *next
+	}
 	return body, nil
 }
 
@@ -149,6 +179,14 @@ func (s *Server) buildModelStatus(ctx context.Context, now time.Time) (*modelSta
 	cfg, err := modelconfig.Load(ctx, s.St.Pool)
 	if err != nil {
 		return nil, err
+	}
+	site, err := pricerules.LoadSite(ctx, s.St.Pool, now)
+	if err != nil {
+		return nil, err
+	}
+	sitePrices := make(map[string]int64, len(site.Config.Models))
+	for _, model := range site.Config.Models {
+		sitePrices[model.ID] = modelconfig.EffectivePrice(model)
 	}
 	recent, err := store.ModelHealthWindow(ctx, s.St.Pool, now.Add(-modelStatusRecentWindow), now)
 	if err != nil {
@@ -175,6 +213,10 @@ func (s *Server) buildModelStatus(ctx context.Context, now time.Time) (*modelSta
 	}
 
 	body := &modelStatusResponse{GeneratedAt: now, Models: []modelStatusItem{}}
+	if !site.NextChange.IsZero() {
+		next := site.NextChange.UTC()
+		body.PriceNextChangeAt = &next
+	}
 	for _, selection := range modelconfig.PublicModels(cfg, "") {
 		model := selection.Model
 		window := recent[model.ID]
@@ -190,7 +232,12 @@ func (s *Server) buildModelStatus(ctx context.Context, now time.Time) (*modelSta
 		}
 		item.Hourly = modelStatusHourly(byModel[model.ID], now)
 		item.Daily, item.Uptime7d = modelStatusDaily(byModel[model.ID], firstDay)
-		item.Price = modelStatusPriceHistory(byModel[model.ID], model, now)
+		item.Price = modelStatusPriceHistory(byModel[model.ID], model, sitePrices[model.ID], now)
+		if active, ok := site.Active[model.ID]; ok && item.Price.CurrentCents != item.Price.BaseCents {
+			item.Price.Adjustment = &modelStatusAdjustment{
+				RuleName: active.RuleName, Mode: active.Adjustment.Mode, Value: active.Adjustment.Value, EndsAt: active.EndsAt.UTC(),
+			}
+		}
 		item.Price.Days = modelStatusPriceDaily(byModel[model.ID], item.Price.CurrentCents, priceFirstDay)
 		body.Models = append(body.Models, item)
 	}
@@ -359,8 +406,11 @@ func modelStatusDayStart(now time.Time) time.Time {
 
 // modelStatusPriceHistory keeps only the hours where the price changed, so
 // the response stays small, and appends the configured price as of now.
-func modelStatusPriceHistory(buckets []store.ModelHealthAgg, model modelconfig.Model, now time.Time) modelStatusPrice {
-	price := modelStatusPrice{CurrentCents: modelconfig.EffectivePrice(model), Unit: modelStatusPricePerImage, Points: []modelStatusPricePoint{}}
+func modelStatusPriceHistory(buckets []store.ModelHealthAgg, model modelconfig.Model, current int64, now time.Time) modelStatusPrice {
+	price := modelStatusPrice{
+		CurrentCents: current, StandardCents: model.PriceCents, DiscountCents: model.DiscountPriceCents,
+		BaseCents: modelconfig.EffectivePrice(model), Unit: modelStatusPricePerImage, Points: []modelStatusPricePoint{},
+	}
 	if model.Kind == modelconfig.ModelKindChat {
 		price.Unit = modelStatusPricePerTurn
 	}

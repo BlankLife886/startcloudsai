@@ -394,6 +394,17 @@ export function useModelStatus() {
     };
   }, [load]);
 
+  // 动态调价到点（规则开始或结束）时重新读取，当前单价随之更新；服务端缓存也在那一刻失效。
+  const nextChangeAt = data?.priceNextChangeAt;
+  useEffect(() => {
+    const at = Date.parse(nextChangeAt || "");
+    if (!Number.isFinite(at)) return undefined;
+    const delay = at - Date.now() + 2000;
+    if (delay < 0 || delay > 6 * 3600_000) return undefined;
+    const timer = window.setTimeout(() => void load(), delay);
+    return () => window.clearTimeout(timer);
+  }, [load, nextChangeAt]);
+
   return { data, loading, error, refresh: load };
 }
 

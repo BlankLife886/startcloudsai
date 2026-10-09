@@ -8,6 +8,7 @@ import {
 } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { useDeferredPanel } from "../../hooks/useDeferredPanel.js";
+import { resolveModelTierPointPricing } from "../../legacy-modules/features/ai-shared/modelPointPricing.js";
 import {
   cancelAssistantRun,
   createAssistantContextBoundary,
@@ -147,7 +148,7 @@ import {
   usageStartedAtMs,
 } from "./assistantWorkspaceCore.jsx";
 import { closestNavigatorTurn } from "./AssistantMessageComponents.jsx";
-import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { fetchRuntimeConfig, onSitePricesChanged } from "@react/legacy-modules/services/runtimeConfig.js";
 
 function browserTimezone() {
   try {
@@ -260,6 +261,7 @@ export function useAssistantWorkspaceController() {
   const conversationsRef = useRef([]);
   const queuedRunsRef = useRef([]);
   const messagesRef = useRef([]);
+  const firstLoadedImageKeysRef = useRef(new Set());
   const workspaceHydratedRef = useRef(false);
   const conversationDraftsRef = useRef(new Map());
   const composerWorkspaceScopeRef = useRef(workspaceScope);
@@ -596,9 +598,15 @@ export function useAssistantWorkspaceController() {
     setGenerationResolution(nextResolution);
     if (nextRatio) setGenerationRatio(nextRatio);
   }, [generationRatio, selectedImageModel]);
+  // “助手提醒”对话由系统创建，固定显示在“新对话”下面，不进历史列表、不占对话数。
+  const inboxId = conversationQuota?.inboxId || "";
+  const inboxConversation = useMemo(
+    () => (inboxId ? conversations.find((item) => item?.id === inboxId) || null : null),
+    [conversations, inboxId],
+  );
   const listableConversations = useMemo(
-    () => conversations.filter((item) => (item?.messages || []).length > 0),
-    [conversations],
+    () => conversations.filter((item) => (item?.messages || []).length > 0 && item.id !== inboxId),
+    [conversations, inboxId],
   );
   const visibleConversations = useMemo(() => {
     if (historyShowAll) return listableConversations;
@@ -940,7 +948,12 @@ export function useAssistantWorkspaceController() {
   }, [shareSubmitting, shareTarget]);
   const markImageLoaded = useCallback((messageId, index) => {
     const key = `${messageId}-${index}`;
+    // 懒加载图片离开视口会被回收、回到视口时再次触发 onLoad；只有最后一条消息里的图片
+    // 首次加载才可能撑高底部内容，其它情况贴底会把正在往上滚的用户拽回底部。
+    const firstLoad = !firstLoadedImageKeysRef.current.has(key);
+    firstLoadedImageKeysRef.current.add(key);
     setLoadedImages((current) => {
+      if (current.has(key)) return current;
       const next = new Set(current);
       next.add(key);
       return next;
@@ -951,6 +964,8 @@ export function useAssistantWorkspaceController() {
       next.delete(key);
       return next;
     });
+    const lastMessage = messagesRef.current[messagesRef.current.length - 1];
+    if (!firstLoad || lastMessage?.id !== messageId) return;
     if (atBottomRef.current || returningRef.current) {
       window.requestAnimationFrame(() => {
         const scroller = messageScrollerRef.current;
@@ -1521,9 +1536,12 @@ export function useAssistantWorkspaceController() {
     };
     window.addEventListener("focus", refreshConfig);
     document.addEventListener("visibilitychange", refreshConfig);
+    // 动态调价到点：价格和「限时调价」标签跟着更新；页面在后台时等回到前台再刷新。
+    const offPrices = onSitePricesChanged(refreshConfig);
     return () => {
       window.removeEventListener("focus", refreshConfig);
       document.removeEventListener("visibilitychange", refreshConfig);
+      offPrices();
     };
   }, [applyAssistantConfig]);
 
@@ -2316,12 +2334,17 @@ export function useAssistantWorkspaceController() {
     if (!item.retained) void deleteAssistantFile(item.id).catch(() => undefined);
   };
 
-  const confirmAssistantCost = async (responseMode, requestedCount = 1, requestedModel = "", requestedReasoningEffort = activeReasoningEffort, { skip = false } = {}) => {
+  const confirmAssistantCost = async (responseMode, requestedCount = 1, requestedModel = "", requestedReasoningEffort = activeReasoningEffort, { skip = false, tier = null } = {}) => {
     const chatModel = availableConversationModels.find((item) => item.model === requestedModel) || selectedConversationModel;
     const imagePriceModel = availableImageModels.find((item) => item.model === requestedModel) || selectedImageModel;
     const imageCount = clampImageCount(requestedCount, imagePriceModel, 1);
     const chatUnit = assistantReasoningPrice(chatModel, requestedReasoningEffort).effective;
-    const imageUnit = Math.max(0, Number(imagePriceModel?.pricePoints || 0));
+    // 分档定价的图片模型按本次的分辨率和质量估价，默认取输入框当前的生图设置。
+    const imageTier = tier || {
+      resolution: generationResolution, quality: generationQuality,
+      ...(generationSize.sizeMode === "exact" ? { exactWidth: generationSize.exactWidth, exactHeight: generationSize.exactHeight } : {}),
+    };
+    const imageUnit = Math.max(0, Number(resolveModelTierPointPricing(imagePriceModel || {}, imageTier).effective || 0));
     const total = responseMode === "image" ? imageUnit * imageCount : chatUnit;
     if (!total || skip || auth.user?.requireCostConfirm === false) return true;
     const controller = new AbortController();
@@ -3389,7 +3412,7 @@ export function useAssistantWorkspaceController() {
       }
       count = referenceImages.length;
     }
-    const unitCents = Math.max(0, Number(selected.pricePoints) || 0);
+    const unitCents = Math.max(0, Number(resolveModelTierPointPricing(selected, { resolution: request.resolution, quality: request.quality }).effective) || 0);
     return {
       liveConversation, proposalMessage, proposal, prompt, imagePlanItems,
       model, selected, request, referenceImages, referenceMode, count,
@@ -3431,7 +3454,7 @@ export function useAssistantWorkspaceController() {
     const { liveConversation, proposalMessage, proposal, prompt, imagePlanItems, model, request, referenceImages, referenceMode, count } = resolved;
     // 本轮还在忙的时候不提交，但这只是时机问题，稍后原样重试即可。
     if (conversationHasWork || proposal.submitting) return "retry";
-    if (!(await confirmAssistantCost("image", count, model, activeReasoningEffort, { skip: auto }))) return false;
+    if (!(await confirmAssistantCost("image", count, model, activeReasoningEffort, { skip: auto, tier: { resolution: request.resolution, quality: request.quality } }))) return false;
     const userMessage = { id: uid(), role: "user", content: auto ? "已自动执行这个创作方案" : "执行这个创作方案", localOnly: true, createdAt: new Date().toISOString(), proposalSourceMessageId: proposalMessage.id, referenceMode, referenceImages: referenceImages.map((image) => ({ ...image })), imagePlanItems };
     const assistantMessage = createLocalAssistantPlaceholder({ prompt, responseMode: "image", userMessageId: userMessage.id, defaults: { model, ratio: request.ratio, requestRatio: request.ratio, resolution: request.resolution, count, requestSize: request.requestSize, width: request.width, height: request.height, quality: request.quality, referenceMode, transparentBackground: proposal.transparentBackground === true } });
     if (imagePlanItems.length) assistantMessage.imagePlanItems = imagePlanItems;
@@ -3972,6 +3995,7 @@ export function useAssistantWorkspaceController() {
     historyGroups,
     historyHasMore,
     railConversations,
+    inboxConversation,
     searchResults,
     searchGroups,
     assetLibraryImages,

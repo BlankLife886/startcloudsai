@@ -301,7 +301,9 @@ func TestCreateTaskAndQuoteUseWorkspacePriceOverride(t *testing.T) {
 	if err != nil || canvasQuote.UnitPriceCents != 7 || canvasQuote.Workspace != modelconfig.WorkspaceCanvas {
 		t.Fatalf("canvas quote = %#v err=%v", canvasQuote, err)
 	}
-	stalePrice := int64(99)
+	// A price above what the user confirmed needs a new confirmation; a lower
+	// one (e.g. a dynamic-pricing discount started meanwhile) goes through.
+	stalePrice := int64(5)
 	_, _, err = taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
 		Type: "t2i", Prompt: "旧价格", Count: 1,
 		Params: map[string]any{"publicModelKey": "shared"}, ExpectedUnitPriceCents: &stalePrice,

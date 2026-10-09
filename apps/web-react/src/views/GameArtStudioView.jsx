@@ -11,6 +11,7 @@ import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
 import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
+import { PriceAdjustmentTag } from "../components/common/PriceAdjustmentTag.jsx";
 import { WireframeTerrainBackground } from "../features/game-art/WireframeTerrainBackground.jsx";
 import { useGameArtJobs } from "../features/game-art/useGameArtJobs.js";
 import {
@@ -25,6 +26,7 @@ import {
   STUDIO_BACKGROUND_OPTIONS,
 } from "../generated/gameArtConstants.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { useSitePriceRefresh } from "../hooks/useSitePriceRefresh.js";
 import { withTransparentPngInstruction } from "@react/legacy-modules/features/ai-shared/transparentPng.js";
 import { IMAGE_COUNT_HARD_MAX, clampImageCount, imageCountChoices, normalizeImageModelCapabilities } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
@@ -101,7 +103,7 @@ function constraintParts(value) {
 
 function ModelPrice({ model, light }) {
   if (isCatalogModelMaintenance(model) || model?.creditCost == null) return null;
-  return <span className={`model-point-price is-compact${light ? " is-light" : ""}`}><strong>{model.creditCost === 0 ? "免费" : `${model.creditCost} 积分/张`}</strong></span>;
+  return <span className={`model-point-price is-compact${light ? " is-light" : ""}`}><strong>{model.creditCost === 0 ? "免费" : `${model.creditCost} 积分/张`}</strong><PriceAdjustmentTag model={model} /></span>;
 }
 
 function DeleteDialog({ open, busy, light, onClose, onConfirm }) {
@@ -287,6 +289,8 @@ function GameArtStudioWorkspace() {
     });
     return () => media.revert();
   }, { scope: rootRef });
+
+  useSitePriceRefresh((config) => setModels(modelsFromConfig(config)));
 
   useEffect(() => {
     let disposed = false;

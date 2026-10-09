@@ -58,6 +58,9 @@ type BillingDecision struct {
 	TaskConcurrency      int        `json:"taskConcurrency,omitempty"`
 	AssistantConcurrency int        `json:"assistantConcurrency,omitempty"`
 	Reason               string     `json:"reason,omitempty"`
+	// SubscriberDiscountPoints is the per-unit subscriber discount already
+	// taken off UnitPoints (dynamic pricing, site requests only).
+	SubscriberDiscountPoints int64 `json:"subscriberDiscountPoints,omitempty"`
 }
 
 type billingDecisionKey struct{}

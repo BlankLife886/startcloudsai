@@ -9,7 +9,10 @@ export const CANVAS_IMAGE_DEFAULT_MAX_REFERENCES = 4;
 export const CANVAS_IMAGE_HARD_MAX_REFERENCES = 16;
 export const CANVAS_IMAGE_ASPECT_RATIOS = ["auto", "16:9", "9:16", "1:1", "3:2", "2:3", "5:4", "4:5", "4:3", "3:4", "21:9", "9:21"] as const;
 export const CANVAS_IMAGE_RESOLUTIONS = ["1K", "2K", "4K"] as const;
-export const CANVAS_IMAGE_QUALITIES = ["low", "medium", "high"] as const;
+// xhigh/max exist only on newer models and auto lets the upstream pick; a
+// model without a configured list keeps the first three.
+export const CANVAS_IMAGE_QUALITIES = ["low", "medium", "high", "xhigh", "max", "auto"] as const;
+const CANVAS_IMAGE_DEFAULT_QUALITIES = ["low", "medium", "high"] as const;
 
 export type CanvasImageModelCapabilities = {
     aspectRatios: string[];
@@ -91,7 +94,7 @@ export function canvasImageModelCapabilities(model?: ChannelModel | null): Canva
         aspectRatios: aspectRatios.length ? aspectRatios : hasConfiguredAspectRatios ? [] : ["1:1"],
         aspectRatiosByResolution,
         resolutions,
-        qualities: normalizeList(safe.qualities, CANVAS_IMAGE_QUALITIES, CANVAS_IMAGE_QUALITIES),
+        qualities: normalizeList(safe.qualities, CANVAS_IMAGE_QUALITIES, CANVAS_IMAGE_DEFAULT_QUALITIES),
         transparentBackground: safe.transparentBackground !== false,
         maxImages: canvasImageMaxCount(model),
         maxReferenceImages: canvasImageMaxReferences(model),

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { fetchRuntimeConfig } from '../../legacy-modules/services/runtimeConfig.js';
+import { fetchRuntimeConfig, onSitePricesChanged } from '../../legacy-modules/services/runtimeConfig.js';
 import { cancelTask, createTask, getTask, listTasks, quoteTaskPrice, uploadFile, waitForTask } from '../../legacy-modules/services/tasksApi.js';
 import { fetchAuthenticatedMediaBlob } from '../../legacy-modules/services/authenticatedMedia.js';
 import { taskOriginalUrl } from '../../legacy-modules/features/creator-hub/taskMedia.js';
@@ -86,6 +86,9 @@ export function useHoloCardJob({ userId, onCandidate }) {
       draftRef.current = null;
     };
   }, [userId]);
+
+  // 动态调价到点：沿用配置同步令牌重新读取模型和价格。
+  useEffect(() => onSitePricesChanged(() => setConfigSyncToken((value) => value + 1)), []);
 
   useEffect(() => {
     let active = true;

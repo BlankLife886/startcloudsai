@@ -6,6 +6,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/pricerules"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -526,7 +528,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (s *Server) handheldUnitPrice(ctx context.Context, modelID string, params map[string]any, inputCount int) (int64, error) {
-	cfg, err := modelconfig.Load(ctx, s.St.Pool)
+	cfg, err := pricerules.LoadSiteConfig(ctx, s.St.Pool, time.Now())
 	if err != nil {
 		return 0, err
 	}

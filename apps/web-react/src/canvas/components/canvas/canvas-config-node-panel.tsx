@@ -67,6 +67,7 @@ import {
   normalizeCanvasLocalImageOperationParams,
 } from "@/lib/canvas/canvas-local-image-operation";
 import { CanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
+import { PriceAdjustmentTag } from "@react/components/common/PriceAdjustmentTag.jsx";
 import {
   catalogModelsByCapability,
   canvasReasoningEfforts,
@@ -1035,13 +1036,14 @@ function StoryboardReasoningPrice({
       {hasDiscount ? (
         <>
           <strong>
-            折扣 {cost.effective} 积分
+            {model?.priceAdjustment ? "" : "折扣 "}{cost.effective} 积分
           </strong>
           <del>{cost.standard} 积分</del>
         </>
       ) : (
         <strong>{cost.effective === 0 ? "免费" : `${cost.effective} 积分`}</strong>
       )}
+      <PriceAdjustmentTag model={model} />
     </span>
   );
 }

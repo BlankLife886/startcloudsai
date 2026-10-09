@@ -206,7 +206,7 @@ export function ImageSettingsTheme({ theme, children }: { theme: CanvasTheme; ch
 }
 
 export function imageQualityLabel(value: string) {
-    return ["auto", "high", "medium", "low"].includes(value) ? i18n.t(`settingsPanels.common.${value}`) : value;
+    return ["auto", "max", "xhigh", "high", "medium", "low"].includes(value) ? i18n.t(`settingsPanels.common.${value}`) : value;
 }
 
 export function imageSizeLabel(size: string, resolution?: string) {

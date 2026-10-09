@@ -153,8 +153,8 @@ func TestModelStatusPriceHistoryKeepsChangesAndEndsAtCurrentPrice(t *testing.T) 
 		{Bucket: hour(2), PriceCents: price(10)},
 		{Bucket: hour(3)},
 		{Bucket: hour(5), PriceCents: price(12)},
-	}, modelconfig.Model{Kind: modelconfig.ModelKindChat, PriceCents: 12, DiscountPriceCents: &discount}, now)
-	if history.Unit != modelStatusPricePerTurn || history.CurrentCents != 8 {
+	}, modelconfig.Model{Kind: modelconfig.ModelKindChat, PriceCents: 12, DiscountPriceCents: &discount}, 8, now)
+	if history.Unit != modelStatusPricePerTurn || history.CurrentCents != 8 || history.BaseCents != 8 || history.StandardCents != 12 {
 		t.Fatalf("price = %+v", history)
 	}
 	want := []modelStatusPricePoint{{hour(1), 10}, {hour(5), 12}, {now, 8}}
@@ -166,8 +166,10 @@ func TestModelStatusPriceHistoryKeepsChangesAndEndsAtCurrentPrice(t *testing.T) 
 			t.Fatalf("point %d = %+v, want %+v", index, history.Points[index], want[index])
 		}
 	}
-	image := modelStatusPriceHistory(nil, modelconfig.Model{Kind: modelconfig.ModelKindImage, PriceCents: 20}, now)
-	if image.Unit != modelStatusPricePerImage || len(image.Points) != 1 || image.Points[0].Cents != 20 {
+	// A dynamic-pricing rule in force: the current price is the site price,
+	// the base price stays the configured one.
+	image := modelStatusPriceHistory(nil, modelconfig.Model{Kind: modelconfig.ModelKindImage, PriceCents: 20}, 15, now)
+	if image.Unit != modelStatusPricePerImage || len(image.Points) != 1 || image.Points[0].Cents != 15 || image.BaseCents != 20 {
 		t.Fatalf("image price = %+v", image)
 	}
 }

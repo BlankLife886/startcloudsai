@@ -1,10 +1,12 @@
 import { starcloudsRequest } from "@/services/starclouds-api";
 import { normalizeCanvasBatchMaxCount } from "@/lib/canvas/canvas-batch-limit";
 import { normalizeExactSizeCapabilities } from "@react/config/exactImageSize.js";
+import { schedulePriceRefresh } from "@react/legacy-modules/services/runtimeConfig.js";
 import { MODEL_REASONING_EFFORTS, defaultCanvasAgentPricing, type CanvasAgentPricing, type ChannelModel, type ModelChannel, type ModelReasoningEffort, type ModelReasoningPrice } from "@/stores/use-config-store";
 
 type SiteModel = {
     id?: unknown;
+    priceAdjustment?: unknown;
     label?: unknown;
     name?: unknown;
     kind?: unknown;
@@ -36,6 +38,7 @@ type SiteModel = {
 };
 
 type RuntimeConfig = {
+    priceSchedule?: { nextChangeAt?: string | null };
     features?: {
         "ai.infiniteCanvas"?: {
             enabled?: unknown;
@@ -90,6 +93,7 @@ export type SiteModelCatalog = {
 
 export async function fetchSiteModelCatalog(): Promise<SiteModelCatalog> {
     const runtime = await starcloudsRequest<RuntimeConfig>("/runtime-config");
+    schedulePriceRefresh(runtime.priceSchedule?.nextChangeAt);
     const feature = runtime.features?.["ai.infiniteCanvas"];
     const imageModels = feature?.config?.imageModels || [];
     const textModels = feature?.config?.textModels || [];
@@ -144,6 +148,20 @@ export async function fetchSiteBackgroundRemovalTools(): Promise<SiteBackgroundR
         .filter((item): item is SiteBackgroundRemovalTool => Boolean(item));
 }
 
+// 动态调价：服务端给出的此刻生效规则，用于「限时调价」标签。
+function priceAdjustment(value: unknown): ChannelModel["priceAdjustment"] {
+    if (!value || typeof value !== "object") return undefined;
+    const item = value as Record<string, unknown>;
+    const amount = Number(item.value);
+    if (!Number.isFinite(amount) || amount === 0) return undefined;
+    return {
+        ruleName: String(item.ruleName || ""),
+        mode: item.mode === "points" ? "points" : "percent",
+        value: amount,
+        endsAt: String(item.endsAt || ""),
+    };
+}
+
 function mapSiteModel(raw: SiteModel, capability: "image" | "text"): ChannelModel | null {
     const name = String(raw.id || raw.name || "").trim();
     if (!name) return null;
@@ -157,6 +175,7 @@ function mapSiteModel(raw: SiteModel, capability: "image" | "text"): ChannelMode
         pricePoints: finiteNumber(raw.pricing?.points ?? raw.pricePoints),
         standardPricePoints: finiteNumber(raw.pricing?.standardPoints ?? raw.standardPricePoints),
         discountPricePoints: finiteNumber(raw.pricing?.discountPoints ?? raw.discountPricePoints),
+        priceAdjustment: priceAdjustment(raw.priceAdjustment),
         resolutions: stringList(raw.resolutions),
         aspectRatios: stringList(raw.aspectRatios),
         aspectRatiosByResolution: stringListMap(raw.aspectRatiosByResolution),

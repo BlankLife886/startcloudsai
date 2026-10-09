@@ -16,6 +16,7 @@ import {
 } from "@react/legacy-modules/features/image-compress/compressEngine.js";
 import { taskCoverUrl, taskDisplayUrl, taskOriginalUrl } from "@react/legacy-modules/features/creator-hub/taskMedia.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { useSitePriceRefresh } from "../hooks/useSitePriceRefresh.js";
 import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
 import { listTasks } from "@react/legacy-modules/services/tasksApi.js";
 import { removeImageBackground, uploadAiInputFile } from "@react/legacy-modules/services/aiWallpaper.js";
@@ -298,6 +299,8 @@ export function BackgroundRemoveView() {
       if (mountedRef.current && historyControllerRef.current === controller) setHistoryLoading(false);
     }
   }, [auth.isAuthenticated, resultUrl, showResult, sourceFile]);
+
+  useSitePriceRefresh((config) => setToolState(imageTools(config)));
 
   useEffect(() => {
     mountedRef.current = true;

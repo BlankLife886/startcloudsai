@@ -348,6 +348,7 @@
 .msg-card__price-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .msg-card__price-now { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
 .msg-card__price-now b { color: var(--msv-text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.msg-card__price-was { color: var(--msv-muted, #8b93a3); font-size: 11px; font-variant-numeric: tabular-nums; }
 .msv-bars { position: relative; display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); align-items: end; gap: 3px; }
 .msv-bars__bar { border-radius: 2px 2px 1px 1px; background: var(--msv-bar); transition: opacity 0.12s ease; }
 .msv-bars__bar.is-today { background: var(--msv-bar-today); }

@@ -18,6 +18,7 @@ import {
   fetchRuntimeConfig,
   getDefaultRuntimeConfig,
 } from "@react/legacy-modules/services/runtimeConfig.js";
+import { useSitePriceRefresh } from "../hooks/useSitePriceRefresh.js";
 import { listTasks, uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import { compressReferenceImageFile } from "@react/legacy-modules/features/ai-shared/referenceImageCompression.js";
 import {
@@ -44,7 +45,7 @@ import {
   imageModelMaxCount,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
-import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
+import { hasTimedPrice, resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import { SHOW_GENERATION_SKILL_CONTROLS } from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
 import {
   taskDisplayUrl,
@@ -69,6 +70,7 @@ import {
   ECOMMERCE_PAGE_KEYS,
   isPageEntryVisible,
 } from "../config/pageControls.js";
+import { PriceAdjustmentTag } from "../components/common/PriceAdjustmentTag.jsx";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
 
@@ -212,7 +214,7 @@ function compactModelPriceLabel(model, { perImage = true } = {}) {
   const price = resolveModelPointPricing(model);
   if (!price.configured) return "";
   const suffix = perImage ? "/张" : "";
-  if (price.hasDiscount) return `折扣 ${price.discount}积分${suffix}`;
+  if (price.hasDiscount) return `${hasTimedPrice(model) ? "限时 " : "折扣 "}${price.discount}积分${suffix}`;
   if (price.effective === 0) return "免费";
   return `${price.effective}积分${suffix}`;
 }
@@ -226,12 +228,13 @@ function StudioModelPrice({ model, perImage }) {
     <span className={`studio-composer__model-price${price.hasDiscount ? " has-discount" : ""}`}>
       {price.hasDiscount ? (
         <>
-          <strong>折扣 {price.discount} 积分{suffix}</strong>
+          <strong>{hasTimedPrice(model) ? "" : "折扣 "}{price.discount} 积分{suffix}</strong>
           <del>{price.standard} 积分{suffix}</del>
         </>
       ) : (
         <strong>{price.effective === 0 ? "免费" : `${price.effective} 积分${suffix}`}</strong>
       )}
+      <PriceAdjustmentTag model={model} />
     </span>
   );
 }
@@ -1118,6 +1121,18 @@ export function StudioHubView() {
         setRecentLoading(false);
     }
   }, [auth.isAuthenticated]);
+
+  useSitePriceRefresh((config) => {
+    setRuntimeConfig(config);
+    fetchAssistantConfig().then((assistant) => {
+      if (!mountedRef.current) return;
+      const normalize = (items) =>
+        (Array.isArray(items) ? items : [])
+          .map((item) => normalizeModel({ ...item, id: item?.model }))
+          .filter(Boolean);
+      setAssistantModels({ conversation: normalize(assistant?.conversationModels), image: normalize(assistant?.imageModels) });
+    }).catch(() => null);
+  });
 
   useEffect(() => {
     mountedRef.current = true;

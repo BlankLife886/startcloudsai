@@ -2170,7 +2170,7 @@ func normalizedImageQuality(values ...string) string {
 		return "auto"
 	}
 	switch quality := strings.ToLower(strings.TrimSpace(values[0])); quality {
-	case "low", "medium", "high", "auto":
+	case "low", "medium", "high", "xhigh", "max", "auto":
 		return quality
 	default:
 		return "auto"

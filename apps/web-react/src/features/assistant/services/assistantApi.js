@@ -8,6 +8,7 @@ import {
   apiRequest,
   buildApiPath,
 } from '@react/legacy-modules/services/apiClient.js'
+import { schedulePriceRefresh } from '@react/legacy-modules/services/runtimeConfig.js'
 
 // 旧的客户端直连管线（streamAssistantChat / classifyAssistantIntent / generateAssistantImage）
 // 已由服务端 runs 管线取代并删除：意图路由与生图统一走 /assistant/runs。
@@ -25,6 +26,7 @@ export async function fetchAssistantConfig(signal) {
       status: response.status,
     })
   }
+  schedulePriceRefresh(payload.data?.priceSchedule?.nextChangeAt)
   return payload.data
 }
 

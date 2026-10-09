@@ -10,11 +10,13 @@ import { EcommerceMaskEditor } from "../features/ecommerce/EcommerceMaskEditor.j
 import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
+import { PriceAdjustmentTag } from "../components/common/PriceAdjustmentTag.jsx";
 import { RegenerateIcon } from "../components/common/RegenerateIcon.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { PackageCheck } from "lucide-react";
 import { useModelSheetJobs } from "../features/model-sheet/useModelSheetJobs.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { useSitePriceRefresh } from "../hooks/useSitePriceRefresh.js";
 import { uploadAiInputFile } from "@react/legacy-modules/services/aiWallpaper.js";
 import { createLocalUpscaledImage } from "@react/legacy-modules/features/ai-wallpaper/services/localImageUpscale.js";
 import { withTransparentPngInstruction } from "@react/legacy-modules/features/ai-shared/transparentPng.js";
@@ -208,7 +210,7 @@ function SelectPopover({ value, options, label, onChange, model = false, light =
         {model ? <ModelCatalogIcon model={option.model} size="sm" /> : null}
         <span className="ratio-select__option-content"><span className="ratio-select__option-label">{option.label || option.value}</span></span>
         {model ? <ModelMaintenanceBadge model={option.model} /> : null}
-        {model && !isCatalogModelMaintenance(option.model) && option.creditCost != null && <span className={`model-point-price is-compact is-prominent${light ? " is-light" : ""}`}><strong><b>{option.creditCost}</b><span>积分/张</span></strong></span>}
+        {model && !isCatalogModelMaintenance(option.model) && option.creditCost != null && <span className={`model-point-price is-compact is-prominent${light ? " is-light" : ""}`}><strong><b>{option.creditCost}</b><span>积分/张</span></strong><PriceAdjustmentTag model={option.model} /></span>}
       </button>)}
     </div>, document.body)}
   </div>;
@@ -417,6 +419,8 @@ export function ModelSheetStudioView() {
     const timer = window.setInterval(update, 1000);
     return () => window.clearInterval(timer);
   }, [jobs.executionStartedAt, jobs.running]);
+
+  useSitePriceRefresh((config) => setModels(featureModels(config)));
 
   useEffect(() => {
     mountedRef.current = true;

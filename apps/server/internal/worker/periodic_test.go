@@ -11,7 +11,7 @@ func TestPeriodicConfigsUseClusterDeduplication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(configs) != 25 {
+	if len(configs) != 26 {
 		t.Fatalf("periodic config count = %d", len(configs))
 	}
 	for _, config := range configs {

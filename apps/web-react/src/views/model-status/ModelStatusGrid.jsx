@@ -13,6 +13,7 @@ import {
   formatSpeed,
   sortModels,
 } from "./modelStatusParts.jsx";
+import { PriceAdjustmentTag } from "../../components/common/PriceAdjustmentTag.jsx";
 
 /** Inline metric: "单轮耗时 19.9秒". */
 function Stat({ label, value, title }) {
@@ -124,6 +125,12 @@ function Card({ model }) {
           <span className="msg-cap">30 天单价</span>
           <span className="msg-card__price-now">
             <b>{formatPrice(model.price?.currentCents, model.price?.unit)}</b>
+            {model.price?.standardCents > model.price?.currentCents ? (
+              <del className="msg-card__price-was" title={model.price?.adjustment ? "调价前标准价" : "标准价"}>
+                {formatPrice(model.price.standardCents, model.price.unit)}
+              </del>
+            ) : null}
+            <PriceAdjustmentTag model={{ priceAdjustment: model.price?.adjustment }} />
             {change ? (
               <span
                 className={`msg-change${change.down ? " is-down" : " is-up"}`}
@@ -131,7 +138,7 @@ function Card({ model }) {
               >
                 {change.text}
               </span>
-            ) : (
+            ) : model.price?.adjustment ? null : (
               <span className="msg-cap">未调价</span>
             )}
           </span>

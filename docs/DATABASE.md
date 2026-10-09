@@ -284,6 +284,9 @@ platform_log_operations_enabled           true
 platform_log_user_enabled                 false
 platform_log_retention_days               7
 platform_log_max_mb                       256
+image_slot_failure_threshold              3
+image_slot_probe_interval_minutes         60
+image_slot_probe_daily_limit              48
 ```
 
 应用缺省值以 `internal/settings/settings.go` 为准；Agent 附加并发默认值在 `internal/store/user_concurrency.go` 中为全局 16、用户 3。后台保存通过 upsert 写入本表。增长奖励使用稳定来源 ID 的钱包账本防重复发放。非空 C2A 数据库配置覆盖环境变量；API Key 管理接口只回传掩码。
@@ -303,6 +306,18 @@ platform_log_max_mb                       256
 ### `operational_incidents`
 
 保存 Worker 每分钟评估的运行告警，包括稳定告警 key、`warning|critical` 级别、标题、摘要、出现次数、结构化指标、首次/最近发现时间和恢复时间。相同问题重复出现时更新原记录，不按分钟创建新行；指标恢复后自动从 `open` 转为 `resolved`。当前规则覆盖任务排队延迟、近期任务失败率、Redis/Asynq 队列不可用或暂停、队列持续积压以及对象清理积压。管理端统计接口只返回当前 open 告警。
+
+生图分辨率槽位也写入本表，key 为 `image_slot:<模型ID>:<分辨率>`：切到备用模型为 `warning`，全部不可用（或手动模式下当前模型故障）为 `critical`。这类告警不在 Worker 每分钟评估的规则里，由槽位切换时写入和解除。
+
+### `image_slot_member_health` / `image_slot_states` / `image_slot_events`
+
+迁移 `00199`（2026-10-08 工作区，未提交）。生图分辨率槽位的运行状态，配置本身在 `app_settings.model_dispatch_config` 的模型 `resolutionSlots` 里：
+
+- `image_slot_member_health`：主键（模型 ID，分辨率）。`healthy|down` 状态、连续失败次数、最近失败时间与原因、最近成功、故障开始时间、最近检测时间/结果/说明。连续失败达到 `image_slot_failure_threshold` 置为 `down`，成功一次清零并恢复。
+- `image_slot_states`：主键（公开模型 ID，分辨率）。当前在用的成员、是否全部不可用、手动模式下指定的成员、上次切换时间（只有真正切换过才有值）。
+- `image_slot_events`：切换、判定故障、恢复、检测、手动操作记录；按 `created_at` 统计 24 小时检测次数（部分索引 `kind='probe'`），保留 30 天。
+
+变更都在 `pg_advisory_xact_lock(hashtext('image_resolution_slots'))` 下进行，避免 API 与 Worker 同时切换。规则见 [生图分档计费与分辨率槽位](IMAGE_TIER_PRICING_AND_SLOTS.md)。
 
 ## 成本利润与开放平台
 

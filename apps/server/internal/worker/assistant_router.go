@@ -233,7 +233,11 @@ func (w *Worker) claimAssistantRun(
 		if err != nil {
 			return err
 		}
-		selected, ok := selectExecutionCandidateExcluding(candidates, running, excluded, units)
+		pool := candidates
+		if image {
+			pool = slotPriorityCandidates(candidates, assistantParamStrings(queued.Params, "_imageSlotModelIds"), excluded)
+		}
+		selected, ok := selectExecutionCandidateExcluding(pool, running, excluded, units)
 		if resumeKnown {
 			selected, ok = &candidates[0], true
 			key := modelconfig.ExecutionRouteKey(selected.Provider)
@@ -268,6 +272,12 @@ func (w *Worker) claimAssistantRun(
 			route[prefix+"Model"] = selected.Model.UpstreamModel
 			route[prefix+"ModelDisplayName"] = selected.Model.Name
 			route["_modelDisplayName"] = selected.Model.Name
+		}
+		if resolution := assistantParamString(queued.Params, "_imageSlotResolution", ""); image && resolution != "" {
+			// Profit accounting charges the slot member that actually runs.
+			route["_imageUpstreamUnitCostCents"] = modelconfig.ImageTierUpstreamCost(selected.Model, modelconfig.ImageTier{
+				Resolution: resolution, Quality: modelconfig.ImageBillingTier(selected.Model, queued.Params).Quality,
+			})
 		}
 		updated, err := store.SetQueuedAssistantRunExecutionRoute(ctx, tx, runID, route)
 		if err != nil || !updated {
@@ -337,6 +347,14 @@ func (w *Worker) retryAssistantProviderRoute(
 	if run.Mode == "image" {
 		retryable = c2a.IsRetryableError(executionErr) || crun.IsRetryableError(executionErr) ||
 			errors.Is(executionErr, context.DeadlineExceeded)
+		if assistantParamString(run.Params, "_imageSlotResolution", "") != "" {
+			// A slot member that refuses outright (bad key, no balance) hands
+			// the run to the next member, and both kinds count against it.
+			retryable = retryable || upstreamRejectsMember(executionErr)
+			if retryable {
+				w.recordAssistantSlotOutcome(ctx, run, false, sanitizeUpstreamMessage(executionErr.Error()))
+			}
+		}
 	} else if run.Mode != "chat" && run.Mode != "agent" {
 		return false, nil
 	}

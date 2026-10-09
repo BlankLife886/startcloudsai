@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { DotLoading } from "antd-mobile";
 import { AddOutline, CloseOutline } from "antd-mobile-icons";
+import { PriceAdjustmentTag } from "@react/components/common/PriceAdjustmentTag.jsx";
 import { qualityLabel, ratioLabel } from "./workGroups.js";
 
 const VISIBLE_REFERENCES = 4;
@@ -73,6 +74,7 @@ export function Composer({
               {item}
             </span>
           ))}
+          <PriceAdjustmentTag model={model} className="m-dock-tag" />
         </span>
         <TuneIcon />
       </button>

@@ -381,7 +381,9 @@ func (s Service) generateLocked(ctx context.Context, tx pgx.Tx, set *store.Comme
 			return result, fmt.Errorf("%w: %s", ErrNeedsConfirmation, BudgetMessage(user, set, result.TotalCents))
 		}
 	case store.CommerceApprovedByUser:
-		if in.ExpectedTotalCents != nil && *in.ExpectedTotalCents != result.TotalCents {
+		// Dynamic pricing can move the price between the card and the click;
+		// a lower price goes through, a higher one needs a new confirmation.
+		if in.ExpectedTotalCents != nil && result.TotalCents > *in.ExpectedTotalCents {
 			return result, fmt.Errorf("%w: 价格已更新为 %d 积分，请确认后再生成", ErrPriceChanged, result.TotalCents)
 		}
 	default:

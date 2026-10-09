@@ -35,6 +35,8 @@ type Step struct {
 	Detail    string `json:"detail,omitempty"`
 	// Image is the generated image, base64 encoded (image steps only).
 	Image string `json:"image,omitempty"`
+	// Pending marks an image step the upstream accepted as an async task.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // Result is the outcome for one model.
@@ -207,6 +209,7 @@ func Image(ctx context.Context, selection *modelconfig.Selection, allowPrivate b
 		case err != nil:
 			step.Detail = Truncate(err.Error(), 300)
 		case pending:
+			step.Pending = true
 			step.Detail = "上游返回异步任务（测试只支持同步出图）"
 		case len(images) == 0 || images[0] == "":
 			step.Detail = "没有返回图片"

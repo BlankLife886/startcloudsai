@@ -20,7 +20,9 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
 	"github.com/BlankLife886/startcloudsai/server/internal/executionconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/growth"
+	"github.com/BlankLife886/startcloudsai/server/internal/imageslots"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/pricerules"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/trialfeature"
@@ -38,6 +40,12 @@ func stringParam(params map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// stringParamRaw is stringParam without lower-casing (resolution tiers are upper case).
+func stringParamRaw(params map[string]any, key string) string {
+	value, _ := params[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func mediaToolInput(params map[string]any) (map[string]any, error) {
@@ -256,7 +264,44 @@ func resolveSelectionPrice(cfg modelconfig.Config, workspace string, model model
 			numericParam(toolInput, "scale_factor"),
 		)
 	}
+	if modelconfig.HasImagePricing(model) {
+		return modelconfig.ResolveImageTierPrice(model, modelconfig.ImageBillingTier(model, params))
+	}
 	return modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
+}
+
+// selectionUpstreamCost is the provider cost of one unit of the request.
+func selectionUpstreamCost(model modelconfig.Model, params map[string]any) int64 {
+	if modelconfig.HasImagePricing(model) {
+		return modelconfig.ImageTierUpstreamCost(model, modelconfig.ImageBillingTier(model, params))
+	}
+	toolInput, _ := params["toolInput"].(map[string]any)
+	return modelconfig.ResolveUpstreamCost(model, int(numericParam(params, "_inputImageLongEdge")), numericParam(toolInput, "scale_factor"))
+}
+
+// billingTier is the matrix cell a request is priced at; empty for flat models.
+func billingTier(model modelconfig.Model, params map[string]any) modelconfig.ImageTier {
+	if !modelconfig.HasImagePricing(model) {
+		return modelconfig.ImageTier{}
+	}
+	return modelconfig.ImageBillingTier(model, params)
+}
+
+// applyResolutionSlot routes a task on a slotted resolution to the members
+// whose health allows it, in failover order, or turns it away when none can.
+func applyResolutionSlot(ctx context.Context, q store.Q, model modelconfig.Model, params map[string]any) error {
+	resolution := modelconfig.ImageBillingTier(model, params).Resolution
+	plan, err := imageslots.PlanFor(ctx, q, model, resolution)
+	if err != nil || !plan.Configured {
+		return err
+	}
+	if plan.Unavailable {
+		return apperr.E("resolution_unavailable", fmt.Sprintf("%s 分辨率的生图服务暂时不可用，请稍后再试或换一个分辨率", resolution), 503)
+	}
+	params["_slotModelId"] = model.ID
+	params["_slotResolution"] = resolution
+	params["_slotModelIds"] = plan.Candidates
+	return nil
 }
 
 // QuoteSelectedImage validates and prices an image request for a model the
@@ -304,7 +349,8 @@ func quoteSelection(ctx context.Context, q store.Q, cfg modelconfig.Config, work
 	if len(users) > 0 {
 		feature, _ := trialfeature.ForTask(in.Type, in.Params)
 		toolInput, _ := in.Params["toolInput"].(map[string]any)
-		decision, err := contractpricing.Resolve(ctx, q, contractpricing.Request{UserID: users[0], Feature: feature.Key, Workspace: workspace, ModelID: selection.Model.ID, Channel: store.BillingChannel(ctx), PublicUnitPoints: quote.UnitPriceCents, Count: int64(in.Count), InputLongEdge: int(numericParam(in.Params, "_inputImageLongEdge")), ScaleFactor: numericParam(toolInput, "scale_factor")})
+		tier := billingTier(selection.Model, in.Params)
+		decision, err := contractpricing.Resolve(ctx, q, contractpricing.Request{UserID: users[0], Feature: feature.Key, Workspace: workspace, ModelID: selection.Model.ID, Channel: store.BillingChannel(ctx), PublicUnitPoints: quote.UnitPriceCents, Count: int64(in.Count), InputLongEdge: int(numericParam(in.Params, "_inputImageLongEdge")), ScaleFactor: numericParam(toolInput, "scale_factor"), Resolution: tier.Resolution, Quality: tier.Quality, Site: publicUnit == nil})
 		if err != nil {
 			return nil, err
 		}
@@ -331,7 +377,7 @@ func QuoteTaskPrice(ctx context.Context, q store.Q, in CreateInput, users ...uui
 		StandardUnitPriceCents: unitPrice, UnitPriceCents: unitPrice,
 		Count: in.Count, TotalPriceCents: unitPrice * int64(in.Count),
 	}
-	cfg, err := modelconfig.Load(ctx, q)
+	cfg, err := pricerules.LoadSiteConfig(ctx, q, store.BillingTime(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -612,7 +658,14 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 			params[key] = value
 		}
 		params["_serviceProvider"] = provider
-		modelCfg, err := modelconfig.Load(ctx, tx)
+		// Site tasks are priced with the dynamic-pricing rules in force at
+		// submission (Beijing time); developer API tasks keep the plain price.
+		var modelCfg modelconfig.Config
+		if developerAPI {
+			modelCfg, err = modelconfig.Load(ctx, tx)
+		} else {
+			modelCfg, err = pricerules.LoadSiteConfig(ctx, tx, store.BillingTime(ctx))
+		}
 		if err != nil {
 			return err
 		}
@@ -725,13 +778,16 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 			provider = selection.Provider.Adapter
 			model = selection.Model.UpstreamModel
 			modelEffectivePrice := modelconfig.EffectivePrice(selection.Model)
+			if tier := billingTier(selection.Model, params); tier.Resolution != "" {
+				// The upstream gets the quality it is billed at: auto would let
+				// it pick a quality whose cost the matrix cannot know.
+				params["quality"] = tier.Quality
+				params["_billingResolution"] = tier.Resolution
+				params["_billingQuality"] = tier.Quality
+			}
 			resolvedPrice := resolveSelectionPrice(modelCfg, workspace, selection.Model, params)
 			unitPrice = resolvedPrice.EffectiveCents
-			upstreamUnitCost := modelconfig.ResolveUpstreamCost(
-				selection.Model,
-				int(numericParam(params, "_inputImageLongEdge")),
-				numericParam(func() map[string]any { value, _ := params["toolInput"].(map[string]any); return value }(), "scale_factor"),
-			)
+			upstreamUnitCost := selectionUpstreamCost(selection.Model, params)
 			if unitPrice == 0 && !selection.Model.AllowZeroPrice {
 				return apperr.E("model_zero_price_blocked", "模型价格尚未配置，已阻止零积分调用", 503)
 			}
@@ -763,6 +819,11 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 			params["_modelEffectivePriceCents"] = modelEffectivePrice
 			params["_upstreamUnitCostCents"] = upstreamUnitCost
 			params["_pricingWorkspace"] = workspace
+			if selection.Model.Kind == modelconfig.ModelKindImage {
+				if err := applyResolutionSlot(ctx, tx, selection.Model, params); err != nil {
+					return err
+				}
+			}
 		} else if isMediaTool {
 			return apperr.E("validation_error", "所选媒体工具尚未配置、未开放或已下线", 422)
 		} else if isBackgroundRemove {
@@ -772,7 +833,7 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 			return apperr.E("validation_error", "所选图片模型未分配给当前页面，请刷新模型列表后重试", 422)
 		}
 		toolInput, _ := params["toolInput"].(map[string]any)
-		decision, err := contractpricing.Resolve(ctx, tx, contractpricing.Request{UserID: userID, Feature: taskFeature.Key, Workspace: workspace, ModelID: stringParam(params, "_modelConfigId"), Channel: store.BillingChannel(ctx), PublicUnitPoints: unitPrice, Count: int64(in.Count), InputLongEdge: int(numericParam(params, "_inputImageLongEdge")), ScaleFactor: numericParam(toolInput, "scale_factor")})
+		decision, err := contractpricing.Resolve(ctx, tx, contractpricing.Request{UserID: userID, Feature: taskFeature.Key, Workspace: workspace, ModelID: stringParam(params, "_modelConfigId"), Channel: store.BillingChannel(ctx), PublicUnitPoints: unitPrice, Count: int64(in.Count), InputLongEdge: int(numericParam(params, "_inputImageLongEdge")), ScaleFactor: numericParam(toolInput, "scale_factor"), Resolution: stringParamRaw(params, "_billingResolution"), Quality: stringParamRaw(params, "_billingQuality"), Site: !developerAPI})
 		if err != nil {
 			return err
 		}
@@ -781,7 +842,10 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 		params["_billingUnitPriceCents"] = unitPrice
 		params["_unitPriceCents"] = unitPrice
 		costCents := unitPrice * int64(in.Count)
-		if in.ExpectedUnitPriceCents != nil && *in.ExpectedUnitPriceCents != unitPrice && !(decision.Source == "subscription_contract" && unitPrice < *in.ExpectedUnitPriceCents) {
+		// The price is the one in force at submission. A lower price than the
+		// user confirmed (a discount window started, a subscriber discount)
+		// goes through; a higher one needs a fresh confirmation.
+		if in.ExpectedUnitPriceCents != nil && unitPrice > *in.ExpectedUnitPriceCents {
 			return apperr.E("price_changed", "任务价格已更新，请确认最新费用后重试", 409)
 		}
 

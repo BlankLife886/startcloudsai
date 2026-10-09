@@ -42,13 +42,15 @@ type Snapshot struct {
 // same-name/price model in another provider must also be authorized in the
 // requesting workspace before it can join the immutable candidate set.
 func AuthorizedCandidates(cfg modelconfig.Config, workspace, providerID, modelID, routeID string, across bool, expectedPrice int64) []modelconfig.Selection {
-	candidates := modelconfig.ExecutionCandidatesRoute(cfg, providerID, modelID, routeID)
-	if across {
-		candidates = modelconfig.ExecutionCandidatesRouteAcrossProviders(cfg, providerID, modelID, routeID, expectedPrice)
-	}
 	selected, found := modelconfig.FindExecutionRoute(cfg, providerID, modelID, "")
 	if !found {
 		return nil
+	}
+	candidates := modelconfig.ExecutionCandidatesRoute(cfg, providerID, modelID, routeID)
+	// Tiered and slotted models name their failover explicitly; matching by
+	// name and one flat price would compare the wrong thing.
+	if across && !modelconfig.HasImagePricing(selected.Model) && len(selected.Model.ResolutionSlots) == 0 {
+		candidates = modelconfig.ExecutionCandidatesRouteAcrossProviders(cfg, providerID, modelID, routeID, expectedPrice)
 	}
 	allowed := map[string]bool{}
 	if workspace != "" {
@@ -74,6 +76,24 @@ func AuthorizedCandidates(cfg modelconfig.Config, workspace, providerID, modelID
 func text(params map[string]any, key string) string {
 	value, _ := params[key].(string)
 	return strings.TrimSpace(value)
+}
+
+// stringList reads a string list param, whether built in memory or decoded
+// from JSON.
+func stringList(params map[string]any, key string) []string {
+	switch values := params[key].(type) {
+	case []string:
+		return values
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+				out = append(out, strings.TrimSpace(text))
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func price(params map[string]any, keys ...string) (int64, bool) {
@@ -127,11 +147,33 @@ func capture(ctx context.Context, q store.Q, source string, id uuid.UUID, cfg mo
 			}
 		}
 	}
-	if source == Task {
+	// A resolution slot runs on its members in failover order; each member
+	// contributes all of its routes.
+	addSlotMembers := func(slot string, members []string) {
+		for _, memberID := range members {
+			for _, model := range cfg.Models {
+				if model.ID != memberID || !model.Enabled || !model.Available() {
+					continue
+				}
+				for _, candidate := range modelconfig.ExecutionCandidatesRoute(cfg, model.ProviderID, model.ID, "") {
+					if accept == nil || accept(slot, candidate) {
+						snapshot.Candidates = append(snapshot.Candidates, Candidate{Slot: slot, ProviderID: candidate.Provider.ID, ModelID: candidate.Model.ID, RouteID: candidate.Provider.RouteID})
+					}
+				}
+			}
+		}
+	}
+	if members := stringList(params, "_slotModelIds"); source == Task && len(members) > 0 {
+		addSlotMembers("task", members)
+	} else if source == Task {
 		add("task", "_", "_modelEffectivePriceCents", "_unitPriceCents")
 	} else {
 		add("chat", "_chat", "_chatModelEffectivePriceCents", "_agentChatUnitPriceCents", "_chatCostCents")
-		add("image", "_image", "_modelEffectivePriceCents", "_imageModelEffectivePriceCents", "_billingUnitPriceCents", "_imageCostCents")
+		if members := stringList(params, "_imageSlotModelIds"); len(members) > 0 {
+			addSlotMembers("image", members)
+		} else {
+			add("image", "_image", "_modelEffectivePriceCents", "_imageModelEffectivePriceCents", "_billingUnitPriceCents", "_imageCostCents")
+		}
 		if provider, ok := modelconfig.EditableFileProvider(cfg); ok {
 			snapshot.Candidates = append(snapshot.Candidates, Candidate{Slot: "editable", ProviderID: provider.ID, RouteID: provider.RouteID})
 		}

@@ -54,6 +54,9 @@ export const T2I_QUALITY_OPTIONS = [
   { value: 'low', label: '低', icon: 'bi-speedometer' },
   { value: 'medium', label: '中', icon: 'bi-sliders' },
   { value: 'high', label: '高', icon: 'bi-stars' },
+  { value: 'xhigh', label: '超高', icon: 'bi-stars' },
+  { value: 'max', label: '最高', icon: 'bi-gem' },
+  { value: 'auto', label: '自动', icon: 'bi-magic' },
 ]
 
 export const T2I_COUNT_OPTIONS = [

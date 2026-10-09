@@ -21,19 +21,28 @@ type ImagePrice struct {
 // 零价：价格没配好就调用，等于白送上游成本，除非模型明确允许零价。
 // 倒挂：售价低于上游成本，每调一次都在亏钱，除非模型明确允许做引流品。
 // 这两道闸必须在扣费之前，放过去之后再发现就只能事后补账了。
-func GuardImageModel(cfg modelconfig.Config, workspace string, selection *modelconfig.Selection, count int) (ImagePrice, error) {
+//
+// tierParams 是本次出图的分辨率、质量（以及精确尺寸）参数；分档定价的模型按对应档位
+// 取价和成本，传 nil 或模型未分档时按模型单价。
+func GuardImageModel(cfg modelconfig.Config, workspace string, selection *modelconfig.Selection, count int, tierParams map[string]any) (ImagePrice, error) {
 	if selection == nil {
 		return ImagePrice{}, nil
 	}
 	if count < 1 {
 		count = 1
 	}
-	total := modelconfig.EffectiveWorkspacePrice(cfg, workspace, selection.Model) * int64(count)
-	unit := total / int64(count)
+	unit := modelconfig.EffectiveWorkspacePrice(cfg, workspace, selection.Model)
+	upstreamCost := selection.Model.UpstreamCostCents
+	if tierParams != nil && modelconfig.HasImagePricing(selection.Model) {
+		tier := modelconfig.ImageBillingTier(selection.Model, tierParams)
+		unit = modelconfig.ResolveImageTierPrice(selection.Model, tier).EffectiveCents
+		upstreamCost = modelconfig.ImageTierUpstreamCost(selection.Model, tier)
+	}
+	total := unit * int64(count)
 	if unit == 0 && !selection.Model.AllowZeroPrice {
 		return ImagePrice{}, apperr.E("model_zero_price_blocked", "图片模型价格尚未配置，已阻止零积分调用", 503)
 	}
-	if unit < selection.Model.UpstreamCostCents && !selection.Model.AllowLossLeader {
+	if unit < upstreamCost && !selection.Model.AllowLossLeader {
 		return ImagePrice{}, apperr.E("model_price_inverted", "图片模型价格低于上游成本，已暂停调用，请联系管理员", 503)
 	}
 	return ImagePrice{Total: total, Unit: unit}, nil

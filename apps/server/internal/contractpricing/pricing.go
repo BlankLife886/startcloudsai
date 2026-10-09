@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/pricerules"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/google/uuid"
 )
@@ -25,7 +26,7 @@ func Capture(ctx context.Context, q store.Q, policy store.SubscriptionPolicy, re
 		if !m.Public || !m.Enabled {
 			continue
 		}
-		item := modelconfig.Model{ID: m.ID, Name: m.Name, Kind: m.Kind, Tool: m.Tool, UpstreamModel: m.UpstreamModel, PriceCents: m.PriceCents, DiscountPriceCents: m.DiscountPriceCents, ReasoningPricing: m.ReasoningPricing, SupportedReasoningEfforts: m.SupportedReasoningEfforts}
+		item := modelconfig.Model{ID: m.ID, Name: m.Name, Kind: m.Kind, Tool: m.Tool, UpstreamModel: m.UpstreamModel, PriceCents: m.PriceCents, DiscountPriceCents: m.DiscountPriceCents, ReasoningPricing: m.ReasoningPricing, SupportedReasoningEfforts: m.SupportedReasoningEfforts, ImagePricing: modelconfig.PublicImagePricing(m)}
 		if m.ImageUpscalePricing != nil {
 			p := *m.ImageUpscalePricing
 			p.HighUpstreamCostCents = 0
@@ -65,9 +66,58 @@ type Request struct {
 	PublicUnitPoints, Count                                               int64
 	InputLongEdge                                                         int
 	ScaleFactor                                                           float64
+	// Resolution and Quality name the price-matrix cell of a tiered image model.
+	Resolution, Quality string
+	// Site marks a request from the site (tasks, AI assistant); only those get
+	// the subscriber discount. Developer API quotes leave it false.
+	Site bool
 }
 
+// Resolve prices one request for a user: the subscription price lock when it
+// applies, then the subscriber discount for site requests.
 func Resolve(ctx context.Context, q store.Q, in Request) (*store.BillingDecision, error) {
+	d, err := resolveContract(ctx, q, in)
+	if err != nil || !in.Site || d.SubscriptionID == nil {
+		return d, err
+	}
+	if err := applySubscriberDiscount(ctx, q, in, d); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// applySubscriberDiscount takes the admin-set subscriber discount off the
+// unit price, keeping the model's zero-price and upstream-cost floors.
+func applySubscriberDiscount(ctx context.Context, q store.Q, in Request, d *store.BillingDecision) error {
+	schedule, err := pricerules.Load(ctx, q)
+	if err != nil || !schedule.Subscriber.Enabled {
+		return err
+	}
+	if _, listed := schedule.Subscriber.Models[in.ModelID]; !listed {
+		return nil
+	}
+	cfg, err := modelconfig.Load(ctx, q)
+	if err != nil {
+		return err
+	}
+	for _, model := range cfg.Models {
+		if model.ID != in.ModelID {
+			continue
+		}
+		cost := modelconfig.ResolveUpstreamCost(model, in.InputLongEdge, in.ScaleFactor)
+		if in.Resolution != "" && modelconfig.HasImagePricing(model) {
+			cost = modelconfig.ImageTierUpstreamCost(model, modelconfig.ImageTier{Resolution: in.Resolution, Quality: in.Quality})
+		}
+		if unit := pricerules.SubscriberPrice(schedule, model, d.UnitPoints, cost); unit < d.UnitPoints {
+			d.SubscriberDiscountPoints = d.UnitPoints - unit
+			d.UnitPoints = unit
+		}
+		return nil
+	}
+	return nil
+}
+
+func resolveContract(ctx context.Context, q store.Q, in Request) (*store.BillingDecision, error) {
 	d := &store.BillingDecision{Source: "public", PublicUnitPoints: in.PublicUnitPoints, UnitPoints: in.PublicUnitPoints, Count: in.Count}
 	if in.UserID == uuid.Nil {
 		return d, nil
@@ -112,11 +162,20 @@ func Resolve(ctx context.Context, q store.Q, in Request) (*store.BillingDecision
 	if model.Tool == modelconfig.ImageToolUpscale {
 		price = modelconfig.ResolveImageUpscalePrice(*model, in.InputLongEdge, in.ScaleFactor)
 	}
+	if in.Resolution != "" && modelconfig.HasImagePricing(*model) {
+		price = modelconfig.ResolveImageTierPrice(*model, modelconfig.ImageTier{Resolution: in.Resolution, Quality: in.Quality})
+	}
 	unit := price.EffectiveCents
 	if in.ReasoningScope != "" && !price.Overridden {
 		unit = modelconfig.ResolveReasoningPrice(*model, in.ReasoningEffort, in.ReasoningScope).EffectiveCents
 	}
 	if unit < 0 || in.Count <= 0 || unit > 1000000000/in.Count {
+		return d, nil
+	}
+	if unit > in.PublicUnitPoints {
+		// A price cut (or a dynamic-pricing discount) took the public price
+		// below the locked one; the user pays the lower public price.
+		d.Reason = "当前价格低于锁定价格，采用当前价格"
 		return d, nil
 	}
 	var normal, subAvailable, eligible int64

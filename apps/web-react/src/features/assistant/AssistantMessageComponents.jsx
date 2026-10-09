@@ -23,6 +23,7 @@ import "./assistant-reply-extras.css";
 import { downloadDiagram, linkMarkdownCitations, markdownOutline, markdownTableClipboard, openDiagramViewer, renderMermaidDiagrams, sortMarkdownTable, toggleDiagramSource } from "./assistantMarkdownEnhance.js";
 import { promptNeedsRecentVisual } from "./domain/visualContext.js";
 import { assistantImageBatchLimit } from "./domain/assistantImageLimits.js";
+import { resolveModelTierPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import {
   clampImageCount,
   getModelAspectRatiosForResolution,
@@ -923,8 +924,8 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
   const individualReferences = !independentPlan && referenceMode === "individual" && referenceImages.length > 0;
   const proposalCount = independentPlan ? planItems.length : individualReferences ? referenceImages.length : frozenProposal ? Math.max(1, Number(proposal.count) || 1) : clampImageCount(proposal.count || 1, selectedModel, 1);
   const busy = Boolean(proposal.submitting);
-  // 按方案的模型单价 × 张数预估；余额读得到才比较，读不到就只显示预估。
-  const costPoints = Math.max(0, Number(selectedModel?.pricePoints || 0)) * proposalCount;
+  // 按方案的模型单价（分档模型取方案的分辨率和质量档）× 张数预估；余额读得到才比较，读不到就只显示预估。
+  const costPoints = Math.max(0, Number(resolveModelTierPointPricing(selectedModel || {}, { resolution: proposal.resolution, quality: proposal.quality }).effective || 0)) * proposalCount;
   const shortPoints = walletBalance !== null && costPoints > 0 ? Math.max(0, costPoints - walletBalance) : 0;
   const toggleMenu = (id) => setOpenMenu((current) => current === id ? "" : id);
   const promptMode = proposal.promptMode === "faithful" ? "faithful" : "enhanced";
@@ -1447,7 +1448,7 @@ function AssistantMessageStatus({ message, status, contextUsage, expanded, hideE
   const activity = pending ? [...toolItems].reverse().find((step) => step.status === "running")?.label || "" : "";
   const metrics = [];
   if (usage?.outputTokens) metrics.push({ key: "out", title: "输出 token", text: `输出 ${formatContextTokens(usage.outputTokens)}` });
-  if (usage?.inputTokens) metrics.push({ key: "in", title: "输入 token", text: `输入 ${formatContextTokens(usage.inputTokens)}` });
+  if (usage?.inputTokens) metrics.push({ key: "in", title: usage.cachedInputTokens ? `输入 token，其中 ${usage.cachedInputTokens} 命中缓存（按折扣计费）` : "输入 token", text: `输入 ${formatContextTokens(usage.inputTokens)}${usage.cachedInputTokens ? `（缓存 ${formatContextTokens(usage.cachedInputTokens)}）` : ""}` });
   if (usage?.firstTokenMs) metrics.push({ key: "ttft", title: "首字耗时", text: `首字 ${formatDurationMs(usage.firstTokenMs)}` });
 
   return (
