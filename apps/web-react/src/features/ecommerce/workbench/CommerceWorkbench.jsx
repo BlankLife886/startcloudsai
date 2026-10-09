@@ -616,7 +616,8 @@ export function CommerceWorkbench({
   const displayUrl = resultUrl || displayShot?.url || "";
   const stageDisplayUrl =
     (history || []).find((row) => row.url === displayUrl)?.display || "";
-  const thumbs = shots.length > 1 ? shots : [];
+  // 单张和多张用同一套布局：缩略列始终显示（单张时只有 01），不再切换成另一种结构
+  const thumbs = shots.length ? shots : [];
   const hasImage = Boolean(displayUrl) && !running && !(failed && !displayUrl);
   const hasRequired = slots
     .filter((slot) => slot.required)

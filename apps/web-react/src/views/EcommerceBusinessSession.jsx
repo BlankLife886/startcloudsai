@@ -232,6 +232,7 @@ import {
   STYLE_REFERENCE_PROMPT,
   STYLE_REFERENCE_ROLE,
   WORKBENCH_NOTE_MAX,
+  WORKBENCH_QUALITIES,
   WORKBENCH_RESOLUTIONS,
   workbenchPresetFields,
 } from "../features/ecommerce/workbench/workbenchPresets.js";
@@ -1351,6 +1352,7 @@ export function EcommerceBusinessSession({
   const [workbenchNote, setWorkbenchNote] = useState("");
   const [presetValues, setPresetValues] = useState({});
   const [resolution, setResolution] = useState("2K");
+  const [quality, setQuality] = useState("");
   const [styleSlot, setStyleSlot] = useState(null);
   const [textStable, setTextStable] = useState(true);
   // ---------- 模型能力：画幅 / 清晰度 / 参考图上限一律以后台模型配置为准 ----------
@@ -1374,6 +1376,25 @@ export function EcommerceBusinessSession({
     : workbenchResolutionOptions.includes("2K")
       ? "2K"
       : workbenchResolutionOptions[0] || "";
+  // 质量同样只给模型勾选过的档位；默认用模型的默认质量，没有时取中质量
+  const workbenchQualityOptions = useMemo(() => {
+    if (!isWorkbenchMode(mode.id) && !isDetailMode(mode.id)) return [];
+    return WORKBENCH_QUALITIES.filter((item) =>
+      modelCapabilities.qualities.includes(item.id),
+    );
+  }, [mode.id, modelCapabilities]);
+  const workbenchQuality = (() => {
+    const ids = workbenchQualityOptions.map((item) => item.id);
+    if (ids.includes(quality)) return quality;
+    const preferred = String(selectedImageModel?.defaultQuality || "").toLowerCase();
+    if (ids.includes(preferred)) return preferred;
+    return ids.includes("medium") ? "medium" : ids[0] || "";
+  })();
+  // 「出图数量」上限跟随模型（后台配置的单次最多张数），没有配置时沿用模块默认
+  const workbenchMaxCount = Math.max(
+    1,
+    Number(selectedImageModel?.maxImages) || mode.maxCount || 4,
+  );
   // 当前清晰度下模型支持的画幅；模型还没加载时不过滤
   const modelRatioSet = useMemo(
     () =>
@@ -1477,6 +1498,7 @@ export function EcommerceBusinessSession({
         workbenchNote,
         presetValues,
         resolution,
+        quality,
         textStable,
         selectedModules,
         detailCustomDirections,
@@ -1526,6 +1548,7 @@ export function EcommerceBusinessSession({
               shadow: setShadow,
               workbenchNote: setWorkbenchNote,
               resolution: setResolution,
+              quality: setQuality,
               aplusAsin: setAplusAsin,
               aplusCompetitorAsin: setAplusCompetitorAsin,
               aplusCategoryId: setAplusCategoryId,
@@ -2851,9 +2874,12 @@ export function EcommerceBusinessSession({
   const variantBlueprints = useMemo(
     () =>
       workbenchSpecById(mode.id)?.packKind === "variants"
-        ? expandVariantBlueprints(ecommerceShotBlueprints(mode.id), requestedCount)
+        ? expandVariantBlueprints(
+            ecommerceShotBlueprints(mode.id),
+            Math.min(requestedCount, workbenchMaxCount),
+          )
         : null,
-    [mode.id, requestedCount],
+    [mode.id, requestedCount, workbenchMaxCount],
   );
   const selectedModuleDetails = useMemo(
     () => supportedEcommerceModules(selectedModules, detailCustomDirections),
@@ -3154,6 +3180,7 @@ export function EcommerceBusinessSession({
           .filter(Boolean)
           .join("\n");
   const baseGenerationPlan = buildEcommerceGenerationPlan({
+    ...(variantBlueprints ? { maxCount: workbenchMaxCount } : {}),
     modeId: mode.id,
     count: outputCount,
     selectedModules: selectedModuleDetails.map((item) => item.value),
@@ -5168,6 +5195,7 @@ export function EcommerceBusinessSession({
           kindVariant: mode.id,
           aspectRatio: item.aspectRatio || aspectRatio,
           ...(workbenchResolution ? { resolution: workbenchResolution } : {}),
+          ...(workbenchQuality ? { quality: workbenchQuality } : {}),
         })),
       });
       const value = Number(quote?.unitPriceCents);
@@ -5586,6 +5614,7 @@ export function EcommerceBusinessSession({
             platform: `${platform} · ${market} · ${language}`,
             batchIndex: index,
             ...(workbenchResolution ? { resolution: workbenchResolution } : {}),
+            ...(workbenchQuality ? { quality: workbenchQuality } : {}),
             ...(item.outputSize ? { outputSize: item.outputSize } : {}),
             ...(item.aplusSpec ? { aplusSpec: item.aplusSpec } : {}),
             ...(accessorySpecBase
@@ -6899,6 +6928,13 @@ export function EcommerceBusinessSession({
                     onChange: setResolution,
                   }
                 : null,
+              quality: workbenchQualityOptions.length
+                ? {
+                    value: workbenchQuality,
+                    options: workbenchQualityOptions,
+                    onChange: setQuality,
+                  }
+                : null,
             }}
             shoot={
               isShootMode(mode.id)
@@ -7549,14 +7585,17 @@ export function EcommerceBusinessSession({
               variants={
                 workbenchSpec.packKind === "variants"
                   ? {
-                      value: Math.min(requestedCount, mode.maxCount || 4),
+                      value: Math.min(requestedCount, workbenchMaxCount),
                       min: 1,
-                      max: mode.maxCount || 4,
+                      max: workbenchMaxCount,
                       onStep: (delta) =>
                         setRequestedCount((current) =>
                           Math.max(
                             1,
-                            Math.min(mode.maxCount || 4, (Number(current) || 1) + delta),
+                            Math.min(
+                              workbenchMaxCount,
+                              Math.min(Number(current) || 1, workbenchMaxCount) + delta,
+                            ),
                           ),
                         ),
                     }

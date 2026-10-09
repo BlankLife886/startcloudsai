@@ -1877,7 +1877,8 @@ to {
   right: -1px;
   width: max-content;
   min-width: 210px;
-  max-width: min(300px, calc(100vw - 24px));
+  /* 价格旁可能有「限时涨 100%」标签，留够名称的宽度。 */
+  max-width: min(380px, calc(100vw - 24px));
   padding: 5px;
   border: 1px solid #44394f;
   border-radius: 8px;
@@ -1890,7 +1891,8 @@ to {
   width: 100%;
   min-height: 36px;
   display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) auto;
+  /* 勾选 · 模型图标 · 名称 · 维护角标（可无）· 价格 */
+  grid-template-columns: 14px auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   padding: 7px 9px;
@@ -1913,6 +1915,7 @@ to {
 .ga-model-menu button > span {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ga-model-menu button > small {
   color: #747c81;

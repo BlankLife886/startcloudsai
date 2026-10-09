@@ -123,6 +123,17 @@ html.color-scheme-dark .commerce-select-menu .sc-model-maintenance-badge,
 
 .commerce-select-trigger:active:not(:disabled) { transform: scale(.985); }
 
+/* 菜单挂在 body 上，拿不到 .commerce-studio 里的主题变量，这里自带一份（与页面一致）。 */
+.commerce-select-menu {
+  --commerce-accent: #6d5cff;
+  --commerce-line: rgb(40 32 72 / 9%);
+}
+
+html.color-scheme-dark .commerce-select-menu {
+  --commerce-accent: #8b7bff;
+  --commerce-line: rgb(255 255 255 / 10%);
+}
+
 .commerce-select-menu {
   padding: 8px;
   border-radius: 16px;
@@ -226,4 +237,22 @@ html.color-scheme-dark .commerce-select-menu .commerce-select-hint {
 }
 .commerce-select-menu button:not(.has-hint):not(:has(.sc-soft-mark, .sc-model-catalog-icon)) {
   grid-template-columns: minmax(0, 1fr) 16px;
+}
+
+/* 选中勾的圆底：最后一列只有 16px，宽度又被上面的 i.bi-check2 规则压成 16px，
+   圆被挤成竖椭圆。这里固定成 20×20 正圆，靠右对齐，多出的宽度落在按钮右内边距里。 */
+.commerce-select-menu button.selected > i.bi-check2 {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  aspect-ratio: 1;
+  justify-self: end;
+  border-radius: 50%;
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* 选项之间留 3px：选中行和悬停行的高亮背景不再连成一块。 */
+.commerce-select-menu > button + button {
+  margin-top: 3px;
 }

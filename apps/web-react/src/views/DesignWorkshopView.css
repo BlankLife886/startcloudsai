@@ -1391,3 +1391,18 @@
     margin-left: 20px;
   }
 }
+
+/* 模型下拉：名称后面跟「限时调价」标签，名称过长时省略。 */
+.dws-select-menu .dws-option-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.dws-select-menu .dws-option-label > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

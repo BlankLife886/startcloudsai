@@ -140,7 +140,7 @@ export function WorkbenchTopToolbar({
   onChangeModelId,
   // 投放设置
   distribution = [],
-  // 画面预设：{ fields, filledCount, extra, resolution }
+  // 画面预设：{ fields, filledCount, extra, resolution, quality }
   presets = null,
   // 商品信息
   product,
@@ -198,13 +198,21 @@ export function WorkbenchTopToolbar({
   const presetFields = presets?.fields || [];
   const presetExtra = presets?.extra || [];
   const presetResolution = presets?.resolution || null;
+  const presetQuality = presets?.quality || null;
+  const presetQualityLabel = presetQuality
+    ? presetQuality.options.find((item) => item.id === presetQuality.value)?.label || ""
+    : "";
   const hasPresetMenu =
-    presetFields.length > 0 || presetExtra.length > 0 || Boolean(presetResolution);
+    presetFields.length > 0 ||
+    presetExtra.length > 0 ||
+    Boolean(presetResolution) ||
+    Boolean(presetQuality);
   const presetFilled = Number(presets?.filledCount) || 0;
   const presetSummary = [
     presetFilled ? `已填 ${presetFilled} 项` : presetFields.length ? "未填写" : "",
     ...presetExtra.map((item) => item.value).filter(Boolean),
     presetResolution?.value || "",
+    presetQualityLabel ? `${presetQualityLabel}质量` : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -311,6 +319,22 @@ export function WorkbenchTopToolbar({
                 onChange={presetResolution.onChange}
                 disabled={disabled}
                 columns={presetResolution.options.length}
+              />
+            </div>
+          ) : null}
+          {presetQuality ? (
+            <div className="workbench-toolbar__group">
+              <span className="workbench-toolbar__group-label">
+                质量
+                <small>越高细节越好，生成更慢</small>
+              </span>
+              <OptionButtons
+                label="选择质量"
+                value={presetQuality.value}
+                options={presetQuality.options}
+                onChange={presetQuality.onChange}
+                disabled={disabled}
+                columns={Math.min(presetQuality.options.length, 3)}
               />
             </div>
           ) : null}

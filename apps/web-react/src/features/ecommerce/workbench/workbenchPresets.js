@@ -3,6 +3,15 @@
 // 每个字段既可从建议里选，也可以直接输入，全部可选；留空时不写进 prompt。
 
 export const WORKBENCH_RESOLUTIONS = Object.freeze(["1K", "2K", "4K"]);
+// 质量档位（与后台模型「输出质量」一致）；页面只显示所选模型勾选过的档位。
+export const WORKBENCH_QUALITIES = Object.freeze([
+  { id: "low", label: "低", hint: "出图最快" },
+  { id: "medium", label: "中", hint: "日常推荐" },
+  { id: "high", label: "高", hint: "细节更好" },
+  { id: "xhigh", label: "超高", hint: "更多细节" },
+  { id: "max", label: "最高", hint: "最慢" },
+  { id: "auto", label: "自动", hint: "由模型决定" },
+]);
 
 export const WORKBENCH_NOTE_MAX = 2000;
 
@@ -211,7 +220,8 @@ export function presetFilledCount(modeId, values = {}) {
 // 多方案出图：同一 blueprint 重复 N 份，每份带方案序号，让模型做出差异化
 export function expandVariantBlueprints(blueprints = [], count = 1) {
   const list = Array.isArray(blueprints) ? blueprints.filter(Boolean) : [];
-  const total = Math.max(1, Math.min(4, Number(count) || 1));
+  // 上限由调用方按所选模型的出图上限收紧，这里只兜一个硬上限
+  const total = Math.max(1, Math.min(20, Number(count) || 1));
   if (!list.length || total <= 1) return list;
   const base = list[0];
   return Array.from({ length: total }, (_, index) => ({

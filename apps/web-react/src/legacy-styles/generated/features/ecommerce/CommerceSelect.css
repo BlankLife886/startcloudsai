@@ -127,22 +127,16 @@
   opacity: 0;
   transform: translateY(-5px) scale(0.975);
 }
-:global(html.color-scheme-dark) .commerce-select-menu {
+html.color-scheme-dark .commerce-select-menu {
   color: #f1f1f5;
   background: rgb(28 28 34 / 98%);
   border-color: #3a3943;
   box-shadow: 0 20px 54px rgb(0 0 0 / 48%);
 }
-:global(html.color-scheme-dark) .commerce-select-menu button.active {
+html.color-scheme-dark .commerce-select-menu button.active {
   background: #302944;
 }
-:global(html.color-scheme-dark) .commerce-select-menu button.selected {
-  color: #c8bcff;
-}
-:global(html.color-scheme-dark) .commerce-select-menu .commerce-select-hint {
-  color: #c8c2d6;
-}
-:global(html.color-scheme-dark) .commerce-select-menu button.selected .commerce-select-hint {
+html.color-scheme-dark .commerce-select-menu button.selected {
   color: #c8bcff;
 }
 html.color-scheme-dark .commerce-select-menu .commerce-select-hint {

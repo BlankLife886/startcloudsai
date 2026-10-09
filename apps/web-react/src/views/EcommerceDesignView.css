@@ -1225,6 +1225,20 @@ html.settings-no-animations .tryon-generate.generate-button:hover:not(:disabled)
   font-size: 12px;
   line-height: 1;
 }
+.tryon-stage__result-composer .tryon-stage__result-close:hover,
+.tryon-stage__result-composer .tryon-stage__result-close:focus-visible {
+  background: rgb(232 228 246);
+}
+/* 深色模式：半透明浅色圆底，× 用浅色，和面板融在一起又看得清。 */
+html.color-scheme-dark .tryon-stage__result-composer .tryon-stage__result-close {
+  color: rgb(255 255 255 / 78%);
+  background: rgb(255 255 255 / 9%);
+}
+html.color-scheme-dark .tryon-stage__result-composer .tryon-stage__result-close:hover,
+html.color-scheme-dark .tryon-stage__result-composer .tryon-stage__result-close:focus-visible {
+  color: #fff;
+  background: rgb(255 255 255 / 16%);
+}
 .tryon-stage__result-composer .tryon-stage__result-done {
   position: absolute;
   right: 8px;
@@ -6086,6 +6100,41 @@ html.color-scheme-dark .tryon-stage__batch.is-corner .tryon-stage__batch-add:hov
 }
 .tryon-stage__garment:has(.tryon-stage__batch.is-corner) .tryon-stage__head {
   right: 56px;
+}
+
+/* ===== 衣服卡片批量区 v3：正方形小图（居中裁切，不显示整张），加号排在最后 ===== */
+.tryon-stage__batch.is-corner .tryon-stage__batch-item {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+}
+.tryon-stage__batch.is-corner .tryon-stage__batch-item img {
+  object-fit: cover;
+  object-position: center;
+}
+.tryon-stage__batch.is-corner .tryon-stage__batch-index {
+  left: 2px;
+  bottom: 2px;
+  min-width: 12px;
+  height: 12px;
+  font-size: 8px;
+  line-height: 12px;
+}
+.tryon-stage__batch.is-corner .tryon-stage__batch-remove {
+  width: 14px;
+  height: 14px;
+  font-size: 10px;
+}
+.tryon-stage__batch.is-corner .tryon-stage__batch-add {
+  order: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.tryon-stage__garment:has(.tryon-stage__batch.is-corner) .tryon-stage__head {
+  right: 52px;
 }
 
 /* ===================== 电商生成历史 v2（整块） ===================== */

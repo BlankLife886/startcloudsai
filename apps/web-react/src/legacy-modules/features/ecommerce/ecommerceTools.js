@@ -1049,6 +1049,8 @@ export function buildEcommerceGenerationPlan({
   finalConstraints = "",
   // 整套锚定：第 1 张先出，其余几张会额外拿到第 1 张成片作为整套参考
   anchoredSeries = false,
+  // 张数上限；不传时用模块默认（mode.maxCount）。备选方案类模块按所选模型的出图上限传入
+  maxCount = 0,
 } = {}) {
   const mode = ecommerceModeById(modeId);
   const consistency = ecommerceConsistencyProfile(mode.id, referenceCount, {
@@ -1061,7 +1063,7 @@ export function buildEcommerceGenerationPlan({
     : ecommerceShotBlueprints(mode.id, selectedModules);
   const requestedCount = Math.max(
     1,
-    Math.min(Number(count) || 1, mode.maxCount || 1),
+    Math.min(Number(count) || 1, Number(maxCount) || mode.maxCount || 1),
   );
   const shots = blueprints.slice(
     0,

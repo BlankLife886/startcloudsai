@@ -318,7 +318,9 @@ assert.deepEqual(
 )
 assert.ok(outpaintVariants[1].direction.includes('第 2/3 个备选方案'))
 assert.equal(expandVariantBlueprints(ecommerceShotBlueprints('outpaint'), 1).length, 1)
-assert.equal(expandVariantBlueprints(ecommerceShotBlueprints('outpaint'), 9).length, 4)
+// 备选方案数量由页面按所选模型的出图上限收紧（如 gpt-image-2 最多 8 张），函数只兜 20 张
+assert.equal(expandVariantBlueprints(ecommerceShotBlueprints('outpaint'), 8).length, 8)
+assert.equal(expandVariantBlueprints(ecommerceShotBlueprints('outpaint'), 99).length, 20)
 const variantPlan = buildEcommerceGenerationPlan({
   modeId: 'outpaint',
   count: 3,

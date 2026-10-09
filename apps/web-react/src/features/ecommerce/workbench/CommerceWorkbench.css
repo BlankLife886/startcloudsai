@@ -1393,3 +1393,66 @@ html.color-scheme-dark .workbench-output .handheld-frame:not(.has-image) {
   background: color-mix(in srgb, #161222 84%, transparent);
   border-color: rgb(255 255 255 / 12%);
 }
+
+/* ===== 与虚拟试衣统一：卡片按钮与流程连线 ===== */
+
+/* 卡片底部按钮：尺寸、间距、过渡与试衣卡片一致（28px 胶囊，距边 8px）。 */
+.commerce-workbench .handheld-ref-card__actions {
+  right: 8px;
+  bottom: 8px;
+  gap: 6px;
+  max-width: calc(100% - 16px);
+}
+
+.commerce-workbench .handheld-ref-card__actions button {
+  height: 28px;
+  gap: 4px;
+  padding: 0 10px;
+  font-size: 11px;
+  transition:
+    color 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.commerce-workbench .handheld-ref-card__actions button i {
+  font-size: 12px;
+}
+
+html.color-scheme-dark .commerce-workbench .handheld-ref-card__actions button {
+  box-shadow: 0 3px 14px rgb(0 0 0 / 28%);
+}
+
+/* 流程连线：和试衣一样是低调的灰色虚线，不带箭头和发光；生成时变成主题色并流动。 */
+.commerce-workbench .handheld-guides__line {
+  stroke: color-mix(in srgb, var(--commerce-ink) 28%, transparent);
+  stroke-dasharray: 5 8;
+  stroke-width: 1.6;
+  opacity: 1;
+}
+
+.commerce-workbench .handheld-guides__flow,
+.commerce-workbench .handheld-guides__arrow {
+  display: none;
+}
+
+.commerce-workbench .handheld-guides.is-running .handheld-guides__line {
+  stroke: color-mix(in srgb, var(--commerce-accent) 72%, var(--commerce-ink));
+  opacity: 1;
+  animation: workbench-tryon-dash 0.9s linear infinite;
+}
+
+@keyframes workbench-tryon-dash {
+  to {
+    stroke-dashoffset: -26;
+  }
+}
+
+html.settings-no-animations .commerce-workbench .handheld-guides.is-running .handheld-guides__line {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .commerce-workbench .handheld-guides.is-running .handheld-guides__line {
+    animation: none;
+  }
+}
