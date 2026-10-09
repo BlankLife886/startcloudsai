@@ -74,6 +74,11 @@ interface ModelItem {
   upstreamInputFields: string[];
   upstreamRequiredInputFields: string[];
   upstreamInputSchema: Record<string, unknown>;
+  upstreamFixedInput?: Record<string, string>;
+  promptMaxChars?: number;
+  skillsDisabled?: boolean;
+  qualityNotSent?: boolean;
+  qualityAlwaysSent?: boolean;
   modality: string;
   operations: string[];
   kind: ModelKind;
@@ -227,6 +232,46 @@ interface ModelDraft extends Omit<
   outputFormatsEnabled: boolean;
   moderationEnabled: boolean;
 }
+
+const MAX_CUSTOM_ASPECT_RATIO = 20;
+
+function aspectRatioValue(value: string) {
+  const [width, height] = String(value).split(":").map(Number);
+  return width > 0 && height > 0 ? width / height : 0;
+}
+
+/** auto, or a positive w:h between 1:20 and 20:1 (1:4, 8:1, 9:19.5 …). */
+function isValidAspectRatio(value: string) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "auto") return true;
+  if (!/^\d+(\.\d+)?:\d+(\.\d+)?$/.test(text)) return false;
+  const ratio = aspectRatioValue(text);
+  return ratio >= 1 / MAX_CUSTOM_ASPECT_RATIO && ratio <= MAX_CUSTOM_ASPECT_RATIO;
+}
+
+/** Listed ratios in the picker's order, then any others from widest to tallest. */
+function sortAspectRatios(values: string[]) {
+  const unique = [...new Set(values.filter(isValidAspectRatio))];
+  const common = ALL_ASPECT_RATIOS.filter((ratio) => unique.includes(ratio));
+  const custom = unique
+    .filter((ratio) => !ALL_ASPECT_RATIOS.includes(ratio))
+    .sort((a, b) => aspectRatioValue(b) - aspectRatioValue(a) || a.localeCompare(b));
+  return [...common, ...custom];
+}
+
+/**
+ * Every ratio offered in the admin picker, whether or not a given model
+ * declares it; the admin decides what each model exposes.
+ */
+const ALL_ASPECT_RATIOS = [
+  "auto",
+  "1:1",
+  "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5",
+  "16:10", "10:16", "5:3", "3:5", "7:5", "5:7",
+  "21:9", "9:21", "2:1", "1:2", "5:2", "2:5",
+  "32:9", "9:32", "3:1", "1:3", "4:1", "1:4", "8:1", "1:8",
+  "19.5:9", "9:19.5", "20:9", "9:20",
+];
 
 const IMAGE_ASPECT_RATIOS = [
   "auto",
@@ -407,21 +452,14 @@ function normalizeAspectRatiosByResolution(
         : selectedSource
           ? [selectedSource]
           : fallbackRatios;
-      const configured = Array.from(
-        new Set(
-          rawValues
-            .map((ratio) => String(ratio).toLowerCase())
-            .filter((ratio) => IMAGE_ASPECT_RATIOS.includes(ratio)),
-        ),
-      );
+      const configured = sortAspectRatios(rawValues.map((ratio) => String(ratio).toLowerCase()));
       return [key, configured.length ? configured : [...fallbackRatios]];
     }),
   );
 }
 
 function aspectRatioUnion(source: Record<string, string[]>) {
-  const selected = new Set(Object.values(source).flat());
-  return IMAGE_ASPECT_RATIOS.filter((ratio) => selected.has(ratio));
+  return sortAspectRatios(Object.values(source).flat());
 }
 
 
@@ -629,6 +667,11 @@ function hydrate(value: ModelConfig) {
     upstreamInputFields: model.upstreamInputFields || [],
     upstreamRequiredInputFields: model.upstreamRequiredInputFields || [],
     upstreamInputSchema: model.upstreamInputSchema || {},
+    upstreamFixedInput: { ...(model.upstreamFixedInput || {}) },
+    promptMaxChars: Number(model.promptMaxChars || 0),
+    skillsDisabled: model.skillsDisabled === true,
+    qualityNotSent: model.qualityNotSent === true,
+    qualityAlwaysSent: model.qualityAlwaysSent === true,
     modality: model.modality || "",
     operations: model.operations || [],
     imageUpscalePricing: model.imageUpscalePricing || null,
@@ -1595,6 +1638,57 @@ function slotResolutions(model: ModelItem) {
   return Object.keys(model.resolutionSlots || {}).sort();
 }
 
+function modelNameById(id: string) {
+  return config.models.find((item) => item.id === id)?.name || id;
+}
+
+/** "2K → X / Y；4K → Z" for an owner's slots, primary first. */
+function slotSummary(model: ModelItem) {
+  return slotResolutions(model)
+    .map((resolution) => {
+      const slot = model.resolutionSlots?.[resolution];
+      const chain = [slot?.primaryModelId, ...(slot?.backupModelIds || [])].filter(Boolean) as string[];
+      return `${resolution} → ${chain.map(modelNameById).join(" / ")}`;
+    })
+    .join("；");
+}
+
+interface SlotBorrow {
+  ownerId: string;
+  ownerName: string;
+  resolution: string;
+  role: string;
+}
+
+/** Which other models' slots each model serves in (member id → uses). */
+const slotBorrowers = computed(() => {
+  const out = new Map<string, SlotBorrow[]>();
+  for (const owner of config.models) {
+    for (const [resolution, slot] of Object.entries(owner.resolutionSlots || {})) {
+      const chain = [slot.primaryModelId, ...(slot.backupModelIds || [])].filter(Boolean);
+      chain.forEach((memberId, index) => {
+        if (memberId === owner.id) return;
+        const list = out.get(memberId) || [];
+        list.push({ ownerId: owner.id, ownerName: owner.name, resolution, role: index === 0 ? "主模型" : `备用 ${index}` });
+        out.set(memberId, list);
+      });
+    }
+  }
+  return out;
+});
+
+function borrowLines(modelId: string) {
+  return (slotBorrowers.value.get(modelId) || []).map((item) => `${item.ownerName} · ${item.resolution} · ${item.role}`);
+}
+
+/** Why a borrowed model cannot be disabled or deleted yet; "" when it can. */
+function borrowedBlockMessage(model: { id: string; name: string }, action: string) {
+  const lines = borrowLines(model.id);
+  return lines.length
+    ? `「${model.name}」正被 ${lines.join("、")} 的分辨率槽位使用，请先在这些模型的「分辨率槽位」里移除它，再${action}`
+    : "";
+}
+
 function modelModerationLine(model: ModelItem) {
   return joinList(
     (model.moderationLevels || []).map((item) =>
@@ -1709,7 +1803,7 @@ function applyImageParamProfile(profile: ImageParamProfile) {
   const dropped = new Set(profile.rules?.drop || []);
   if (capabilities.resolutions?.length) {
     const ratios = (capabilities.aspectRatios?.length
-      ? IMAGE_ASPECT_RATIOS.filter((ratio) => capabilities.aspectRatios!.includes(ratio))
+      ? sortAspectRatios(capabilities.aspectRatios.map((ratio) => ratio.toLowerCase()))
       : modelDraft.aspectRatios.length ? [...modelDraft.aspectRatios] : [...IMAGE_ASPECT_RATIOS]);
     modelDraft.resolutions = [...capabilities.resolutions];
     modelDraft.aspectRatios = ratios;
@@ -1751,6 +1845,19 @@ function openModelTest(model: ModelItem) {
     kind: model.kind as "chat" | "image",
     compat: model.compat ? cloneJSON(model.compat) : null,
     supportedReasoningEfforts: [...(model.supportedReasoningEfforts || [])],
+    crunModel: provider?.adapter === "crun" && model.kind === "image"
+      ? {
+          upstreamInputFields: [...(model.upstreamInputFields || [])],
+          upstreamRequiredInputFields: [...(model.upstreamRequiredInputFields || [])],
+          upstreamInputSchema: cloneJSON(model.upstreamInputSchema || {}),
+          upstreamFixedInput: { ...(model.upstreamFixedInput || {}) },
+          qualityNotSent: model.qualityNotSent === true,
+          qualityAlwaysSent: model.qualityAlwaysSent === true,
+          resolutions: [...(model.resolutions || [])],
+          aspectRatios: [...(model.aspectRatios || [])],
+          qualities: [...(model.qualities || [])],
+        }
+      : null,
   };
   modelTestOpen.value = true;
 }
@@ -1871,6 +1978,11 @@ const modelDraft = reactive<ModelDraft>({
   upstreamInputFields: [],
   upstreamRequiredInputFields: [],
   upstreamInputSchema: {},
+  upstreamFixedInput: {},
+  promptMaxChars: 0,
+  skillsDisabled: false,
+  qualityNotSent: false,
+  qualityAlwaysSent: false,
   modality: "",
   operations: [],
   kind: "image",
@@ -1936,6 +2048,11 @@ function openModel(index = -1) {
           upstreamInputFields: [...(source.upstreamInputFields || [])],
           upstreamRequiredInputFields: [...(source.upstreamRequiredInputFields || [])],
           upstreamInputSchema: cloneJSON(source.upstreamInputSchema || {}),
+          upstreamFixedInput: { ...(source.upstreamFixedInput || {}) },
+          promptMaxChars: Number(source.promptMaxChars || 0),
+          skillsDisabled: source.skillsDisabled === true,
+          qualityNotSent: source.qualityNotSent === true,
+          qualityAlwaysSent: source.qualityAlwaysSent === true,
           modality: source.modality || "",
           operations: [...(source.operations || [])],
           kind: source.kind,
@@ -2018,6 +2135,11 @@ function openModel(index = -1) {
           upstreamInputFields: [],
           upstreamRequiredInputFields: [],
           upstreamInputSchema: {},
+          upstreamFixedInput: {},
+          promptMaxChars: 0,
+          skillsDisabled: false,
+          qualityNotSent: false,
+          qualityAlwaysSent: false,
           modality: "",
           operations: [],
           kind:
@@ -2072,12 +2194,15 @@ function openModel(index = -1) {
   );
   modelEditIndex.value = index;
   activeCRUNSchema.value = null;
+  customAspectRatios.value = [];
+  customAspectRatioInput.value = "";
+  resetCRUNPriceQuotes();
   modelDialogVisible.value = true;
   if (
     source &&
     config.providers.find((provider) => provider.id === source.providerId)?.adapter === "crun"
   ) {
-    void loadCRUNModelSchema(source.upstreamModel);
+    void loadCRUNModelSchema(source.upstreamModel, false);
   }
 }
 
@@ -2184,9 +2309,7 @@ const schemaResolutionOptions = computed(() =>
 );
 
 const schemaAspectRatioOptions = computed(() =>
-  schemaStringEnum("aspect_ratio")
-    .map((value) => value.toLowerCase())
-    .filter((value) => IMAGE_ASPECT_RATIOS.includes(value)),
+  sortAspectRatios(schemaStringEnum("aspect_ratio").map((value) => value.toLowerCase()).filter(isValidAspectRatio)),
 );
 
 const schemaQualityOptions = computed(() =>
@@ -2213,17 +2336,58 @@ const schemaSupportsTransparentBackground = computed(() =>
   ),
 );
 
+// CRUN leaves maxItems out for many models (their docs give the limit), so
+// a missing limit allows up to the platform maximum instead of one image.
 const schemaReferenceMax = computed(() => {
   if (!modelDraft.upstreamInputFields.includes("img_urls")) return 0;
   const maxItems = Number(currentSchemaProperties.value.img_urls?.maxItems || 0);
-  return Math.min(16, Math.max(1, maxItems || 1));
+  return maxItems > 0 ? Math.min(16, maxItems) : 16;
 });
+
+const schemaDeclaresReferenceMax = computed(
+  () => Number(currentSchemaProperties.value.img_urls?.maxItems || 0) > 0,
+);
 
 const isSchemaDrivenCRUNImage = computed(
   () =>
     selectedModelProvider.value?.adapter === "crun" &&
     modelDraft.kind === "image",
 );
+
+// Fields the platform fills per request; anything else with an enum (such as
+// model_variant or mode) is a version switch the admin pins per site model.
+const CRUN_PLATFORM_INPUT_FIELDS = new Set([
+  "prompt", "img_urls", "aspect_ratio", "resolution", "quality", "background",
+  "output_format", "moderation", "size", "width", "height", "n", "num_outputs",
+]);
+
+const crunVariantFields = computed(() => {
+  if (!isSchemaDrivenCRUNImage.value) return [];
+  const properties = (modelDraft.upstreamInputSchema?.properties || {}) as Record<string, { enum?: unknown[]; description?: string }>;
+  return modelDraft.upstreamInputFields
+    .filter((field) => !CRUN_PLATFORM_INPUT_FIELDS.has(field))
+    .map((field) => ({
+      field,
+      description: String(properties[field]?.description || ""),
+      options: (properties[field]?.enum || []).map((value) => String(value).trim()).filter(Boolean),
+    }))
+    .filter((item) => item.options.length > 1);
+});
+
+function setCRUNFixedInput(field: string, value: string) {
+  const next = { ...(modelDraft.upstreamFixedInput || {}) };
+  if (value) next[field] = value;
+  else delete next[field];
+  modelDraft.upstreamFixedInput = next;
+}
+
+function crunFixedInputForSave() {
+  if (!isSchemaDrivenCRUNImage.value) return {};
+  const allowed = new Set(crunVariantFields.value.map((item) => item.field));
+  return Object.fromEntries(
+    Object.entries(modelDraft.upstreamFixedInput || {}).filter(([field, value]) => allowed.has(field) && value),
+  );
+}
 
 const canConfigureExactSize = computed(() =>
   !isSchemaDrivenCRUNImage.value || schemaSupportsExactSize(modelDraft.upstreamInputSchema, modelDraft.upstreamInputFields),
@@ -2235,14 +2399,86 @@ const availableResolutionOptions = computed(() =>
     : ["1K", "2K", "4K"],
 );
 
+// Every ratio the admin may want: the common list, whatever the upstream
+// declares (1:4, 8:1 …) and any custom ratio already configured.
 const availableAspectRatioOptions = computed(() =>
-  isSchemaDrivenCRUNImage.value
-    ? schemaAspectRatioOptions.value
-    : IMAGE_ASPECT_RATIOS,
+  sortAspectRatios([
+    ...ALL_ASPECT_RATIOS,
+    ...customAspectRatios.value,
+    ...(isSchemaDrivenCRUNImage.value ? schemaAspectRatioOptions.value : []),
+    ...modelDraft.aspectRatios,
+    ...Object.values(modelDraft.aspectRatiosByResolution || {}).flat(),
+  ]),
 );
 
+/** The ratio itself; a CRUN ratio the schema does not list is only noted. */
+function aspectRatioLabel(ratio: string) {
+  if (ratio === "auto") return "Auto";
+  return isSchemaDrivenCRUNImage.value && !schemaAspectRatioOptions.value.includes(ratio)
+    ? `${ratio}（上游未声明）`
+    : ratio;
+}
+
+/** Ratios the admin typed in this session, offered in every picker. */
+const customAspectRatios = ref<string[]>([]);
+const customAspectRatioInput = ref("");
+
+/** Adds a typed ratio to every resolution (or the flat list) of the draft. */
+function addCustomAspectRatio() {
+  const value = customAspectRatioInput.value.trim().toLowerCase().replace(/\s+/g, "").replace("：", ":");
+  if (!isValidAspectRatio(value) || value === "auto") {
+    ElMessage.warning("比例格式应为「宽:高」，如 1:4、9:19.5，范围 1:20 到 20:1");
+    return;
+  }
+  customAspectRatios.value = sortAspectRatios([...customAspectRatios.value, value]);
+  if (modelDraft.resolutions.length) {
+    for (const resolution of modelDraft.resolutions) {
+      modelDraft.aspectRatiosByResolution[resolution] = sortAspectRatios([
+        ...(modelDraft.aspectRatiosByResolution[resolution] || []),
+        value,
+      ]);
+    }
+  } else {
+    modelDraft.aspectRatios = sortAspectRatios([...modelDraft.aspectRatios, value]);
+  }
+  customAspectRatioInput.value = "";
+  ElMessage.success(`已添加比例 ${value}，并为每个分辨率勾选；不需要的分辨率可以在下拉里去掉`);
+}
+
+/** Keeps only valid ratios after a custom entry, telling the admin what was dropped. */
+function cleanDraftRatios(values: string[]) {
+  const cleaned = values.map((value) => String(value).trim().toLowerCase().replace(/\s+/g, ""));
+  const invalid = cleaned.filter((value) => !isValidAspectRatio(value));
+  if (invalid.length) ElMessage.warning(`比例格式应为「宽:高」，如 1:4、9:19.5，范围 1:20 到 20:1；已忽略：${invalid.join("、")}`);
+  return sortAspectRatios(cleaned.filter(isValidAspectRatio));
+}
+
+function onResolutionRatiosChange(resolution: string, values: string[]) {
+  modelDraft.aspectRatiosByResolution[resolution] = cleanDraftRatios(values);
+}
+
+/** A CRUN model without a quality input runs at its built-in quality. */
+const upstreamHasNoQuality = computed(
+  () => isSchemaDrivenCRUNImage.value && !modelDraft.upstreamInputFields.includes("quality"),
+);
+
+/**
+ * Whether the user's quality reaches the provider; otherwise it only bills.
+ * Where the CRUN schema lists no quality it is sent only if the admin says so.
+ */
+const qualitySentUpstream = computed(() =>
+  !modelDraft.qualityNotSent && (!upstreamHasNoQuality.value || modelDraft.qualityAlwaysSent === true),
+);
+
+function setQualitySentUpstream(value: string | number | boolean) {
+  modelDraft.qualityNotSent = !value;
+  modelDraft.qualityAlwaysSent = Boolean(value) && upstreamHasNoQuality.value;
+}
+
+// Qualities sent to a schema that declares them must be ones it accepts; any
+// other case (only billing, or sent on the admin's say-so) may use any tier.
 const availableQualityOptions = computed(() =>
-  isSchemaDrivenCRUNImage.value
+  isSchemaDrivenCRUNImage.value && qualitySentUpstream.value && !upstreamHasNoQuality.value
     ? IMAGE_QUALITIES.filter((item) =>
         schemaQualityOptions.value.includes(item.value),
       )
@@ -2275,6 +2511,11 @@ function applyCRUNModelSchema(entry: ModelCatalogEntry) {
   modelDraft.upstreamInputFields = [...(entry.inputFields || [])];
   modelDraft.upstreamRequiredInputFields = [...(entry.requiredInputFields || [])];
   modelDraft.upstreamInputSchema = cloneJSON(entry.inputSchema || {});
+  modelDraft.upstreamFixedInput = Object.fromEntries(
+    Object.entries(modelDraft.upstreamFixedInput || {}).filter(([field]) =>
+      modelDraft.upstreamInputFields.includes(field),
+    ),
+  );
   modelDraft.modality = entry.modality || "";
   modelDraft.operations = [...(entry.operations || [])];
   if (entry.kind && modelDraft.kind !== entry.kind) {
@@ -2284,8 +2525,11 @@ function applyCRUNModelSchema(entry: ModelCatalogEntry) {
   modelDraft.tool = entry.kind === "image_tool"
     ? String(entry.operations?.[0] || "").replaceAll("-", "_")
     : "";
-  if (entry.kind !== "image") return;
+}
 
+/** Copies the selected CRUN model's live options into the draft; only on request. */
+function fillCapabilitiesFromCRUNReference() {
+  if (activeCRUNSchema.value?.kind !== "image") return;
   const resolutions = [...schemaResolutionOptions.value];
   const ratios = [...schemaAspectRatioOptions.value];
   modelDraft.resolutions = resolutions;
@@ -2293,18 +2537,133 @@ function applyCRUNModelSchema(entry: ModelCatalogEntry) {
   modelDraft.aspectRatiosByResolution = Object.fromEntries(
     resolutions.map((resolution) => [resolution, [...ratios]]),
   );
-  modelDraft.qualities = [...schemaQualityOptions.value];
+  if (qualitySentUpstream.value) modelDraft.qualities = [...schemaQualityOptions.value];
   modelDraft.transparentBackground = schemaSupportsTransparentBackground.value;
   modelDraft.outputFormats = [...schemaOutputFormatOptions.value];
   modelDraft.outputFormatsEnabled = modelDraft.outputFormats.length > 0;
   modelDraft.moderationLevels = [...schemaModerationOptions.value];
   modelDraft.moderationEnabled = modelDraft.moderationLevels.length > 0;
-  modelDraft.maxReferenceImages = schemaReferenceMax.value;
+  modelDraft.maxReferenceImages = schemaDeclaresReferenceMax.value || schemaReferenceMax.value === 0
+    ? schemaReferenceMax.value
+    : Math.min(schemaReferenceMax.value, modelDraft.maxReferenceImages || 1);
   modelDraft.maxImages = Math.min(4, Math.max(1, modelDraft.maxImages || 4));
+  ElMessage.success("已按 CRUN 参数填入生图能力，可继续修改");
 }
 
-async function loadCRUNModelSchema(model: string) {
+const crunPromptReferenceLimit = computed(() =>
+  Number(activeCRUNSchema.value?.inputSchema?.properties?.prompt?.maxLength || 0),
+);
+
+interface CRUNPriceQuote {
+  resolution?: string;
+  quality?: string;
+  withReference: boolean;
+  credits: number;
+  error?: string;
+}
+
+const crunPriceQuotes = ref<CRUNPriceQuote[]>([]);
+const crunPriceBalance = ref<number | null>(null);
+const crunPriceLoading = ref(false);
+const crunPriceError = ref("");
+
+function resetCRUNPriceQuotes() {
+  crunPriceQuotes.value = [];
+  crunPriceBalance.value = null;
+  crunPriceError.value = "";
+}
+
+/** Live CRUN credit quotes for the draft's own options; shown only, never saved. */
+async function loadCRUNPriceQuotes() {
+  if (!isSchemaDrivenCRUNImage.value || crunPriceLoading.value) return;
+  crunPriceLoading.value = true;
+  crunPriceError.value = "";
+  try {
+    const result = await request<{ quotes: CRUNPriceQuote[]; balance: number }>("/api/v1/admin/model-config/crun-price-quotes", {
+      method: "POST",
+      silent: true,
+      body: {
+        providerId: modelDraft.providerId,
+        upstreamModel: modelDraft.upstreamModel,
+        crunModel: {
+          upstreamInputFields: [...modelDraft.upstreamInputFields],
+          upstreamRequiredInputFields: [...modelDraft.upstreamRequiredInputFields],
+          upstreamInputSchema: cloneJSON(modelDraft.upstreamInputSchema),
+          upstreamFixedInput: { ...(modelDraft.upstreamFixedInput || {}) },
+        },
+      },
+    });
+    crunPriceQuotes.value = result.quotes || [];
+    crunPriceBalance.value = typeof result.balance === "number" ? result.balance : null;
+  } catch (error) {
+    crunPriceError.value = error instanceof Error ? error.message : "读取 CRUN 价格失败";
+  } finally {
+    crunPriceLoading.value = false;
+  }
+}
+
+watch(
+  () => [modelEditorTab.value, modelDraft.upstreamModel, JSON.stringify(modelDraft.upstreamFixedInput || {})] as const,
+  ([tab], previous) => {
+    if (previous && (previous[1] !== modelDraft.upstreamModel || previous[2] !== JSON.stringify(modelDraft.upstreamFixedInput || {}))) {
+      resetCRUNPriceQuotes();
+    }
+    if (tab === "pricing" && isSchemaDrivenCRUNImage.value && modelDraft.upstreamInputFields.length && !crunPriceQuotes.value.length && !crunPriceError.value) {
+      void loadCRUNPriceQuotes();
+    }
+  },
+);
+
+function onDraftEnabledChange(value: string | number | boolean) {
+  const blocked = !value ? borrowedBlockMessage({ id: modelDraft.id, name: modelDraft.name }, "停用") : "";
+  if (blocked) {
+    modelDraft.enabled = true;
+    ElMessage.warning(blocked);
+  }
+}
+
+/** Every field the selected CRUN model accepts, read live; shown only, never saved. */
+const crunReferenceRows = computed(() => {
+  const entry = activeCRUNSchema.value;
+  if (!entry || entry.kind === "chat") return [];
+  const properties = entry.inputSchema?.properties || {};
+  const required = new Set(entry.requiredInputFields || []);
+  return (entry.inputFields || []).map((field) => {
+    const property = properties[field] || {};
+    const limits: string[] = [];
+    if (property.enum?.length) limits.push(property.enum.map((value) => (value === null || value === "" ? "空" : String(value))).join(" / "));
+    if (property.minimum !== undefined || property.maximum !== undefined) limits.push(`${property.minimum ?? ""}–${property.maximum ?? ""}`);
+    if (property.maxLength) limits.push(`≤${property.maxLength} 字`);
+    if (property.minItems || property.maxItems) limits.push(`${property.minItems || 0}–${property.maxItems || "?"} 张`);
+    return {
+      field,
+      type: property.type || "",
+      values: limits.join("；") || "—",
+      defaultValue: property.default === undefined || property.default === null ? "—" : String(property.default),
+      required: required.has(field),
+      description: property.description || property.title || "",
+    };
+  });
+});
+
+// Fields and their allowed values; limits patched in from docs are ignored.
+function crunSchemaSignature(fields: string[] = [], schema: Record<string, unknown> = {}) {
+  const properties = (schema?.properties || {}) as Record<string, { enum?: unknown[] }>;
+  return JSON.stringify(
+    [...fields].sort().map((field) => [field, (properties[field]?.enum || []).map(String).sort()]),
+  );
+}
+
+const crunSchemaChanged = ref(false);
+
+/**
+ * Reads the model's live CRUN schema. With apply (refresh or a new upstream
+ * model) it overwrites the draft's capabilities; without it (opening the
+ * editor) it only verifies and flags drift, so saved settings survive a save.
+ */
+async function loadCRUNModelSchema(model: string, apply = true) {
   const provider = selectedModelProvider.value;
+  crunSchemaChanged.value = false;
   if (provider?.adapter !== "crun" || !model.trim()) {
     activeCRUNSchema.value = null;
     return;
@@ -2319,10 +2678,19 @@ async function loadCRUNModelSchema(model: string) {
   }
   loadingCRUNSchema.value = true;
   try {
-    applyCRUNModelSchema(await fetchCRUNModelSchema(provider, model));
-    ElMessage.success("已按 CRUN 实时参数同步模型能力");
+    const entry = await fetchCRUNModelSchema(provider, model);
+    if (!apply) {
+      activeCRUNSchema.value = entry;
+      crunSchemaChanged.value =
+        crunSchemaSignature(entry.inputFields, entry.inputSchema) !==
+        crunSchemaSignature(modelDraft.upstreamInputFields, modelDraft.upstreamInputSchema);
+      return;
+    }
+    applyCRUNModelSchema(entry);
+    ElMessage.success("已读取 CRUN 实时参数，能力设置未改动；需要时点「按参考填入」");
   } catch {
     activeCRUNSchema.value = null;
+    if (!apply) return;
     modelDraft.upstreamInputFields = [];
     modelDraft.upstreamRequiredInputFields = [];
     modelDraft.upstreamInputSchema = {};
@@ -2335,6 +2703,7 @@ async function loadCRUNModelSchema(model: string) {
 
 function onModelProviderChange() {
   modelDraft.upstreamModel = "";
+  modelDraft.upstreamFixedInput = {};
   modelDraft.upstreamInputFields = [];
   modelDraft.upstreamRequiredInputFields = [];
   modelDraft.upstreamInputSchema = {};
@@ -2708,6 +3077,11 @@ async function saveModelDraft() {
     upstreamInputFields: [...modelDraft.upstreamInputFields],
     upstreamRequiredInputFields: [...modelDraft.upstreamRequiredInputFields],
     upstreamInputSchema: cloneJSON(modelDraft.upstreamInputSchema),
+    upstreamFixedInput: crunFixedInputForSave(),
+    promptMaxChars: Math.max(0, Math.round(Number(modelDraft.promptMaxChars || 0))),
+    skillsDisabled: modelDraft.skillsDisabled === true,
+    qualityNotSent: modelDraft.qualityNotSent === true,
+    qualityAlwaysSent: modelDraft.qualityAlwaysSent === true && upstreamHasNoQuality.value && !modelDraft.qualityNotSent,
     modality: modelDraft.modality,
     operations: [...modelDraft.operations],
     kind: modelDraft.kind,
@@ -2840,6 +3214,11 @@ async function saveModelDraft() {
 
 async function removeModel(index: number) {
   const model = config.models[index];
+  const blocked = borrowedBlockMessage(model, "删除");
+  if (blocked) {
+    await ElMessageBox.alert(blocked, "无法删除", { type: "warning" });
+    return;
+  }
   await ElMessageBox.confirm(`确认删除模型“${model.name}”？`, "删除模型", {
     type: "warning",
   });
@@ -2860,6 +3239,12 @@ function modelOriginalIndex(value: unknown) {
 
 function onCatalogModelStateChange(value: unknown) {
   const model = value as ModelItem;
+  const blocked = !model.enabled ? borrowedBlockMessage(model, "停用") : "";
+  if (blocked) {
+    model.enabled = true;
+    ElMessage.warning(blocked);
+    return;
+  }
   if (model.status === "maintenance") model.default = false;
   if (!model.public || !model.enabled) {
     model.default = false;
@@ -3071,16 +3456,21 @@ onBeforeUnmount(() => {
                 >
                   <td>
                     <div class="cell-model">
-                      <span class="kind-badge cell-kind" :class="`is-${row.kind}`">{{ kindName(row.kind) }}</span>
                       <span class="cell-model__icon" aria-hidden="true">
                         <img v-if="row.iconUrl" :src="row.iconUrl" alt="" />
                         <Cpu v-else />
                       </span>
-                      <strong class="cell-model__name" :title="row.description ? `${row.name}：${row.description}` : row.name">{{ row.name }}</strong>
-                      <span v-if="row.default" class="default-badge">默认</span>
-                      <span v-if="row.status === 'maintenance'" class="maintenance-badge">维护中</span>
-                      <span v-if="apiReferences[row.id]?.length" class="api-ref-badge" :title="`API 调用模型：${apiReferences[row.id].map(item => item.apiName).join('、')}`">API {{ apiReferences[row.id].length }}</span>
-                      <span v-if="slotResolutions(row as ModelItem).length" class="slot-badge" :title="`这些分辨率配置了主模型和备用：${slotResolutions(row as ModelItem).join('、')}`">槽位 {{ slotResolutions(row as ModelItem).join(" ") }}</span>
+                      <div class="cell-model__main">
+                        <strong class="cell-model__name" :title="row.description ? `${row.name}：${row.description}` : row.name">{{ row.name }}</strong>
+                        <div class="cell-model__tags">
+                          <span class="kind-badge cell-kind" :class="`is-${row.kind}`">{{ kindName(row.kind) }}</span>
+                          <span v-if="row.default" class="default-badge">默认</span>
+                          <span v-if="row.status === 'maintenance'" class="maintenance-badge">维护中</span>
+                          <span v-if="apiReferences[row.id]?.length" class="api-ref-badge" :title="`API 调用模型：${apiReferences[row.id].map(item => item.apiName).join('、')}`">API {{ apiReferences[row.id].length }}</span>
+                          <span v-if="slotResolutions(row as ModelItem).length" class="slot-badge" :title="`分辨率槽位（主模型在前）：${slotSummary(row as ModelItem)}`">槽位 {{ slotSummary(row as ModelItem) }}</span>
+                          <span v-if="borrowLines(row.id).length" class="slot-badge is-borrowed" :title="`被这些槽位借用：\n${borrowLines(row.id).join('\n')}`">被借用 {{ borrowLines(row.id).length }}</span>
+                        </div>
+                      </div>
                     </div>
                   </td>
                   <td><span class="cell-upstream mono" :title="row.upstreamModel">{{ row.upstreamModel || "—" }}</span></td>
@@ -3980,21 +4370,53 @@ onBeforeUnmount(() => {
                 class="model-schema-state"
               >
                 <el-tag
-                  :type="activeCRUNSchema ? 'success' : 'warning'"
+                  :type="activeCRUNSchema && !crunSchemaChanged ? 'success' : 'warning'"
                   size="small"
                   effect="plain"
                 >
                   {{
                     loadingCRUNSchema
                       ? "正在读取实时参数"
-                      : activeCRUNSchema
-                        ? `参数已验证 · ${modelDraft.upstreamInputFields.length} 个字段`
-                        : "参数尚未验证"
+                      : !activeCRUNSchema
+                        ? "参数尚未验证"
+                        : crunSchemaChanged
+                          ? "上游参数有变化 · 点「刷新」同步"
+                          : `参数已验证 · ${modelDraft.upstreamInputFields.length} 个字段`
                   }}
                 </el-tag>
                 <span v-if="activeCRUNSchema?.operations?.length">
                   {{ activeCRUNSchema.operations.join(" · ") }}
                 </span>
+              </div>
+              <div v-if="crunReferenceRows.length" class="crun-reference">
+                <div class="crun-reference__head">
+                  <strong>CRUN 参数参考</strong>
+                  <small>选中模型时实时读取，仅供参考，不会写入配置</small>
+                  <el-button v-if="activeCRUNSchema?.kind === 'image'" size="small" @click="fillCapabilitiesFromCRUNReference">按参考填入生图能力</el-button>
+                </div>
+                <el-table :data="crunReferenceRows" size="small" max-height="320">
+                  <el-table-column prop="field" label="参数" width="170"><template #default="{ row }"><code>{{ row.field }}</code></template></el-table-column>
+                  <el-table-column prop="type" label="类型" width="80" />
+                  <el-table-column prop="values" label="可选值 / 范围" min-width="220" />
+                  <el-table-column prop="defaultValue" label="默认" width="110" />
+                  <el-table-column label="必填" width="60"><template #default="{ row }">{{ row.required ? "是" : "" }}</template></el-table-column>
+                  <el-table-column prop="description" label="说明" min-width="200" show-overflow-tooltip />
+                </el-table>
+              </div>
+              <div v-if="crunVariantFields.length" class="model-variant-fields">
+                <div v-for="item in crunVariantFields" :key="item.field" class="model-variant-field">
+                  <span><code>{{ item.field }}</code> 版本</span>
+                  <el-select
+                    :model-value="modelDraft.upstreamFixedInput?.[item.field] || ''"
+                    size="small"
+                    placeholder="不固定（上游默认）"
+                    @update:model-value="(value: string) => setCRUNFixedInput(item.field, value)"
+                  >
+                    <el-option label="不固定（上游默认）" value="" />
+                    <el-option v-for="option in item.options" :key="option" :label="option" :value="option" />
+                  </el-select>
+                  <small v-if="item.description">{{ item.description }}</small>
+                </div>
               </div>
             </el-form-item>
             <el-form-item label="模型图标（选填）" class="model-field-icon">
@@ -4033,6 +4455,25 @@ onBeforeUnmount(() => {
               />
             </el-form-item>
           </div>
+        </section>
+
+        <section v-if="isSchemaDrivenCRUNImage" v-show="modelEditorTab === 'pricing'" class="model-section">
+          <header class="model-section__head crun-price-head">
+            <span>
+              <strong>CRUN 上游价格参考</strong>
+              <small>按这个模型的分辨率、质量和是否带参考图，实时向 CRUN 询价；只显示、不保存，不出图也不扣费</small>
+            </span>
+            <el-button size="small" :icon="Refresh" :loading="crunPriceLoading" @click="loadCRUNPriceQuotes">读取</el-button>
+          </header>
+          <p v-if="crunPriceError" class="crun-price-error">{{ crunPriceError }}</p>
+          <el-table v-else-if="crunPriceQuotes.length" :data="crunPriceQuotes" size="small" max-height="360">
+            <el-table-column label="分辨率" width="110"><template #default="{ row }">{{ row.resolution || "—" }}</template></el-table-column>
+            <el-table-column label="质量" width="110"><template #default="{ row }">{{ row.quality || "—" }}</template></el-table-column>
+            <el-table-column label="参考图" width="90"><template #default="{ row }">{{ row.withReference ? "带 1 张" : "不带" }}</template></el-table-column>
+            <el-table-column label="CRUN 积分 / 张" min-width="140"><template #default="{ row }"><span v-if="row.error" class="crun-price-error">{{ row.error }}</span><strong v-else>{{ row.credits }}</strong></template></el-table-column>
+          </el-table>
+          <p v-else-if="!crunPriceLoading" class="crun-price-hint">切到这里时会自动读取，也可以点「读取」</p>
+          <small v-if="crunPriceBalance !== null" class="crun-price-hint">CRUN 账户余额：{{ crunPriceBalance }} 积分</small>
         </section>
 
         <section
@@ -4193,7 +4634,7 @@ onBeforeUnmount(() => {
                 <strong>启用模型</strong>
                 <small>允许后台调度执行</small>
               </span>
-              <el-switch v-model="modelDraft.enabled" />
+              <el-switch v-model="modelDraft.enabled" @change="onDraftEnabledChange" />
             </label>
           </div>
           <p v-if="modelDraft.kind !== 'image_tool'" class="model-api-note">
@@ -4290,7 +4731,17 @@ onBeforeUnmount(() => {
             <div v-if="availableAspectRatioOptions.length" class="auto-aspect-rules">
               <div class="auto-aspect-rules__heading">
                 <strong>比例控制</strong>
-                <span>仅开放上游当前接受的比例</span>
+                <span>下拉列出全部常见比例，按需勾选；没有的比例在下面添加</span>
+              </div>
+              <div class="custom-ratio-row">
+                <el-input
+                  v-model="customAspectRatioInput"
+                  size="small"
+                  placeholder="自定义比例，如 7:3、9:19.5"
+                  aria-label="自定义比例"
+                  @keyup.enter="addCustomAspectRatio"
+                />
+                <el-button size="small" :icon="Plus" @click="addCustomAspectRatio">添加比例</el-button>
               </div>
               <div v-if="modelDraft.resolutions.length" class="auto-aspect-rules__grid">
                 <label
@@ -4301,18 +4752,23 @@ onBeforeUnmount(() => {
                   <strong>{{ resolution }}</strong>
                   <i>→</i>
                   <el-select
-                    v-model="modelDraft.aspectRatiosByResolution[resolution]"
+                    :model-value="modelDraft.aspectRatiosByResolution[resolution]"
                     multiple
+                    filterable
+                    allow-create
+                    default-first-option
+                    :reserve-keyword="false"
                     collapse-tags
                     collapse-tags-tooltip
                     :max-collapse-tags="2"
-                    placeholder="选择多个比例"
+                    placeholder="选择或输入比例，如 1:4"
                     popper-class="aspect-ratio-dropdown"
+                    @update:model-value="(values: string[]) => onResolutionRatiosChange(resolution, values)"
                   >
                     <el-option
                       v-for="ratio in availableAspectRatioOptions"
                       :key="ratio"
-                      :label="ratio === 'auto' ? 'Auto' : ratio"
+                      :label="aspectRatioLabel(ratio)"
                       :value="ratio"
                     />
                   </el-select>
@@ -4320,16 +4776,21 @@ onBeforeUnmount(() => {
               </div>
               <el-select
                 v-else
-                v-model="modelDraft.aspectRatios"
+                :model-value="modelDraft.aspectRatios"
                 multiple
+                filterable
+                allow-create
+                default-first-option
+                :reserve-keyword="false"
                 collapse-tags
                 collapse-tags-tooltip
-                placeholder="选择用户可用比例"
+                placeholder="选择或输入比例，如 1:4"
+                @update:model-value="(values: string[]) => (modelDraft.aspectRatios = cleanDraftRatios(values))"
               >
                 <el-option
                   v-for="ratio in availableAspectRatioOptions"
                   :key="ratio"
-                  :label="ratio === 'auto' ? 'Auto' : ratio"
+                  :label="aspectRatioLabel(ratio)"
                   :value="ratio"
                 />
               </el-select>
@@ -4373,7 +4834,14 @@ onBeforeUnmount(() => {
               <div class="model-capability-tile">
                 <div class="model-capability-copy">
                   <strong>输出质量</strong>
-                  <span>用户可选档位</span>
+                  <span v-if="upstreamHasNoQuality && qualitySentUpstream">上游参数里没有质量，仍会按你的设置发送；上游可能忽略或报错，建议先用「测试」确认</span>
+                  <span v-else-if="upstreamHasNoQuality">上游参数里没有质量，当前不发送；勾选的档位用于用户选择和计费</span>
+                  <span v-else-if="modelDraft.qualityNotSent">用户可选、按所选档位计费，但不发给上游，上游按默认质量出图</span>
+                  <span v-else>用户可选档位，会发给上游</span>
+                  <label class="quality-send-switch">
+                    <el-switch size="small" :model-value="qualitySentUpstream" @update:model-value="setQualitySentUpstream" />
+                    <small>发送给上游</small>
+                  </label>
                 </div>
                 <el-checkbox-group
                   v-if="availableQualityOptions.length"
@@ -4453,6 +4921,20 @@ onBeforeUnmount(() => {
                   </el-checkbox-group>
                   <em v-else>模型内置</em>
                 </div>
+              </div>
+              <div class="model-capability-tile">
+                <div class="model-capability-copy">
+                  <strong>提示词字数上限</strong>
+                  <span>0 表示跟随系统设置的全局上限；填了以模型为准<template v-if="crunPromptReferenceLimit">（CRUN 参考 ≤{{ crunPromptReferenceLimit }} 字）</template></span>
+                </div>
+                <el-input-number v-model="modelDraft.promptMaxChars" :min="0" :max="100000" :step="100" controls-position="right" />
+              </div>
+              <div class="model-capability-tile">
+                <div class="model-capability-copy">
+                  <strong>使用技能（Skill）</strong>
+                  <span>关闭后，这个模型不追加技能说明，也不展开 @技能</span>
+                </div>
+                <el-switch :model-value="!modelDraft.skillsDisabled" @update:model-value="(value: string | number | boolean) => (modelDraft.skillsDisabled = !value)" />
               </div>
               <div class="model-capability-tile">
                 <div class="model-capability-copy">
@@ -5826,6 +6308,13 @@ html.dark .res-badge {
   color: var(--ink-3);
   font-size: 10px;
 }
+.custom-ratio-row {
+  display: flex;
+  gap: 8px;
+  max-width: 360px;
+  margin-bottom: 8px;
+}
+
 .auto-aspect-rules__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -5849,8 +6338,22 @@ html.dark .res-badge {
 .auto-aspect-rule :deep(.el-select) {
   width: 100%;
 }
+/* Each quality is its own chip, so a wrapped second row keeps whole corners. */
+.compact-options {
+  gap: 5px;
+}
 .compact-options :deep(.el-checkbox-button__inner) {
   min-width: 58px;
+  border: 0;
+  border-radius: 5px;
+  padding: 6px 8px;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.compact-options
+  :deep(.el-checkbox-button:first-child .el-checkbox-button__inner),
+.compact-options
+  :deep(.el-checkbox-button:last-child .el-checkbox-button__inner) {
+  border-radius: 5px;
 }
 .reference-limit > span {
   color: var(--ink-3);
@@ -6846,6 +7349,69 @@ html.dark .kind-filter button.active {
 .model-picker .el-select {
   width: 100%;
 }
+.quality-send-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--ink-3);
+}
+
+.crun-price-head {
+  align-items: center;
+}
+
+.crun-price-hint {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.crun-price-error {
+  color: var(--el-color-danger);
+  font-size: 12px;
+}
+
+.crun-reference {
+  display: grid;
+  width: 100%;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.crun-reference__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.crun-reference__head small {
+  flex: 1;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.model-variant-fields {
+  display: grid;
+  width: 100%;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.model-variant-field {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 220px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.model-variant-field small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .model-schema-state {
   display: flex;
   width: 100%;
@@ -6969,9 +7535,11 @@ html.dark .kind-filter button.active {
 }
 
 /* ---- 模型目录：紧凑表格 ---- */
-.catalog-table-wrap { min-width: 0; }
-.catalog-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; color: var(--ink-2); }
-.catalog-table .col-model { width: 24%; }
+/* Narrow screens scroll the table sideways instead of squeezing the model
+   column until names vanish. */
+.catalog-table-wrap { min-width: 0; overflow-x: auto; }
+.catalog-table { width: 100%; min-width: 1120px; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; color: var(--ink-2); }
+.catalog-table .col-model { width: max(280px, 24%); }
 .catalog-table .col-provider { width: 10%; }
 .catalog-table .col-upstream { width: 13%; }
 .catalog-table .col-price { width: 9%; }
@@ -7002,9 +7570,14 @@ html.dark .kind-filter button.active {
 .cell-model__icon { display: grid; flex: none; width: 26px; height: 26px; overflow: hidden; place-items: center; border: 1px solid var(--border); border-radius: 7px; color: var(--accent-ink); background: var(--surface-2); }
 .cell-model__icon img { width: 100%; height: 100%; object-fit: contain; }
 .cell-model__icon svg { width: 15px; height: 15px; }
-.cell-model__name { min-width: 0; overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 650; text-overflow: ellipsis; }
+.cell-model__main { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-width: 0; }
+.cell-model__tags { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; white-space: normal; }
+.cell-model__tags > span { flex: none; max-width: 100%; }
+.cell-model__tags > .slot-badge { flex: 0 1 auto; white-space: normal; overflow-wrap: anywhere; border-radius: 8px; }
+.cell-model__name { min-width: 0; color: var(--ink); font-size: 13px; font-weight: 650; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 .cell-line > .kind-badge, .cell-line > .default-badge, .cell-line > .maintenance-badge, .cell-line > .api-ref-badge, .cell-line > .slot-badge { flex: none; }
-.slot-badge { padding: 0 6px; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); border-radius: 999px; color: var(--warning); font-size: 11px; line-height: 18px; }
+.slot-badge.is-borrowed { border-color: color-mix(in srgb, var(--accent-ink, #2f7) 45%, transparent); color: var(--accent-ink, inherit); }
+.slot-badge { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); border-radius: 999px; color: var(--warning); font-size: 11px; line-height: 18px; }
 .cell-price { display: grid; gap: 2px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: default; }
 .cell-price strong { color: var(--ink); font-size: 14px; font-weight: 700; }
 .cell-price__unit { color: var(--ink-3); font-size: 11px; }

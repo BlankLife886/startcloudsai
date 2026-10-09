@@ -8,7 +8,7 @@ function points(value) {
 }
 
 export function generationButtonState({ authenticated = true, loading = false, referencesReady = true,
-  hasPrompt = true, modelReady = true, invalidSize = false, quoting = false, confirmation = null,
+  hasPrompt = true, modelReady = true, invalidSize = false, quoting = false, confirmation = null, referenceHint = "",
   submitting = false, submissionPhase = "", pendingBatch = null, taskCounts = {}, generationCost = null, count = 1 } = {}) {
   const remaining = pendingBatchEntries(pendingBatch);
   const full = remaining.some(entry => QUEUE_CAPACITY_CODES.has(entry.error?.code));
@@ -22,7 +22,7 @@ export function generationButtonState({ authenticated = true, loading = false, r
     amount = prices.every(price => price !== null) ? prices.reduce((sum, price) => sum + price, 0) : null;
   }
   const busy = submitting || submissionPhase === "recovering" || quoting;
-  const disabled = authenticated && (busy || !referencesReady || (!remaining.length && (loading || !hasPrompt || !modelReady || invalidSize)));
+  const disabled = authenticated && (busy || !referencesReady || (!remaining.length && (loading || !hasPrompt || !modelReady || invalidSize || Boolean(referenceHint))));
   const result = { state: "ready", label: "立即生成", points: amount, count: imageCount, disabled, busy, action: "generate",
     title: amount === null ? "提交前核对本次费用" : `本次预计 ${amount} 积分，生成 ${imageCount} 张` };
   if (submitting || submissionPhase === "recovering") {
@@ -30,6 +30,7 @@ export function generationButtonState({ authenticated = true, loading = false, r
     return { ...result, state: phase, label: phase === "uploading" ? "上传参考图" : phase === "recovering" ? "核对提交" : "正在提交", title: "正在处理本次提交，请稍候" };
   }
   if (quoting) return { ...result, state: "quoting", label: "核算费用", title: "正在核对最新费用" };
+  if (referenceHint && !remaining.length) return { ...result, title: referenceHint };
   if (confirmation) {
     const insufficient = confirmation.available != null && Number(confirmation.total) > Number(confirmation.available);
     if (insufficient) {

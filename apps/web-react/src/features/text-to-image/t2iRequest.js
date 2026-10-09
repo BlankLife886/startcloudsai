@@ -27,6 +27,12 @@ export function normalizePublicModel(item = {}) {
   };
 }
 
+/** A model's own prompt limit wins over the global t2i limit. */
+export function modelPromptMaxChars(model, globalLimit = 8000) {
+  const own = Number(model?.promptMaxChars);
+  return Number.isFinite(own) && own > 0 ? own : globalLimit;
+}
+
 export function wallpaperFeature(config = {}) {
   const raw = config.features?.["ai.wallpaperGeneration"] || {};
   return raw.config && typeof raw.config === "object"
@@ -78,7 +84,9 @@ export function buildT2iPayload(settings, { sourceUrls, batchId, batchIndex, bat
   const supportsQuality = capabilities.qualities.includes(quality);
   const supportedRatios = getModelAspectRatiosForResolution(model || {}, resolution);
   const supportsRatio = !exact && supportedRatios.includes(ratio);
-  const activeSkills = resolveActiveWallpaperSkills({
+  // Skills are written for GPT image models; a model with skills disabled
+  // gets the user's prompt alone.
+  const activeSkills = model?.skillsDisabled === true ? [] : resolveActiveWallpaperSkills({
     outputType: "image",
     resolutionScale: supportsResolution ? resolution : "",
     superResolutionEnabled,

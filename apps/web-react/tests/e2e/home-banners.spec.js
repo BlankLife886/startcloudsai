@@ -481,7 +481,7 @@ test('configured banner with empty copy keeps a valid destination on the right',
   const hero = page.getByRole('region', { name: '首页精选' })
   await expect(hero.locator('h1, .home-hero__tagline')).toHaveCount(0)
   await expect(hero.getByRole('link', { name: '查看详情', exact: true })).toHaveAttribute('href', '/text-to-image')
-  await expect(hero.getByRole('link', { name: '探索全部工具', exact: true })).toBeVisible()
+  await expect(hero.getByRole('link', { name: '探索全部工具', exact: true })).toHaveCount(0)
   for (const width of [1280, 1440]) {
     await page.setViewportSize({ width, height: 900 })
     const copy = await hero.locator('.home-hero__copy').boundingBox()

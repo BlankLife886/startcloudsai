@@ -54,9 +54,11 @@ func KindOf(model modelconfig.Model) (string, bool) {
 
 // Runnable reports whether /v1 can execute a request on the site model: it
 // exists, is enabled and not in maintenance, and its provider is enabled with
-// an execution route speaking the OpenAI wire protocol (CRUN is an
-// asynchronous task protocol). The provider is resolved the way site model
-// selection resolves it, including its first execution route.
+// a synchronous execution route: OpenAI wire, or a vendor-native adapter
+// (Gemini, DashScope, MiniMax) that providerclient serves behind the OpenAI
+// shapes. CRUN is an asynchronous task protocol and cannot back /v1. The
+// provider is resolved the way site model selection resolves it, including
+// its first execution route.
 func Runnable(cfg modelconfig.Config, modelID string) (modelconfig.Selection, bool) {
 	for _, model := range cfg.Models {
 		if model.ID != modelID {
@@ -66,12 +68,20 @@ func Runnable(cfg modelconfig.Config, modelID string) (modelconfig.Selection, bo
 			return modelconfig.Selection{}, false
 		}
 		provider, ok := modelconfig.ActiveProvider(cfg, model.ProviderID)
-		if !ok || provider.Adapter != modelconfig.AdapterOpenAI {
+		if !ok || !synchronousAdapter(provider.Adapter) {
 			return modelconfig.Selection{}, false
 		}
 		return modelconfig.Selection{Provider: provider, Model: model}, true
 	}
 	return modelconfig.Selection{}, false
+}
+
+func synchronousAdapter(adapter string) bool {
+	switch adapter {
+	case modelconfig.AdapterOpenAI, modelconfig.AdapterGemini, modelconfig.AdapterDashScope, modelconfig.AdapterMiniMax:
+		return true
+	}
+	return false
 }
 
 // LegacyOffered lists what /v1 offered before the catalog existed, in the

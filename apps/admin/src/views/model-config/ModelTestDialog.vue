@@ -16,6 +16,20 @@ export interface ModelTestTarget {
   compat?: RequestCompat | null;
   /** Reasoning levels enabled on the model, marked in the picker. */
   supportedReasoningEfforts?: string[];
+  /** Schema-driven CRUN image model as configured on the page; tested via CRUN tasks. */
+  crunModel?: CRUNTestModel | null;
+}
+
+export interface CRUNTestModel {
+  upstreamInputFields: string[];
+  upstreamRequiredInputFields: string[];
+  upstreamInputSchema: Record<string, unknown>;
+  upstreamFixedInput?: Record<string, string>;
+  qualityNotSent?: boolean;
+  qualityAlwaysSent?: boolean;
+  resolutions: string[];
+  aspectRatios: string[];
+  qualities: string[];
 }
 
 interface TestStep {
@@ -61,6 +75,10 @@ const visible = computed({
 });
 
 const prompt = ref("");
+const crunResolution = ref("");
+const crunRatio = ref("");
+const crunQuality = ref("");
+const referenceUrl = ref("");
 const editPrompt = ref(DEFAULT_PROMPTS.edit);
 const withEdit = ref(true);
 const withTools = ref(true);
@@ -80,12 +98,23 @@ watch(
     prompt.value = target.kind === "image" ? DEFAULT_PROMPTS.image : DEFAULT_PROMPTS.chat;
     editPrompt.value = DEFAULT_PROMPTS.edit;
     reasoningEffort.value = "";
+    const crunModel = target.crunModel;
+    crunResolution.value = crunModel?.resolutions[0] || "";
+    crunRatio.value = crunModel?.aspectRatios.find((ratio) => ratio !== "auto") || crunModel?.aspectRatios[0] || "";
+    crunQuality.value = crunModel?.qualities.includes("medium") ? "medium" : crunModel?.qualities[0] || "";
+    referenceUrl.value = "";
     response.value = null;
     failure.value = "";
   },
 );
 
 const isImage = computed(() => props.target?.kind === "image");
+const crunModel = computed(() => (isImage.value ? props.target?.crunModel || null : null));
+const crunEditOnly = computed(() => !!crunModel.value?.upstreamRequiredInputFields.includes("img_urls"));
+const crunAcceptsReference = computed(() => !!crunModel.value?.upstreamInputFields.includes("img_urls"));
+const crunFixedLabel = computed(() =>
+  Object.entries(crunModel.value?.upstreamFixedInput || {}).map(([field, value]) => `${field}=${value}`).join("、"),
+);
 const enabledEfforts = computed(() => new Set(props.target?.supportedReasoningEfforts || []));
 function effortLabel(value: string) {
   return value ? REASONING_OPTIONS.find((option) => option.value === value)?.label || value : "模型默认";
@@ -102,6 +131,7 @@ const imageResponseLabel = computed(() => {
 });
 
 function imageSrc(base64: string) {
+  if (/^https?:\/\//.test(base64)) return base64;
   const mime = base64.startsWith("/9j/") ? "image/jpeg" : base64.startsWith("UklGR") ? "image/webp" : "image/png";
   return `data:${mime};base64,${base64}`;
 }
@@ -130,6 +160,16 @@ async function run() {
         edit: isImage.value && withEdit.value,
         skipTools: !isImage.value && !withTools.value,
         reasoningEffort: isImage.value ? "" : reasoningEffort.value,
+        ...(crunModel.value
+          ? {
+              crunModel: crunModel.value,
+              edit: crunEditOnly.value || (withEdit.value && crunAcceptsReference.value),
+              resolution: crunResolution.value,
+              aspectRatio: crunRatio.value,
+              quality: crunQuality.value,
+              referenceUrl: referenceUrl.value.trim(),
+            }
+          : {}),
       },
     });
   } catch (error) {
@@ -152,13 +192,40 @@ async function run() {
   >
     <div v-if="target" class="mt">
       <section class="mt-input">
-        <label class="mt-field">
+        <label v-if="!crunEditOnly" class="mt-field">
           <span>{{ isImage ? "文生图提示词" : "对话内容" }}</span>
           <el-input v-model="prompt" type="textarea" :autosize="{ minRows: 3, maxRows: 6 }" :aria-label="isImage ? '文生图提示词' : '对话内容'" />
         </label>
+        <template v-if="crunModel">
+          <div class="mt-crun">
+            <label v-if="crunModel.resolutions.length" class="mt-field">
+              <span>分辨率</span>
+              <el-select v-model="crunResolution" aria-label="分辨率">
+                <el-option v-for="item in crunModel.resolutions" :key="item" :label="item" :value="item" />
+              </el-select>
+            </label>
+            <label v-if="crunModel.aspectRatios.length" class="mt-field">
+              <span>比例</span>
+              <el-select v-model="crunRatio" aria-label="比例">
+                <el-option v-for="item in crunModel.aspectRatios" :key="item" :label="item" :value="item" />
+              </el-select>
+            </label>
+            <label v-if="crunModel.qualities.length" class="mt-field">
+              <span>质量</span>
+              <el-select v-model="crunQuality" aria-label="质量">
+                <el-option v-for="item in crunModel.qualities" :key="item" :label="item" :value="item" />
+              </el-select>
+            </label>
+          </div>
+          <p v-if="crunFixedLabel" class="mt-note">固定版本参数：{{ crunFixedLabel }}</p>
+        </template>
         <template v-if="isImage">
-          <el-checkbox v-model="withEdit">再用生成的图测试图生图</el-checkbox>
-          <label v-if="withEdit" class="mt-field">
+          <el-checkbox v-if="!crunEditOnly && (!crunModel || crunAcceptsReference)" v-model="withEdit">再用生成的图测试图生图</el-checkbox>
+          <label v-if="crunModel && (crunEditOnly || (withEdit && crunAcceptsReference))" class="mt-field">
+            <span>参考图地址<small class="mt-hint">{{ crunEditOnly ? "该模型只支持改图，必填；需公网可访问" : "留空则用上一步生成的图" }}</small></span>
+            <el-input v-model="referenceUrl" placeholder="https://…" aria-label="参考图地址" />
+          </label>
+          <label v-if="withEdit || crunEditOnly" class="mt-field">
             <span>图生图提示词</span>
             <el-input v-model="editPrompt" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" aria-label="图生图提示词" />
           </label>
@@ -240,6 +307,11 @@ async function run() {
   font-weight: 400;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+.mt-crun {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 .mt-note {
   margin: 0;

@@ -140,7 +140,8 @@ test('real-time pricing and restricted channels are disclosed without invented b
   await expect(benefits.locator('dl')).not.toContainText('网站')
   await expect(benefits).toContainText('适用场景全部场景')
   await expect(benefits).toContainText('适用模型全部模型')
-  await expect(benefits).toContainText('+0')
+  await expect(benefits).toContainText('图片并发4 张')
+  await expect(benefits).not.toContainText('+0')
   await expect(benefits).not.toContainText('全额退款')
 })
 

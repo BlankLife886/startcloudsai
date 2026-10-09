@@ -953,7 +953,7 @@ func (w *Worker) callSub2APIClient(ctx context.Context, task *store.Task, client
 		client = client.WithImageModel(model)
 	}
 	finalPrompt, size := prompt.Compile(task.Type, w.taskPromptWithSkills(ctx, task), task.Params)
-	quality := taskParamString(task.Params, "quality")
+	quality := upstreamQuality(task.Params, taskParamString(task.Params, "quality"))
 	inputData, err := w.loadInputImageBytes(ctx, task.InputKeys)
 	if err != nil {
 		return nil, err
@@ -1119,6 +1119,26 @@ func normalizeCRUNAspectRatio(params map[string]any, size string) string {
 	return closest
 }
 
+// upstreamQuality is the quality sent to the provider: none when the model is
+// set to bill by quality without passing it on.
+func upstreamQuality(params map[string]any, quality string) string {
+	if taskParamBool(params, "_qualityNotSent") {
+		return ""
+	}
+	return quality
+}
+
+// requestedCRUNAspectRatio prefers the ratio the user picked (including auto)
+// over the legacy fallback, so a schema-driven model gets its own nearest ratio.
+func requestedCRUNAspectRatio(params map[string]any, fallback string) string {
+	for _, key := range []string{"aspectRatio", "ratio"} {
+		if value := taskParamString(params, key); value != "" {
+			return value
+		}
+	}
+	return fallback
+}
+
 func crunPrompt(prompt string) string {
 	runes := []rune(strings.TrimSpace(prompt))
 	if len(runes) > 5000 {
@@ -1189,12 +1209,20 @@ func (w *Worker) createCRUNImageTasks(
 	}
 	request := crun.OpenAIImageRequest{
 		Prompt: crunPrompt(finalPrompt), N: task.Count, Size: size,
-		Quality: taskParamString(task.Params, "quality"), ImageURLs: references,
+		Quality: upstreamQuality(task.Params, taskParamString(task.Params, "quality")), ImageURLs: references,
 		AspectRatio: aspectRatio, Resolution: resolution,
 		TransparentBackground: taskParamBool(task.Params, "transparentPngEnabled", "transparentPng", "transparentBackground"),
 		OutputFormat:          taskParamString(task.Params, "outputFormat"),
 		ModerationLevel:       taskParamString(task.Params, "moderationLevel"),
 		AllowedInputFields:    allowedInputFields,
+	}
+	if len(models) > 0 && len(models[0].UpstreamInputFields) > 0 {
+		adapted := modelconfig.AdaptCRUNImage(models[0], modelconfig.CRUNImageParams{
+			Prompt: strings.TrimSpace(finalPrompt), AspectRatio: requestedCRUNAspectRatio(task.Params, aspectRatio), Resolution: request.Resolution,
+		})
+		request.Prompt, request.AspectRatio, request.Resolution = adapted.Prompt, adapted.AspectRatio, adapted.Resolution
+		request.FixedInput = models[0].UpstreamFixedInput
+		request.ForceQuality = models[0].QualityAlwaysSent
 	}
 	if err := applyCRUNExactSize(&request, task.Params, exactFields); err != nil {
 		return nil, &crun.PreflightError{Err: err}
@@ -1316,7 +1344,7 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 		client := providerclient.TaskImageForSelection(selection, w.Cfg.C2APrivateNetworkAllowed())
 		finalPrompt, size := prompt.Compile(task.Type, w.taskPromptWithSkills(ctx, task), task.Params)
 		imageOptions := c2a.ImageOptions{
-			Quality:               taskParamString(task.Params, "quality"),
+			Quality:               upstreamQuality(task.Params, taskParamString(task.Params, "quality")),
 			InputFidelity:         taskParamString(task.Params, "inputFidelity"),
 			TransparentBackground: taskParamBool(task.Params, "transparentPngEnabled", "transparentPng", "transparentBackground"),
 			OutputFormat:          taskParamString(task.Params, "outputFormat"),
@@ -1399,7 +1427,7 @@ func (w *Worker) callUpstreamLegacy(ctx context.Context, task *store.Task, provi
 	client := w.frozenC2AClient(frozen)
 	finalPrompt, size := prompt.Compile(task.Type, w.taskPromptWithSkills(ctx, task), task.Params)
 	imageOptions := c2a.ImageOptions{
-		Quality:               taskParamString(task.Params, "quality"),
+		Quality:               upstreamQuality(task.Params, taskParamString(task.Params, "quality")),
 		InputFidelity:         taskParamString(task.Params, "inputFidelity"),
 		TransparentBackground: taskParamBool(task.Params, "transparentPngEnabled", "transparentPng", "transparentBackground"),
 		OutputFormat:          taskParamString(task.Params, "outputFormat"),
@@ -2283,7 +2311,11 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 			}
 		}
 		log.Printf("task %s upstream call failed (%s): %v", taskID, errorCode, callErr)
-		w.recordSlotFailure(ctx, task, errorCode, errorMessage)
+		// A request the upstream rejects as invalid says nothing about the
+		// member's health, so it never counts toward taking a member out.
+		if !upstreamRejectsRequest(callErr) {
+			w.recordSlotFailure(ctx, task, errorCode, errorMessage)
+		}
 	}
 	configuredProvider := taskParamString(task.Params, "_providerConfigId") != ""
 	if callErr != nil && (isRetryableTaskError(callErr) || slotMemberRejected(task, callErr)) && len(outputKeys) == 0 &&

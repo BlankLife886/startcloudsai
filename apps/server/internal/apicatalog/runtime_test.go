@@ -189,3 +189,19 @@ func TestScheduledPricing(t *testing.T) {
 		t.Fatalf("a model not in service changes price at once: %+v", draft)
 	}
 }
+
+// Vendor-native adapters run synchronously behind the OpenAI shapes and can
+// back /v1; CRUN is an asynchronous task protocol and cannot.
+func TestRunnableAdapters(t *testing.T) {
+	for adapter, want := range map[string]bool{
+		modelconfig.AdapterOpenAI: true, modelconfig.AdapterGemini: true,
+		modelconfig.AdapterDashScope: true, modelconfig.AdapterMiniMax: true,
+		modelconfig.AdapterCRUN: false,
+	} {
+		cfg := catalogFixture()
+		cfg.Providers[0].Adapter = adapter
+		if _, got := Runnable(cfg, "img"); got != want {
+			t.Errorf("adapter %q runnable = %v, want %v", adapter, got, want)
+		}
+	}
+}

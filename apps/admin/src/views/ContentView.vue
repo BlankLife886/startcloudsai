@@ -7,6 +7,7 @@ import {
   Download,
   Document,
   EditPen,
+  MagicStick,
   Picture,
   Plus,
   Refresh,
@@ -756,6 +757,7 @@ function openLogCreate() {
     itemsText: "",
     highlight: true,
   });
+  resetAiDraft();
   logDialogVisible.value = true;
 }
 
@@ -770,6 +772,7 @@ function openLogEdit(entry: ChangelogEntry) {
     itemsText: (entry.items ?? []).join("\n"),
     highlight: Boolean(entry.highlight),
   });
+  resetAiDraft();
   logDialogVisible.value = true;
 }
 
@@ -807,6 +810,88 @@ async function submitLog() {
   } finally {
     logSubmitting.value = false;
   }
+}
+
+// ---------- AI 代写 ----------
+interface ChangelogDraft {
+  tag: string;
+  title: string;
+  summary: string;
+  items: string[];
+}
+const aiNotes = ref("");
+const aiLoading = ref(false);
+const aiDraft = ref<ChangelogDraft | null>(null);
+// 填入前的表单内容，用于“撤销填入”。
+const aiUndo = ref<Pick<typeof logForm, "tag" | "title" | "summary" | "itemsText"> | null>(null);
+
+function resetAiDraft() {
+  aiNotes.value = "";
+  aiDraft.value = null;
+  aiUndo.value = null;
+}
+
+const logFormHasContent = computed(() =>
+  Boolean(logForm.title.trim() || logForm.summary.trim() || logForm.itemsText.trim()),
+);
+
+async function runAiDraft(mode: "notes" | "polish") {
+  if (aiLoading.value) return;
+  if (mode === "notes" && !aiNotes.value.trim()) {
+    ElMessage.warning("先写下这次改了什么");
+    return;
+  }
+  aiLoading.value = true;
+  try {
+    aiDraft.value = await request<ChangelogDraft>("/api/v1/admin/changelog/draft", {
+      method: "POST",
+      body: {
+        notes: mode === "notes" ? aiNotes.value.trim() : "",
+        current: {
+          tag: logForm.tag,
+          title: logForm.title.trim(),
+          summary: logForm.summary.trim(),
+          items: logForm.itemsText.split("\n").map((line) => line.trim()).filter(Boolean),
+        },
+      },
+    });
+  } finally {
+    aiLoading.value = false;
+  }
+}
+
+function applyAiDraft() {
+  const draft = aiDraft.value;
+  if (!draft) return;
+  aiUndo.value = {
+    tag: logForm.tag,
+    title: logForm.title,
+    summary: logForm.summary,
+    itemsText: logForm.itemsText,
+  };
+  Object.assign(logForm, {
+    tag: draft.tag || logForm.tag,
+    title: draft.title,
+    summary: draft.summary,
+    itemsText: draft.items.join("\n"),
+  });
+  ElMessage.success("已填入表单，可继续修改后发布");
+}
+
+function undoAiDraft() {
+  if (!aiUndo.value) return;
+  Object.assign(logForm, aiUndo.value);
+  aiUndo.value = null;
+}
+
+const logItemCount = computed(
+  () => logForm.itemsText.split("\n").filter((line) => line.trim()).length,
+);
+
+// 列表里同一版本连续的几条只在第一条显示版本号。
+function isVersionStart(index: number) {
+  const items = changelogPagination.items.value;
+  return index === 0 || items[index - 1]?.version !== items[index]?.version;
 }
 
 async function removeLog(entry: ChangelogEntry) {
@@ -875,7 +960,7 @@ const announcementPagination = useClientPagination(
   () => filteredAnnouncements.value,
   10,
 );
-const changelogPagination = useClientPagination(() => filteredChangelog.value, 10);
+const changelogPagination = useClientPagination(() => filteredChangelog.value, 20);
 
 const liveAnnCount = computed(
   () => announcements.value.filter((item) => announcementState(item).key === "live").length,
@@ -1064,7 +1149,11 @@ onBeforeUnmount(() => clearInterval(announcementClock));
       <div
         v-loading="currentLoading"
         class="content-board"
-        :class="{ 'is-table': activeTab === 'announcements' && announcementPagination.items.value.length }"
+        :class="{
+          'is-table':
+            (activeTab === 'announcements' && announcementPagination.items.value.length) ||
+            (activeTab === 'changelog' && changelogPagination.items.value.length),
+        }"
       >
         <el-table
           v-if="activeTab === 'announcements' && announcementPagination.items.value.length"
@@ -1171,56 +1260,55 @@ onBeforeUnmount(() => clearInterval(announcementClock));
           v-else-if="activeTab === 'changelog' && changelogPagination.items.value.length"
           class="log-list"
         >
+          <div class="log-row log-row--head" aria-hidden="true">
+            <span>版本</span>
+            <span>类型</span>
+            <span>标题与摘要</span>
+            <span class="is-num">改动</span>
+            <span>焦点</span>
+            <span />
+          </div>
           <article
-            v-for="entry in changelogPagination.items.value"
+            v-for="(entry, index) in changelogPagination.items.value"
             :key="entry.id"
-            class="log-card"
-            :class="{ 'is-highlight': entry.highlight }"
+            class="log-row"
+            :class="{ 'is-highlight': entry.highlight, 'is-group-start': isVersionStart(index) }"
+            @dblclick="openLogEdit(entry)"
           >
-            <div class="log-card__version">
-              <strong>{{ entry.version }}</strong>
-              <span class="tnum">{{ entry.date }}</span>
+            <div class="log-row__version">
+              <template v-if="isVersionStart(index)">
+                <strong class="tnum">{{ entry.version }}</strong>
+                <span class="tnum">{{ entry.date }}</span>
+              </template>
             </div>
-            <div class="log-card__body">
-              <header>
-                <h3>{{ entry.title }}</h3>
-                <div class="log-card__tags">
-                  <span
-                    class="status-chip"
-                    :class="entry.tag === 'feature' ? 'is-violet' : 'is-success'"
-                  >
-                    {{ TAG_LABELS[entry.tag] ?? entry.tag }}
-                  </span>
-                  <span v-if="entry.highlight" class="status-chip is-warning">
-                    焦点
-                  </span>
-                </div>
-              </header>
-              <p>{{ entry.summary || "未填写摘要" }}</p>
-              <span class="log-card__count tnum">
-                {{ entry.items?.length || 0 }} 条改动
+            <div>
+              <span class="status-chip" :class="entry.tag === 'feature' ? 'is-violet' : 'is-success'">
+                {{ TAG_LABELS[entry.tag] ?? entry.tag }}
               </span>
             </div>
-            <footer class="log-card__foot">
-              <label class="content-switch">
-                <span>焦点</span>
-                <el-switch
-                  :model-value="Boolean(entry.highlight)"
-                  :loading="switchingLogId === entry.id"
-                  @change="toggleLogHighlight(entry, Boolean($event))"
-                />
-              </label>
-              <div class="content-actions">
-                <el-button :icon="EditPen" @click="openLogEdit(entry)">编辑</el-button>
-                <el-button
-                  type="danger"
-                  plain
-                  :icon="Delete"
-                  aria-label="删除更新说明"
-                  @click="removeLog(entry)"
-                />
-              </div>
-            </footer>
+            <div class="log-row__main">
+              <strong :title="entry.title">
+                {{ entry.title }}
+                <span v-if="entry.highlight" class="status-chip is-warning">焦点</span>
+              </strong>
+              <p :title="entry.summary || ''" :class="{ 'is-empty': !entry.summary }">
+                {{ entry.summary || "未填写摘要" }}
+              </p>
+            </div>
+            <span class="log-row__count tnum" :class="{ 'is-empty': !entry.items?.length }">
+              {{ entry.items?.length || 0 }} 条
+            </span>
+            <el-switch
+              :model-value="Boolean(entry.highlight)"
+              :loading="switchingLogId === entry.id"
+              size="small"
+              aria-label="设为焦点版本"
+              @change="toggleLogHighlight(entry, Boolean($event))"
+            />
+            <div class="log-row__actions">
+              <el-button text :icon="EditPen" @click="openLogEdit(entry)">编辑</el-button>
+              <el-button text type="danger" :icon="Delete" aria-label="删除更新说明" @click="removeLog(entry)" />
+            </div>
           </article>
         </div>
 
@@ -1637,70 +1725,104 @@ onBeforeUnmount(() => clearInterval(announcementClock));
       :title="logEditingId ? '编辑更新说明' : '发布版本'"
       subtitle="发布新版本后，已打开网站的用户会收到刷新提示"
       :icon="Document"
-      width="min(960px, calc(100vw - 32px))"
+      width="min(1180px, calc(100vw - 32px))"
       nested-scroll
       :confirm-text="logEditingId ? '保存' : '发布'"
       :confirm-loading="logSubmitting"
       @confirm="submitLog"
     >
-      <el-form class="changelog-editor" label-position="top">
-        <div class="changelog-editor__meta">
-          <el-form-item label="版本号" required>
+      <div class="changelog-editor">
+        <el-form class="changelog-editor__form" label-position="top">
+          <div class="changelog-editor__meta">
+            <el-form-item label="版本号" required>
+              <el-input v-model="logForm.version" maxlength="32" placeholder="如 3.3.1" />
+              <small v-if="!logEditingId" class="changelog-editor__hint">已按上一版自动递增</small>
+            </el-form-item>
+            <el-form-item label="日期" required>
+              <el-date-picker v-model="logForm.date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+            </el-form-item>
+            <el-form-item label="类型">
+              <el-select v-model="logForm.tag" style="width: 100%">
+                <el-option label="新功能" value="feature" />
+                <el-option label="体验优化" value="experience" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="本期焦点">
+              <div class="changelog-editor__highlight">
+                <el-switch v-model="logForm.highlight" />
+                <span>置顶到用户端更新页</span>
+              </div>
+            </el-form-item>
+          </div>
+          <el-form-item label="标题" required>
+            <el-input v-model="logForm.title" maxlength="200" show-word-limit placeholder="这一版用户能感知到的变化" />
+          </el-form-item>
+          <el-form-item label="摘要">
             <el-input
-              v-model="logForm.version"
-              maxlength="32"
-              placeholder="如 3.3.1"
-            />
-            <small v-if="!logEditingId" class="changelog-editor__hint">
-              已按上一版自动递增，可直接修改
-            </small>
-          </el-form-item>
-          <el-form-item label="日期" required>
-            <el-date-picker
-              v-model="logForm.date"
-              type="date"
-              value-format="YYYY-MM-DD"
-              style="width: 100%"
+              v-model="logForm.summary"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 6 }"
+              placeholder="一两句话说明这次发版的重点"
             />
           </el-form-item>
-          <el-form-item label="类型">
-            <el-select v-model="logForm.tag" style="width: 100%">
-              <el-option label="新功能" value="feature" />
-              <el-option label="体验优化" value="experience" />
-            </el-select>
+          <el-form-item class="changelog-editor__items">
+            <template #label>条目 <em class="changelog-editor__count tnum">{{ logItemCount }} 条</em></template>
+            <el-input
+              v-model="logForm.itemsText"
+              type="textarea"
+              :autosize="{ minRows: 10, maxRows: 40 }"
+              placeholder="一行一条改动说明，会显示在用户端更新时间线里"
+            />
           </el-form-item>
-          <el-form-item label="本期焦点">
-            <div class="changelog-editor__highlight">
-              <el-switch v-model="logForm.highlight" />
-              <span>置顶到用户端更新页</span>
+        </el-form>
+
+        <aside class="changelog-ai" aria-label="AI 代写">
+          <header class="changelog-ai__head">
+            <span class="changelog-ai__mark"><el-icon><MagicStick /></el-icon></span>
+            <div>
+              <strong>AI 代写</strong>
+              <small>把改动要点整理成用户看得懂的说明</small>
             </div>
-          </el-form-item>
-        </div>
-        <el-form-item label="标题" required>
+          </header>
           <el-input
-            v-model="logForm.title"
-            maxlength="200"
-            show-word-limit
-            placeholder="这一版用户能感知到的变化"
-          />
-        </el-form-item>
-        <el-form-item label="摘要">
-          <el-input
-            v-model="logForm.summary"
+            v-model="aiNotes"
             type="textarea"
-            :autosize="{ minRows: 4, maxRows: 8 }"
-            placeholder="一两段话说明这次发版的重点"
+            resize="none"
+            :rows="7"
+            maxlength="8000"
+            :placeholder="'随手写下这次改了什么，可直接粘贴提交记录或需求清单，例如：\n- 画布支持多选拖动\n- 修复 4K 图下载失败'"
+            :disabled="aiLoading"
           />
-        </el-form-item>
-        <el-form-item class="changelog-editor__items" label="条目">
-          <el-input
-            v-model="logForm.itemsText"
-            type="textarea"
-            :autosize="{ minRows: 12, maxRows: 24 }"
-            placeholder="一行一条改动说明，会显示在用户端更新时间线里"
-          />
-        </el-form-item>
-      </el-form>
+          <div class="changelog-ai__actions">
+            <el-button type="primary" :icon="MagicStick" :loading="aiLoading" :disabled="!aiNotes.trim()" @click="runAiDraft('notes')">
+              生成草稿
+            </el-button>
+            <el-button :disabled="aiLoading || !logFormHasContent" @click="runAiDraft('polish')">润色当前内容</el-button>
+          </div>
+          <p class="changelog-ai__tip">使用「系统设置 · AI 模型」里的后台分析模型；结果先预览，确认后再填入表单。</p>
+
+          <div v-if="aiDraft" class="changelog-ai__result">
+            <div class="changelog-ai__result-head">
+              <span class="status-chip" :class="aiDraft.tag === 'feature' ? 'is-violet' : 'is-success'">
+                {{ TAG_LABELS[aiDraft.tag] ?? aiDraft.tag }}
+              </span>
+              <strong>{{ aiDraft.title }}</strong>
+            </div>
+            <p v-if="aiDraft.summary">{{ aiDraft.summary }}</p>
+            <ul>
+              <li v-for="(item, index) in aiDraft.items" :key="index">{{ item }}</li>
+            </ul>
+            <div class="changelog-ai__result-actions">
+              <el-button type="primary" size="small" @click="applyAiDraft">填入表单</el-button>
+              <el-button v-if="aiUndo" size="small" @click="undoAiDraft">撤销填入</el-button>
+              <el-button text size="small" @click="aiDraft = null">丢弃</el-button>
+            </div>
+          </div>
+          <p v-else-if="aiUndo" class="changelog-ai__tip">
+            已填入表单。<el-button text size="small" @click="undoAiDraft">撤销填入</el-button>
+          </p>
+        </aside>
+      </div>
     </AdminDialog>
 
     <el-drawer
@@ -1961,111 +2083,150 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   margin-left: 0;
 }
 
-.log-card {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+/* 更新说明：紧凑单行，同一版本只在首行显示版本号 */
+.log-list {
+  display: grid;
+  flex: 1;
+  align-content: start;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 120px 84px minmax(0, 1fr) 64px 56px 132px;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: 8px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  transition: background-color 0.15s ease;
+}
+
+.log-row.is-group-start {
+  border-top-color: var(--border);
+}
+
+.log-row:hover {
   background: var(--surface-2);
-  box-shadow: inset 3px 0 0 transparent;
 }
 
-.log-card:hover {
-  border-color: var(--border-strong);
+.log-row.is-highlight {
+  background: color-mix(in srgb, var(--warning-soft) 55%, transparent);
+  box-shadow: inset 3px 0 0 var(--warning);
 }
 
-.log-card {
-  display: grid;
-  grid-template-columns: 108px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 16px;
-}
-
-.log-card.is-highlight {
-  border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
-  background: color-mix(in srgb, var(--warning-soft) 45%, var(--surface-2));
-}
-
-.log-card__body h3 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.35;
-}
-
-.log-card__body h3 {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.log-card__body p {
-  margin: 6px 0 0;
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.55;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.log-card__body p {
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
-}
-
-.log-card__count {
-  display: inline-flex;
-  margin-top: 8px;
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.log-card__foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: auto;
-}
-
-.log-card__version {
-  display: grid;
-  gap: 4px;
-}
-
-.log-card__version strong {
-  font-size: 18px;
-  font-weight: 760;
-  letter-spacing: -0.04em;
-}
-
-.log-card__version span {
+.log-row--head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 36px;
+  border-top: 0;
+  background: var(--surface-2);
   color: var(--ink-3);
   font-size: 12px;
   font-weight: 600;
 }
 
-.log-card__body header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
+.log-row--head:hover {
+  background: var(--surface-2);
 }
 
-.log-card__tags {
+.log-row--head .is-num,
+.log-row__count {
+  text-align: right;
+}
+
+.log-row__version {
+  display: grid;
+  gap: 2px;
+}
+
+.log-row__version strong {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 760;
+  letter-spacing: -0.03em;
+}
+
+.log-row__version span {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.log-row__main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.log-row__main strong {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-row__main strong .status-chip {
+  min-height: 18px;
+  padding: 0 6px;
+  font-size: 10px;
+}
+
+.log-row__main p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-row__main p.is-empty,
+.log-row__count.is-empty {
+  color: color-mix(in srgb, var(--ink-3) 60%, transparent);
+}
+
+.log-row__count {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.log-row__actions {
+  display: flex;
   justify-content: flex-end;
-  gap: 6px;
-  flex-shrink: 0;
+  gap: 2px;
+}
+
+.log-row__actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+@media (max-width: 860px) {
+  .log-row {
+    grid-template-columns: 88px minmax(0, 1fr) auto;
+    gap: 6px 12px;
+  }
+  .log-row--head { display: none; }
+  .log-row > :nth-child(2) { grid-column: 2; grid-row: 2; }
+  .log-row__main { grid-column: 2 / -1; grid-row: 1; }
+  .log-row__count { display: none; }
+  .log-row__actions { grid-column: 3; grid-row: 2; }
 }
 
 .status-chip {
@@ -2143,16 +2304,12 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   border-top: 1px solid var(--border);
 }
 
-.log-list {
-  display: grid;
-  gap: 10px;
-  align-content: start;
-}
 
 .announcement-editor {
   display: grid;
   flex: 1;
   grid-template-columns: minmax(0, 1fr) 440px;
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -2162,10 +2319,14 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 
 .announcement-editor__form {
   min-width: 0;
+  min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 4px 28px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink-3) 45%, transparent) transparent;
 }
 
 .announcement-editor__form :deep(.el-form-item) {
@@ -2407,6 +2568,7 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 
 .announcement-preview-stage {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 16px;
@@ -2440,13 +2602,19 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   font-weight: 650;
 }
 
+/* 预览区自己滚动：内容比预览区高时可以滚到底，不再被裁掉 */
 .announcement-preview-canvas {
   flex: 1;
   min-height: 0;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   padding: 16px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
   border: 1px solid var(--border);
   border-radius: 12px;
   background:
@@ -2457,8 +2625,10 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 }
 
 .announcement-preview {
+  flex: none;
+  /* 上下 auto 外边距：内容不高时垂直居中，内容超高时从顶部开始、可完整滚动 */
+  margin: auto 0;
   width: min(360px, 100%);
-  max-height: 100%;
   overflow: hidden;
   display: grid;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -2710,11 +2880,21 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   }
 }
 
+/* 发布版本：左侧表单自己滚动，右侧 AI 代写 */
 .changelog-editor {
-  display: flex;
-  flex-direction: column;
-  min-height: min(72vh, 760px);
-  padding: 8px 8px 4px;
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  min-height: 0;
+}
+
+.changelog-editor__form {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 10px 4px 2px;
+  scrollbar-width: thin;
 }
 
 .changelog-editor__meta {
@@ -2730,7 +2910,8 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   gap: 10px;
 }
 
-.changelog-editor__highlight span {
+.changelog-editor__highlight span,
+.changelog-editor__hint {
   color: var(--ink-3);
   font-size: 12px;
   line-height: 1.4;
@@ -2738,14 +2919,19 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 
 .changelog-editor__hint {
   display: block;
-  margin-top: 6px;
+  margin-top: 4px;
+}
+
+.changelog-editor__count {
+  margin-left: 6px;
   color: var(--ink-3);
   font-size: 12px;
-  line-height: 1.4;
+  font-style: normal;
+  font-weight: 500;
 }
 
 .changelog-editor :deep(.el-form-item) {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .changelog-editor :deep(.el-form-item__label) {
@@ -2754,24 +2940,121 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 }
 
 .changelog-editor :deep(.el-textarea__inner) {
+  line-height: 1.6;
+}
+
+.changelog-ai {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--surface-2);
+  scrollbar-width: thin;
+}
+
+.changelog-ai__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.changelog-ai__mark {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.changelog-ai__head strong {
+  display: block;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.changelog-ai__head small {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.changelog-ai :deep(.el-textarea__inner) {
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.changelog-ai__actions,
+.changelog-ai__result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.changelog-ai__actions .el-button + .el-button,
+.changelog-ai__result-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+.changelog-ai__tip {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.changelog-ai__result {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgb(16 24 40 / 0.05), 0 6px 16px -10px rgb(16 24 40 / 0.18);
+}
+
+.changelog-ai__result-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.changelog-ai__result-head strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.changelog-ai__result p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.changelog-ai__result ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-2);
+  font-size: 12px;
   line-height: 1.55;
 }
 
-.changelog-editor__items {
-  flex: 1 1 auto;
-}
-
-.changelog-editor__items :deep(.el-form-item__content),
-.changelog-editor__items :deep(.el-textarea),
-.changelog-editor__items :deep(.el-textarea__inner) {
-  min-height: 280px;
-}
-
-@media (max-width: 860px) {
+@media (max-width: 960px) {
   .changelog-editor {
-    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
   }
-
+  .changelog-editor__form,
+  .changelog-ai {
+    overflow: visible;
+  }
   .changelog-editor__meta {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

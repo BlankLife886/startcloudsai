@@ -256,7 +256,12 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 		return
 	}
 	now := time.Now().UTC()
-	subscribed, err := store.ActiveSubscriptionFlagsByUserIDs(ctx, s.St.Pool, ids, now)
+	subscriptions, err := store.LatestSubscriptionsByUserIDs(ctx, s.St.Pool, ids, now)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	orderSummaries, err := store.OrderSummariesByUserIDs(ctx, s.St.Pool, ids)
 	if err != nil {
 		fail(c, err)
 		return
@@ -280,7 +285,19 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 			"orders":         summary.Orders,
 		}
 		d["profile"] = profiles[u.ID]
-		d["subscription"] = gin.H{"active": subscribed[u.ID]}
+		if sub, found := subscriptions[u.ID]; found {
+			d["subscription"] = gin.H{
+				"active":   sub.Active,
+				"status":   sub.Status,
+				"planName": sub.PlanName,
+				"startsAt": isoValue(sub.StartsAt),
+				"endsAt":   isoValue(sub.EndsAt),
+				"total":    sub.Total,
+			}
+		} else {
+			d["subscription"] = gin.H{"active": false, "total": 0}
+		}
+		d["orderSummary"] = orderSummaries[u.ID]
 		if ip := lastIPs[u.ID]; ip != "" {
 			d["lastSessionIp"] = ip
 		} else {

@@ -11,6 +11,7 @@ declare module 'vue' {
     AdminDateRange: typeof import('./components/AdminDateRange.vue')['default']
     AdminDialog: typeof import('./components/AdminDialog.vue')['default']
     AdminListShell: typeof import('./components/AdminListShell.vue')['default']
+    ContentPolicyRulesPanel: typeof import('./components/settings/ContentPolicyRulesPanel.vue')['default']
     CursorPager: typeof import('./components/CursorPager.vue')['default']
     DeveloperAPIModelsPanel: typeof import('./components/DeveloperAPIModelsPanel.vue')['default']
     EChart: typeof import('./components/EChart.vue')['default']

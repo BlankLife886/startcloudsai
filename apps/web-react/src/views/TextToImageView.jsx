@@ -22,6 +22,7 @@ import {
   clampImageCount,
   imageCountChoices,
   normalizeImageModelCapabilities,
+  referenceRequiredMessage,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import {
   composePendingLaunchPrompt,
@@ -88,7 +89,7 @@ import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCata
 import { RegenerateIcon } from "../components/common/RegenerateIcon.jsx";
 import { ExactImageSizeControl } from "../components/ExactImageSizeControl.jsx";
 import { validateExactImageSize } from "../config/exactImageSize.js";
-import { backgroundRemovalModelsOf, buildT2iPayload, featureModels, wallpaperFeature } from "../features/text-to-image/t2iRequest.js";
+import { backgroundRemovalModelsOf, buildT2iPayload, featureModels, modelPromptMaxChars, wallpaperFeature } from "../features/text-to-image/t2iRequest.js";
 import "./TextToImageView.css";
 import { PriceAdjustmentTag } from "../components/common/PriceAdjustmentTag.jsx";
 
@@ -839,7 +840,6 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const models = useMemo(() => featureModels(runtime), [runtime]);
   const availableModels = useMemo(() => availableCatalogModels(models), [models]);
   const feature = useMemo(() => wallpaperFeature(runtime), [runtime]);
-  const promptMaxChars = runtime?.promptInputLimits?.t2iPromptMaxChars ?? 8000;
   const backgroundRemovalModels = useMemo(() => backgroundRemovalModelsOf(runtime), [runtime]);
   const backgroundRemovalModel =
     backgroundRemovalModels.find((item) => item.default === true) ||
@@ -847,6 +847,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     null;
   const currentModel = availableModels.find((item) => item.id === modelId)
     || (imageSize.sizeMode === "exact" ? null : availableModels.find((item) => item.default) || availableModels[0] || null);
+  const promptMaxChars = modelPromptMaxChars(currentModel, runtime?.promptInputLimits?.t2iPromptMaxChars ?? 8000);
   const exactSize = imageSize.sizeMode === "exact"
     ? validateExactImageSize(currentModel, imageSize.exactWidth, imageSize.exactHeight)
     : null;
@@ -1766,6 +1767,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const generationButton = generationButtonState({
     authenticated, loading, referencesReady, hasPrompt: Boolean(prompt.trim()), modelReady: Boolean(currentModel),
     invalidSize: Boolean(exactSize && !exactSize.valid), quoting: quotingCost, confirmation: cost,
+    referenceHint: referenceRequiredMessage(currentModel, references.length),
     submitting: jobs.submitting, submissionPhase: jobs.submissionPhase, pendingBatch: jobs.pendingBatch,
     taskCounts,
     generationCost: tierUnitPrice == null ? null : generationCost,

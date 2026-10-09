@@ -26,6 +26,7 @@ type SiteModel = {
     qualities?: unknown;
     transparentBackground?: unknown;
     maxReferenceImages?: unknown;
+    requiresReference?: unknown;
     maxImages?: unknown;
     supportedReasoningEfforts?: unknown;
     defaultReasoningEffort?: unknown;
@@ -183,6 +184,7 @@ function mapSiteModel(raw: SiteModel, capability: "image" | "text"): ChannelMode
         qualities: stringList(raw.qualities),
         transparentBackground: raw.transparentBackground !== false,
         maxReferenceImages: finiteNumber(raw.maxReferenceImages),
+        requiresReference: raw.requiresReference === true,
         maxImages: finiteNumber(raw.maxImages),
         supportedReasoningEfforts: reasoningEffortList(raw.supportedReasoningEfforts),
         defaultReasoningEffort: reasoningEffort(raw.defaultReasoningEffort),

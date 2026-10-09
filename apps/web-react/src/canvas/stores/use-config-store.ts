@@ -49,6 +49,7 @@ export type ChannelModel = {
     qualities?: string[];
     transparentBackground?: boolean;
     maxReferenceImages?: number;
+    requiresReference?: boolean;
     maxImages?: number;
     supportedReasoningEfforts?: ModelReasoningEffort[];
     defaultReasoningEffort?: ModelReasoningEffort;

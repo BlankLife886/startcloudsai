@@ -75,6 +75,11 @@ type OpenAIImageRequest struct {
 	OutputFormat          string
 	ModerationLevel       string
 	AllowedInputFields    []string
+	// FixedInput carries admin-pinned schema fields such as model_variant.
+	FixedInput map[string]string
+	// ForceQuality sends quality even when the schema does not declare it;
+	// the admin chose to, so the upstream decides what to do with it.
+	ForceQuality bool
 }
 
 func New(baseURL, apiKey, model string, timeoutSecs int) (*Client, error) {
@@ -244,6 +249,12 @@ func (c *Client) EstimateMediaTask(ctx context.Context, request MediaTaskRequest
 	return &data, nil
 }
 
+// EstimateImage returns CRUN's credit quote for the input CreateTask would
+// send for this request; nothing is generated or charged.
+func (c *Client) EstimateImage(ctx context.Context, request OpenAIImageRequest) (*MediaEstimate, error) {
+	return c.EstimateMediaTask(ctx, MediaTaskRequest{Model: c.model, Input: buildImageInput(request)})
+}
+
 // CreateMediaTask intentionally performs exactly one HTTP request. Callers
 // must persist the returned task ID before any retry or status polling.
 func (c *Client) CreateMediaTask(ctx context.Context, request MediaTaskRequest) (*MediaTaskCreated, error) {
@@ -325,7 +336,13 @@ func (c *Client) CreateTaskWithRequest(ctx context.Context, request OpenAIImageR
 }
 
 func buildImageInput(request OpenAIImageRequest) map[string]any {
-	input := map[string]any{"prompt": request.Prompt}
+	input := map[string]any{}
+	for field, value := range request.FixedInput {
+		if inputFieldAllowed(request.AllowedInputFields, field) {
+			input[field] = value
+		}
+	}
+	input["prompt"] = request.Prompt
 	if !request.ExactSize && inputFieldAllowed(request.AllowedInputFields, "aspect_ratio") && strings.TrimSpace(request.AspectRatio) != "" {
 		input["aspect_ratio"] = request.AspectRatio
 	}
@@ -347,7 +364,7 @@ func buildImageInput(request OpenAIImageRequest) map[string]any {
 			}
 		}
 	}
-	if quality := strings.ToLower(strings.TrimSpace(request.Quality)); inputFieldAllowed(request.AllowedInputFields, "quality") && quality != "" {
+	if quality := strings.ToLower(strings.TrimSpace(request.Quality)); quality != "" && (request.ForceQuality || inputFieldAllowed(request.AllowedInputFields, "quality")) {
 		input["quality"] = quality
 	}
 	if inputFieldAllowed(request.AllowedInputFields, "background") && request.TransparentBackground {

@@ -137,6 +137,35 @@ const slotCounts = computed(() => {
   };
 });
 
+const view = ref<"slots" | "members">("slots");
+
+interface MemberUsage {
+  ownerName: string;
+  resolution: string;
+  role: string;
+  active: boolean;
+  status: MemberView["status"];
+}
+
+/** Each model that serves in any slot, with every slot that borrows it. */
+const memberUsages = computed(() => {
+  const byMember = new Map<string, { modelId: string; name: string; usages: MemberUsage[] }>();
+  for (const slot of overview.value?.slots || []) {
+    for (const member of slot.members) {
+      const entry = byMember.get(member.modelId) || { modelId: member.modelId, name: member.name, usages: [] };
+      entry.usages.push({
+        ownerName: slot.modelId === member.modelId ? `${slot.modelName}（自身）` : slot.modelName,
+        resolution: slot.resolution,
+        role: member.order === 0 ? "主模型" : `备用 ${member.order}`,
+        active: member.active,
+        status: member.status,
+      });
+      byMember.set(member.modelId, entry);
+    }
+  }
+  return [...byMember.values()].sort((a, b) => b.usages.length - a.usages.length || a.name.localeCompare(b.name));
+});
+
 async function saveSettings() {
   if (await act("settings", "settings", { ...settingsDraft }, "PUT")) ElMessage.success("已保存");
 }
@@ -245,9 +274,27 @@ function eventText(event: SlotEvent): string {
         <span>共 {{ slotCounts.total }} 个</span>
         <span v-if="slotCounts.backup" class="is-warning">{{ slotCounts.backup }} 个使用备用</span>
         <span v-if="slotCounts.down" class="is-danger">{{ slotCounts.down }} 个不可用</span>
+        <el-segmented v-model="view" class="ss-view" size="small" :options="[{ label: '按槽位', value: 'slots' }, { label: '按成员模型', value: 'members' }]" />
       </header>
 
-      <div class="ss-slots">
+      <table v-if="view === 'members' && memberUsages.length" class="ss-members">
+        <thead>
+          <tr><th>成员模型</th><th>被借用</th><th>用在哪里</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="member in memberUsages" :key="member.modelId">
+            <td><strong>{{ member.name }}</strong></td>
+            <td>{{ member.usages.length }} 处</td>
+            <td>
+              <span v-for="usage in member.usages" :key="`${usage.ownerName}:${usage.resolution}`" class="ss-usage" :class="{ 'is-down': usage.status === 'down' }">
+                {{ usage.ownerName }} · {{ usage.resolution }} · {{ usage.role }}<template v-if="usage.active"> · 使用中</template><template v-if="usage.status === 'down'"> · 故障</template>
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div v-show="view === 'slots'" class="ss-slots">
         <article v-for="slot in overview?.slots || []" :key="`${slot.modelId}:${slot.resolution}`" class="ss-slot" :class="`is-${slotState(slot).tone}`">
           <header>
             <span class="ss-res">{{ slot.resolution }}</span>
@@ -443,6 +490,12 @@ function eventText(event: SlotEvent): string {
   font-size: 13px;
 }
 .ss-summary .is-warning { color: var(--warning); }
+.ss-view { margin-left: auto; }
+.ss-members { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ss-members th, .ss-members td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.ss-members th { color: var(--ink-3); font-weight: 500; }
+.ss-usage { display: inline-block; margin: 2px 6px 2px 0; padding: 2px 8px; border-radius: 5px; background: var(--el-fill-color-light); }
+.ss-usage.is-down { color: var(--danger); }
 .ss-summary .is-danger { color: var(--danger); }
 .ss-res {
   padding: 2px 10px;

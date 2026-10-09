@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/subscription"
 	"github.com/gin-gonic/gin"
@@ -34,6 +37,29 @@ func publicSubscriptionChange(change *store.SubscriptionChange) gin.H {
 		"refundCalculation": change.RefundCalculation, "createdAt": change.CreatedAt, "updatedAt": change.UpdatedAt,
 		"completedAt": change.CompletedAt, "expiresAt": change.ExpiresAt}
 }
+
+// modelNames maps the model config ids a plan stores to the names users see;
+// ids missing from the catalogue fall back to the id itself.
+func (s *Server) modelNames(ctx context.Context) func([]string) []string {
+	byID := map[string]string{}
+	if cfg, err := modelconfig.Load(ctx, s.St.Pool); err == nil {
+		for _, model := range cfg.Models {
+			byID[model.ID] = model.Name
+		}
+	}
+	return func(ids []string) []string {
+		names := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if name := byID[id]; name != "" {
+				names = append(names, name)
+			} else {
+				names = append(names, id)
+			}
+		}
+		return names
+	}
+}
+
 // myConcurrency 返回当前用户的执行并发额度（基础 + 订阅 + 手动）与占用，供前端按实际额度
 // 控制同时提交的任务数；比 /me/subscriptions 轻，不做订阅积分过期等写操作。
 func (s *Server) myConcurrency(c *gin.Context) {
@@ -73,9 +99,13 @@ func (s *Server) mySubscriptions(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	modelNames := s.modelNames(ctx)
 	items := []gin.H{}
 	for _, sub := range subscriptions {
 		item := subscriptionDict(sub, at)
+		if len(sub.Policy.ModelIDs) > 0 {
+			item["modelNames"] = modelNames(sub.Policy.ModelIDs)
+		}
 		if sub.PlanName == "" {
 			p, err := store.GetPlan(ctx, s.St.Pool, sub.PlanID)
 			if err != nil {
@@ -121,7 +151,7 @@ func (s *Server) mySubscriptions(c *gin.Context) {
 	for _, change := range changes {
 		publicChanges = append(publicChanges, publicSubscriptionChange(change))
 	}
-	ok(c, gin.H{"concurrency": concurrency, "items": items, "changes": publicChanges, "serverTime": at, "refundMode": "manual_provider_confirmation"})
+	ok(c, gin.H{"concurrency": concurrency, "baseCanvasProjects": settings.ResolveCanvasProjectMaxCount(ctx, s.St.Pool), "baseAssistantConversations": settings.ResolveAssistantConversationPolicy(ctx, s.St.Pool).MaxCount, "items": items, "changes": publicChanges, "serverTime": at, "refundMode": "manual_provider_confirmation"})
 }
 func (s *Server) mySubscriptionGrants(c *gin.Context) {
 	user, err := s.requireUser(c)

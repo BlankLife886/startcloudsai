@@ -35,6 +35,8 @@ import { useSitePriceRefresh } from "../hooks/useSitePriceRefresh.js";
 import {
   getModelAspectRatiosForResolution,
   normalizeImageModelCapabilities,
+  referenceRequiredMessage,
+  promptInputLimit,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { resolveT2iOutputSize } from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
 import {
@@ -1987,6 +1989,10 @@ function DesignWorkshopWorkspace() {
       );
       return;
     }
+    if (referenceRequiredMessage(activeModel, hasReference ? 1 : 0)) {
+      setLocalError(referenceRequiredMessage(activeModel, 0));
+      return;
+    }
     if (hasReference && maxReferenceImages < 1) {
       setLocalError("当前模型不支持参考图，请在后台切换模型后重试。");
       return;
@@ -3557,7 +3563,7 @@ function DesignWorkshopWorkspace() {
                   id="dws-brief"
                   value={isIteration ? iterationBrief : brief}
                   rows={5}
-                  maxLength={1000}
+                  maxLength={promptInputLimit(activeModel, 1000)}
                   aria-label={isIteration ? "本次迭代要求" : "产品与页面描述"}
                   placeholder={
                     isIteration
@@ -4596,7 +4602,7 @@ function DesignWorkshopWorkspace() {
             <textarea
               value={regionPrompt}
               rows={4}
-              maxLength={1000}
+              maxLength={promptInputLimit(activeModel, 1000)}
               disabled={regionBusy}
               placeholder={regionActionGuide.placeholder}
               onChange={(event) => setRegionPrompt(event.target.value)}

@@ -200,6 +200,13 @@ func TestResolutionSlotsNormalizeAndValidate(t *testing.T) {
 	expectError("nested", "不能嵌套", func(cfg *Config) {
 		cfg.Models[3].ResolutionSlots = map[string]ResolutionSlot{"1K": {PrimaryModelID: "backup-b"}}
 	})
+	expectError("ratio", "不支持比例", func(cfg *Config) {
+		cfg.Models[3].AspectRatios = []string{"1:1"}
+		cfg.Models[3].AspectRatiosByResolution = nil
+	})
+	expectError("edit only", "只支持改图", func(cfg *Config) {
+		cfg.Models[3].UpstreamRequiredInputFields = []string{"img_urls", "prompt"}
+	})
 }
 
 func TestNewerQualitiesAreOptInAndAutoCanBeItsOwnTier(t *testing.T) {
@@ -232,5 +239,23 @@ func TestNewerQualitiesAreOptInAndAutoCanBeItsOwnTier(t *testing.T) {
 	delete(cfg.Models[0].ImagePricing["1K"], "xhigh")
 	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "缺少 1K · xhigh") {
 		t.Fatalf("a selected quality must be priced: %v", err)
+	}
+}
+
+func TestSlotMemberCapabilities(t *testing.T) {
+	owner := Model{Name: "主人", Qualities: []string{"high"}, MaxReferenceImages: 4, AspectRatios: []string{"1:1"}, Resolutions: []string{"2K"}}
+	member := Model{Name: "成员", Qualities: []string{"high"}, MaxReferenceImages: 4, AspectRatios: []string{"1:1"}, Resolutions: []string{"2K"}}
+	if err := validateSlotMemberCapabilities(owner, member, "2K", "成员"); err != nil {
+		t.Fatalf("compatible member rejected: %v", err)
+	}
+	noQuality := member
+	noQuality.Qualities = nil
+	if err := validateSlotMemberCapabilities(owner, noQuality, "2K", "成员"); err == nil || !strings.Contains(err.Error(), "没有开放任何质量档") {
+		t.Fatalf("member without qualities = %v", err)
+	}
+	fewerRefs := member
+	fewerRefs.MaxReferenceImages = 1
+	if err := validateSlotMemberCapabilities(owner, fewerRefs, "2K", "成员"); err == nil || !strings.Contains(err.Error(), "张参考图") {
+		t.Fatalf("member with fewer references = %v", err)
 	}
 }

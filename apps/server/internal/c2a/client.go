@@ -1805,6 +1805,9 @@ func (c *Client) EditImagesStandardStream(ctx context.Context, prompt, model str
 	if len(images) == 0 {
 		return StandardImageResponse{}, &UpstreamError{Message: "图像编辑至少需要一张参考图"}
 	}
+	if c.imageBackend != nil {
+		return c.editImagesBackend(ctx, prompt, model, n, images, size)
+	}
 	reader, pipe := io.Pipe()
 	writer := multipart.NewWriter(pipe)
 	go func() {
@@ -1812,6 +1815,40 @@ func (c *Client) EditImagesStandardStream(ctx context.Context, prompt, model str
 	}()
 	defer reader.Close()
 	return c.sendImageEdit(ctx, "", reader, writer.FormDataContentType(), -1)
+}
+
+// NativeImageEditMaxBytes caps the reference images of one edit sent to a
+// vendor-native backend. Those APIs take the images inline in a JSON body,
+// so they are read into memory instead of streamed.
+const NativeImageEditMaxBytes = 40 << 20
+
+// editImagesBackend serves a streamed edit through the native image backend.
+func (c *Client) editImagesBackend(ctx context.Context, prompt, model string, n int, images []StreamImage, size string) (StandardImageResponse, error) {
+	inputs := make([]string, 0, len(images))
+	remaining := int64(NativeImageEditMaxBytes)
+	for _, image := range images {
+		file, err := image.Open()
+		if err != nil {
+			return StandardImageResponse{}, err
+		}
+		data, err := io.ReadAll(io.LimitReader(file, remaining+1))
+		file.Close()
+		if err != nil {
+			return StandardImageResponse{}, err
+		}
+		remaining -= int64(len(data))
+		if remaining < 0 {
+			return StandardImageResponse{}, &UpstreamError{StatusCode: http.StatusRequestEntityTooLarge,
+				Message: fmt.Sprintf("该模型的参考图合计不能超过 %d MB", NativeImageEditMaxBytes>>20)}
+		}
+		inputs = append(inputs, base64.StdEncoding.EncodeToString(data))
+	}
+	results, err := c.imageBackend.GenerateImages(ctx, prompt, model, n, size, inputs)
+	response := StandardImageResponse{Created: time.Now().Unix()}
+	for _, image := range results {
+		response.Data = append(response.Data, StandardImageData{B64JSON: image})
+	}
+	return response, err
 }
 
 func writeStreamedImageEdit(writer *multipart.Writer, prompt, model string, n int, images []StreamImage, size string, options ImageOptions) error {

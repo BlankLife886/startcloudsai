@@ -81,7 +81,7 @@ import {
   saveAssistantWorkspaceState,
 } from "./services/assistantHistory.js";
 import {
-  IMAGE_ASPECT_RATIOS,
+  isValidAspectRatio,
   clampImageCount,
   getModelAspectRatiosForResolution,
   imageCountChoices,
@@ -1462,7 +1462,7 @@ export function useAssistantWorkspaceController() {
       setGenerationSize(workspaceState.creationType === "image" && workspaceState.generationSize?.sizeMode === "exact"
         ? { sizeMode: "exact", exactWidth: String(workspaceState.generationSize.exactWidth || ""), exactHeight: String(workspaceState.generationSize.exactHeight || "") }
         : { sizeMode: "ratio", exactWidth: "", exactHeight: "" });
-      if (IMAGE_ASPECT_RATIOS.includes(workspaceState.generationRatio)) setGenerationRatio(workspaceState.generationRatio);
+      if (isValidAspectRatio(workspaceState.generationRatio)) setGenerationRatio(workspaceState.generationRatio);
       if (RESOLUTIONS.some((item) => item.id === String(workspaceState.generationResolution || "").toUpperCase())) setGenerationResolution(String(workspaceState.generationResolution).toUpperCase());
       if (IMAGE_QUALITY_OPTIONS.some((item) => item.id === String(workspaceState.generationQuality || "").toLowerCase())) setGenerationQuality(String(workspaceState.generationQuality).toLowerCase());
       if (Number.isFinite(Number(workspaceState.generationCount))) setGenerationCount(clampImageCount(workspaceState.generationCount, availableImages.find((item) => item.model === (workspaceState.creationType === "image" ? workspaceState.generationModel : "")) || availableImages[0]));
@@ -1490,7 +1490,7 @@ export function useAssistantWorkspaceController() {
         if (pending.config?.reasoningEffort) {
           setReasoningEffort(String(pending.config.reasoningEffort).trim().toLowerCase());
         }
-        if (IMAGE_ASPECT_RATIOS.includes(pending.config?.ratio)) setGenerationRatio(pending.config.ratio);
+        if (isValidAspectRatio(pending.config?.ratio)) setGenerationRatio(pending.config.ratio);
         if (RESOLUTIONS.some((item) => item.id === String(pending.config?.resolution || "").toUpperCase())) {
           setGenerationResolution(String(pending.config.resolution).toUpperCase());
         }

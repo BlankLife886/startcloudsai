@@ -65,9 +65,28 @@ func (s *Server) adminProfitability(c *gin.Context, _ *store.User) {
 	for _, model := range config.Models {
 		labels[model.ID] = model.Name
 	}
+	// 已从模型目录删掉的模型：用当时记录的显示名，不直接显示内部 ID。
+	if dimension == "model" {
+		missing := make([]string, 0)
+		for _, item := range items {
+			if item.Key != "" && strings.TrimSpace(labels[item.Key]) == "" {
+				missing = append(missing, item.Key)
+			}
+		}
+		historical, err := store.ResolveProfitModelNames(c.Request.Context(), s.St.Pool, missing, since)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		for id, name := range historical {
+			labels[id] = name
+		}
+	}
 	for index := range items {
 		if label := strings.TrimSpace(labels[items[index].Key]); label != "" {
 			items[index].Label = label
+		} else if dimension == "model" && items[index].Key != "" {
+			items[index].Label = store.ProfitModelFallbackLabel(items[index].Key)
 		} else if strings.TrimSpace(items[index].Label) == "" {
 			items[index].Label = "未记录"
 		}

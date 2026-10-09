@@ -185,6 +185,11 @@ type Model struct {
 	UpstreamInputFields         []string             `json:"upstreamInputFields,omitempty"`
 	UpstreamRequiredInputFields []string             `json:"upstreamRequiredInputFields,omitempty"`
 	UpstreamInputSchema         map[string]any       `json:"upstreamInputSchema,omitempty"`
+	UpstreamFixedInput          map[string]string    `json:"upstreamFixedInput,omitempty"` // pinned CRUN fields such as model_variant
+	PromptMaxChars              int                  `json:"promptMaxChars,omitempty"`     // overrides the global prompt limit; 0 follows it
+	SkillsDisabled              bool                 `json:"skillsDisabled,omitempty"`     // image skills are not added for this model
+	QualityNotSent              bool                 `json:"qualityNotSent,omitempty"`     // users pick and pay by quality, but it is not sent upstream
+	QualityAlwaysSent           bool                 `json:"qualityAlwaysSent,omitempty"`  // admin sends quality even where the CRUN schema lists none
 	Modality                    string               `json:"modality,omitempty"`
 	Operations                  []string             `json:"operations,omitempty"`
 	Kind                        string               `json:"kind"`
@@ -531,6 +536,7 @@ func normalize(cfg *Config) {
 		model.UpstreamModel = strings.TrimSpace(model.UpstreamModel)
 		model.UpstreamInputFields = cleanStrings(model.UpstreamInputFields)
 		model.UpstreamRequiredInputFields = cleanStrings(model.UpstreamRequiredInputFields)
+		model.UpstreamFixedInput = cleanFixedInput(model.UpstreamFixedInput)
 		model.Modality = strings.ToLower(strings.TrimSpace(model.Modality))
 		model.Operations = cleanStrings(model.Operations)
 		model.Kind = strings.TrimSpace(model.Kind)
@@ -587,7 +593,7 @@ func normalize(cfg *Config) {
 			if model.ModerationLevels == nil {
 				model.ModerationLevels = append([]string(nil), ImageModerationLevels...)
 			}
-			model.AspectRatios = cleanEnum(model.AspectRatios, ImageAspectRatios)
+			model.AspectRatios = cleanAspectRatios(model.AspectRatios)
 			model.AspectRatiosByResolution = normalizeAspectRatiosByResolution(*model)
 			if union := aspectRatioUnion(model.AspectRatiosByResolution); len(union) > 0 {
 				model.AspectRatios = union
@@ -733,7 +739,7 @@ func normalizeAspectRatiosByResolution(model Model) map[string][]string {
 	for resolution, ratios := range model.legacyAutoAspectRatios {
 		legacy[strings.ToUpper(strings.TrimSpace(resolution))] = ratios
 	}
-	fallback := cleanEnum(model.AspectRatios, ImageAspectRatios)
+	fallback := cleanAspectRatios(model.AspectRatios)
 	if len(fallback) == 0 {
 		fallback = append([]string(nil), ImageAspectRatios...)
 	}
@@ -751,7 +757,7 @@ func normalizeAspectRatiosByResolution(model Model) map[string][]string {
 				source = fallback
 			}
 		}
-		ratios := cleanEnum(source, ImageAspectRatios)
+		ratios := cleanAspectRatios(source)
 		if len(ratios) == 0 {
 			ratios = append([]string(nil), fallback...)
 		}
@@ -767,13 +773,11 @@ func aspectRatioUnion(rules map[string][]string) []string {
 			selected[strings.ToLower(strings.TrimSpace(ratio))] = true
 		}
 	}
-	result := make([]string, 0, len(selected))
-	for _, ratio := range ImageAspectRatios {
-		if selected[ratio] {
-			result = append(result, ratio)
-		}
+	list := make([]string, 0, len(selected))
+	for ratio := range selected {
+		list = append(list, ratio)
 	}
-	return result
+	return cleanAspectRatios(list)
 }
 
 // AspectRatiosForResolution returns the user-selectable ratios for a resolution.
@@ -797,7 +801,14 @@ func AutoAspectRatioCandidates(model Model, resolution string) []string {
 	if len(result) > 0 {
 		return result
 	}
-	return []string{firstConcreteAspectRatio(model)}
+	// A model that offers only auto (some edit models keep the input's shape)
+	// gets no ratio constraint instead of an invented 1:1.
+	for _, ratio := range model.AspectRatios {
+		if ratio = strings.ToLower(strings.TrimSpace(ratio)); ratio != "" && ratio != "auto" {
+			return []string{ratio}
+		}
+	}
+	return nil
 }
 
 func ValidAdapter(value string) bool {
@@ -926,6 +937,12 @@ func Validate(cfg Config) error {
 		}
 		if err := validateExactSizeConfig(model, providers[model.ProviderID]); err != nil {
 			return err
+		}
+		if err := validateFixedInput(model, providers[model.ProviderID]); err != nil {
+			return err
+		}
+		if model.PromptMaxChars < 0 || model.PromptMaxChars > MaxPromptChars {
+			return fmt.Errorf("模型 %s 的提示词字数上限须在 0-%d 之间（0 为跟随全局）", model.Name, MaxPromptChars)
 		}
 		if model.Kind == ModelKindImageTool {
 			if !ValidImageTool(model.Tool) {

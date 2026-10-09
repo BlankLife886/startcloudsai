@@ -13,6 +13,7 @@ test('plan editor keeps and edits the API model scope',async({page})=>{
  await page.route('**/api/**',route=>fulfillJson(route,{items:[]}))
  await page.route('**/api/v1/admin/auth/session',route=>fulfillJson(route,{admin:{id:'admin',username:'管理员',email:'admin@example.com',role:'admin'}}))
  await page.route('**/api/v1/admin/developer-api/models',route=>fulfillJson(route,{items:[{id:'apim_a',apiName:'gpt-image-2',kind:'image',status:'live'},{id:'apim_b',apiName:'gpt-5.5',kind:'chat',status:'live'},{id:'apim_c',apiName:'old',kind:'image',status:'retired'}]}))
+ await page.route('**/api/v1/admin/model-config',route=>fulfillJson(route,{providers:[],models:[{id:'m1',name:'GPT Image 2',upstreamModel:'gpt-image-2',kind:'image',enabled:true},{id:'m2',name:'Gemini 对话',upstreamModel:'gemini-3-pro',kind:'chat',enabled:true}]}))
  await page.route('**/api/v1/admin/plans**',route=>{
   if(route.request().method()==='GET')return fulfillJson(route,{items:[plan],baseConcurrency:2,baseCanvasProjects:3})
   writes.push(route.request().postDataJSON());return fulfillJson(route,plan)
@@ -22,7 +23,11 @@ test('plan editor keeps and edits the API model scope',async({page})=>{
  await page.getByRole('button',{name:'编辑',exact:true}).first().click()
  const dialog=page.getByRole('dialog',{name:'编辑套餐'})
  const field=page.locator('.plan-api-models')
- await expect(field).toContainText('已限定模型ID范围')
+ const siteModels=page.locator('.plan-site-models')
+ await expect(siteModels).toContainText('GPT Image 2')
+ await siteModels.locator('.el-select').click()
+ await page.getByRole('option',{name:/Gemini 对话/}).click()
+ await page.keyboard.press('Escape')
  await expect(field).toContainText('gpt-image-2')
  await field.locator('.el-select').click()
  await expect(page.getByRole('option',{name:/old/})).toHaveCount(0)
@@ -31,4 +36,5 @@ test('plan editor keeps and edits the API model scope',async({page})=>{
  if(process.env.SHOT_DIR){await page.waitForTimeout(300);await field.scrollIntoViewIfNeeded();await page.screenshot({path:`${process.env.SHOT_DIR}/admin-plan-api.png`})}
  await page.getByRole('button',{name:'保存套餐'}).click()
  await expect.poll(()=>writes[0]?.subscriptionPolicy?.apiModelIds).toEqual(['apim_a','apim_b'])
+ expect(writes[0].subscriptionPolicy.modelIds).toEqual(['m1','m2'])
 })

@@ -401,8 +401,8 @@ for(const [theme,width] of [['light',1280],['light',900],['dark',390]]) {
     await setup(page,theme)
     await page.setViewportSize({width,height:844})
     await page.route('**/api/v1/me/subscriptions',route=>fulfillJson(route,{
-      items:[{...sub,spentPoints:19,currentTermSpentPoints:0,priorTermSpentPoints:19,hasPriorTerm:true,contract:{planRevision:2,concurrencyBonus:8,lockModelPrices:true,allowTopupPriceLock:true},policy:{...policy,modelIds:Array.from({length:8},(_,i)=>`subscription-model-${i}`)}}],
-      changes:[],concurrency:{base:4,bonus:8,limit:12},serverTime:'2026-08-11T04:00:00Z',
+      items:[{...sub,spentPoints:19,currentTermSpentPoints:0,priorTermSpentPoints:19,hasPriorTerm:true,contract:{planRevision:2,concurrencyBonus:8,canvasProjectBonus:10,assistantConversationBonus:20,lockModelPrices:true,allowTopupPriceLock:true},policy:{...policy,modelIds:Array.from({length:8},(_,i)=>`subscription-model-${i}`)}}],
+      changes:[],concurrency:{base:4,bonus:8,limit:12},baseCanvasProjects:30,baseAssistantConversations:40,serverTime:'2026-08-11T04:00:00Z',
     }))
     await page.goto('/subscriptions')
     const card=page.locator('.subscription-aside__card')
@@ -415,6 +415,8 @@ for(const [theme,width] of [['light',1280],['light',900],['dark',390]]) {
     await expect(rights).toContainText('12 张')
     await expect(rights).toContainText('网站、API')
     await expect(rights).toContainText('文生图')
+    await expect(rights).toContainText('画布项目40 个')
+    await expect(rights).toContainText('助手对话60 个')
     await expect(footer.getByRole('button',{name:'升级前已使用积分，退款需人工处理',exact:true})).toBeDisabled()
     const actionTops=await footer.locator('button,a').evaluateAll(items=>items.map(item=>item.getBoundingClientRect().top))
     expect(Math.max(...actionTops)-Math.min(...actionTops)).toBeLessThan(1)
@@ -422,7 +424,8 @@ for(const [theme,width] of [['light',1280],['light',900],['dark',390]]) {
     await expect(footer.getByRole('link',{name:'购买额度包',exact:true})).toBeInViewport({ratio:1})
     const before=await footer.boundingBox()
     await content.evaluate(el=>{el.scrollTop=el.scrollHeight})
-    expect(await content.evaluate(el=>el.scrollTop)).toBeGreaterThan(0)
+    // 权益 sits in the right panel now, so the overview card has nothing hidden below the fold.
+    if(width>1080) expect(await content.evaluate(el=>el.scrollHeight<=el.clientHeight+1)).toBe(true)
     const after=await footer.boundingBox(),frame=await card.boundingBox(),body=await content.boundingBox()
     expect(Math.abs(after.y-before.y)).toBeLessThan(1)
     expect(Math.abs(after.y+after.height-frame.y-frame.height)).toBeLessThan(2)
@@ -498,12 +501,14 @@ for (const [theme,width] of [['light',1280],['dark',390]]) {
   test(`unavailable upgrade keeps its disabled button without a reason icon at ${width}`, async ({page}) => {
     await setup(page,theme)
     await page.setViewportSize({width,height:844})
-    await page.route('**/api/v1/plans',route=>fulfillJson(route,{items:[{...target,dailyGrantCents:100,features:['每24小时重置，未用积分不结转','网站与 API 通用'],subscriptionPolicy:{...target.subscriptionPolicy,concurrencyBonus:2}}],paymentEnabled:true,paymentMethods:['alipay']}))
+    await page.route('**/api/v1/plans',route=>fulfillJson(route,{items:[{...target,dailyGrantCents:100,features:['每24小时重置，未用积分不结转','网站与 API 通用'],subscriptionPolicy:{...target.subscriptionPolicy,concurrencyBonus:2,canvasProjectBonus:10}}],baseConcurrency:4,baseCanvasProjects:30,baseAssistantConversations:40,paymentEnabled:true,paymentMethods:['alipay']}))
     await page.goto('/pricing?plan=subscription&upgradeFrom=sub-one')
     const card=page.locator('.pp-plan')
     await expect(card.locator('.pp-plan__benefits li').filter({hasText:/每日刷新|每天重置/})).toHaveCount(0)
     await expect(card.locator('.pp-plan__benefits li').filter({hasText:'网站与 API 通用'})).toHaveCount(1)
-    await expect(card.locator('.pp-plan__benefits li').filter({hasText:'并发 +2'})).toHaveCount(1)
+    await expect(card.locator('.pp-plan__benefits li').filter({hasText:'图片并发 6 张（订阅 +2）'})).toHaveCount(1)
+    await expect(card.locator('.pp-plan__benefits li').filter({hasText:'画布项目 40 个（订阅 +10）'})).toHaveCount(1)
+    await expect(card.locator('.pp-plan__benefits li').filter({hasText:/^助手对话 40 个$/})).toHaveCount(1)
     await expect(card.locator('.pp-plan__benefits')).not.toContainText('最多同时处理')
     await expect(card.locator('.pp-plan__benefits')).not.toContainText('共享并发')
     await expect(card.locator('.pp-plan__quota > div')).toHaveText(/100\s*积分\s*\/\s*天/)

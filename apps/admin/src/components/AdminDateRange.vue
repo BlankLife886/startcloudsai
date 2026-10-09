@@ -21,7 +21,7 @@ function change(value: string[] | null) {
 
 <template>
   <div class="admin-date-range">
-    <span v-if="!hideLabel">{{ label }} <small>北京时间</small></span>
+    <span v-if="!hideLabel">{{ label }}</span>
     <el-date-picker :model-value="range" type="daterange" value-format="YYYY-MM-DD" format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" :shortcuts="shortcuts" :aria-label="`${label}范围（北京时间）`" clearable @update:model-value="change" />
   </div>
 </template>
@@ -29,6 +29,5 @@ function change(value: string[] | null) {
 <style scoped>
 .admin-date-range { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .admin-date-range > span { font-size: 12px; color: var(--ink-2); white-space: nowrap; }
-.admin-date-range small { font-size: 10px; color: var(--ink-3); }
 .admin-date-range :deep(.el-date-editor) { width: 260px; max-width: 100%; flex-grow: 0; }
 </style>

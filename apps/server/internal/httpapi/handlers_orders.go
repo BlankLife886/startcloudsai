@@ -37,8 +37,13 @@ func (s *Server) listPlans(c *gin.Context) {
 		return
 	}
 	items := make([]gin.H, 0, len(plans))
+	modelNames := s.modelNames(c.Request.Context())
 	for _, p := range plans {
-		items = append(items, planDict(p, false))
+		item := planDict(p, false)
+		if len(p.SubscriptionPolicy.ModelIDs) > 0 {
+			item["modelNames"] = modelNames(p.SubscriptionPolicy.ModelIDs)
+		}
+		items = append(items, item)
 	}
 	client, paymentCfg, configErr := s.resolveLanjingPay(c.Request.Context())
 	if configErr != nil {

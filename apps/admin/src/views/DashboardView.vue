@@ -1598,7 +1598,8 @@ html.dark .hero { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 20px 44px
 .orders__sub, .orders__timing { color: var(--ink-3); font-size: 12px; line-height: 1.6; }
 .orders__sub b, .orders__timing b { color: var(--ink); font-weight: 650; }
 .orders__timing b.is-warn { color: var(--warning); }
-.orders__now { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 6px 0 2px; }
+/* 实时卡片与付款用时贴底，和中间图表 / 右侧表格底边对齐 */
+.orders__now { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: auto 0 2px; padding-top: 10px; }
 .orders__now .live-num b { font-size: 20px; }
 .orders__now .live-num b.is-warn { color: var(--warning); }
 .orders__chart { display: flex; flex-direction: column; min-width: 0; }

@@ -1524,6 +1524,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 				"aspectRatios":       selection.Model.AspectRatios,
 				"qualities":          selection.Model.Qualities,
 				"maxReferenceImages": selection.Model.MaxReferenceImages,
+				"requiresReference":  modelconfig.CRUNRequiresReference(selection.Model),
 				"maxImages":          selection.Model.GenerationMaxImages(),
 				"imageBatchLimit":    modelBatchLimit,
 				"fastMode":           selection.Model.FastMode,
@@ -1584,6 +1585,8 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		params["_modelOutputFormats"] = imageSelection.Model.OutputFormats
 		params["_modelModerationLevels"] = imageSelection.Model.ModerationLevels
 		params["_modelMaxReferenceImages"] = imageSelection.Model.MaxReferenceImages
+		params["_skillsDisabled"] = imageSelection.Model.SkillsDisabled
+		params["_qualityNotSent"] = imageSelection.Model.QualityNotSent
 		params["_unitPriceCents"] = imageWorkspacePrice.EffectiveCents
 		params["_billingUnitPriceCents"] = imageWorkspacePrice.EffectiveCents
 		params["_modelEffectivePriceCents"] = modelconfig.EffectivePrice(imageSelection.Model)

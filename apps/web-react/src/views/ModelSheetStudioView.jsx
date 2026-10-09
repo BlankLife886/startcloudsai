@@ -28,6 +28,8 @@ import { composePendingLaunchPrompt, takePendingPrompt } from "@react/legacy-mod
 import {
   coerceImageModelSettings,
   normalizeImageModelCapabilities,
+  referenceRequiredMessage,
+  promptInputLimit,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-styles/generated/views/ModelSheetStudioView.css";
@@ -592,6 +594,7 @@ export function ModelSheetStudioView() {
     setRetryViews([]);
     if (!selectedViews.length) { setLocalError("请至少选择一个输出视角"); return; }
     if (!activeModel) { setLocalError("后台还没有为模型设计分配可用模型"); return; }
+    if (referenceRequiredMessage(activeModel, referenceItems.length)) { setLocalError(referenceRequiredMessage(activeModel, referenceItems.length)); return; }
     if (outputMode === "separate") {
       await runSeparateViews(selectedViews.map((id) => allViewOptions.find((view) => view.id === id)).filter(Boolean));
       return;
@@ -761,7 +764,7 @@ export function ModelSheetStudioView() {
           </div> : <button type="button" className={`ms3-upload${dragOver ? " is-over" : ""}`} disabled={!maxReferences} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => { if (!maxReferences) return; event.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={(event) => { if (!maxReferences) return; event.preventDefault(); setDragOver(false); acceptFiles(event.dataTransfer.files); }}><i className="bi bi-image" /><strong>{maxReferences ? "添加参考图" : "当前模型不支持参考图"}</strong>{maxReferences > 0 && <small>最多 {maxReferences} 张</small>}</button>}
           <input ref={fileInputRef} hidden type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={(event) => { acceptFiles(event.target.files); event.target.value = ""; }} />
         </section>}
-        <section className="ms3-block"><div className="ms3-block-head"><span>主体</span><em>{prompt.length}/1500</em></div><textarea className="ms3-textarea" rows={3} maxLength={1500} placeholder="写服装、材质、结构。空着也能先出三视图。" value={prompt} onChange={(event) => setPrompt(event.target.value)} /><div className="ms3-chips">{BRIEF_EXAMPLES.map((example) => <button key={example.label} type="button" onClick={() => setPrompt(example.text)}>{example.label}</button>)}</div></section>
+        <section className="ms3-block"><div className="ms3-block-head"><span>主体</span><em>{prompt.length}/{promptInputLimit(activeModel, 1500)}</em></div><textarea className="ms3-textarea" rows={3} maxLength={promptInputLimit(activeModel, 1500)} placeholder="写服装、材质、结构。空着也能先出三视图。" value={prompt} onChange={(event) => setPrompt(event.target.value)} /><div className="ms3-chips">{BRIEF_EXAMPLES.map((example) => <button key={example.label} type="button" onClick={() => setPrompt(example.text)}>{example.label}</button>)}</div></section>
         <section className="ms3-block">
           <div className="ms3-block-head"><span>方案</span><em>{outputMode === "board" ? "一张拼板" : `${selectedViews.length} 张独立图`}</em></div>
           <div className="ms3-seg" role="radiogroup" aria-label="出图方案">

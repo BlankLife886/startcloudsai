@@ -26,6 +26,35 @@ export const IMAGE_COUNT_DEFAULT_MAX = 4
 // modelconfig.MaxImagesLimit 作为兜底，不再在前端另设更小的上限。
 export const IMAGE_COUNT_HARD_MAX = 100
 
+const MAX_CUSTOM_ASPECT_RATIO = 20
+
+function ratioNumber(value) {
+  const [width, height] = String(value).split(':').map(Number)
+  return width > 0 && height > 0 ? width / height : 0
+}
+
+/** auto, or a positive w:h the admin configured (1:4, 8:1, 9:19.5 …). */
+export function isValidAspectRatio(value) {
+  const text = String(value || '').trim().toLowerCase()
+  if (text === 'auto') return true
+  if (!/^\d+(\.\d+)?:\d+(\.\d+)?$/.test(text)) return false
+  const ratio = ratioNumber(text)
+  return ratio >= 1 / MAX_CUSTOM_ASPECT_RATIO && ratio <= MAX_CUSTOM_ASPECT_RATIO
+}
+
+/** Valid ratios once each: common ones first, then custom ones wide to tall. */
+export function normalizeAspectRatioList(value, fallback = IMAGE_ASPECT_RATIOS) {
+  if (!Array.isArray(value)) return [...fallback]
+  const selected = new Set(
+    value.map((item) => String(item || '').trim().toLowerCase().replace(/\s+/g, '')).filter(isValidAspectRatio),
+  )
+  const common = IMAGE_ASPECT_RATIOS.filter((ratio) => selected.has(ratio))
+  const custom = [...selected]
+    .filter((ratio) => !IMAGE_ASPECT_RATIOS.includes(ratio))
+    .sort((a, b) => ratioNumber(b) - ratioNumber(a) || a.localeCompare(b))
+  return [...common, ...custom]
+}
+
 function normalizeEnumList(value, allowed, fallback) {
   if (!Array.isArray(value)) return [...fallback]
   const allowedSet = new Set(allowed)
@@ -52,15 +81,25 @@ export function normalizeImageQuality(value) {
   return normalized
 }
 
+/** A prompt box's cap: the page's own cap, tightened by the model's prompt limit. */
+export function promptInputLimit(model, pageLimit) {
+  const own = Number(model?.promptMaxChars)
+  if (!(Number.isFinite(own) && own > 0)) return pageLimit
+  return pageLimit > 0 ? Math.min(pageLimit, own) : own
+}
+
+/** Message shown when an edit-only model has no reference image; "" when fine. */
+export function referenceRequiredMessage(model, referenceCount = 0) {
+  return model?.requiresReference === true && !(Number(referenceCount) > 0)
+    ? '所选模型只支持改图，请先添加参考图或切换模型'
+    : ''
+}
+
 export function normalizeImageModelCapabilities(model = {}) {
   // 默认参数对 null 不生效；模型未就绪时必须兜底，否则文生图页会白屏崩溃
   const safeModel = model && typeof model === 'object' ? model : {}
   const hasConfiguredAspectRatios = Array.isArray(safeModel.aspectRatios)
-  const globalAspectRatios = normalizeEnumList(
-    safeModel.aspectRatios,
-    IMAGE_ASPECT_RATIOS,
-    IMAGE_ASPECT_RATIOS,
-  )
+  const globalAspectRatios = normalizeAspectRatioList(safeModel.aspectRatios, IMAGE_ASPECT_RATIOS)
   const qualities = normalizeEnumList(safeModel.qualities, IMAGE_QUALITIES, DEFAULT_IMAGE_QUALITIES)
   const outputFormats = normalizeEnumList(
     safeModel.outputFormats,
@@ -105,9 +144,8 @@ export function normalizeImageModelCapabilities(model = {}) {
           ...(Array.isArray(legacyValue) ? legacyValue : [legacyValue]),
         ]
       }
-      const configured = normalizeEnumList(
+      const configured = normalizeAspectRatioList(
         Array.isArray(sourceValue) ? sourceValue : sourceValue ? [sourceValue] : globalAspectRatios,
-        IMAGE_ASPECT_RATIOS,
         globalAspectRatios,
       )
       return [resolution, configured.length ? configured : [...globalAspectRatios]]
@@ -115,7 +153,7 @@ export function normalizeImageModelCapabilities(model = {}) {
   )
   const configuredRatioSet = new Set(Object.values(aspectRatiosByResolution).flat())
   const aspectRatios = supportedResolutions.length
-    ? IMAGE_ASPECT_RATIOS.filter((ratio) => configuredRatioSet.has(ratio))
+    ? normalizeAspectRatioList([...configuredRatioSet])
     : globalAspectRatios
 
   return {

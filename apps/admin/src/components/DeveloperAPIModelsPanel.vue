@@ -318,7 +318,7 @@ function runAction(row: APIModel, key: string) {
               <span class="apim-option-meta">{{ kindLabel(item.kind) }} · 站内 {{ points(item.sitePriceCents) }} 积分<template v-if="!item.runnable"> · 不可用</template></span>
             </el-option>
           </el-select>
-          <small v-if="selectedTarget && !selectedTarget.runnable" class="is-danger">这个站内模型已停用、维护中或线路不是 OpenAI 协议，发布后会无法调用。</small>
+          <small v-if="selectedTarget && !selectedTarget.runnable" class="is-danger">这个站内模型已停用、维护中或线路是异步任务协议（CRUN），发布后会无法调用。</small>
         </el-form-item>
         <el-form-item label="API 价格">
           <el-radio-group v-model="form.priceMode">

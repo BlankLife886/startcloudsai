@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useLocation } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { useLocale } from "../i18n/index.js";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
 import { useLiveAnnouncements } from "../features/announcements/useLiveAnnouncements.js";
@@ -36,6 +36,26 @@ function announcementCta(item, isEntryVisible) {
   } catch {
     return null;
   }
+}
+
+// 点公告按钮：先关掉公告；站内地址走前端路由跳转，不整页刷新（整页刷新会让“每次打开都弹”的公告又弹出来）
+function useCtaClick(cta, onDismiss) {
+  const navigate = useNavigate();
+  return (event) => {
+    onDismiss();
+    if (!cta || event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (event.currentTarget.target === "_blank") return;
+    let target;
+    try {
+      target = new URL(cta.url, window.location.href);
+    } catch {
+      return;
+    }
+    if (target.origin !== window.location.origin) return;
+    event.preventDefault();
+    navigate(`${target.pathname}${target.search}${target.hash}`);
+  };
 }
 
 function readLocal(id) {
@@ -96,6 +116,8 @@ function useCarouselIndex(item, count, autoplay) {
 
   return {
     index: count > 1 ? index : 0,
+    interval,
+    playing: play,
     setIndex,
     pause: () => {
       pausedRef.current = true;
@@ -171,6 +193,7 @@ function PromoBannerCopy({ title, body }) {
 
 function PromoBanner({ item, cta, onDismiss }) {
   const { t } = useLocale();
+  const onCta = useCtaClick(cta, onDismiss);
   const canClose = item.allowClose !== false || !cta;
   const title = String(item.title || "").trim();
   const body = String(item.body || "").trim();
@@ -192,7 +215,7 @@ function PromoBanner({ item, cta, onDismiss }) {
             href={cta.url}
             target={cta.url.startsWith("http") ? "_blank" : undefined}
             rel={cta.url.startsWith("http") ? "noreferrer" : undefined}
-            onClick={() => onDismiss()}
+            onClick={onCta}
           >
             {cta.text}
           </a>
@@ -218,7 +241,7 @@ function PromoBanner({ item, cta, onDismiss }) {
 function sideMediaBox(ratio) {
   const r = Number.isFinite(ratio) && ratio > 0 ? ratio : 4 / 3;
   const shape = r < 0.85 ? "portrait" : r <= 1.25 ? "square" : "landscape";
-  const height = shape === "portrait" ? 440 : shape === "square" ? 380 : 320;
+  const height = shape === "portrait" ? 560 : shape === "square" ? 500 : 420;
   const boxRatio = Math.min(1.56, Math.max(0.62, r));
   const width = Math.round(height * boxRatio);
   const fit = Math.abs(Math.log(r / boxRatio)) > 0.2 ? "contain" : "cover";
@@ -248,8 +271,12 @@ function SideMedia({ asset, title, box, onMeasure }) {
   );
 }
 
+const prefersReducedMotion = () =>
+  typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
 function AnnouncementCard({ item, cta, onDismiss }) {
   const { t } = useLocale();
+  const onCta = useCtaClick(cta, onDismiss);
   const placement = item.placement === "banner" ? "banner" : "modal";
   const layout = placement === "banner" ? "text_only" : item.layout || "text_only";
   const assets = assetsOf(item);
@@ -315,7 +342,7 @@ function AnnouncementCard({ item, cta, onDismiss }) {
             href={cta.url}
             target={cta.url.startsWith("http") ? "_blank" : undefined}
             rel={cta.url.startsWith("http") ? "noreferrer" : undefined}
-            onClick={() => onDismiss()}
+            onClick={onCta}
           >
             {cta.text}
           </a>
@@ -349,6 +376,10 @@ function AnnouncementCard({ item, cta, onDismiss }) {
           <i className="bi bi-x" />
         </button>
       ) : null}
+      <small className="client-announcement__tag">
+        <i className="bi bi-megaphone-fill" aria-hidden="true" />
+        {t("公告")}
+      </small>
       {placement === "banner" && item.decorImageUrl ? (
         <img
           className="client-announcement__decor"
@@ -365,6 +396,7 @@ function AnnouncementCard({ item, cta, onDismiss }) {
       ) : isCarousel ? (
         <div
           className="client-announcement__media is-carousel"
+          style={{ "--ann-interval": `${carousel.interval}ms` }}
           onMouseEnter={carousel.pause}
           onMouseLeave={carousel.resume}
         >
@@ -392,7 +424,7 @@ function AnnouncementCard({ item, cta, onDismiss }) {
           >
             <i className="bi bi-chevron-right" />
           </button>
-          <div className="client-announcement__dots" role="tablist">
+          <div className={`client-announcement__dots${carousel.playing ? " is-autoplay" : ""}`} role="tablist">
             {media.map((asset, index) => (
               <button
                 key={asset.url}
@@ -414,24 +446,23 @@ function AnnouncementCard({ item, cta, onDismiss }) {
         </div>
       ) : null}
       <div className="client-announcement__copy">
-        <small>{t("公告")}</small>
         <strong>{item.title}</strong>
         {item.body ? <p>{item.body}</p> : null}
         <div className="client-announcement__actions">
+          {canClose ? (
+            <button type="button" onClick={() => onDismiss()}>
+              {closeText}
+            </button>
+          ) : null}
           {cta ? (
             <a
               href={cta.url}
               target={cta.url.startsWith("http") ? "_blank" : undefined}
               rel={cta.url.startsWith("http") ? "noreferrer" : undefined}
-              onClick={() => onDismiss()}
+              onClick={onCta}
             >
               {cta.text}
             </a>
-          ) : null}
-          {canClose ? (
-            <button type="button" onClick={() => onDismiss()}>
-              {closeText}
-            </button>
           ) : null}
         </div>
       </div>
@@ -447,6 +478,9 @@ export function ClientAnnouncementHost() {
   // 关掉一个弹窗时还在排队的其它弹窗公告：本次打开页面不再接着弹，之后新推送的照常弹
   const [queuedModalIds, setQueuedModalIds] = useState(() => new Set());
   const [bannerSlot, setBannerSlot] = useState(null);
+  const [leavingId, setLeavingId] = useState("");
+  const leaveTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(leaveTimer.current), []);
 
   useLayoutEffect(() => {
     setBannerSlot(document.getElementById("site-announcement-slot"));
@@ -485,6 +519,24 @@ export function ClientAnnouncementHost() {
     }
   };
 
+  // 弹窗先播离场动画再真正关闭
+  const dismissModal = (item) => {
+    if (!item?.id || leavingId) return;
+    if (prefersReducedMotion()) {
+      dismiss(item);
+      return;
+    }
+    // 关闭记录立即写入：动画期间页面跳走也不会再弹
+    rememberDismiss(item);
+    markAnnouncementsRead(item);
+    const id = announcementIdentity(item);
+    setLeavingId(id);
+    leaveTimer.current = window.setTimeout(() => {
+      dismiss(item);
+      setLeavingId((current) => (current === id ? "" : current));
+    }, 240);
+  };
+
   if (!banner && !modal) return null;
 
   return (
@@ -497,14 +549,14 @@ export function ClientAnnouncementHost() {
         : null}
       {modal ? (
         <div
-          className="client-announcement-modal"
+          className={`client-announcement-modal${leavingId && leavingId === announcementIdentity(modal) ? " is-leaving" : ""}`}
           role="dialog"
           aria-modal="true"
           aria-label={modal.title || "公告"}
         >
           {/* 遮罩只挡住页面，不响应点击：公告必须通过关闭按钮或行动按钮离开 */}
           <div className="client-announcement-modal__backdrop" aria-hidden="true" />
-          <AnnouncementCard item={modal} cta={modalCta} onDismiss={() => dismiss(modal)} />
+          <AnnouncementCard key={announcementIdentity(modal)} item={modal} cta={modalCta} onDismiss={() => dismissModal(modal)} />
         </div>
       ) : null}
     </>

@@ -1,9 +1,9 @@
 import { formatPoints } from '../legacy-modules/services/billingApi.js';
-import { subscriptionRefundHours } from './subscriptionTerms.js';
+import { subscriptionQuotaRights, subscriptionRefundHours } from './subscriptionTerms.js';
 
 const names = {web:'网站',api:'API',text_to_image:'文生图',ai_assistant:'AI助手',ui_design:'UI设计',ecommerce_design:'电商创作',illustration_coloring:'插画上色',model_sheet:'角色设定',game_art:'游戏美术',background_remove:'背景移除',infinite_canvas:'无限画布'};
 
-export function SubscriptionPurchaseBenefits({plan,t}) {
+export function SubscriptionPurchaseBenefits({plan,bases,t}) {
   const policy=plan.subscriptionPolicy || {};
   const lock=policy.lockModelPrices !== false;
   const scope=(values,all,translate=true)=>Array.isArray(values) ? values.length ? values.map(value=>translate ? names[value] || value : value).join('、') : all : all;
@@ -11,9 +11,9 @@ export function SubscriptionPurchaseBenefits({plan,t}) {
   const rows=[
     ['订阅周期',`${plan.durationDays} 天`],
     ['每天额度',formatPoints(plan.dailyGrantCents)],
-    ['并发',`+${policy.concurrencyBonus ?? 0}`],
+    ...subscriptionQuotaRights(policy,bases).map(right=>[right.label,right.value]),
     ['价格保护',lock ? policy.allowTopupPriceLock ? '订阅及合格额度包锁价' : '仅订阅积分锁价' : '按实时模型价格计费'],
-    ['适用模型',scope(policy.modelIds,'全部模型',false)],
+    ['适用模型',scope(plan.modelNames?.length ? plan.modelNames : policy.modelIds,'全部模型',false)],
     ['使用渠道',scope(policy.channels ?? ['web','api'],'无')],
     ['适用场景',scope(policy.featureKeys,'全部场景')],
   ];

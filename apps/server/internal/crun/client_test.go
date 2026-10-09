@@ -289,3 +289,28 @@ func TestGenericMediaCatalogEstimateCreateAndWait(t *testing.T) {
 		t.Fatalf("urls=%#v err=%v", urls, err)
 	}
 }
+
+func TestBuildImageInputAddsFixedInput(t *testing.T) {
+	input := buildImageInput(OpenAIImageRequest{
+		Prompt: "cat", Resolution: "2k",
+		AllowedInputFields: []string{"prompt", "model_variant", "resolution"},
+		FixedInput:         map[string]string{"model_variant": "sunburst", "mode": "fast"},
+	})
+	if input["model_variant"] != "sunburst" || input["resolution"] != "2k" || input["prompt"] != "cat" {
+		t.Fatalf("input = %#v", input)
+	}
+	if _, ok := input["mode"]; ok {
+		t.Fatalf("undeclared fixed field was sent: %#v", input)
+	}
+}
+
+func TestBuildImageInputForceQuality(t *testing.T) {
+	request := OpenAIImageRequest{Prompt: "cat", Quality: "High", AllowedInputFields: []string{"prompt", "resolution"}}
+	if _, ok := buildImageInput(request)["quality"]; ok {
+		t.Fatal("quality sent although the schema does not declare it")
+	}
+	request.ForceQuality = true
+	if got := buildImageInput(request)["quality"]; got != "high" {
+		t.Fatalf("forced quality = %#v, want high", got)
+	}
+}

@@ -416,7 +416,7 @@ func (b *openAIChatBilling) recordProfit(status, errorCode string) {
 	if err := store.UpsertUsageProfitEntry(ctx, b.s.St.Pool, store.UsageProfitEntry{
 		SourceType: store.DeveloperAPIProfitSourceType, SourceID: b.billing.BillingID, UserID: b.userID, APIKeyID: &b.apiKeyID,
 		EventStatus: status, Workspace: modelconfig.WorkspaceAssistant, ProviderID: b.selection.Provider.ID,
-		RouteID: b.selection.Provider.RouteID, ModelID: b.selection.Model.ID, Units: 1,
+		RouteID: b.selection.Provider.RouteID, ModelID: b.selection.Model.ID, ModelName: b.selection.Model.Name, Units: 1,
 		RevenueCents: revenue, UpstreamCostCents: cost, Metadata: metadata, CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		log.Printf("developer API chat profit record failed billing_id=%s status=%s: %v", b.billing.BillingID, status, err)

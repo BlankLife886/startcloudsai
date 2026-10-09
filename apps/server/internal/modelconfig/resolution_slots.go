@@ -101,6 +101,11 @@ func validateSlotMember(owner, member Model, resolution, label string) error {
 	if !containsFold(member.Resolutions, resolution) {
 		return fmt.Errorf("%s 不支持 %s", label, resolution)
 	}
+	if member.ID != owner.ID {
+		if err := validateSlotMemberCapabilities(owner, member, resolution, label); err != nil {
+			return err
+		}
+	}
 	for _, quality := range owner.Qualities {
 		if len(member.Qualities) > 0 && !containsExact(member.Qualities, quality) {
 			return fmt.Errorf("%s 不支持质量 %s", label, quality)
@@ -111,6 +116,30 @@ func validateSlotMember(owner, member Model, resolution, label string) error {
 		if owner.Enabled && owner.Public && price < cost && !owner.AllowLossLeader {
 			return fmt.Errorf("%s 在 %s · %s 档的上游成本高于用户价格", label, resolution, quality)
 		}
+	}
+	return nil
+}
+
+// validateSlotMemberCapabilities checks, at save time, what the worker checks
+// per task: a member that cannot take a request the owner accepts is skipped
+// silently at run time, so the admin is told now instead.
+func validateSlotMemberCapabilities(owner, member Model, resolution, label string) error {
+	memberRatios := AspectRatiosForResolution(member, resolution)
+	for _, ratio := range AspectRatiosForResolution(owner, resolution) {
+		if !containsFold(memberRatios, ratio) {
+			return fmt.Errorf("%s 在 %s 不支持比例 %s，请在它的「生图能力」里开启或从槽位移除", label, resolution, ratio)
+		}
+	}
+	// A member with no quality at all would be skipped for every quality the
+	// owner bills by; the owner-side loop covers members that list some.
+	if len(owner.Qualities) > 0 && len(member.Qualities) == 0 {
+		return fmt.Errorf("%s 没有开放任何质量档，请在它的「生图能力」里勾选 %s 或从槽位移除", label, strings.Join(owner.Qualities, "、"))
+	}
+	if member.MaxReferenceImages < owner.MaxReferenceImages {
+		return fmt.Errorf("%s 最多接受 %d 张参考图，少于本模型的 %d 张", label, member.MaxReferenceImages, owner.MaxReferenceImages)
+	}
+	if CRUNRequiresReference(member) && !CRUNRequiresReference(owner) {
+		return fmt.Errorf("%s 只支持改图，而本模型允许不带参考图生成", label)
 	}
 	return nil
 }

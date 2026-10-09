@@ -3,6 +3,7 @@ import { Dialog, Toast } from "@mobile/components/overlay/index.js";
 import { quoteServerAiJob } from "@react/legacy-modules/services/aiWallpaper.js";
 import { getWallet } from "@react/legacy-modules/services/meApi.js";
 import { buildT2iPayload } from "@react/features/text-to-image/t2iRequest.js";
+import { referenceRequiredMessage } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { batchQuotePayload, pendingBatchEntries } from "@react/features/text-to-image/submissionBatch.js";
 import { QUEUE_CAPACITY_CODES, isInsufficientBalanceFailure } from "@react/features/text-to-image/submissionState.js";
 import { goLogin } from "@mobile/app/login.js";
@@ -129,13 +130,18 @@ export function useGenerate({ jobs, form, references, setReferences, user, authe
       Toast.show({ content: "暂无可用模型，请稍后再试" });
       return;
     }
+    const referenceHint = referenceRequiredMessage(form.model, references.length);
+    if (referenceHint) {
+      Toast.show({ content: referenceHint });
+      return;
+    }
     try {
       const cost = await confirmCost(null);
       if (cost) await submit({ cost });
     } catch (error) {
       Toast.show({ icon: "fail", content: error?.message || "费用读取失败，请稍后重试" });
     }
-  }, [authenticated, confirmCost, form.model, form.settings.prompt, jobs.submissionPhase, jobs.submitting, quoting, submit]);
+  }, [authenticated, confirmCost, form.model, form.settings.prompt, jobs.submissionPhase, jobs.submitting, quoting, references.length, submit]);
 
   const resumePending = useCallback(async () => {
     const batch = jobs.pendingBatch;

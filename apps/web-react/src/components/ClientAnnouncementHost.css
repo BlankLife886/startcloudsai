@@ -249,60 +249,235 @@
   position: absolute;
   inset: 0;
   border: 0;
-  background: rgb(10 10 14 / 0.05);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  background:
+    radial-gradient(60% 50% at 50% 45%, rgb(84 87 236 / 0.22), transparent 70%),
+    rgb(12 14 32 / 0.62);
+  animation: client-announcement-fade 240ms ease both;
 }
 
 .client-announcement {
+  --ann-accent: #5457ec;
+  --ann-accent-2: #6f6dfb;
+  --ann-title: #141936;
+  --ann-text: #565c76;
+  --ann-muted: #8a8fa6;
+  --ann-ghost-bg: rgb(20 25 54 / 0.05);
+  --ann-ghost-border: rgb(20 25 54 / 0.08);
+  --ann-ghost-fg: #4a4f68;
+  --ann-media-bg: #eceefb;
+  --ann-close-bg: rgb(255 255 255 / 0.86);
+  --ann-close-fg: #4a4f68;
+
   position: relative;
   z-index: 1;
+  isolation: isolate;
   display: grid;
   overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 0.1);
-  background: #14141c;
-  color: #f6f5ff;
-  box-shadow: 0 24px 64px rgb(0 0 0 / 0.42);
+  border: 1px solid rgb(255 255 255 / 0.92);
+  background:
+    radial-gradient(220px 160px at 100% 0%, rgb(196 190 255 / 0.4), transparent 72%),
+    radial-gradient(260px 180px at 0% 100%, rgb(206 214 255 / 0.36), transparent 70%),
+    linear-gradient(160deg, rgb(255 255 255 / 0.98) 0%, rgb(246 246 255 / 0.97) 60%, rgb(239 241 255 / 0.97) 100%);
+  color: var(--ann-title);
+  box-shadow:
+    0 32px 72px -16px rgb(40 44 140 / 0.4),
+    0 10px 24px -8px rgb(84 87 236 / 0.16),
+    0 1px 0 rgb(255 255 255 / 1) inset;
+  animation: client-announcement-in 620ms cubic-bezier(0.2, 1.2, 0.3, 1) backwards;
+}
+
+
+:root.color-scheme-dark .client-announcement,
+:root.dark .client-announcement {
+  --ann-accent: #5d5ff0;
+  --ann-accent-2: #7a78ff;
+  --ann-title: #f1f2ff;
+  --ann-text: rgb(226 229 255 / 0.72);
+  --ann-muted: rgb(226 229 255 / 0.5);
+  --ann-ghost-bg: rgb(255 255 255 / 0.06);
+  --ann-ghost-border: rgb(255 255 255 / 0.1);
+  --ann-ghost-fg: rgb(236 238 255 / 0.86);
+  --ann-media-bg: #191a32;
+  --ann-close-bg: rgb(30 30 58 / 0.86);
+  --ann-close-fg: rgb(236 238 255 / 0.86);
+
+  border-color: rgb(160 160 255 / 0.18);
+  background:
+    radial-gradient(220px 160px at 100% 0%, rgb(122 112 255 / 0.24), transparent 72%),
+    radial-gradient(260px 180px at 0% 100%, rgb(84 96 220 / 0.18), transparent 70%),
+    linear-gradient(160deg, rgb(32 32 62 / 0.97), rgb(21 21 42 / 0.97));
+  box-shadow:
+    0 32px 72px -16px rgb(0 0 0 / 0.66),
+    0 1px 0 rgb(255 255 255 / 0.08) inset;
 }
 
 .client-announcement-modal .client-announcement {
-  width: min(560px, 100%);
-  max-height: min(88vh, 860px);
-  border-radius: 22px;
+  width: min(720px, 100%);
+  max-height: min(90vh, 920px);
+  border-radius: 32px;
 }
 
-.client-announcement-modal .client-announcement.is-carousel {
-  width: min(640px, 100%);
+.client-announcement-modal .client-announcement.is-carousel,
+.client-announcement-modal .client-announcement.is-grid {
+  width: min(820px, 100%);
 }
 
+/* 单列布局：图片固定，文案区占剩余高度，正文内部滚动，按钮始终可见 */
+.client-announcement-modal .client-announcement:is(.is-text-only, .is-carousel, .is-grid) {
+  display: flex;
+  flex-direction: column;
+}
+
+.client-announcement-modal .client-announcement:is(.is-text-only, .is-carousel, .is-grid) .client-announcement__media {
+  flex: none;
+}
+
+.client-announcement-modal .client-announcement .client-announcement__copy {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.client-announcement-modal .client-announcement .client-announcement__copy > :not(p) {
+  flex: none;
+}
+
+.client-announcement-modal .client-announcement .client-announcement__copy p {
+  flex: 0 1 auto;
+  min-height: 3.5em;
+}
+
+
+/* ---------- 顶部大图（海报） ---------- */
 .client-announcement-modal .client-announcement.is-image-top {
   display: flex;
-  width: min(620px, calc(100vw - 40px));
-  max-height: min(92vh, 960px);
+  width: min(780px, calc(100vw - 40px));
+  max-height: min(94vh, 1040px);
   flex-direction: column;
   align-items: center;
   gap: 22px;
   overflow: visible;
-  padding-top: 44px;
+  padding-top: 48px;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
 
-/* 左文右图：图片区尺寸来自原图比例（--ann-media-w/h），文字列固定宽度并垂直居中 */
+.client-announcement.is-image-top .client-announcement__poster {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: min(80vh, 880px);
+  border-radius: 28px;
+  object-fit: contain;
+  background: transparent;
+  filter: drop-shadow(0 28px 48px rgb(20 22 70 / 0.42));
+  animation: client-announcement-pop 680ms cubic-bezier(0.2, 1.2, 0.3, 1) backwards;
+}
+
+.client-announcement.is-image-top .client-announcement__poster-cta {
+  animation: client-announcement-rise 520ms 260ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.client-announcement.is-image-top .client-announcement__poster-fallback {
+  width: 100%;
+  padding: 28px 24px;
+  border: 1px solid rgb(255 255 255 / 0.9);
+  border-radius: 28px;
+  background: linear-gradient(160deg, rgb(255 255 255 / 0.98), rgb(242 243 255 / 0.97));
+  color: var(--ann-title);
+  text-align: center;
+  box-shadow: 0 32px 72px -16px rgb(40 44 140 / 0.4);
+}
+
+.client-announcement.is-image-top .client-announcement__poster-fallback strong {
+  display: block;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.client-announcement.is-image-top .client-announcement__poster-fallback p {
+  margin: 10px 0 0;
+  color: var(--ann-text);
+  line-height: 1.7;
+  white-space: pre-line;
+}
+
+:root.color-scheme-dark .client-announcement.is-image-top .client-announcement__poster-fallback,
+:root.dark .client-announcement.is-image-top .client-announcement__poster-fallback {
+  border-color: rgb(160 160 255 / 0.18);
+  background: linear-gradient(160deg, rgb(32 32 62 / 0.97), rgb(21 21 42 / 0.97));
+}
+
+.client-announcement.is-image-top .client-announcement__close {
+  top: 0;
+  right: 0;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgb(255 255 255 / 0.6);
+  background: rgb(255 255 255 / 0.22);
+  color: #fff;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 6px 16px rgb(0 0 0 / 0.18);
+}
+
+.client-announcement.is-image-top .client-announcement__close:hover {
+  background: rgb(255 255 255 / 0.4);
+  color: #fff;
+}
+
+.client-announcement.is-image-top .client-announcement__poster-cta {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 40px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--ann-accent-2), var(--ann-accent));
+  box-shadow:
+    0 16px 32px -8px rgb(84 87 236 / 0.6),
+    0 1px 0 rgb(255 255 255 / 0.4) inset,
+    0 -2px 0 rgb(40 40 160 / 0.18) inset;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 780;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+}
+
+.client-announcement.is-image-top .client-announcement__poster-cta:hover,
+.client-announcement.is-image-top .client-announcement__poster-cta:focus,
+.client-announcement.is-image-top .client-announcement__poster-cta:active,
+.client-announcement.is-image-top .client-announcement__poster-cta:visited {
+  color: #fff;
+  text-decoration: none;
+}
+
+.client-announcement.is-image-top .client-announcement__poster-cta:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+/* ---------- 左图右文 / 左文右图 ---------- */
+/* 图片区尺寸来自原图比例（--ann-media-w/h），文字列固定宽度并垂直居中 */
 .client-announcement-modal .client-announcement.is-image-left,
 .client-announcement-modal .client-announcement.is-image-right {
   --ann-side-h: min(var(--ann-media-h, 340px), calc(100dvh - 96px));
   width: auto;
   max-width: calc(100vw - 32px);
-  grid-template-columns: var(--ann-media-w, 420px) minmax(300px, 340px);
+  grid-template-columns: var(--ann-media-w, 520px) minmax(360px, 420px);
   grid-template-rows: var(--ann-side-h);
   transition: opacity 180ms ease;
 }
 
 .client-announcement-modal .client-announcement.is-image-right {
-  grid-template-columns: minmax(300px, 340px) var(--ann-media-w, 420px);
+  grid-template-columns: minmax(360px, 420px) var(--ann-media-w, 520px);
 }
 
 .client-announcement-modal .client-announcement.is-image-right .client-announcement__media {
@@ -317,37 +492,38 @@
 .client-announcement.is-image-right .client-announcement__copy {
   justify-content: center;
   min-height: 0;
-  padding: 32px 28px;
+  padding: 40px 36px 34px;
 }
 
 .client-announcement.is-image-left .client-announcement__copy strong,
 .client-announcement.is-image-right .client-announcement__copy strong {
-  font-size: 20px;
+  font-size: 24px;
 }
 
 .client-announcement.is-image-left .client-announcement__copy p,
 .client-announcement.is-image-right .client-announcement__copy p {
   max-height: none;
-  min-height: 0;
   flex: 0 1 auto;
-  font-size: 14px;
+  font-size: 15px;
+}
+
+.client-announcement-modal .client-announcement:is(.is-image-left, .is-image-right) .client-announcement__copy p {
+  min-height: 7em;
 }
 
 .client-announcement.is-image-left .client-announcement__actions,
 .client-announcement.is-image-right .client-announcement__actions {
   flex: none;
-  margin-top: 12px;
-}
-
-/* 文字在左时，关闭按钮落在图片上，保持深色圆底可读 */
-.client-announcement.is-image-right .client-announcement__close {
-  background: rgb(12 12 16 / 0.52);
+  justify-content: flex-start;
+  margin-top: 14px;
 }
 
 .client-announcement__media.is-side {
   overflow: hidden;
   height: 100%;
   min-height: 0;
+  margin: 0;
+  border-radius: 0;
 }
 
 .client-announcement__media.is-side .client-announcement__media-bg {
@@ -377,21 +553,31 @@
   filter: drop-shadow(0 10px 24px rgb(0 0 0 / 0.35));
 }
 
+/* ---------- 关闭按钮 ---------- */
 .client-announcement__close {
   position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 3;
+  top: 18px;
+  right: 18px;
+  z-index: 4;
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 38px;
+  height: 38px;
   place-items: center;
   padding: 0;
-  border: 0;
+  border: 1px solid rgb(255 255 255 / 0.7);
   border-radius: 50%;
-  background: rgb(12 12 16 / 0.42);
-  color: #fff;
+  background: var(--ann-close-bg);
+  color: var(--ann-close-fg);
+  box-shadow: 0 6px 16px rgb(20 22 70 / 0.14);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   cursor: pointer;
+  transition: transform 160ms ease, color 160ms ease, background 160ms ease;
+}
+
+:root.color-scheme-dark .client-announcement__close,
+:root.dark .client-announcement__close {
+  border-color: rgb(255 255 255 / 0.12);
 }
 
 .client-announcement__close i {
@@ -402,8 +588,8 @@
 .client-announcement__close::after {
   content: "";
   position: absolute;
-  width: 12px;
-  height: 1.5px;
+  width: 14px;
+  height: 1.8px;
   border-radius: 1px;
   background: currentColor;
 }
@@ -417,9 +603,16 @@
 }
 
 .client-announcement__close:hover {
-  background: rgb(12 12 16 / 0.62);
+  color: var(--ann-title);
+  transform: rotate(90deg);
 }
 
+.client-announcement.is-image-top .client-announcement__close::before,
+.client-announcement.is-image-top .client-announcement__close::after {
+  width: 14px;
+}
+
+/* ---------- 图片区 ---------- */
 .client-announcement__decor {
   width: 54px;
   height: 54px;
@@ -430,100 +623,17 @@
 
 .client-announcement__media {
   position: relative;
-  height: 220px;
-  min-height: 220px;
-  background: #111118;
+  overflow: hidden;
+  height: min(360px, 40vh);
+  min-height: min(360px, 40vh);
+  margin: 12px 12px 0;
+  border-radius: 24px;
+  background: var(--ann-media-bg);
 }
 
 .client-announcement.is-carousel .client-announcement__media {
-  height: 320px;
-  min-height: 320px;
-}
-
-.client-announcement.is-image-top .client-announcement__poster {
-  display: block;
-  width: 100%;
-  height: auto;
-  max-height: min(74vh, 760px);
-  object-fit: contain;
-  background: transparent;
-}
-
-.client-announcement.is-image-top .client-announcement__poster-fallback {
-  width: 100%;
-  padding: 24px 8px;
-  color: #fff;
-  text-align: center;
-}
-
-.client-announcement.is-image-top .client-announcement__poster-fallback strong {
-  display: block;
-  font-size: 22px;
-}
-
-.client-announcement.is-image-top .client-announcement__poster-fallback p {
-  margin: 8px 0 0;
-  color: rgb(255 255 255 / 0.72);
-  white-space: pre-line;
-}
-
-.client-announcement.is-image-top .client-announcement__close {
-  top: 0;
-  right: 0;
-  width: 32px;
-  height: 32px;
-  border: 1.5px solid #17171f;
-  background: rgb(255 255 255 / 0.72);
-  color: #17171f;
-}
-
-.client-announcement.is-image-top .client-announcement__close::before,
-.client-announcement.is-image-top .client-announcement__close::after {
-  width: 14px;
-}
-
-.client-announcement.is-image-top .client-announcement__close:hover {
-  background: #17171f;
-  color: #fff;
-}
-
-:root.color-scheme-dark .client-announcement.is-image-top .client-announcement__close,
-:root.dark .client-announcement.is-image-top .client-announcement__close {
-  border-color: rgb(255 255 255 / 0.86);
-  background: transparent;
-  color: #fff;
-}
-
-:root.color-scheme-dark .client-announcement.is-image-top .client-announcement__close:hover,
-:root.dark .client-announcement.is-image-top .client-announcement__close:hover {
-  background: rgb(255 255 255 / 0.12);
-  color: #fff;
-}
-
-.client-announcement.is-image-top .client-announcement__poster-cta {
-  display: inline-flex;
-  min-height: 48px;
-  align-items: center;
-  justify-content: center;
-  padding: 0 32px;
-  border: 1px solid rgb(255 255 255 / 0.28);
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at 20% 0%, rgb(255 255 255 / 0.28), transparent 42%),
-    linear-gradient(108deg, #5f4bf3, #8b5cf6 62%, #c052d5);
-  box-shadow: 0 10px 24px rgb(109 92 255 / 0.32);
-  color: #fff;
-  font-size: 16px;
-  font-weight: 760;
-  text-decoration: none;
-}
-
-.client-announcement.is-image-top .client-announcement__poster-cta:hover,
-.client-announcement.is-image-top .client-announcement__poster-cta:focus,
-.client-announcement.is-image-top .client-announcement__poster-cta:active,
-.client-announcement.is-image-top .client-announcement__poster-cta:visited {
-  color: #fff;
-  text-decoration: none;
+  height: min(440px, 46vh);
+  min-height: min(440px, 46vh);
 }
 
 .client-announcement__media img {
@@ -537,11 +647,13 @@
   position: absolute;
   inset: 0;
   opacity: 0;
-  transition: opacity 360ms ease;
+  transform: scale(1.03);
+  transition: opacity 420ms ease, transform 900ms ease;
 }
 
 .client-announcement__media.is-carousel img.is-active {
   opacity: 1;
+  transform: scale(1);
 }
 
 .client-announcement__nav {
@@ -549,74 +661,123 @@
   top: 50%;
   z-index: 2;
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 44px;
+  height: 44px;
   place-items: center;
-  border: 0;
+  border: 1px solid rgb(255 255 255 / 0.5);
   border-radius: 50%;
-  background: rgb(12 12 16 / 0.42);
+  background: rgb(255 255 255 / 0.24);
   color: #fff;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   transform: translateY(-50%);
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 180ms ease, background 160ms ease;
+}
+
+.client-announcement__media.is-carousel:hover .client-announcement__nav,
+.client-announcement__nav:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .client-announcement__nav {
+    opacity: 1;
+  }
 }
 
 .client-announcement__nav.is-prev {
-  left: 10px;
+  left: 12px;
 }
 
 .client-announcement__nav.is-next {
-  right: 10px;
+  right: 12px;
 }
 
 .client-announcement__nav:hover {
-  background: rgb(12 12 16 / 0.62);
+  background: rgb(255 255 255 / 0.4);
 }
 
 .client-announcement__dots {
   position: absolute;
-  right: 0;
+  left: 50%;
   bottom: 12px;
-  left: 0;
   z-index: 2;
   display: flex;
   justify-content: center;
   gap: 6px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgb(10 12 30 / 0.28);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transform: translateX(-50%);
 }
 
 .client-announcement__dots button {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: rgb(255 255 255 / 0.38);
+  background: rgb(255 255 255 / 0.5);
   cursor: pointer;
+  transition: width 220ms ease, background 220ms ease;
 }
 
 .client-announcement__dots button.is-active {
-  width: 16px;
+  position: relative;
+  overflow: hidden;
+  width: 28px;
+  background: rgb(255 255 255 / 0.45);
+}
+
+.client-announcement__dots button.is-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
   background: #fff;
+  transform-origin: left center;
+  animation: client-announcement-progress var(--ann-interval, 4500ms) linear both;
+}
+
+.client-announcement__dots:not(.is-autoplay) button.is-active::after {
+  animation: none;
+}
+
+.client-announcement__media.is-carousel:hover .client-announcement__dots button.is-active::after {
+  animation-play-state: paused;
 }
 
 .client-announcement__media.is-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  height: 220px;
-  padding: 6px;
+  gap: 10px;
+  height: min(400px, 44vh);
+  min-height: min(400px, 44vh);
+  padding: 0;
+  background: transparent;
 }
 
 .client-announcement__media.is-grid img {
   min-height: 0;
-  border-radius: 8px;
+  border-radius: 18px;
 }
 
+/* ---------- 文案 ---------- */
 .client-announcement__copy {
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex-direction: column;
-  gap: 8px;
-  padding: 18px 20px 20px;
+  gap: 12px;
+  padding: 28px 36px 32px;
+}
+
+.client-announcement.is-text-only .client-announcement__copy {
+  padding: 40px 44px 34px;
 }
 
 .client-announcement.is-banner .client-announcement__copy {
@@ -624,56 +785,128 @@
   padding: 12px 14px;
 }
 
-.client-announcement__copy small {
-  color: #9b8cff;
-  font-size: 11px;
+/* 「公告」标签固定在卡片左上角 */
+.client-announcement__tag {
+  position: absolute;
+  top: 26px;
+  left: 26px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border: 1px solid rgb(255 255 255 / 0.7);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.86);
+  color: var(--ann-accent);
+  box-shadow: 0 6px 16px rgb(20 22 70 / 0.16);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font-size: 12px;
   font-weight: 750;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.08em;
+  animation: client-announcement-rise 520ms 120ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.client-announcement__tag i {
+  font-size: 11px;
+}
+
+:root.color-scheme-dark .client-announcement__tag,
+:root.dark .client-announcement__tag {
+  border-color: rgb(255 255 255 / 0.12);
+  background: rgb(30 30 58 / 0.82);
+  color: #c4c2ff;
+}
+
+/* 纯文字公告：标签落在浅色卡片上，改成淡紫底，并给标题让出位置 */
+.client-announcement.is-text-only .client-announcement__tag {
+  border-color: transparent;
+  background: rgb(84 87 236 / 0.1);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:root.color-scheme-dark .client-announcement.is-text-only .client-announcement__tag,
+:root.dark .client-announcement.is-text-only .client-announcement__tag {
+  background: rgb(122 120 255 / 0.18);
+}
+
+.client-announcement-modal .client-announcement.is-text-only .client-announcement__copy {
+  padding-top: 74px;
+}
+
+/* 左文右图时左上角是文字列，给标签让出位置 */
+.client-announcement-modal .client-announcement.is-image-right .client-announcement__copy {
+  padding-top: 72px;
 }
 
 .client-announcement__copy strong {
-  font-size: 18px;
-  font-weight: 750;
-  letter-spacing: -0.02em;
-  line-height: 1.3;
+  padding-right: 36px;
+  color: var(--ann-title);
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
 }
 
 .client-announcement__copy p {
   margin: 0;
   overflow: auto;
-  max-height: 9.6em;
-  color: rgb(255 255 255 / 0.68);
-  font-size: 13px;
-  line-height: 1.6;
+  max-height: 12.6em;
+  padding-right: 6px;
+  color: var(--ann-text);
+  font-size: 16px;
+  line-height: 1.75;
   white-space: pre-line;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(120 124 180 / 0.35) transparent;
 }
 
 .client-announcement__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 8px;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
 }
 
 .client-announcement__actions a,
 .client-announcement__actions button {
   display: inline-flex;
-  min-height: 36px;
+  min-height: 48px;
   align-items: center;
-  padding: 0 16px;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 28px;
   border-radius: 999px;
-  font-size: 13px;
+  font: inherit;
+  font-size: 15px;
   font-weight: 750;
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease, background 160ms ease;
 }
 
 .client-announcement__actions a {
-  border: 1px solid rgb(255 255 255 / 0.28);
-  background:
-    radial-gradient(circle at 20% 0%, rgb(255 255 255 / 0.28), transparent 42%),
-    linear-gradient(108deg, #5f4bf3, #8b5cf6 62%, #c052d5);
-  box-shadow: 0 6px 16px rgb(109 92 255 / 0.28);
+  position: relative;
+  overflow: hidden;
+  border: 0;
+  background: linear-gradient(180deg, var(--ann-accent-2), var(--ann-accent));
+  box-shadow:
+    0 12px 24px -8px rgb(84 87 236 / 0.58),
+    0 1px 0 rgb(255 255 255 / 0.4) inset,
+    0 -2px 0 rgb(40 40 160 / 0.18) inset;
   color: #fff;
+  letter-spacing: 0.02em;
   text-decoration: none;
+}
+
+.client-announcement__actions a i,
+.client-announcement.is-image-top .client-announcement__poster-cta i {
+  font-size: 0.95em;
+  transition: transform 160ms ease;
 }
 
 .client-announcement__actions a:hover,
@@ -684,13 +917,314 @@
   text-decoration: none;
 }
 
+.client-announcement__actions a::before,
+.client-announcement.is-image-top .client-announcement__poster-cta::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 30%, rgb(255 255 255 / 0.38) 50%, transparent 70%);
+  transform: translateX(-120%);
+  animation: client-announcement-shine 3.2s 1.2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.client-announcement__actions a:hover {
+  filter: brightness(1.06);
+  transform: translateY(-2px);
+  box-shadow:
+    0 18px 30px -8px rgb(84 87 236 / 0.66),
+    0 1px 0 rgb(255 255 255 / 0.4) inset,
+    0 -2px 0 rgb(40 40 160 / 0.18) inset;
+}
+
+.client-announcement__actions a:active,
+.client-announcement__actions button:active,
+.client-announcement.is-image-top .client-announcement__poster-cta:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.client-announcement__actions a:hover i,
+.client-announcement.is-image-top .client-announcement__poster-cta:hover i {
+  transform: translateX(3px);
+}
+
 .client-announcement__actions button {
-  border: 1px solid rgb(255 255 255 / 0.14);
-  background: rgb(255 255 255 / 0.06);
-  color: rgb(255 255 255 / 0.82);
+  border: 1px solid var(--ann-ghost-border);
+  background: var(--ann-ghost-bg);
+  color: var(--ann-ghost-fg);
+}
+
+/* 没有行动按钮时，关闭按钮就是主按钮 */
+.client-announcement__actions > button:only-child {
+  border: 0;
+  background: linear-gradient(180deg, var(--ann-accent-2), var(--ann-accent));
+  box-shadow:
+    0 12px 24px -8px rgb(84 87 236 / 0.58),
+    0 1px 0 rgb(255 255 255 / 0.4) inset,
+    0 -2px 0 rgb(40 40 160 / 0.18) inset;
+  color: #fff;
+}
+
+.client-announcement__actions > button:only-child:hover,
+:root.color-scheme-dark .client-announcement__actions > button:only-child:hover,
+:root.dark .client-announcement__actions > button:only-child:hover {
+  background: linear-gradient(180deg, var(--ann-accent-2), var(--ann-accent));
+  color: #fff;
+  filter: brightness(1.06);
+  transform: translateY(-2px);
+}
+
+.client-announcement__actions button:hover {
+  background: rgb(84 87 236 / 0.1);
+  color: var(--ann-accent);
+}
+
+:root.color-scheme-dark .client-announcement__actions button:hover,
+:root.dark .client-announcement__actions button:hover {
+  background: rgb(255 255 255 / 0.1);
+  color: #fff;
+}
+
+/* 只有一个按钮时撑满一行，更好点 */
+.client-announcement.is-text-only .client-announcement__actions > :only-child {
+  min-width: 160px;
+}
+
+.client-announcement__actions a:focus-visible,
+.client-announcement__actions button:focus-visible,
+.client-announcement__close:focus-visible,
+.client-announcement__nav:focus-visible,
+.client-announcement.is-image-top .client-announcement__poster-cta:focus-visible {
+  outline: 2px solid rgb(111 109 251 / 0.6);
+  outline-offset: 2px;
+}
+
+/* 内容依次浮现 */
+.client-announcement__media:not(.is-side),
+.client-announcement__copy > * {
+  animation: client-announcement-rise 560ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.client-announcement__media:not(.is-side) { animation-delay: 80ms; }
+.client-announcement__copy > :nth-child(1) { animation-delay: 140ms; }
+.client-announcement__copy > :nth-child(2) { animation-delay: 190ms; }
+.client-announcement__copy > :nth-child(3) { animation-delay: 240ms; }
+.client-announcement__copy > :nth-child(4) { animation-delay: 290ms; }
+.client-announcement__copy > :nth-child(5) { animation-delay: 340ms; }
+
+/* 离场 */
+.client-announcement-modal.is-leaving .client-announcement-modal__backdrop {
+  animation: client-announcement-fade-out 260ms ease forwards;
+}
+
+.client-announcement-modal.is-leaving .client-announcement {
+  animation: client-announcement-out 260ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+
+@keyframes client-announcement-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes client-announcement-out {
+  to {
+    opacity: 0;
+    transform: perspective(1400px) translateY(18px) scale(0.94);
+  }
+}
+
+@keyframes client-announcement-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes client-announcement-pop {
+  from {
+    opacity: 0;
+    transform: translateY(30px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes client-announcement-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes client-announcement-shine {
+  0% {
+    transform: translateX(-130%);
+  }
+  55%,
+  100% {
+    transform: translateX(130%);
+  }
+}
+
+/* ---------- 3D 主按钮：柔和的立体感（内侧明暗 + 多层渐隐投影），按下时平滑下沉 ---------- */
+.client-announcement.is-image-top .client-announcement__poster-cta,
+.client-announcement__actions a,
+.client-announcement__actions > button:only-child {
+  --ann-btn-lift: 0px;
+
+  isolation: isolate;
+  border: 0;
+  background:
+    radial-gradient(120% 140% at 50% -20%, rgb(255 255 255 / 0.28), transparent 55%),
+    linear-gradient(180deg, #8684ff 0%, #6c6af8 52%, #5856eb 100%);
+  box-shadow:
+    inset 0 1px 1px rgb(255 255 255 / 0.55),
+    inset 0 -4px 8px rgb(52 48 196 / 0.45),
+    0 2px 2px rgb(60 56 200 / 0.35),
+    0 6px 10px -2px rgb(72 68 225 / 0.35),
+    0 16px 28px -10px rgb(72 68 225 / 0.55);
+  color: #fff;
+  text-shadow: 0 1px 1px rgb(36 30 140 / 0.35);
+  transform: translateY(var(--ann-btn-lift)) scale(1);
+  transition:
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.client-announcement.is-image-top .client-announcement__poster-cta {
+  min-height: 58px;
+  padding: 0 54px;
+  font-size: 17px;
+}
+
+/* 顶部柔光 */
+.client-announcement.is-image-top .client-announcement__poster-cta::after,
+.client-announcement__actions a::after,
+.client-announcement__actions > button:only-child::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 8%;
+  right: 8%;
+  height: 50%;
+  z-index: -1;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.34), rgb(255 255 255 / 0));
+  filter: blur(0.5px);
+  pointer-events: none;
+}
+
+.client-announcement__actions > button:only-child {
+  position: relative;
+  overflow: hidden;
+}
+
+.client-announcement.is-image-top .client-announcement__poster-cta:hover,
+.client-announcement__actions a:hover,
+.client-announcement__actions > button:only-child:hover,
+:root.color-scheme-dark .client-announcement__actions > button:only-child:hover,
+:root.dark .client-announcement__actions > button:only-child:hover {
+  --ann-btn-lift: -2px;
+  background:
+    radial-gradient(120% 140% at 50% -20%, rgb(255 255 255 / 0.28), transparent 55%),
+    linear-gradient(180deg, #8684ff 0%, #6c6af8 52%, #5856eb 100%);
+  color: #fff;
+  filter: brightness(1.05) saturate(1.05);
+  box-shadow:
+    inset 0 1px 1px rgb(255 255 255 / 0.6),
+    inset 0 -4px 8px rgb(52 48 196 / 0.4),
+    0 3px 3px rgb(60 56 200 / 0.3),
+    0 10px 16px -4px rgb(72 68 225 / 0.38),
+    0 22px 36px -12px rgb(72 68 225 / 0.6);
+}
+
+.client-announcement.is-image-top .client-announcement__poster-cta:active,
+.client-announcement__actions a:active,
+.client-announcement__actions > button:only-child:active {
+  --ann-btn-lift: 1px;
+  filter: brightness(0.97);
+  transition-duration: 120ms;
+  box-shadow:
+    inset 0 1px 1px rgb(255 255 255 / 0.35),
+    inset 0 3px 8px rgb(40 36 170 / 0.4),
+    0 1px 1px rgb(60 56 200 / 0.3),
+    0 3px 6px -2px rgb(72 68 225 / 0.35),
+    0 8px 14px -8px rgb(72 68 225 / 0.4);
+}
+
+/* 扫光：更慢、更淡，避免一闪一闪 */
+.client-announcement__actions a::before,
+.client-announcement.is-image-top .client-announcement__poster-cta::before {
+  background: linear-gradient(105deg, transparent 35%, rgb(255 255 255 / 0.22) 50%, transparent 65%);
+  animation: client-announcement-shine 5s 1.4s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+}
+
+/* 下方留出投影的位置 */
+.client-announcement__actions {
+  padding-bottom: 4px;
+}
+
+@keyframes client-announcement-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes client-announcement-in {
+  from {
+    opacity: 0;
+    transform: perspective(1400px) translateY(40px) rotateX(10deg) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(1400px) translateY(0) rotateX(0deg) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .client-announcement,
+  .client-announcement-modal__backdrop,
+  .client-announcement__media,
+  .client-announcement__copy > *,
+  .client-announcement__tag,
+  .client-announcement__poster,
+  .client-announcement__actions a::before,
+  .client-announcement.is-image-top .client-announcement__poster-cta,
+  .client-announcement.is-image-top .client-announcement__poster-cta::before,
+  .client-announcement-modal.is-leaving .client-announcement,
+  .client-announcement-modal.is-leaving .client-announcement-modal__backdrop {
+    animation: none !important;
+  }
+
+
+  .client-announcement__close:hover {
+    transform: none;
+  }
 }
 
 @media (max-width: 760px) {
+  .client-announcement-modal .client-announcement {
+    border-radius: 24px;
+  }
+
+  .client-announcement-modal .client-announcement.is-image-top {
+    border-radius: 0;
+  }
+
   .client-announcement-modal .client-announcement.is-image-left,
   .client-announcement-modal .client-announcement.is-image-right {
     width: min(420px, 100%);
@@ -728,11 +1262,64 @@
 
   .client-announcement.is-image-left .client-announcement__copy,
   .client-announcement.is-image-right .client-announcement__copy {
-    padding: 20px 20px 22px;
+    padding: 20px 22px 22px;
     overflow: auto;
   }
 
-  .client-announcement.is-image-right .client-announcement__close {
-    background: rgb(12 12 16 / 0.42);
+  .client-announcement-modal .client-announcement.is-image-right .client-announcement__copy {
+    padding-top: 20px;
+  }
+
+  .client-announcement-modal .client-announcement.is-text-only .client-announcement__copy {
+    padding-top: 64px;
+  }
+
+  .client-announcement__tag {
+    top: 20px;
+    left: 20px;
+  }
+
+  .client-announcement__media {
+    height: 240px;
+    min-height: 240px;
+    margin: 10px 10px 0;
+    border-radius: 18px;
+  }
+
+  .client-announcement.is-carousel .client-announcement__media {
+    height: 280px;
+    min-height: 280px;
+  }
+
+  .client-announcement__media.is-grid {
+    height: 260px;
+    min-height: 260px;
+  }
+
+  .client-announcement__copy {
+    padding: 20px 22px 22px;
+  }
+
+  .client-announcement.is-text-only .client-announcement__copy {
+    padding: 30px 24px 24px;
+  }
+
+  .client-announcement__copy strong,
+  .client-announcement.is-image-left .client-announcement__copy strong,
+  .client-announcement.is-image-right .client-announcement__copy strong {
+    font-size: 21px;
+  }
+
+  .client-announcement__copy p {
+    font-size: 15px;
+  }
+
+  .client-announcement__actions {
+    justify-content: stretch;
+  }
+
+  .client-announcement__actions a,
+  .client-announcement__actions button {
+    flex: 1 1 0;
   }
 }

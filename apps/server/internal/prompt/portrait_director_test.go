@@ -20,3 +20,14 @@ func TestPortraitDirectorSkillFileMatchesLegacyPrompt(t *testing.T) {
 		t.Fatal("SKILL.md body drifted from femalePortraitDirectorPrompt")
 	}
 }
+
+func TestT2ISkillsSkippedWhenModelDisablesThem(t *testing.T) {
+	params := map[string]any{"skillIds": []string{femalePortraitDirectorSkillID}, "_skillsDisabled": true}
+	if got := applyT2ISkills("一只猫", params); got != "一只猫" {
+		t.Fatalf("prompt = %q, want the user's text only", got)
+	}
+	delete(params, "_skillsDisabled")
+	if got := applyT2ISkills("一只猫", params); got == "一只猫" {
+		t.Fatal("skills should apply when the model allows them")
+	}
+}

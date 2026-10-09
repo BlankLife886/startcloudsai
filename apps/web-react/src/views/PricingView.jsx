@@ -45,6 +45,7 @@ import { CheckoutOrderStage, checkoutCountdown, isConfirmingOrder, isUnsettledOr
 import { PaymentMethodSwitch } from "./PaymentMethodSwitch.jsx";
 import { SubscriptionUpgradeCheckout } from './SubscriptionUpgradeCheckout.jsx';
 import { SubscriptionPurchaseBenefits } from './SubscriptionPurchaseBenefits.jsx';
+import { subscriptionQuotaRights } from './subscriptionTerms.js';
 import { upgradeBlockReason } from './subscriptionUpgrade.js';
 
 gsap.registerPlugin(useGSAP);
@@ -312,7 +313,7 @@ function normalizePlans(plans) {
   }));
 }
 
-function planFeatures(plan, baseConcurrency = 4) {
+function planFeatures(plan, bases = {}) {
   if (plan.preview) return plan.features;
   const configured = Array.isArray(plan.features) ? plan.features : [];
   const cleaned = configured.filter(
@@ -329,7 +330,7 @@ function planFeatures(plan, baseConcurrency = 4) {
   const policy = plan.subscriptionPolicy || {};
   const rights = plan.kind === 'subscription'
     ? [policy.lockModelPrices === false ? '模型按实时价格计费' : policy.allowTopupPriceLock ? '订阅及合格额度包享价格保护' : '订阅积分享价格保护',
-      `并发 +${policy.concurrencyBonus > 0 ? policy.concurrencyBonus : 0} 张`]
+      ...subscriptionQuotaRights(policy, bases).map(right => right.text)]
     : [plan.priceLockEligible ? '有效合格订阅下可享价格保护' : '按实时模型价格消费'];
   return [...new Set([...base, ...rights])];
 }
@@ -830,7 +831,7 @@ export function PricingView() {
   const [plans, setPlans] = useState([]);
   const [faqCatalog, setFaqCatalog] = useState(null);
   const catalogRequestVersion = useRef(0);
-  const [baseConcurrency, setBaseConcurrency] = useState(4);
+  const [quotaBases, setQuotaBases] = useState({ concurrency: 4 });
   const [paymentEnabled, setPaymentEnabled] = useState(false);
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [pricing, setPricing] = useState(null);
@@ -880,7 +881,7 @@ export function PricingView() {
         setFaqCatalog(catalog);
         setPlans(catalog.items);
         setPaymentEnabled(catalog.paymentEnabled === true);
-        setBaseConcurrency(Number(catalog.baseConcurrency) || 4);
+        setQuotaBases({ concurrency: Number(catalog.baseConcurrency) || 4, canvasProjects: catalog.baseCanvasProjects, assistantConversations: catalog.baseAssistantConversations });
         setPaymentMethods(Array.isArray(catalog.paymentMethods) ? catalog.paymentMethods.filter(method => ['alipay', 'wechat'].includes(method)) : []);
         setPlansLoadFailed(false);
       }
@@ -1554,7 +1555,7 @@ export function PricingView() {
                         </div>
                         <small>{!plan.preview && t(plan.kind === "subscription" ? "自开通时起每24小时重置" : "一次性入账")}</small>
                       </div>
-                      <ul>{planFeatures(plan, baseConcurrency).map(feature => <li key={feature}><Check size={15} aria-hidden="true" /><span>{t(feature)}</span></li>)}</ul>
+                      <ul>{planFeatures(plan, quotaBases).map(feature => <li key={feature}><Check size={15} aria-hidden="true" /><span>{t(feature)}</span></li>)}</ul>
                     </div>
                   </article>
                 );
@@ -1672,7 +1673,7 @@ export function PricingView() {
                   </div>
                   <img className="pp-checkout__art" src="/pricing/subscription-upgrade.webp" alt="" />
                 </div>
-                {checkout.plan.kind === 'subscription' && <SubscriptionPurchaseBenefits plan={checkout.plan} t={t} />}
+                {checkout.plan.kind === 'subscription' && <SubscriptionPurchaseBenefits plan={checkout.plan} bases={quotaBases} t={t} />}
                 <PaymentMethodSwitch methods={paymentMethods} value={checkout.method} onChange={method => setCheckout(value => ({ ...value, method }))} disabled={checkout.loading} t={t} />
                 {checkout.error && <p className="pp-checkout__error" role="alert">{t(checkout.error)}</p>}
                 {checkout.errorCode === "user_unsettled_order" && (

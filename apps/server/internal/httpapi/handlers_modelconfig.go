@@ -266,7 +266,7 @@ func (s *Server) apiModelsBrokenBy(ctx context.Context, next modelconfig.Config)
 		if _, after := apicatalog.Runnable(next, entry.TargetModelID); after {
 			continue
 		}
-		reason := "服务商停用或线路不是 OpenAI 协议"
+		reason := "服务商停用或线路是异步任务协议（CRUN）"
 		if model, found := siteModelByID(next, entry.TargetModelID); !found {
 			reason = "站内模型被删除"
 		} else if !model.Enabled {

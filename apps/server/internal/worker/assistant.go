@@ -4458,7 +4458,7 @@ func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.
 	if size == "auto" {
 		size = ""
 	}
-	quality := assistantParamString(run.Params, "quality", "high")
+	quality := upstreamQuality(run.Params, assistantParamString(run.Params, "quality", "high"))
 	inputs := make([]string, 0, len(references))
 	for _, reference := range references {
 		data, _, _, loadErr := downloadAssistantImage(ctx, reference)
@@ -4551,7 +4551,7 @@ func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.
 				itemParams := assistantImagePlanParams(run.Params, plan[index])
 				itemPrompt := prompt.ConstrainAutoAspectRatio(plan[index].Prompt, itemParams)
 				itemSize := assistantPlanString(plan[index].RequestSize, size)
-				itemQuality := assistantPlanString(plan[index].Quality, quality)
+				itemQuality := upstreamQuality(run.Params, assistantPlanString(plan[index].Quality, quality))
 				return submitAndWaitAssistantC2ATask(itemCtx, client, taskID, existingTaskID(slot), 1,
 					func(submitCtx context.Context) ([]string, bool, string, error) {
 						options := c2a.ImageOptions{Quality: itemQuality}
@@ -4694,6 +4694,7 @@ func createAssistantCRUNPlanTasks(
 	plan []assistantImageExecutionItem,
 	references []string,
 	params map[string]any,
+	model *modelconfig.Model,
 	existing []string,
 	onCreated func([]string) error,
 ) ([]string, error) {
@@ -4713,9 +4714,16 @@ func createAssistantCRUNPlanTasks(
 		request.Prompt = crunPrompt(prompt.ConstrainAutoAspectRatio(plan[index].Prompt, itemParams))
 		request.ImageURLs = itemReferences
 		request.Size = assistantPlanString(plan[index].RequestSize, request.Size)
-		request.Quality = assistantPlanString(plan[index].Quality, request.Quality)
+		request.Quality = upstreamQuality(params, assistantPlanString(plan[index].Quality, request.Quality))
 		request.AspectRatio = normalizeCRUNAspectRatio(itemParams, request.Size)
 		request.Resolution = normalizeCRUNResolutionForAspect(normalizeCRUNResolution(itemParams), request.AspectRatio)
+		if model != nil && len(model.UpstreamInputFields) > 0 {
+			adapted := modelconfig.AdaptCRUNImage(*model, modelconfig.CRUNImageParams{
+				Prompt:      strings.TrimSpace(prompt.ConstrainAutoAspectRatio(plan[index].Prompt, itemParams)),
+				AspectRatio: requestedCRUNAspectRatio(itemParams, request.AspectRatio), Resolution: request.Resolution,
+			})
+			request.Prompt, request.AspectRatio, request.Resolution = adapted.Prompt, adapted.AspectRatio, adapted.Resolution
+		}
 		if err := applyCRUNExactSize(&request, itemParams, base.ExactSizeFields); err != nil {
 			return nil, err
 		}
@@ -4760,14 +4768,25 @@ func (w *Worker) executeAssistantImageCRUNClient(
 	if err != nil {
 		return err
 	}
+	if len(references) == 0 && len(models) > 0 && modelconfig.CRUNRequiresReference(models[0]) {
+		return &crun.PreflightError{Err: errors.New("所选模型只支持改图，请先添加参考图或切换模型")}
+	}
 	aspectRatio := normalizeCRUNAspectRatio(run.Params, assistantParamString(run.Params, "requestSize", ""))
 	resolution := normalizeCRUNResolutionForAspect(normalizeCRUNResolution(run.Params), aspectRatio)
 	request := crun.OpenAIImageRequest{
 		Prompt: crunPrompt(finalPrompt), N: count,
 		Size:    assistantParamString(run.Params, "requestSize", ""),
-		Quality: assistantParamString(run.Params, "quality", ""), ImageURLs: references,
+		Quality: upstreamQuality(run.Params, assistantParamString(run.Params, "quality", "")), ImageURLs: references,
 		AspectRatio: aspectRatio, Resolution: resolution,
 		AllowedInputFields: allowedInputFields,
+	}
+	if len(models) > 0 && len(models[0].UpstreamInputFields) > 0 {
+		adapted := modelconfig.AdaptCRUNImage(models[0], modelconfig.CRUNImageParams{
+			Prompt: strings.TrimSpace(finalPrompt), AspectRatio: requestedCRUNAspectRatio(run.Params, aspectRatio), Resolution: request.Resolution,
+		})
+		request.Prompt, request.AspectRatio, request.Resolution = adapted.Prompt, adapted.AspectRatio, adapted.Resolution
+		request.FixedInput = models[0].UpstreamFixedInput
+		request.ForceQuality = models[0].QualityAlwaysSent
 	}
 	if err := applyCRUNExactSize(&request, run.Params, exactFields); err != nil {
 		return err
@@ -4790,7 +4809,11 @@ func (w *Worker) executeAssistantImageCRUNClient(
 		if len(plan) != count {
 			return fmt.Errorf("独立多图方案数量不一致：方案 %d 张，输出 %d 张", len(plan), count)
 		}
-		taskIDs, err = createAssistantCRUNPlanTasks(ctx, client, request, plan, references, run.Params,
+		var planModel *modelconfig.Model
+		if len(models) > 0 {
+			planModel = &models[0]
+		}
+		taskIDs, err = createAssistantCRUNPlanTasks(ctx, client, request, plan, references, run.Params, planModel,
 			taskParamStrings(run.Params, "_crunTaskIds"), onCreated)
 	} else {
 		taskIDs, err = createAssistantCRUNImageTasks(ctx, client, request,
@@ -4853,7 +4876,7 @@ func (w *Worker) executeAssistantImage(ctx context.Context, client *sub2api.Clie
 	}
 	finalPrompt := prompt.ConstrainAutoAspectRatio(w.assistantImagePromptWithSkills(ctx, run), run.Params)
 	size := assistantParamString(run.Params, "requestSize", "auto")
-	quality := assistantParamString(run.Params, "quality", "high")
+	quality := upstreamQuality(run.Params, assistantParamString(run.Params, "quality", "high"))
 	storedByIndex := make([]map[string]any, count)
 	requestCtx, cancelRequest := context.WithTimeout(ctx, assistantSynchronousImageLimit)
 	defer cancelRequest()

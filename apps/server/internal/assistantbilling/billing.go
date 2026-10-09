@@ -5,6 +5,7 @@ package assistantbilling
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -302,7 +303,7 @@ func completeAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expecte
 		if err := store.InsertUsageProfitEntry(ctx, tx, store.UsageProfitEntry{
 			SourceType: SourceType, SourceID: run.ID.String(), BillingGeneration: run.BillingGeneration,
 			UserID: run.UserID, EventStatus: "succeeded", Workspace: paramString(run.Params, "workspace"),
-			ProviderID: paramString(run.Params, providerKey), ModelID: paramString(run.Params, modelKey), Units: units,
+			ProviderID: paramString(run.Params, providerKey), ModelID: paramString(run.Params, modelKey), ModelName: paramString(run.Params, modelNameKey(modelKey)), Units: units,
 			RevenueCents: cost, UpstreamCostCents: paramInt64(run.Params, unitCostKey) * int64(upstreamUnits),
 			Metadata: metadata, CreatedAt: time.Now().UTC(),
 		}); err != nil {
@@ -390,7 +391,7 @@ func FailTxAttempt(ctx context.Context, q store.Q, id uuid.UUID, expectedAttempt
 		if err := store.InsertUsageProfitEntry(ctx, q, store.UsageProfitEntry{
 			SourceType: SourceType, SourceID: run.ID.String(), BillingGeneration: run.BillingGeneration,
 			UserID: run.UserID, EventStatus: "failed", Workspace: paramString(run.Params, "workspace"),
-			ProviderID: paramString(run.Params, providerKey), ModelID: paramString(run.Params, modelKey), Units: units,
+			ProviderID: paramString(run.Params, providerKey), ModelID: paramString(run.Params, modelKey), ModelName: paramString(run.Params, modelNameKey(modelKey)), Units: units,
 			RevenueCents: revenue, UpstreamCostCents: paramInt64(run.Params, unitCostKey) * int64(units),
 			Metadata: map[string]any{"mode": run.Mode, "errorCode": code}, CreatedAt: time.Now().UTC(),
 		}); err != nil {
@@ -638,4 +639,9 @@ func Requeue(ctx context.Context, q store.Q, run *store.AssistantRun) (bool, err
 		return false, err
 	}
 	return store.RequeueAssistantRun(ctx, q, run.ID)
+}
+
+// modelNameKey 对应模型 ID 参数的显示名参数，例如 _imageModelConfigId → _imageModelDisplayName。
+func modelNameKey(modelKey string) string {
+	return strings.Replace(modelKey, "ConfigId", "DisplayName", 1)
 }

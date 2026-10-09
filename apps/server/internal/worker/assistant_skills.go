@@ -54,6 +54,9 @@ func (w *Worker) assistantImagePromptWithSkills(ctx context.Context, run *store.
 	if !strings.Contains(run.Prompt, "@") || w.St == nil || w.St.Pool == nil {
 		return run.Prompt
 	}
+	if skillsDisabled, _ := run.Params["_skillsDisabled"].(bool); skillsDisabled {
+		return w.promptWithoutSkillMentions(ctx, run.Prompt)
+	}
 	expanded, _, err := skillmention.ExpandOfficial(ctx, w.St.Pool, run.Prompt)
 	if err != nil {
 		log.Printf("assistant run %s: expand official skills failed: %v", run.ID, err)

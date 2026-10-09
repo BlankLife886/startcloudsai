@@ -65,6 +65,9 @@ func hasSkillID(params map[string]any, expected string) bool {
 // skillIds=female-portrait-director，同一请求也就不会与 @ 展开的正文重复拼接。
 // 已入库的旧任务参数（例如服务端重试）仍按原约定执行；不再需要时连同常量一起删除。
 func applyT2ISkills(compiled string, params map[string]any) string {
+	if skillsDisabled, _ := params["_skillsDisabled"].(bool); skillsDisabled {
+		return compiled
+	}
 	if !hasSkillID(params, femalePortraitDirectorSkillID) {
 		return compiled
 	}

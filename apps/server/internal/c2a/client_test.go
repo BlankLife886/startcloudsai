@@ -345,6 +345,44 @@ func TestEditImagesStandardStreamSurfacesSourceErrors(t *testing.T) {
 	}
 }
 
+type recordingBackend struct {
+	model  string
+	inputs []string
+}
+
+func (b *recordingBackend) GenerateImages(_ context.Context, _, model string, n int, _ string, inputs []string) ([]string, error) {
+	b.model, b.inputs = model, inputs
+	return []string{"result-b64"}, nil
+}
+
+// A native backend (Gemini, DashScope, MiniMax) takes inline base64 images,
+// so a streamed edit must go to it instead of the OpenAI multipart endpoint.
+func TestEditImagesStandardStreamUsesNativeBackend(t *testing.T) {
+	backend := &recordingBackend{}
+	client := NewWithPolicy("http://upstream.invalid", "test-key", 30, true).WithStandardImages().WithImageBackend(backend)
+	open := func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(png1x1())), nil }
+	images := []StreamImage{{ContentType: "image/png", Open: open}, {ContentType: "image/png", Open: open}}
+	response, err := client.EditImagesStandardStream(context.Background(), "refine", "gemini-image", 1, images, "", ImageOptions{})
+	if err != nil || len(response.Data) != 1 || response.Data[0].B64JSON != "result-b64" {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+	want := base64.StdEncoding.EncodeToString(png1x1())
+	if backend.model != "gemini-image" || len(backend.inputs) != 2 || backend.inputs[0] != want || backend.inputs[1] != want {
+		t.Fatalf("backend got model=%q inputs=%d", backend.model, len(backend.inputs))
+	}
+
+	huge := []StreamImage{{ContentType: "image/png", Open: func() (io.ReadCloser, error) {
+		return io.NopCloser(io.LimitReader(zeroReader{}, NativeImageEditMaxBytes+1)), nil
+	}}}
+	if _, err := client.EditImagesStandardStream(context.Background(), "refine", "gemini-image", 1, huge, "", ImageOptions{}); err == nil {
+		t.Fatal("reference images over the native limit must be rejected")
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
 func TestGenerateImagesWithIDHonorsExplicitQuality(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

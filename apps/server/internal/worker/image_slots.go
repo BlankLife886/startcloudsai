@@ -77,6 +77,30 @@ func upstreamRejectsMember(err error) bool {
 	return false
 }
 
+// upstreamRejectsRequest reports a 400/422: the parameters were refused, not
+// the member, e.g. a ratio the model does not offer at a resolution.
+func upstreamRejectsRequest(err error) bool {
+	if err == nil {
+		return false
+	}
+	status := 0
+	var c2aErr *c2a.UpstreamError
+	var subErr *sub2api.UpstreamError
+	var crunErr *crun.UpstreamError
+	switch {
+	case errors.As(err, &c2aErr):
+		status = c2aErr.StatusCode
+	case errors.As(err, &subErr):
+		status = subErr.Status
+	case errors.As(err, &crunErr):
+		status = crunErr.Status
+		if crunErr.Code == http.StatusUnprocessableEntity || crunErr.Code == http.StatusBadRequest {
+			return true
+		}
+	}
+	return status == http.StatusBadRequest || status == http.StatusUnprocessableEntity
+}
+
 func (w *Worker) recordSlotFailure(ctx context.Context, task *store.Task, errorCode, message string) {
 	if task == nil || taskParamString(task.Params, "_slotResolution") == "" || !slotFailureCounts(errorCode) {
 		return

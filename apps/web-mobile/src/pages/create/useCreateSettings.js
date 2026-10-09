@@ -18,6 +18,7 @@ import {
   backgroundRemovalModelsOf,
   featureModels,
   wallpaperFeature,
+  modelPromptMaxChars,
 } from "@react/features/text-to-image/t2iRequest.js";
 
 const DRAFT_VERSION = 1;
@@ -158,7 +159,7 @@ export function useCreateSettings(userId) {
     ratioOptions,
     countOptions,
     maxReferences: Math.max(0, Number(model?.maxReferenceImages ?? 4)),
-    promptMaxChars: runtime?.promptInputLimits?.t2iPromptMaxChars ?? 8000,
+    promptMaxChars: modelPromptMaxChars(model, runtime?.promptInputLimits?.t2iPromptMaxChars ?? 8000),
     unitCost,
   };
 }

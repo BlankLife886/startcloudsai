@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +22,8 @@ type UsageProfitEntry struct {
 	ProviderID        string
 	RouteID           string
 	ModelID           string
+	// ModelName 记录当时的模型显示名，模型从目录删掉后报表仍能显示名称。
+	ModelName         string
 	Units             int
 	RevenueCents      int64
 	UpstreamCostCents int64
@@ -74,6 +77,9 @@ func UpsertUsageProfitEntry(ctx context.Context, q Q, entry UsageProfitEntry) er
 func normalizeUsageProfitEntry(entry UsageProfitEntry) UsageProfitEntry {
 	if entry.Metadata == nil {
 		entry.Metadata = map[string]any{}
+	}
+	if name := strings.TrimSpace(entry.ModelName); name != "" {
+		entry.Metadata["modelName"] = name
 	}
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = time.Now().UTC()
@@ -193,4 +199,60 @@ func ListProfitabilityBreakdownBySource(ctx context.Context, q Q, dimension stri
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// ResolveProfitModelNames 给已不在模型目录里的模型 ID 找回当时的显示名：
+// 优先账本 metadata.modelName，其次对应任务 / AI 助手运行参数里记录的显示名。
+func ResolveProfitModelNames(ctx context.Context, q Q, modelIDs []string, since time.Time) (map[string]string, error) {
+	names := make(map[string]string, len(modelIDs))
+	if len(modelIDs) == 0 {
+		return names, nil
+	}
+	rows, err := q.Query(ctx, `SELECT ledger.model_id, COALESCE(
+			MAX(NULLIF(ledger.metadata->>'modelName', '')),
+			MAX(NULLIF(task.params->>'_modelDisplayName', '')),
+			MAX(NULLIF(CASE
+				WHEN run.params->>'_imageModelConfigId' = ledger.model_id THEN run.params->>'_imageModelDisplayName'
+				WHEN run.params->>'_chatModelConfigId' = ledger.model_id THEN run.params->>'_chatModelDisplayName'
+				WHEN run.params->>'_modelConfigId' = ledger.model_id THEN run.params->>'_modelDisplayName'
+			END, '')),
+			'')
+		FROM usage_profit_ledger ledger
+		LEFT JOIN tasks task ON task.id = (CASE WHEN ledger.source_type = 'task' THEN ledger.source_id::uuid END)
+		LEFT JOIN assistant_runs run ON run.id = (CASE WHEN ledger.source_type = 'assistant_run' THEN ledger.source_id::uuid END)
+		WHERE ledger.model_id = ANY($1) AND ledger.created_at >= $2
+		GROUP BY ledger.model_id`, modelIDs, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		// 早期个别记录把内部 ID 当成了显示名，这种不算找到名称。
+		if name = strings.TrimSpace(name); name != "" && !isInternalModelID(name) {
+			names[id] = name
+		}
+	}
+	return names, rows.Err()
+}
+
+// isInternalModelID 判断是否为模型目录的内部 ID（model-<uuid>）。
+func isInternalModelID(value string) bool {
+	rest, ok := strings.CutPrefix(value, "model-")
+	if !ok {
+		return false
+	}
+	_, err := uuid.Parse(rest)
+	return err == nil
+}
+
+// ProfitModelFallbackLabel 找不到名称的已删除模型，显示为“已删除的模型 · 短 ID”。
+func ProfitModelFallbackLabel(modelID string) string {
+	if !isInternalModelID(modelID) {
+		return modelID
+	}
+	return "已删除的模型 · " + strings.TrimPrefix(modelID, "model-")[:8]
 }

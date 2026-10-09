@@ -310,12 +310,10 @@ func (s *Server) createTask(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "prompt: 完整任务内容过长", 422))
 		return
 	}
+	// The t2i limit is checked once the model is known: its own limit wins.
+	promptMaxRunes := 0
 	if body.Type == "t2i" {
-		maxT2I := s.t2iPromptMaxRunes(c.Request.Context())
-		if len([]rune(body.Prompt)) > maxT2I {
-			fail(c, apperr.E("validation_error", fmt.Sprintf("prompt: 长度不能超过 %d 个字符", maxT2I), 422))
-			return
-		}
+		promptMaxRunes = s.t2iPromptMaxRunes(c.Request.Context())
 	}
 	count := 1
 	if body.Count != nil {
@@ -382,6 +380,7 @@ func (s *Server) createTask(c *gin.Context) {
 		Params:                 body.Params,
 		TrustedParams:          trustedParams,
 		InputKeys:              body.InputKeys,
+		PromptMaxRunes:         promptMaxRunes,
 		Count:                  count,
 		IdempotencyKey:         body.IdempotencyKey,
 		ExpectedUnitPriceCents: body.ExpectedUnitPriceCents,

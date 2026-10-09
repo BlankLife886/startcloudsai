@@ -449,19 +449,6 @@ export function SubscriptionsView() {
               {current.skippedCycles > 0 ? <p className="subscription-legacy">已跳过 {current.skippedCycles} 个过期周期，不累积补发额度。</p> : null}
               {current.upgradeReclaimedPoints > 0 ? <p className="subscription-legacy">历史升级已置换回收 {formatPoints(current.upgradeReclaimedPoints)}，不计为创作消费。</p> : null}
 
-              {!unsubscribed ? <section className="subscription-scope" aria-label="订阅权益">
-                <header><h2>{stopped ? '原订阅权益' : '订阅权益'}</h2>{current.contract && <span>权益版本 v{current.contract.planRevision}</span>}</header>
-                <dl>
-                  <div><dt>价格保护</dt><dd>{current.contract ? current.contract.lockModelPrices ? current.contract.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分' : '按实时价格计费' : '历史订阅按实时价格计费'}{current.contract?.lockModelPrices && <small>站内创作适用；API 调用按控制台「模型」页的价格计费</small>}</dd></div>
-                  {current.contract && <div><dt>额外并发</dt><dd>+{current.contract.concurrencyBonus ?? 0} 张</dd></div>}
-                  {!stopped && data.concurrency && <div><dt>并发上限</dt><dd>{data.concurrency.imageLimit ?? data.concurrency.limit} 张<small>基础 {data.concurrency.base} + 订阅 {data.concurrency.planBonus ?? data.concurrency.bonus}{data.concurrency.manualBonus > 0 ? ` + 专属追加 ${data.concurrency.manualBonus}` : ''}，所有生图场景共用</small></dd></div>}
-                  {!stopped && data.concurrency?.chatLimit != null && <div><dt>对话并发上限</dt><dd>{data.concurrency.chatLimit} 次<small>与图片额度独立</small></dd></div>}
-                  <div><dt>使用渠道</dt><dd>{current.policy?.channels?.map(value => value === 'api' ? 'API' : value === 'web' ? '网站' : value).join('、') || '按原套餐权益'}</dd></div>
-                  <div><dt>适用场景</dt><dd>{current.policy?.featureKeys?.length ? current.policy.featureKeys.map(key => scenes[key] || key).join('、') : '全部场景'}</dd></div>
-                  {current.policy?.modelIds?.length > 0 && <div><dt>适用模型</dt><dd>{current.policy.modelIds.join('、')}</dd></div>}
-                </dl>
-                {current.contract && (current.status !== 'active' || current.upgrading) && <p className="subscription-scope__status">当前订阅权益已暂停或结束</p>}
-              </section> : null}
 
               {current.billingVersion !== 2 ? (
                 <p className="subscription-legacy">
@@ -504,6 +491,21 @@ export function SubscriptionsView() {
           </aside>
 
           <section className="subscription-ledger" aria-label="发放记录">
+            {!unsubscribed ? <section className="subscription-scope" aria-label="订阅权益">
+              <header><h2>{stopped ? '原订阅权益' : '订阅权益'}</h2>{current.contract && <span>权益版本 v{current.contract.planRevision}</span>}</header>
+              <dl>
+                <div><dt>价格保护</dt><dd>{current.contract ? current.contract.lockModelPrices ? current.contract.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分' : '按实时价格计费' : '历史订阅按实时价格计费'}{current.contract?.lockModelPrices && <small>站内创作适用；API 调用按控制台「模型」页的价格计费</small>}</dd></div>
+                {current.contract && <div><dt>额外并发</dt><dd>+{current.contract.concurrencyBonus ?? 0} 张</dd></div>}
+                {!stopped && data.concurrency && <div><dt>并发上限</dt><dd>{data.concurrency.imageLimit ?? data.concurrency.limit} 张<small>基础 {data.concurrency.base} + 订阅 {data.concurrency.planBonus ?? data.concurrency.bonus}{data.concurrency.manualBonus > 0 ? ` + 专属追加 ${data.concurrency.manualBonus}` : ''}，所有生图场景共用</small></dd></div>}
+                {!stopped && data.concurrency?.chatLimit != null && <div><dt>对话并发上限</dt><dd>{data.concurrency.chatLimit} 次<small>与图片额度独立</small></dd></div>}
+                {current.contract && <div><dt>画布项目</dt><dd>{!stopped && data.baseCanvasProjects != null ? `${data.baseCanvasProjects + (current.contract.canvasProjectBonus ?? 0)} 个` : `+${current.contract.canvasProjectBonus ?? 0} 个`}<small>{!stopped && data.baseCanvasProjects != null ? `基础 ${data.baseCanvasProjects} + 订阅 ${current.contract.canvasProjectBonus ?? 0}，无限画布最多可保存的项目数` : '订阅追加的无限画布项目数'}</small></dd></div>}
+                {current.contract && <div><dt>助手对话</dt><dd>{!stopped && data.baseAssistantConversations != null ? `${data.baseAssistantConversations + (current.contract.assistantConversationBonus ?? 0)} 个` : `+${current.contract.assistantConversationBonus ?? 0} 个`}<small>{!stopped && data.baseAssistantConversations != null ? `基础 ${data.baseAssistantConversations} + 订阅 ${current.contract.assistantConversationBonus ?? 0}，超出时自动归档最久没用的对话` : '订阅追加的 AI 助手对话保留数'}</small></dd></div>}
+                <div><dt>使用渠道</dt><dd>{current.policy?.channels?.map(value => value === 'api' ? 'API' : value === 'web' ? '网站' : value).join('、') || '按原套餐权益'}</dd></div>
+                <div><dt>适用场景</dt><dd>{current.policy?.featureKeys?.length ? current.policy.featureKeys.map(key => scenes[key] || key).join('、') : '全部场景'}</dd></div>
+                <div className="is-wide"><dt>适用模型</dt><dd>{current.policy?.modelIds?.length ? (current.modelNames || current.policy.modelIds).join('、') : '全部模型'}</dd></div>
+              </dl>
+              {current.contract && (current.status !== 'active' || current.upgrading) && <p className="subscription-scope__status">当前订阅权益已暂停或结束</p>}
+            </section> : null}
             <header className="subscription-ledger__head">
               <div>
                 <h2>{tab === "grants" ? "发放记录" : "升级与退订"}</h2>

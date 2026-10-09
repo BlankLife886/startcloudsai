@@ -171,6 +171,25 @@ func validateModelImageCapabilities(model modelconfig.Model, params map[string]a
 	if referenceCount > model.MaxReferenceImages {
 		return apperr.E("validation_error", fmt.Sprintf("所选模型最多支持 %d 张参考图", model.MaxReferenceImages), 422)
 	}
+	if referenceCount == 0 && modelconfig.CRUNRequiresReference(model) {
+		return apperr.E("validation_error", "所选模型只支持改图，请至少上传 1 张参考图", 422)
+	}
+	return nil
+}
+
+// validatePromptLength applies the model's own prompt limit on every page and
+// falls back to the global limit for the task type (t2i only today).
+func validatePromptLength(in CreateInput, selection *modelconfig.Selection, configured bool) error {
+	length := len([]rune(in.Prompt))
+	if configured && selection != nil && selection.Model.PromptMaxChars > 0 {
+		if limit := selection.Model.PromptMaxChars; length > limit {
+			return apperr.E("validation_error", fmt.Sprintf("所选模型的提示词上限为 %d 字，本次为 %d 字，请精简描述或切换模型", limit, length), 422)
+		}
+		return nil
+	}
+	if in.PromptMaxRunes > 0 && length > in.PromptMaxRunes {
+		return apperr.E("validation_error", fmt.Sprintf("prompt: 长度不能超过 %d 个字符", in.PromptMaxRunes), 422)
+	}
 	return nil
 }
 
@@ -204,6 +223,9 @@ type CreateInput struct {
 	Count                  int
 	IdempotencyKey         *string
 	ExpectedUnitPriceCents *int64
+	// PromptMaxRunes is the global prompt limit for this task type; a model's
+	// own PromptMaxChars replaces it. 0 skips the check.
+	PromptMaxRunes int `json:"-"`
 }
 
 type PriceQuote struct {
@@ -705,6 +727,9 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 		if err := ValidateStrictAlphaImageRequest(selection, params); err != nil {
 			return err
 		}
+		if err := validatePromptLength(in, selection, configured); err != nil {
+			return err
+		}
 		if err := modelconfig.ValidateExactImageSelection(selection, params); err != nil {
 			return apperr.E("validation_error", err.Error(), 422)
 		}
@@ -814,6 +839,8 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 			params["_modelModerationLevels"] = selection.Model.ModerationLevels
 			params["_modelMaxReferenceImages"] = selection.Model.MaxReferenceImages
 			params["_modelMaxImages"] = selection.Model.GenerationMaxImages()
+			params["_skillsDisabled"] = selection.Model.SkillsDisabled
+			params["_qualityNotSent"] = selection.Model.QualityNotSent
 			params["_unitPriceCents"] = unitPrice
 			params["_billingUnitPriceCents"] = unitPrice
 			params["_modelEffectivePriceCents"] = modelEffectivePrice
@@ -1337,7 +1364,7 @@ func recordTaskProfit(ctx context.Context, q store.Q, task *store.Task, revenue 
 		UserID: task.UserID, APIKeyID: apiKeyID,
 		EventStatus: status, Workspace: stringParam(task.Params, "_pricingWorkspace"),
 		ProviderID: stringParam(task.Params, "_providerConfigId"), RouteID: stringParam(task.Params, "_providerRouteId"),
-		ModelID: stringParam(task.Params, "_modelConfigId"), Units: units,
+		ModelID: stringParam(task.Params, "_modelConfigId"), ModelName: stringParam(task.Params, "_modelDisplayName"), Units: units,
 		RevenueCents: revenue, UpstreamCostCents: unitCost * int64(max(units, 0)), Metadata: metadata, CreatedAt: at,
 	})
 }

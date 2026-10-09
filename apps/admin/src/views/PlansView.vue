@@ -55,7 +55,7 @@ interface PlanForm {
   tier: number;
   channels: string[];
   featureKeys: string[];
-  modelIdsText: string;
+  modelIds: string[];
   apiModelIds: string[];
   refundWindowHours: number;
   code: string;
@@ -89,7 +89,7 @@ const statusFilter = ref<"" | "active" | "inactive">("");
 function defaultForm(): PlanForm {
   return {
     lockModelPrices: true, allowTopupPriceLock: false, priceLockEligible: false, concurrencyBonus: 0, canvasProjectBonus: 0, assistantConversationBonus: 0,
-    series: "general", tier: 1, channels: ["web", "api"], featureKeys: [], modelIdsText: "", apiModelIds: [], refundWindowHours: 3,
+    series: "general", tier: 1, channels: ["web", "api"], featureKeys: [], modelIds: [], apiModelIds: [], refundWindowHours: 3,
     code: "",
     name: "",
     description: "",
@@ -223,7 +223,7 @@ function openEdit(row: unknown) {
     tier: plan.subscriptionPolicy?.tier || 1,
     channels: plan.subscriptionPolicy?.channels || ["web", "api"],
     featureKeys: plan.subscriptionPolicy?.featureKeys || [],
-    modelIdsText: (plan.subscriptionPolicy?.modelIds || []).join("\n"),
+    modelIds: [...(plan.subscriptionPolicy?.modelIds || [])],
     apiModelIds: plan.subscriptionPolicy?.apiModelIds || [],
     refundWindowHours: plan.subscriptionPolicy?.refundWindowHours ?? 24,
     active: plan.active,
@@ -450,7 +450,7 @@ function badgeTone(badge: string) {
 type APIModelOption = { id: string; apiName: string; kind: string; status: string };
 const apiModels = ref<APIModelOption[]>([]);
 function planModelIds() {
-  return form.modelIdsText.split("\n").map(v => v.trim()).filter(Boolean);
+  return Array.from(new Set(form.modelIds.map(v => v.trim()).filter(Boolean)));
 }
 const limitsModels = computed(() => planModelIds().length > 0);
 async function loadAPIModels() {
@@ -462,7 +462,47 @@ async function loadAPIModels() {
   }
 }
 
-onMounted(() => { loadPlans(); loadAPIModels(); });
+type SiteModelOption = { id: string; name: string; upstreamModel: string; kind: string; enabled: boolean; status?: string };
+const siteModels = ref<SiteModelOption[]>([]);
+const siteModelKinds: Record<string, string> = { chat: "对话模型", image: "生图模型", image_tool: "图片工具" };
+// Grouped by kind for the picker; ids saved on a plan but no longer in the
+// catalogue stay selectable so editing never silently drops them.
+const siteModelGroups = computed(() => {
+  const known = new Set(siteModels.value.map(model => model.id));
+  const groups = Object.entries(siteModelKinds).map(([kind, label]) => ({
+    label,
+    options: siteModels.value.filter(model => model.kind === kind),
+  }));
+  const others = siteModels.value.filter(model => !siteModelKinds[model.kind]);
+  if (others.length) groups.push({ label: "其他", options: others });
+  const missing = form.modelIds.filter(id => !known.has(id));
+  if (missing.length) groups.push({ label: "已不在模型目录", options: missing.map(id => ({ id, name: id, upstreamModel: "", kind: "", enabled: false })) });
+  return groups.filter(group => group.options.length);
+});
+async function loadSiteModels() {
+  try {
+    const res = await request<{ models?: SiteModelOption[] }>("/api/v1/admin/model-config", { silent: true });
+    siteModels.value = (res.models || []).filter(model => model.status !== "retired");
+  } catch {
+    siteModels.value = [];
+  }
+}
+
+const sceneOptions = [
+  { value: "text_to_image", label: "文生图" },
+  { value: "ai_assistant", label: "AI助手" },
+  { value: "ui_design", label: "UI设计" },
+  { value: "ecommerce_design", label: "电商创作" },
+  { value: "illustration_coloring", label: "插画上色" },
+  { value: "model_sheet", label: "角色设定" },
+  { value: "game_art", label: "游戏美术" },
+  { value: "background_remove", label: "背景移除" },
+  { value: "infinite_canvas", label: "无限画布" },
+  { value: "developer_api_image", label: "API 调用生图" },
+  { value: "developer_api_chat", label: "API 调用对话" },
+];
+
+onMounted(() => { loadPlans(); loadAPIModels(); loadSiteModels(); });
 </script>
 
 <template>
@@ -621,7 +661,7 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
       :title="dialogTitle"
       subtitle="新配置影响后续购买与升级，已购订阅权益和额度包资格保持不变"
       :icon="Collection"
-      width="780px"
+      :width="form.kind === 'subscription' ? '1120px' : '980px'"
       panel-class="plan-editor-dialog"
       :confirm-loading="saving"
       :confirm-disabled="saving"
@@ -629,155 +669,173 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
       @confirm="savePlan"
     >
       <el-form label-position="top" class="plan-form">
-        <div class="plan-form__grid">
-          <el-form-item label="套餐名称" required>
-            <el-input
-              v-model="form.name"
-              maxlength="128"
-              placeholder="例如：创作者积分包"
-            />
-          </el-form-item>
-          <el-form-item label="套餐代码" required>
-            <el-input
-              v-model="form.code"
-              maxlength="64"
-              placeholder="creator_1000"
-              data-no-translate
-            />
-          </el-form-item>
-          <el-form-item label="套餐类型" required>
-            <el-segmented
-              v-model="form.kind"
-              :options="[
-                { label: '一次性积分包', value: 'topup' },
-                { label: '订阅计划', value: 'subscription' },
-              ]"
-            />
-          </el-form-item>
-          <el-form-item label="销售价格（元）" required>
-            <el-input-number
-              v-model="form.priceYuan"
-              :min="0"
-              :max="10000000"
-              :step="1"
-              :precision="2"
-            />
-          </el-form-item>
-        </div>
+        <div class="plan-form__cols">
+          <div class="plan-form__col">
+            <section class="plan-form__section">
+              <h3>基本信息</h3>
+              <div class="plan-form__grid">
+                <el-form-item required>
+                  <template #label>套餐名称<HelpTip content="用户在价格页、订单和订阅中心看到的名称，最多 128 字。" /></template>
+                  <el-input v-model="form.name" maxlength="128" placeholder="例如：创作者积分包" />
+                </el-form-item>
+                <el-form-item required>
+                  <template #label>套餐代码<HelpTip content="内部唯一标识，用于统计与对账。仅支持小写字母、数字、短横线和下划线，创建后尽量不要修改。" /></template>
+                  <el-input v-model="form.code" maxlength="64" placeholder="creator_1000" data-no-translate />
+                </el-form-item>
+                <el-form-item required>
+                  <template #label>套餐类型<HelpTip content="一次性积分包：付款后积分直接进入钱包，长期有效。订阅计划：按周期每 24 小时发放一次积分，未用完的在下次发放时失效。" /></template>
+                  <el-segmented v-model="form.kind" :options="[{ label: '一次性积分包', value: 'topup' }, { label: '订阅计划', value: 'subscription' }]" />
+                </el-form-item>
+                <el-form-item required>
+                  <template #label>销售价格（元）<HelpTip content="用户实际支付的金额。修改后只影响之后的购买，已购订单不变。" /></template>
+                  <el-input-number v-model="form.priceYuan" :min="0" :max="10000000" :step="1" :precision="2" />
+                </el-form-item>
+                <el-form-item class="is-wide">
+                  <template #label>套餐说明<HelpTip content="展示在价格页套餐卡片上的简介，建议写清适合人群和核心价值，最多 500 字。" /></template>
+                  <el-input v-model="form.description" type="textarea" :rows="2" maxlength="500" show-word-limit placeholder="说明适合人群和核心价值" />
+                </el-form-item>
+              </div>
+            </section>
 
+            <section class="plan-form__section">
+              <h3>{{ form.kind === 'topup' ? '积分与展示' : '发放与展示' }}</h3>
+              <div class="plan-form__grid is-3">
+                <template v-if="form.kind === 'topup'">
+                  <el-form-item required>
+                    <template #label>基础积分<HelpTip content="购买后到账的基础积分。到账总额 = 基础积分 + 额外赠送积分。" /></template>
+                    <el-input-number v-model="form.grantPoints" :min="0" :max="1000000000" :precision="0" />
+                  </el-form-item>
+                  <el-form-item>
+                    <template #label>额外赠送积分<HelpTip content="随基础积分一起到账，价格页会单独标注“赠 N 积分”。" /></template>
+                    <el-input-number v-model="form.bonusPoints" :min="0" :max="1000000000" :precision="0" />
+                  </el-form-item>
+                </template>
+                <template v-else>
+                  <el-form-item required>
+                    <template #label>订阅有效天数<HelpTip content="从开通时刻起算的有效期，到期后停止发放，未用积分失效。" /></template>
+                    <el-input-number v-model="form.durationDays" :min="1" :max="3650" :precision="0" />
+                  </el-form-item>
+                  <el-form-item required>
+                    <template #label>每24小时发放积分<HelpTip content="每个 24 小时周期发放一次。当期没用完的积分在下次发放时重置，不累计。" /></template>
+                    <el-input-number v-model="form.dailyGrantPoints" :min="1" :max="1000000000" :precision="0" />
+                  </el-form-item>
+                </template>
+                <el-form-item>
+                  <template #label>展示角标<HelpTip content="价格页卡片右上角的小标签，最多 24 字。包含“热门 / 限时 / 新品”时会自动套用对应颜色。" /></template>
+                  <el-input v-model="form.badge" maxlength="24" placeholder="例如：热卖 / 限时" />
+                </el-form-item>
+              </div>
+              <div class="plan-form__summary">
+                <template v-if="form.kind === 'topup'">到账合计 <b>{{ formatPoints(form.grantPoints + form.bonusPoints) }}</b> 积分</template>
+                <template v-else>整期最多发放 <b>{{ formatPoints(form.durationDays * form.dailyGrantPoints) }}</b> 积分（{{ form.durationDays }} 天 × {{ formatPoints(form.dailyGrantPoints) }}）</template>
+              </div>
+            </section>
 
-        <el-form-item label="套餐说明">
-          <el-input
-            v-model="form.description"
-            type="textarea"
-            :rows="2"
-            maxlength="500"
-            show-word-limit
-            placeholder="说明适合人群和核心价值"
-          />
-        </el-form-item>
-
-        <div class="plan-form__grid">
-          <template v-if="form.kind === 'topup'">
-            <el-form-item label="基础积分" required>
-              <el-input-number
-                v-model="form.grantPoints"
-                :min="0"
-                :max="1000000000"
-                :precision="0"
-              />
-            </el-form-item>
-            <el-form-item label="额外赠送积分">
-              <el-input-number
-                v-model="form.bonusPoints"
-                :min="0"
-                :max="1000000000"
-                :precision="0"
-              />
-            </el-form-item>
-          </template>
-          <template v-else>
-            <el-form-item label="订阅有效天数" required>
-              <el-input-number
-                v-model="form.durationDays"
-                :min="1"
-                :max="3650"
-                :precision="0"
-              />
-            </el-form-item>
-            <el-form-item label="每24小时发放积分" required>
-              <el-input-number
-                v-model="form.dailyGrantPoints"
-                :min="1"
-                :max="1000000000"
-                :precision="0"
-              />
-            </el-form-item>
-          </template>
-          <el-form-item label="展示角标">
-            <el-input
-              v-model="form.badge"
-              maxlength="24"
-              placeholder="例如：热卖 / 限时"
-            />
-          </el-form-item>
-        </div>
-
-        <el-form-item label="套餐权益">
-          <el-input
-            v-model="form.featuresText"
-            type="textarea"
-            :rows="5"
-            placeholder="每行一条，最多 12 条"
-          />
-        </el-form-item>
-        <template v-if="form.kind === 'subscription'">
-          <div class="plan-form__switches">
-            <label><span><strong>订阅模型价格保护</strong><small>有效期内使用订阅锁定价</small></span><el-switch v-model="form.lockModelPrices" /></label>
-            <label><span><strong>延伸至合格额度包</strong><small>同时要求额度包接受锁价；退款审核期间停用</small></span><el-switch v-model="form.allowTopupPriceLock" :disabled="!form.lockModelPrices" /></label>
+            <section class="plan-form__section">
+              <h3>上架与价格保护</h3>
+              <div class="plan-form__switches">
+                <label>
+                  <span><strong>立即上架<HelpTip content="上架后用户在价格页可以看到并购买；下架不影响已购用户。" /></strong><small>上架后用户价格页可见</small></span>
+                  <el-switch v-model="form.active" />
+                </label>
+                <label>
+                  <span><strong>设为推荐<HelpTip content="价格页高亮展示，全站同时只保留一个推荐套餐，设置后其他套餐的推荐会被取消。" /></strong><small>全站只保留一个推荐套餐</small></span>
+                  <el-switch v-model="form.recommended" />
+                </label>
+                <template v-if="form.kind === 'subscription'">
+                  <label>
+                    <span><strong>订阅模型价格保护<HelpTip content="订阅有效期内，后台调整模型价格不影响该用户，站内创作按开通时锁定的价格扣费；API 调用仍按控制台“模型”页价格计费。" /></strong><small>有效期内使用订阅锁定价</small></span>
+                    <el-switch v-model="form.lockModelPrices" />
+                  </label>
+                  <label>
+                    <span><strong>延伸至合格额度包<HelpTip content="开启后，该订阅用户使用“接受订阅锁价”的额度包积分时，也按订阅锁定价扣费。需先开启模型价格保护；退款审核期间自动停用。" /></strong><small>额度包也需接受锁价</small></span>
+                    <el-switch v-model="form.allowTopupPriceLock" :disabled="!form.lockModelPrices" />
+                  </label>
+                </template>
+                <label v-else>
+                  <span><strong>接受订阅锁价<HelpTip content="开启后，持有“延伸至合格额度包”订阅的用户使用本额度包积分时，按其订阅锁定价扣费；关闭则始终按实时价格扣费。" /></strong><small>符合资格的订阅可锁价</small></span>
+                  <el-switch v-model="form.priceLockEligible" />
+                </label>
+              </div>
+            </section>
           </div>
-          <div class="plan-form__grid">
-            <el-form-item label="订阅额外图片并发"><el-input-number v-model="form.concurrencyBonus" :min="0" :max="1000" :precision="0" /></el-form-item>
-            <el-form-item label="生效后图片并发"><span>基础 {{ baseConcurrency }} + 订阅 {{ form.concurrencyBonus }} = {{ baseConcurrency + form.concurrencyBonus }} 张；对话额度单独配置</span></el-form-item>
-            <el-form-item label="订阅额外画布项目数"><el-input-number v-model="form.canvasProjectBonus" :min="0" :max="10000" :precision="0" /></el-form-item>
-            <el-form-item label="生效后画布项目数"><span>基础 {{ baseCanvasProjects }} + 订阅 {{ form.canvasProjectBonus }} = {{ baseCanvasProjects + form.canvasProjectBonus }} 个；已购用户按购买时的套餐生效</span></el-form-item>
-            <el-form-item label="订阅额外助手对话数"><el-input-number v-model="form.assistantConversationBonus" :min="0" :max="10000" :precision="0" /></el-form-item>
-            <el-form-item label="生效后助手对话数"><span>基础 {{ baseAssistantConversations }} + 订阅 {{ form.assistantConversationBonus }} = {{ baseAssistantConversations + form.assistantConversationBonus }} 个；超出时自动归档最久没用的对话</span></el-form-item>
-          </div>
-          <div class="plan-form__grid">
-            <el-form-item label="订阅系列"><el-input v-model="form.series" maxlength="64" /></el-form-item>
-            <el-form-item label="升级级别"><el-input-number v-model="form.tier" :min="1" :max="100" :precision="0" /></el-form-item>
-            <el-form-item label="未使用全退窗口（小时）"><el-input-number v-model="form.refundWindowHours" :min="0" :max="720" :precision="0" /></el-form-item>
-          </div>
-          <el-form-item label="使用渠道"><el-checkbox-group v-model="form.channels"><el-checkbox value="web">网站</el-checkbox><el-checkbox value="api">API</el-checkbox></el-checkbox-group></el-form-item>
-          <el-form-item label="适用场景"><el-select v-model="form.featureKeys" multiple clearable placeholder="全部场景" style="width:100%"><el-option v-for="option in [{value:'text_to_image',label:'文生图'},{value:'ai_assistant',label:'AI助手'},{value:'ui_design',label:'UI设计'},{value:'ecommerce_design',label:'电商创作'},{value:'illustration_coloring',label:'插画上色'},{value:'model_sheet',label:'角色设定'},{value:'game_art',label:'游戏美术'},{value:'background_remove',label:'背景移除'},{value:'infinite_canvas',label:'无限画布'},{value:'developer_api_image',label:'API 调用生图'},{value:'developer_api_chat',label:'API 调用对话'}]" :key="option.value" :value="option.value" :label="option.label" /></el-select></el-form-item>
-          <el-form-item label="模型ID范围"><el-input v-model="form.modelIdsText" type="textarea" :rows="3" placeholder="留空允许全部模型，每行一个模型配置ID" /></el-form-item>
-          <el-form-item v-if="form.channels.includes('api')" label="API 模型">
-            <div class="plan-api-models">
-              <el-select v-if="limitsModels" v-model="form.apiModelIds" multiple clearable filterable placeholder="不选则订阅积分不能用于API 调用" style="width:100%">
-                <el-option v-for="item in apiModels" :key="item.id" :value="item.id" :label="`${item.apiName}（${item.kind === 'chat' ? '对话' : '图片'}）`" />
-              </el-select>
-              <p>{{ limitsModels ? '已限定模型ID范围：API 调用只能用这里选中的 API 模型。' : '模型ID范围留空：订阅积分可用于全部API 调用模型。' }}适用场景若有限定，还需勾选「API 调用生图 / 对话」。</p>
-            </div>
-          </el-form-item>
-        </template>
-        <el-form-item v-else label="允许此额度包接受订阅锁价"><el-switch v-model="form.priceLockEligible" /></el-form-item>
 
-        <div class="plan-form__switches">
-          <label>
-            <span
-              ><strong>立即上架</strong
-              ><small>上架后用户价格页可见</small></span
-            >
-            <el-switch v-model="form.active" />
-          </label>
-          <label>
-            <span
-              ><strong>设为推荐</strong
-              ><small>全站同时只保留一个推荐套餐</small></span
-            >
-            <el-switch v-model="form.recommended" />
-          </label>
+          <div class="plan-form__col">
+            <section v-if="form.kind === 'subscription'" class="plan-form__section">
+              <h3>额度与升级<HelpTip content="额度加成在全站基础额度上为订阅用户增加数量。已购用户按购买时的套餐生效，修改只影响之后的购买。" /></h3>
+              <div class="plan-form__grid is-3">
+                <el-form-item>
+                  <template #label>额外图片并发<HelpTip content="订阅用户可以同时生成的图片数增加多少，所有生图场景共用；对话并发单独计算。" /></template>
+                  <el-input-number v-model="form.concurrencyBonus" :min="0" :max="1000" :precision="0" />
+                  <small class="plan-form__calc">基础 {{ baseConcurrency }} + {{ form.concurrencyBonus }} = <b>{{ baseConcurrency + form.concurrencyBonus }}</b> 张</small>
+                </el-form-item>
+                <el-form-item>
+                  <template #label>额外画布项目<HelpTip content="无限画布最多可保存的项目数增加多少。" /></template>
+                  <el-input-number v-model="form.canvasProjectBonus" :min="0" :max="10000" :precision="0" />
+                  <small class="plan-form__calc">基础 {{ baseCanvasProjects }} + {{ form.canvasProjectBonus }} = <b>{{ baseCanvasProjects + form.canvasProjectBonus }}</b> 个</small>
+                </el-form-item>
+                <el-form-item>
+                  <template #label>额外助手对话<HelpTip content="AI 助手最多保留的对话数增加多少；超出时自动归档最久没用的对话。" /></template>
+                  <el-input-number v-model="form.assistantConversationBonus" :min="0" :max="10000" :precision="0" />
+                  <small class="plan-form__calc">基础 {{ baseAssistantConversations }} + {{ form.assistantConversationBonus }} = <b>{{ baseAssistantConversations + form.assistantConversationBonus }}</b> 个</small>
+                </el-form-item>
+                <el-form-item>
+                  <template #label>订阅系列<HelpTip content="只有同一系列的套餐之间才能互相升级，例如 general。不同系列视为互不相关的产品。" /></template>
+                  <el-input v-model="form.series" maxlength="64" data-no-translate />
+                </el-form-item>
+                <el-form-item>
+                  <template #label>升级级别<HelpTip content="同系列内数字越大级别越高，用户只能升级到更高级别；且新套餐的渠道、场景和模型范围要覆盖原套餐。" /></template>
+                  <el-input-number v-model="form.tier" :min="1" :max="100" :precision="0" />
+                </el-form-item>
+                <el-form-item>
+                  <template #label>全额退款窗口（小时）<HelpTip content="开通后在这段时间内且没有使用订阅积分，可申请全额退款；超出时限或已使用积分的退订按规则审核。" /></template>
+                  <el-input-number v-model="form.refundWindowHours" :min="0" :max="720" :precision="0" />
+                </el-form-item>
+              </div>
+            </section>
+
+            <section v-if="form.kind === 'subscription'" class="plan-form__section">
+              <h3>
+                适用范围<HelpTip content="订阅积分可以在哪些渠道、功能和模型上使用；范围之外的消费不能使用订阅积分。" />
+                <span class="plan-form__channels">
+                  使用渠道<HelpTip content="网站：站内各创作功能。API：开发者 API 调用。都不勾选则订阅积分无法使用。" />
+                  <el-checkbox-group v-model="form.channels"><el-checkbox value="web">网站</el-checkbox><el-checkbox value="api">API</el-checkbox></el-checkbox-group>
+                </span>
+              </h3>
+              <el-form-item>
+                <template #label>适用场景<HelpTip content="订阅积分可用于哪些功能，留空表示全部场景。限定了场景时，API 使用还需勾选“API 调用生图 / 对话”。" /></template>
+                <el-select v-model="form.featureKeys" multiple clearable collapse-tags-tooltip placeholder="全部场景" style="width:100%">
+                  <el-option v-for="option in sceneOptions" :key="option.value" :value="option.value" :label="option.label" />
+                </el-select>
+              </el-form-item>
+              <el-form-item class="plan-site-models">
+                <template #label>适用模型<HelpTip content="订阅积分只能用于选中的站内模型，留空表示全部模型。列表来自模型目录，用户订阅中心会显示模型名称。" /></template>
+                <el-select v-model="form.modelIds" multiple clearable filterable collapse-tags-tooltip placeholder="全部模型" style="width:100%">
+                  <el-option-group v-for="group in siteModelGroups" :key="group.label" :label="group.label">
+                    <el-option v-for="model in group.options" :key="model.id" :value="model.id" :label="model.name || model.id">
+                      <span class="plan-model-option">
+                        <span>{{ model.name || model.id }}</span>
+                        <small data-no-translate>{{ model.upstreamModel }}</small>
+                        <em v-if="!model.enabled">未启用</em>
+                      </span>
+                    </el-option>
+                  </el-option-group>
+                </el-select>
+              </el-form-item>
+              <el-form-item v-if="form.channels.includes('api')" class="plan-api-models">
+                <template #label>API 模型<HelpTip :content="limitsModels ? '已限定站内模型：API 调用只能用这里选中的 API 模型；不选则订阅积分不能用于 API 调用。' : '适用模型留空时，订阅积分可用于全部 API 模型，无需单独选择。'" /></template>
+                <el-select v-if="limitsModels" v-model="form.apiModelIds" multiple clearable filterable collapse-tags-tooltip placeholder="不选则订阅积分不能用于 API 调用" style="width:100%">
+                  <el-option v-for="item in apiModels" :key="item.id" :value="item.id" :label="`${item.apiName}（${item.kind === 'chat' ? '对话' : '图片'}）`" />
+                </el-select>
+                <span v-else class="plan-form__muted">适用模型为全部，订阅积分可用于全部 API 模型。</span>
+              </el-form-item>
+            </section>
+
+            <section class="plan-form__section">
+              <h3>套餐权益文案<HelpTip content="价格页卡片中展示的权益条目，每行一条，最多 12 条、单条 120 字。只是展示文案，不影响实际权限；实际权限以套餐规则为准。" /></h3>
+              <el-input v-model="form.featuresText" type="textarea" :rows="form.kind === 'subscription' ? 4 : 12" placeholder="每行一条，最多 12 条" />
+            </section>
+          </div>
         </div>
       </el-form>
     </AdminDialog>
@@ -1162,10 +1220,82 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
   color: var(--ink);
 }
 
+.plan-form__cols {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 16px;
+}
+
+.plan-form__col {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.plan-form__section {
+  padding: 12px 14px 2px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.plan-form__section h3 {
+  display: flex;
+  align-items: center;
+  margin: 0 0 10px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.plan-form__channels {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.plan-form__channels .el-checkbox-group {
+  margin-left: 8px;
+}
+
+.plan-form__channels .el-checkbox {
+  height: 22px;
+  margin-right: 14px;
+}
+
+.plan-form__section > .el-textarea {
+  margin-bottom: 12px;
+}
+
+.plan-form__section :deep(.el-form-item) {
+  margin-bottom: 12px;
+}
+
+.plan-form__section :deep(.el-form-item__label) {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+
 .plan-form__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 16px;
+  gap: 0 14px;
+}
+
+.plan-form__grid.is-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.plan-form__grid > .is-wide {
+  grid-column: 1 / -1;
 }
 
 .plan-form :deep(.el-input-number),
@@ -1173,18 +1303,49 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
   width: 100%;
 }
 
+.plan-form__calc {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.plan-form__calc b,
+.plan-form__summary b {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.plan-form__summary {
+  margin: -4px 0 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.plan-form__muted {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .plan-form__switches {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
 .plan-form__switches label {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 14px;
+  gap: 12px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface-2);
@@ -1196,6 +1357,8 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
 }
 
 .plan-form__switches strong {
+  display: flex;
+  align-items: center;
   color: var(--ink);
   font-size: 12px;
 }
@@ -1203,7 +1366,29 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
 .plan-form__switches small {
   margin-top: 4px;
   color: var(--ink-3);
-  font-size: 10px;
+  font-size: 11px;
+}
+
+.plan-model-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.plan-model-option small {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-model-option em {
+  margin-left: auto;
+  color: var(--warning);
+  font-size: 11px;
+  font-style: normal;
 }
 
 @media (max-width: 1400px) {
@@ -1224,13 +1409,19 @@ onMounted(() => { loadPlans(); loadAPIModels(); });
   }
 }
 
+@media (max-width: 1080px) {
+  .plan-form__cols {
+    grid-auto-flow: row;
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 680px) {
   .plan-form__grid,
+  .plan-form__grid.is-3,
   .plan-form__switches {
     grid-template-columns: 1fr;
   }
 }
 
-.plan-api-models { width: 100%; }
-.plan-api-models p { margin: 6px 0 0; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
 </style>

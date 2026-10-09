@@ -90,3 +90,36 @@ test("tiered models price by resolution and quality", () => {
   assert.equal(modelPointPriceRange({ pricePoints: 10 }), null);
   assert.equal(resolveModelTierPointPricing({ pricePoints: 12 }, { resolution: "4K", quality: "high" }).effective, 12);
 });
+
+test("a model's own prompt limit wins over the global limit", async () => {
+  const { modelPromptMaxChars } = await import("../src/features/text-to-image/t2iRequest.js");
+  assert.equal(modelPromptMaxChars({ promptMaxChars: 800 }, 8000), 800);
+  assert.equal(modelPromptMaxChars({ promptMaxChars: 20000 }, 8000), 20000);
+  assert.equal(modelPromptMaxChars({ promptMaxChars: 0 }, 8000), 8000);
+  assert.equal(modelPromptMaxChars(null, 8000), 8000);
+});
+
+test("a model with skills disabled gets no skill prompt", async () => {
+  const { buildT2iPayload } = await import("../src/features/text-to-image/t2iRequest.js");
+  const model = { id: "qwen", resolutions: ["2K"], aspectRatios: ["1:1"], aspectRatiosByResolution: { "2K": ["1:1"] }, qualities: [], skillsDisabled: true };
+  const payload = buildT2iPayload(
+    { model, prompt: "一只猫", ratio: "1:1", resolution: "2K", superResolutionEnabled: true, selectedSkillIds: ["any"] },
+    { sourceUrls: [], batchId: "b", batchIndex: 0, batchSize: 1, batchCreatedAt: 0 },
+  );
+  assert.equal(payload.prompt, "一只猫");
+  assert.deepEqual(payload.input.skillIds, []);
+  const withSkills = buildT2iPayload(
+    { model: { ...model, skillsDisabled: false }, prompt: "一只猫", ratio: "1:1", resolution: "2K", superResolutionEnabled: true },
+    { sourceUrls: [], batchId: "b", batchIndex: 0, batchSize: 1, batchCreatedAt: 0 },
+  );
+  assert.equal(withSkills.input.skillIds.length > 0, withSkills.prompt !== "一只猫", "skills, when active, change the prompt");
+});
+
+test("models keep custom aspect ratios the admin configured", async () => {
+  const { normalizeImageModelCapabilities, isValidAspectRatio } = await import("../src/legacy-modules/features/ai-shared/modelImageCapabilities.js");
+  const caps = normalizeImageModelCapabilities({ resolutions: ["2K"], aspectRatios: ["16:9", "1:4", "8:1"], aspectRatiosByResolution: { "2K": ["16:9", "1:4", "8:1", "bad"] } });
+  assert.deepEqual(caps.aspectRatiosByResolution["2K"], ["16:9", "8:1", "1:4"]);
+  assert.deepEqual(caps.aspectRatios, ["16:9", "8:1", "1:4"]);
+  assert.equal(isValidAspectRatio("9:19.5"), true);
+  assert.equal(isValidAspectRatio("50:1"), false);
+});

@@ -15,6 +15,7 @@ import {
   TrendCharts,
   User,
   Wallet,
+  WarningFilled,
 } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { request } from "@/request";
@@ -22,6 +23,7 @@ import { normalizePoints } from "@/utils";
 import type { AdminSettings, GrowthMilestone } from "@/components/settings/types";
 import UserProfileRulesDialog from "@/components/UserProfileRulesDialog.vue";
 import AdminDialog from "@/components/AdminDialog.vue";
+import ContentPolicyRulesPanel, { type ContentPolicyRules } from "@/components/settings/ContentPolicyRulesPanel.vue";
 import {
   describeChanges,
   findEmptyNumberFields,
@@ -100,11 +102,16 @@ type SettingsSection =
   | "growth"
   | "concurrency"
   | "logging"
-  | "retry";
+  | "retry"
+  | "content-policy";
 
 const route = useRoute();
 const loading = ref(false);
 const activeSection = ref<SettingsSection>("payment");
+// 内容违规规则走独立接口、独立保存，不进统一的“保存并生效”。
+const policyPanel = ref<InstanceType<typeof ContentPolicyRulesPanel> | null>(null);
+const policyRules = ref<ContentPolicyRules | null>(null);
+const policyDirty = ref(false);
 const saving = ref(false);
 const savedSignature = ref("");
 const testingPayment = ref(false);
@@ -458,6 +465,18 @@ const sections = computed(() => [
       ? `${form.platformLogRetentionDays} 天 · ${form.platformLogMaxMb} MB`
       : "已关闭",
     on: form.platformLoggingEnabled,
+  },
+  {
+    id: "content-policy" as const,
+    label: "内容违规",
+    icon: WarningFilled,
+    desc: "上游拒绝时的违规识别关键词、违规扣费开关与每人每天免扣次数；改动单独保存",
+    hint: policyRules.value
+      ? policyRules.value.enabled
+        ? `扣费开启 · 免扣 ${policyRules.value.dailyFreeCount} 次`
+        : "扣费已关闭"
+      : "识别与扣费规则",
+    on: Boolean(policyRules.value?.enabled),
   },
   {
     id: "retry" as const,
@@ -896,13 +915,14 @@ async function discardChanges() {
 }
 
 onBeforeRouteLeave(async () => {
-  if (!isDirty.value) return true;
+  if (!isDirty.value && !policyDirty.value) return true;
   try {
     await ElMessageBox.confirm(
       "系统设置有未保存的更改，离开后这些更改会丢失。",
       "离开系统设置？",
       { type: "warning", confirmButtonText: "放弃更改并离开", cancelButtonText: "留下继续编辑" },
     );
+    await policyPanel.value?.discard();
     return true;
   } catch {
     return false;
@@ -910,7 +930,7 @@ onBeforeRouteLeave(async () => {
 });
 
 function warnBeforeUnload(event: BeforeUnloadEvent) {
-  if (!isDirty.value) return;
+  if (!isDirty.value && !policyDirty.value) return;
   event.preventDefault();
   event.returnValue = "";
 }
@@ -921,6 +941,11 @@ onMounted(() => {
   const section = String(route.query.section || "");
   if (sections.value.some((item) => item.id === section)) {
     activeSection.value = section as SettingsSection;
+  }
+  // 从违规记录“用这段返回调规则”跳过来：带着上游返回直接识别一次。
+  const testMessage = (window.history.state as { policyTestMessage?: unknown } | null)?.policyTestMessage;
+  if (activeSection.value === "content-policy" && typeof testMessage === "string" && testMessage) {
+    void policyPanel.value?.testWith(testMessage);
   }
   void load();
 });
@@ -944,7 +969,8 @@ onMounted(() => {
           <strong>{{ item.label }}</strong>
           <small>{{ item.hint }}</small>
         </span>
-        <em v-if="warningCount(item.id)" class="settings-nav__warn" :title="`${warningCount(item.id)} 条配置提醒`">{{ warningCount(item.id) }}</em>
+        <em v-if="item.id === 'content-policy' && policyDirty" class="settings-nav__warn" title="规则有未保存的修改">!</em>
+        <em v-else-if="warningCount(item.id)" class="settings-nav__warn" :title="`${warningCount(item.id)} 条配置提醒`">{{ warningCount(item.id) }}</em>
         <i v-else class="settings-nav__dot" :class="{ 'is-on': item.on }" :title="item.on ? '已启用' : '未启用'" />
       </button>
     </aside>
@@ -956,18 +982,36 @@ onMounted(() => {
           <h2>{{ activeSectionMeta.label }}</h2>
           <p>{{ activeSectionMeta.desc }}</p>
         </div>
-        <div class="settings-head__actions">
+        <div v-if="activeSection === 'content-policy'" class="settings-head__actions">
+          <span class="sync-state" :class="{ 'is-dirty': policyDirty }"><i />{{ policyDirty ? "规则有未保存修改" : "规则已同步" }}</span>
+          <el-button v-if="policyDirty" @click="policyPanel?.revert()">放弃修改</el-button>
+          <el-button v-else :icon="Refresh" @click="policyPanel?.reload()">刷新</el-button>
+          <el-button
+            type="primary"
+            :icon="Check"
+            :loading="policyPanel?.saving"
+            :disabled="!policyDirty || Boolean(policyPanel?.problem)"
+            @click="policyPanel?.save()"
+          >保存规则</el-button>
+        </div>
+        <div v-else class="settings-head__actions">
           <span class="sync-state" :class="{ 'is-dirty': isDirty }"><i />{{ isDirty ? "有未保存变更" : "配置已同步" }}</span>
           <el-button :icon="Refresh" @click="load">刷新</el-button>
           <el-button type="primary" :icon="Check" :loading="saving" :disabled="!isDirty" @click="save">保存并生效</el-button>
         </div>
       </header>
 
-          <div class="pane-body">
+          <div class="pane-body" :class="{ 'is-fill': activeSection === 'content-policy' }">
             <div v-if="sectionWarnings.length" class="warn-box" role="alert">
               <strong>配置提醒</strong>
               <ul><li v-for="item in sectionWarnings" :key="item.text">{{ item.text }}</li></ul>
             </div>
+            <ContentPolicyRulesPanel
+              v-show="activeSection === 'content-policy'"
+              ref="policyPanel"
+              @saved="policyRules = $event"
+              @update:dirty="policyDirty = $event"
+            />
             <template v-if="activeSection === 'payment'">
       <div class="settings-card">
         <div
@@ -1710,6 +1754,8 @@ onMounted(() => {
               </div>
             </template>
 
+            <template v-else-if="activeSection === 'content-policy'" />
+
             <template v-else>
       <div class="settings-card">
         <header class="card-head"><strong>失败重试</strong><small>连接、超时或临时上游错误时自动重试</small></header>
@@ -1800,7 +1846,7 @@ onMounted(() => {
           </div>
 
       <transition name="save-bar">
-        <div v-if="isDirty" class="save-bar" role="status">
+        <div v-if="isDirty && activeSection !== 'content-policy'" class="save-bar" role="status">
           <span><i />有未保存的更改，保存后立即对全站生效</span>
           <el-button text @click="discardChanges">撤销更改</el-button>
           <el-button type="primary" :icon="Check" :loading="saving" @click="save">保存并生效</el-button>
@@ -1926,6 +1972,8 @@ html.dark .settings-head { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 
 .sync-state.is-dirty i { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); }
 
 .pane-body { display: flex; flex: 1; flex-direction: column; gap: 14px; min-height: 0; padding: 14px 2px 90px; overflow-y: auto; }
+/* 内容违规规则自带保存，不需要给底部保存条留位置 */
+.pane-body.is-fill { padding-bottom: 2px; }
 
 /* ---------- 卡片 ---------- */
 .settings-card {

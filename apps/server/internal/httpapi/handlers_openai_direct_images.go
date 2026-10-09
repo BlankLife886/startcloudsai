@@ -117,6 +117,11 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 		failOpenAI(c, apperr.E("provider_misconfigured", "所选图片模型的上游服务尚未配置好，暂不可调用，请联系平台", http.StatusBadGateway), "model")
 		return
 	}
+	if request.ResponseFormat == "url" && providerclient.NativeImages(selection.Provider) {
+		// Native image APIs return image data only; there is no link to pass on.
+		failOpenAIImage(c, imageParameterError("response_format", "该模型只返回图片数据，请使用 response_format=b64_json"))
+		return
+	}
 	params, err := openAIImageParams(request, selection.Model, len(files))
 	if err != nil {
 		failOpenAIImage(c, err)
@@ -442,7 +447,7 @@ func (s *Server) recordOpenAIImageProfit(ctx context.Context, record directImage
 	return store.UpsertUsageProfitEntry(ctx, s.St.Pool, store.UsageProfitEntry{
 		SourceType: store.DeveloperAPIProfitSourceType, SourceID: billing.BillingID, UserID: record.UserID, APIKeyID: &record.APIKeyID,
 		EventStatus: status, Workspace: modelconfig.WorkspaceT2I, ProviderID: record.Selection.Provider.ID,
-		RouteID: record.Selection.Provider.RouteID, ModelID: record.Selection.Model.ID, Units: record.Request.N,
+		RouteID: record.Selection.Provider.RouteID, ModelID: record.Selection.Model.ID, ModelName: record.Selection.Model.Name, Units: record.Request.N,
 		RevenueCents: revenue, UpstreamCostCents: cost, Metadata: metadata, CreatedAt: time.Now().UTC(),
 	})
 }

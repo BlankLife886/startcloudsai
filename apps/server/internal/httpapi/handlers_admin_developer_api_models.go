@@ -436,7 +436,7 @@ func (s *Server) developerAPIModelAction(c *gin.Context, admin *store.User, acti
 				return conflict("只有草稿可以发布")
 			}
 			if _, runnable := apicatalog.Runnable(cfg, existing.TargetModelID); !runnable {
-				return apperr.E("validation_error", "它指向的站内模型已停用、维护中或线路不是 OpenAI 协议，发布后会无法调用；请先处理站内模型或更换指向", 422)
+				return apperr.E("validation_error", "它指向的站内模型已停用、维护中或线路是异步任务协议（CRUN），发布后会无法调用；请先处理站内模型或更换指向", 422)
 			}
 			if next.PublishedAt == nil {
 				next.PublishedAt = &now
@@ -470,7 +470,7 @@ func (s *Server) developerAPIModelAction(c *gin.Context, admin *store.User, acti
 				return conflict("模型不在维护中")
 			}
 			if _, runnable := apicatalog.Runnable(cfg, existing.TargetModelID); !runnable {
-				return apperr.E("validation_error", "它指向的站内模型仍不可用（已停用、维护中或线路不是 OpenAI 协议），恢复后调用仍会返回 503", 422)
+				return apperr.E("validation_error", "它指向的站内模型仍不可用（已停用、维护中，或线路为 CRUN 异步任务协议），恢复后调用仍会返回 503", 422)
 			}
 			next.Status = store.DeveloperAPIModelLive
 			if next.SunsetAt != nil {

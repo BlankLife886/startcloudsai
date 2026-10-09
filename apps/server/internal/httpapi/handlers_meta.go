@@ -101,7 +101,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"aspectRatios": model.AspectRatios, "aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
 			"supportsExactSize": model.SupportsExactSize, "exactSizeLimits": model.ExactSizeRules(),
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
-			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
+			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages, "promptMaxChars": model.PromptMaxChars, "requiresReference": modelconfig.CRUNRequiresReference(model), "skillsDisabled": model.SkillsDisabled,
 			"maxImages": model.GenerationMaxImages(),
 		}, model.ID)
 	}
@@ -178,7 +178,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
 			"supportsExactSize": model.SupportsExactSize, "exactSizeLimits": model.ExactSizeRules(),
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
-			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
+			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages, "promptMaxChars": model.PromptMaxChars, "requiresReference": modelconfig.CRUNRequiresReference(model), "skillsDisabled": model.SkillsDisabled,
 			"maxImages": model.GenerationMaxImages(),
 			"pricing": gin.H{
 				"points": price, "cents": price, "standardPoints": model.PriceCents,

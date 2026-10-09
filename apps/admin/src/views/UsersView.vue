@@ -9,6 +9,7 @@ import UserProfilePanel from '@/components/UserProfilePanel.vue'
 import UserBillingPanel from '@/components/UserBillingPanel.vue'
 import { normalizeList, request, type Page } from '@/request'
 import { seekByPage, usePagedList } from '@/usePagedList'
+import { billingMoney, orderKindLabels, orderStatusMeta, type BillingOrder } from '@/billingTypes'
 import {
   formatProfileMoney,
   lifecycleLabels,
@@ -121,8 +122,55 @@ interface AdminUser {
   createdAt: string
   usage?: UserUsage
   profile?: UserProfileMetrics | null
-  subscription?: { active?: boolean } | null
+  subscription?: UserSubscriptionBrief | null
+  orderSummary?: UserOrderSummary | null
   lastSessionIp?: string | null
+}
+
+/** 列表里的订阅摘要：生效中的那条，没有则是最近结束的那条 */
+interface UserSubscriptionBrief {
+  active?: boolean
+  status?: string
+  planName?: string
+  startsAt?: string
+  endsAt?: string
+  total?: number
+}
+
+/** 列表里的充值订单摘要：只统计已到账的订单 */
+interface UserOrderSummary {
+  paidCount: number
+  paidCents: number
+  topupCount: number
+  topupCents: number
+  subscriptionCount: number
+  subscriptionCents: number
+  pendingCount: number
+  lastPaidAt?: string | null
+}
+
+function subscriptionCellLabel(sub: UserSubscriptionBrief | null | undefined) {
+  if (!sub?.planName && !sub?.active) return '未订阅'
+  if (sub.status === 'refunding') return '退订审核中'
+  return sub.active ? '生效中' : '已结束'
+}
+
+function subscriptionCellBadge(sub: UserSubscriptionBrief | null | undefined) {
+  if (sub?.status === 'refunding') return 'badge--warning'
+  return sub?.active ? 'badge--success' : 'badge--neutral'
+}
+
+function formatDay(value?: string | null) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function paymentMethodLabel(method: string | null | undefined) {
+  if (method === 'alipay') return '支付宝'
+  if (method === 'wechat') return '微信支付'
+  return '未记录'
 }
 
 function displayName(user: AdminUser | null | undefined) {
@@ -358,6 +406,11 @@ async function submitAdjust() {
 const concurrencyVisible = ref(false)
 const concurrencyForm = reactive({ bonus: 0 })
 const concurrencySubmitting = ref(false)
+const concurrencyPlanBonus = computed(() => {
+  const c = overview.value?.concurrency
+  return c ? (c.planBonus ?? c.bonus) : 0
+})
+const concurrencyFormBonus = computed(() => Math.max(0, Math.round(Number(concurrencyForm.bonus) || 0)))
 
 function openConcurrency() {
   concurrencyForm.bonus = overview.value?.concurrency?.manualBonus ?? 0
@@ -493,6 +546,20 @@ const taskList = usePagedList<UserTask>(
   { seek: seekByPage(page => loadUserTasks({ page })) },
 )
 
+const orderPageSize = ref(20)
+
+function loadUserOrders(position: { cursor?: string | null, page?: number }) {
+  return request<Page<BillingOrder>>('/api/v1/admin/orders', {
+    query: { userId: drawerUser.value?.id, limit: orderPageSize.value, summary: false, ...position },
+  })
+}
+
+const orderList = usePagedList<BillingOrder>(
+  cursor => loadUserOrders({ cursor }),
+  () => `${drawerUser.value?.id ?? ''}:${orderPageSize.value}`,
+  { seek: seekByPage(page => loadUserOrders({ page })) },
+)
+
 let overviewGeneration = 0
 async function loadOverview() {
   if (!drawerUser.value) return
@@ -546,6 +613,7 @@ watch(activeTab, (tab) => {
   loadedTabs.add(tab)
   if (tab === 'ledger') ledgerList.reset()
   else if (tab === 'tasks') taskList.reset()
+  else if (tab === 'orders') orderList.reset()
 })
 
 /** 抽屉里展示的用户（概览接口返回后以其为准） */
@@ -557,12 +625,19 @@ const taskSuccessRate = computed(() => {
   return Math.round((counts.tasksSucceeded / counts.tasksTotal) * 100)
 })
 
-function openDrawerTab(tab: 'ledger' | 'tasks') {
+function openDrawerTab(tab: 'ledger' | 'tasks' | 'orders' | 'billing') {
   activeTab.value = tab
 }
 
-function openRelatedPage(path: string, search?: string) {
-  void router.push({ path, query: search ? { search } : undefined })
+/** 从列表的订单/订阅格子直接打开抽屉里对应的 Tab */
+function openDrawerAt(user: AdminUser, tab: 'orders' | 'billing') {
+  openDrawer(user)
+  openDrawerTab(tab)
+}
+
+function openRelatedPage(path: string, search?: string, extra?: Record<string, string>) {
+  const query = { ...(search ? { search } : {}), ...extra }
+  void router.push({ path, query: Object.keys(query).length ? query : undefined })
 }
 
 function trialFeatureLabels(trial: UserTrialAccess | null | undefined) {
@@ -766,14 +841,43 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
               </template>
             </el-table-column>
 
-            <el-table-column label="订阅" width="88" align="center">
+            <el-table-column label="订阅" width="156" class-name="col-group">
               <template #default="{ row }">
-                <span
-                  class="badge"
-                  :class="row.subscription?.active ? 'badge--success' : 'badge--neutral'"
+                <button
+                  v-if="row.subscription?.planName || row.subscription?.active"
+                  type="button"
+                  class="billing-cell"
+                  title="查看订阅权益"
+                  @click.stop="openDrawerAt(row as AdminUser, 'billing')"
                 >
-                  {{ row.subscription?.active ? '已订阅' : '未订阅' }}
-                </span>
+                  <span class="billing-cell__top">
+                    <span class="badge" :class="subscriptionCellBadge(row.subscription)">{{ subscriptionCellLabel(row.subscription) }}</span>
+                    <strong class="cell-text" :title="row.subscription.planName">{{ row.subscription.planName || '订阅' }}</strong>
+                  </span>
+                  <small>
+                    {{ row.subscription.active ? '到期' : '结束于' }} {{ formatDay(row.subscription.endsAt) }}
+                    <template v-if="(row.subscription.total ?? 0) > 1"> · 共 {{ row.subscription.total }} 次</template>
+                  </small>
+                </button>
+                <span v-else class="badge badge--neutral">未订阅</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="充值订单" width="132" class-name="col-num">
+              <template #default="{ row }">
+                <button
+                  v-if="row.orderSummary?.paidCount || row.orderSummary?.pendingCount"
+                  type="button"
+                  class="billing-cell is-num"
+                  :title="`额度包 ${row.orderSummary.topupCount} 笔 ${billingMoney(row.orderSummary.topupCents)}，订阅 ${row.orderSummary.subscriptionCount} 笔 ${billingMoney(row.orderSummary.subscriptionCents)}`"
+                  @click.stop="openDrawerAt(row as AdminUser, 'orders')"
+                >
+                  <strong class="tnum">{{ billingMoney(row.orderSummary.paidCents) }}</strong>
+                  <small>
+                    {{ row.orderSummary.paidCount }} 笔已付<template v-if="row.orderSummary.pendingCount"> · <em>{{ row.orderSummary.pendingCount }} 待付</em></template>
+                  </small>
+                </button>
+                <span v-else class="cell-muted">-</span>
               </template>
             </el-table-column>
 
@@ -897,16 +1001,32 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
       subtitle="在基础并发与订阅加成之上额外追加，立即生效"
       :icon="Odometer"
       width="420px"
-      footer-hint="范围 0 ~ 1000 张，填 0 表示取消追加"
+      footer-hint="0 ~ 1000 张，填 0 取消追加"
       confirm-text="保存"
       :confirm-loading="concurrencySubmitting"
       @confirm="submitConcurrency"
     >
-      <template v-if="overview?.concurrency" #meta>
-        <span class="admin-dialog__chip tnum">
-          追加前 基础 {{ overview.concurrency.base }} + 订阅 {{ overview.concurrency.planBonus ?? overview.concurrency.bonus }} = {{ overview.concurrency.base + (overview.concurrency.planBonus ?? overview.concurrency.bonus) }} 张
-        </span>
-      </template>
+      <div v-if="overview?.concurrency" class="concurrency-sum tnum">
+        <div class="concurrency-sum__cell">
+          <span>基础</span>
+          <strong>{{ overview.concurrency.base }}</strong>
+        </div>
+        <i aria-hidden="true">+</i>
+        <div class="concurrency-sum__cell">
+          <span>订阅</span>
+          <strong>{{ concurrencyPlanBonus }}</strong>
+        </div>
+        <i aria-hidden="true">+</i>
+        <div class="concurrency-sum__cell is-edit">
+          <span>手动追加</span>
+          <strong>{{ concurrencyFormBonus }}</strong>
+        </div>
+        <i aria-hidden="true">=</i>
+        <div class="concurrency-sum__cell is-total">
+          <span>保存后上限</span>
+          <strong>{{ overview.concurrency.base + concurrencyPlanBonus + concurrencyFormBonus }} 张</strong>
+        </div>
+      </div>
       <el-form label-position="top" class="adjust-form">
         <el-form-item label="追加张数" required>
           <el-input-number v-model="concurrencyForm.bonus" :min="0" :max="1000" :precision="0" :step="1" />
@@ -1168,7 +1288,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                       <span>素材</span>
                       <strong class="tnum">{{ overview.counts.assets }}</strong>
                     </div>
-                    <button type="button" class="count-card" @click="openDrawerTab('ledger')">
+                    <button type="button" class="count-card" @click="openDrawerTab('orders')">
                       <span>订单</span>
                       <strong class="tnum">{{ overview.counts.orders }}</strong>
                     </button>
@@ -1222,6 +1342,86 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
               />
               <el-empty v-else-if="!overviewLoading" description="暂无画像数据" :image-size="56" />
             </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="订单" name="orders" class="drawer-list-tab">
+            <AdminListShell
+              class="drawer-list-shell users-list-shell"
+              fill
+              :has-prev="orderList.hasPrev.value"
+              :has-next="orderList.hasNext.value"
+              :loading="orderList.loading.value"
+              :page="orderList.page.value"
+              :count="orderList.items.value.length"
+              :total="orderList.total.value"
+              :total-capped="orderList.totalCapped.value"
+              :page-size="orderPageSize"
+              @update:page="orderList.goToPage"
+              @update:page-size="(size: number) => { orderPageSize = size; orderList.reset() }"
+            >
+              <template #footer-start>
+                <div class="drawer-orders-toolbar">
+                  <span v-if="drawerUserInfo?.orderSummary" class="drawer-orders-toolbar__sum">
+                    已到账 <strong class="tnum">{{ billingMoney(drawerUserInfo.orderSummary.paidCents) }}</strong>
+                    · {{ drawerUserInfo.orderSummary.paidCount }} 笔
+                  </span>
+                  <el-button
+                    size="small"
+                    text
+                    type="primary"
+                    @click="drawerUserInfo && openRelatedPage('/orders', undefined, { userId: drawerUserInfo.id })"
+                  >
+                    在订单页查看
+                  </el-button>
+                </div>
+              </template>
+              <div class="users-table-shell">
+                <el-table
+                  v-loading="orderList.loading.value"
+                  class="users-table"
+                  :data="orderList.items.value"
+                  height="100%"
+                  size="small"
+                  row-class-name="row-clickable"
+                  @row-click="(row: BillingOrder) => openRelatedPage('/orders', undefined, { orderId: row.id })"
+                >
+                  <template #empty>
+                    <el-empty description="暂无订单" :image-size="60" />
+                  </template>
+                  <el-table-column label="下单时间" width="110" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <span class="cell-time" :title="formatTime(row.createdAt)">{{ formatShortTime(row.createdAt) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="商品" min-width="170" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <div class="ledger-reason">
+                        <span class="cell-text">{{ row.planName || '未知套餐' }}</span>
+                        <small class="drawer-id">{{ orderKindLabels[row.finance?.kind] || (row.planKind === 'subscription' ? '订阅' : '额度包') }}</small>
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="金额" width="104" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <span class="tnum">{{ billingMoney(row.payAmountCents ?? row.amountCents) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="支付方式" width="88" align="left" header-align="left">
+                    <template #default="{ row }">{{ paymentMethodLabel(row.paymentMethod) }}</template>
+                  </el-table-column>
+                  <el-table-column label="状态" width="116" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <el-tag size="small" :type="orderStatusMeta(row as BillingOrder).type" effect="light">{{ orderStatusMeta(row as BillingOrder).label }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="到账时间" width="110" align="left" header-align="left">
+                    <template #default="{ row }">
+                      <span class="cell-time" :title="formatTime(row.paidAt || row.completedAt)">{{ row.paidAt || row.completedAt ? formatShortTime(row.paidAt || row.completedAt) : '-' }}</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+            </AdminListShell>
           </el-tab-pane>
 
           <el-tab-pane label="账本" name="ledger" class="drawer-list-tab">
@@ -2360,6 +2560,57 @@ button.count-card.is-emphasis:hover {
   white-space: nowrap;
 }
 
+.concurrency-sum {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-2, color-mix(in srgb, var(--ink) 4%, var(--surface)));
+}
+
+.concurrency-sum > i {
+  align-self: flex-end;
+  padding-bottom: 1px;
+  color: var(--ink-3);
+  font-size: 13px;
+  font-style: normal;
+  line-height: 20px;
+}
+
+.concurrency-sum__cell {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.concurrency-sum__cell span {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.concurrency-sum__cell strong {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.concurrency-sum__cell.is-edit strong {
+  color: var(--accent-ink);
+}
+
+.concurrency-sum__cell.is-total {
+  flex: 1.4 1 0;
+  align-items: flex-end;
+}
+
 .adjust-form :deep(.el-form-item) {
   margin-bottom: 14px;
 }
@@ -2383,6 +2634,75 @@ button.count-card.is-emphasis:hover {
 
 .adjust-form :deep(.el-textarea__inner) {
   min-height: 76px;
+}
+
+/* 列表里的订阅 / 充值订单格子：可点，打开抽屉对应 Tab */
+.billing-cell {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.billing-cell.is-num {
+  justify-items: end;
+  text-align: right;
+}
+
+.billing-cell__top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.billing-cell__top .badge {
+  flex: none;
+}
+
+.billing-cell strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.billing-cell small {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.billing-cell small em {
+  color: var(--warning, #d97706);
+  font-style: normal;
+}
+
+.billing-cell:hover strong {
+  color: var(--accent-ink);
+}
+
+.drawer-orders-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.drawer-orders-toolbar__sum strong {
+  color: var(--ink);
 }
 </style>
 

@@ -1,5 +1,6 @@
 import { normalizeGptImageOutputSize } from "@react/legacy-modules/services/aiImageOutputSize.js";
 import { normalizeExactSizeCapabilities, validateExactImageSize } from "@react/config/exactImageSize.js";
+import { normalizeAspectRatioList } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { modelMaintenance, modelOptionMeta, resolveModelForCapability, type AiConfig, type ChannelModel } from "@/stores/use-config-store";
 
 export const CANVAS_IMAGE_MAX_COUNT = 4;
@@ -77,19 +78,20 @@ export function canvasImageMaxReferences(model?: ChannelModel | null) {
 export function canvasImageModelCapabilities(model?: ChannelModel | null): CanvasImageModelCapabilities {
     const safe: Partial<ChannelModel> = model ?? {};
     const hasConfiguredAspectRatios = Array.isArray(safe.aspectRatios);
-    const globalAspectRatios = normalizeList(safe.aspectRatios, CANVAS_IMAGE_ASPECT_RATIOS, CANVAS_IMAGE_ASPECT_RATIOS);
+    // Admins may configure any w:h (1:4, 8:1 …), not only the common list.
+    const globalAspectRatios: string[] = normalizeAspectRatioList(safe.aspectRatios, [...CANVAS_IMAGE_ASPECT_RATIOS]);
     const resolutions = normalizeList(safe.resolutions, CANVAS_IMAGE_RESOLUTIONS, CANVAS_IMAGE_RESOLUTIONS).map((item) => item.toUpperCase());
     const sourceRatios = safe.aspectRatiosByResolution && typeof safe.aspectRatiosByResolution === "object" ? safe.aspectRatiosByResolution : {};
     const hasResolutionRules = Object.keys(sourceRatios).length > 0;
     const aspectRatiosByResolution = Object.fromEntries(
         resolutions.map((resolution) => {
             const configured = sourceRatios[resolution] || sourceRatios[resolution.toLowerCase()];
-            const ratios = normalizeList(hasResolutionRules ? configured : configured || globalAspectRatios, CANVAS_IMAGE_ASPECT_RATIOS, globalAspectRatios);
+            const ratios: string[] = normalizeAspectRatioList(hasResolutionRules ? configured : configured || globalAspectRatios, globalAspectRatios);
             return [resolution, ratios.length ? ratios : [...globalAspectRatios]];
         }),
     );
     const configuredRatioSet = new Set(Object.values(aspectRatiosByResolution).flat());
-    const aspectRatios = CANVAS_IMAGE_ASPECT_RATIOS.filter((ratio) => configuredRatioSet.has(ratio));
+    const aspectRatios: string[] = normalizeAspectRatioList([...configuredRatioSet]);
     return {
         aspectRatios: aspectRatios.length ? aspectRatios : hasConfiguredAspectRatios ? [] : ["1:1"],
         aspectRatiosByResolution,

@@ -16,6 +16,9 @@ func (w *Worker) taskPromptWithSkills(ctx context.Context, task *store.Task) str
 	if !strings.Contains(task.Prompt, "@") || w.St == nil || w.St.Pool == nil {
 		return task.Prompt
 	}
+	if taskParamBool(task.Params, "_skillsDisabled") {
+		return w.promptWithoutSkillMentions(ctx, task.Prompt)
+	}
 	expanded, skills, err := skillmention.ExpandOfficial(ctx, w.St.Pool, task.Prompt)
 	if err != nil {
 		log.Printf("task %s: expand official skills failed: %v", task.ID, err)
@@ -29,4 +32,14 @@ func (w *Worker) taskPromptWithSkills(ctx context.Context, task *store.Task) str
 		log.Printf("task %s: official skills applied: %s", task.ID, strings.Join(slugs, ","))
 	}
 	return expanded
+}
+
+// promptWithoutSkillMentions drops @skill tokens for a model that does not use
+// skills, so the upstream sees neither the skill text nor the bare mention.
+func (w *Worker) promptWithoutSkillMentions(ctx context.Context, text string) string {
+	mentions, err := skillmention.FindOfficial(ctx, w.St.Pool, text)
+	if err != nil || len(mentions) == 0 {
+		return text
+	}
+	return strings.TrimSpace(skillmention.Strip(text, mentions))
 }

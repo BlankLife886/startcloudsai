@@ -434,6 +434,9 @@ export async function requestCanvasImages(config: AiConfig, prompt: string, refe
             ? `当前模型最多支持 ${referenceLimit} 张参考图，已连接 ${references.length} 张，请减少参考图或切换模型`
             : "当前模型不支持参考图，请断开参考图或切换模型");
     }
+    if (modelOptionMeta(config, config.model)?.requiresReference && references.length === 0) {
+        throw new Error("所选模型只支持改图，请先连接参考图或切换模型");
+    }
     const inputKeys = await Promise.all(references.map(ensureReferenceKey));
     const maskKey = mask ? await ensureReferenceKey(mask) : "";
     if (signal?.aborted) throw abortError();
