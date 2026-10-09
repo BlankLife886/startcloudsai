@@ -117,11 +117,6 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 		failOpenAI(c, apperr.E("provider_misconfigured", "所选图片模型的上游服务尚未配置好，暂不可调用，请联系平台", http.StatusBadGateway), "model")
 		return
 	}
-	if request.ResponseFormat == "url" && providerclient.NativeImages(selection.Provider) {
-		// Native image APIs return image data only; there is no link to pass on.
-		failOpenAIImage(c, imageParameterError("response_format", "该模型只返回图片数据，请使用 response_format=b64_json"))
-		return
-	}
 	params, err := openAIImageParams(request, selection.Model, len(files))
 	if err != nil {
 		failOpenAIImage(c, err)
@@ -459,20 +454,19 @@ func openAIRequestSize(request openAIImageRequest) string {
 	return request.Size
 }
 
+// directOpenAIImageResponse prefers the requested response_format but passes
+// on whatever the upstream returned when it ignored that choice: the image was
+// made, so the caller gets it (and is billed) instead of a failure.
 func directOpenAIImageResponse(upstream c2a.StandardImageResponse, requestedFormat string) (*openAIImageResponse, error) {
 	result := &openAIImageResponse{Created: upstream.Created, Data: make([]openAIImageData, 0, len(upstream.Data))}
 	for _, item := range upstream.Data {
-		switch requestedFormat {
-		case "url":
-			if item.URL == "" {
-				return nil, apperr.E("image_result_unavailable", "上游没有返回图片链接（url），本次不扣费", http.StatusBadGateway)
-			}
+		switch {
+		case requestedFormat == "url" && item.URL != "":
 			result.Data = append(result.Data, openAIImageData{URL: item.URL})
-		default:
-			if item.B64JSON == "" {
-				return nil, apperr.E("image_result_unavailable", "上游没有返回图片数据（b64_json），本次不扣费", http.StatusBadGateway)
-			}
+		case item.B64JSON != "":
 			result.Data = append(result.Data, openAIImageData{B64JSON: item.B64JSON})
+		case item.URL != "":
+			result.Data = append(result.Data, openAIImageData{URL: item.URL})
 		}
 	}
 	if len(result.Data) == 0 {

@@ -3,8 +3,8 @@ import {ConsoleSelect} from './Controls.jsx';
 import {CODE_LANGUAGES,INSTALL_COMMANDS,callableModel,codeExample,modelNotes,number} from './presentation.js';
 
 export const PROTOCOLS={
- images:{label:'文生图',path:'/images/generations',kind:'image',call:'images.generate(',icon:Image,result:'运行后在当前目录生成 output.png。',curlResult:'返回 JSON，图片是 data[0].b64_json 里的 base64。'},
- edits:{label:'图片编辑',path:'/images/edits',kind:'image',call:'images.edit(',icon:WandSparkles,result:'运行前把参考图放到当前目录并命名为 reference.png，结果保存为 output.png。',curlResult:'上传当前目录的 reference.png，返回 JSON，图片是 data[0].b64_json 里的 base64。'},
+ images:{label:'文生图',path:'/images/generations',kind:'image',call:'images.generate(',icon:Image,result:'运行后在当前目录生成 output.png。',curlResult:'返回 JSON，图片是 data[0].b64_json 里的 base64；个别模型返回 data[0].url 图片链接。'},
+ edits:{label:'图片编辑',path:'/images/edits',kind:'image',call:'images.edit(',icon:WandSparkles,result:'运行前把参考图放到当前目录并命名为 reference.png，结果保存为 output.png。',curlResult:'上传当前目录的 reference.png，返回 JSON，图片是 data[0].b64_json 里的 base64；个别模型返回 data[0].url 图片链接。'},
  chat:{label:'对话',path:'/chat/completions',kind:'chat',call:'chat.completions.create(',icon:MessageSquareText,result:'运行后逐字打印模型回复，流结束即完成。',curlResult:'以 SSE 逐段返回，收到 data: [DONE] 即结束。'},
 };
 // Editing needs a model that accepts reference images.

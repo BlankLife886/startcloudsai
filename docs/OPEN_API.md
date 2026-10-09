@@ -27,6 +27,7 @@ export STAR_CLOUD_API_KEY='替换为你的 Key'
 ```python
 import base64
 import os
+import urllib.request
 from openai import OpenAI
 
 client = OpenAI(
@@ -43,8 +44,11 @@ result = client.images.generate(
     prompt="一只在窗边晒太阳的橘猫，柔和自然光，摄影风格",
     size="auto",
 )
+image = result.data[0]
+# 个别模型的上游只返回 url，两种都要处理
+data = base64.b64decode(image.b64_json) if image.b64_json else urllib.request.urlopen(image.url).read()
 with open("cat.png", "xb") as file:
-    file.write(base64.b64decode(result.data[0].b64_json))
+    file.write(data)
 ```
 
 更完整的脚本（自动识别图片格式、编辑图片、Node 示例）见 `examples/open-api/`。
@@ -56,6 +60,7 @@ with open("cat.png", "xb") as file:
 - 成功响应与 OpenAI 相同；错误统一为 `{"error":{"message":"...","type":"...","param":null,"code":"..."}}`。
 - `model` 填模型名，也就是 `/v1/models` 返回的 `id`。模型名在控制台和本文档里始终一致。
 - 每把 Key 都有每分钟请求数、日/月请求数、日/月积分预算、每日流量上限，可选限定可用模型、IP 白名单和到期日期。这些都在控制台设置；超出时返回 `429`。
+- 支持在浏览器网页里直接调用（已开启跨域，只认 Key，不带 Cookie）。但写在网页前端的 Key 任何访问者都能看到，正式产品请从你自己的服务端转发，或给 Key 设置较小的额度和到期日期。
 - 客户端和反向代理的读取超时不低于 270 秒；服务端最多等待上游 240 秒。
 
 ## 模型
@@ -96,16 +101,18 @@ curl -sS --max-time 270 "$STAR_CLOUD_BASE_URL/images/generations" \
   }'
 ```
 
-成功返回 `{"created":1788912000,"data":[{"b64_json":"..."}]}`。`response_format: "url"` 时数组项为 `{"url":"https://..."}`，这是有有效期的签名地址，请及时下载，不要公开分享。
+成功返回 `{"created":1788912000,"data":[{"b64_json":"..."}]}`。`response_format: "url"` 时数组项为 `{"url":"https://..."}`，这是有有效期的地址，请及时下载，不要公开分享。
+
+> **以实际返回为准**：个别模型的上游会忽略 `response_format`，只返回 `url` 或只返回 `b64_json`。这时平台把上游的结果原样返回给你，照常计费。请在代码里两种都处理：有 `b64_json` 就解码，否则下载 `url`。
 
 | 字段 | 说明 |
 | --- | --- |
 | `model` | 必填，模型名 |
 | `prompt` | 必填 |
 | `n` | 默认 1，1–10，且不超过模型的单次张数上限 |
-| `size` | 默认 `auto`（模型原生尺寸）。`宽x高` 需模型支持精确尺寸，否则返回 400，不会偷偷缩放 |
-| `quality` | 默认 `auto`；`low`、`medium`、`high`、`xhigh`、`max`（后两档需模型支持），`standard`/`hd` 分别视为 `medium`/`high`。开发者 API 按 API 模型目录价计费，不使用站内的分辨率 × 质量分档价 |
-| `response_format` | `b64_json`（默认）或 `url` |
+| `size` | 默认 `auto`，按模型原生尺寸出图。`宽x高`（如 `1024x1536`）只有控制台“模型”页 size 列标出了范围的模型支持，其他模型返回 400，请改用 `auto` |
+| `quality` | 默认 `auto`；`low`、`medium`、`high`、`xhigh`、`max`，每个模型可用的取值见控制台“模型”页 quality 列，`standard`/`hd` 分别视为 `medium`/`high`。开发者 API 按 API 模型目录价计费，不使用站内的分辨率 × 质量分档价 |
+| `response_format` | `b64_json`（默认）或 `url`。上游不支持你选的格式时，返回上游实际给出的格式 |
 | `output_format` | `png`、`jpeg`、`webp`。模型支持指定格式时生效；模型只输出原生格式时忽略此字段 |
 | `background` | `auto`（默认）、`opaque`、`transparent`；透明背景需模型支持，且不能搭配 JPEG |
 | `moderation` | 可选 `auto` 或 `low`，需模型支持 |
@@ -152,7 +159,7 @@ for chunk in client.chat.completions.create(model="gpt-5.6-luna", messages=[{"ro
 
 ## 计费与失败
 
-- **成功才扣费**。拿到结果才按模型价格结算，每个请求只扣一次。
+- **成功才扣费**。拿到图片或回答才按模型价格结算，每个请求只扣一次；图片以 `url` 还是 `b64_json` 返回都算成功。
 - **失败全额退回**。上游拒绝（含内容风控）、出错、超时或平台故障都算失败：退回预留积分，也不计入 Key 的日/月额度。上游故障或超时不会导致 Key 被冻结。
 - **客户端断开不等于失败**。生图和非流式对话发出后，即使你断开连接，平台也会等上游完成：上游成功就扣费（结果无法再取回），失败才退回。流式对话在收到回答内容后断开照常扣费，收到内容前断开不扣费。
 - **不自动重试**。网关不会替你重试，也不支持用同一个请求编号找回结果。需要重试时直接发一个新请求。所有付费接口都返回 `X-Should-Retry: false`，并建议把 SDK 的自动重试关掉（`max_retries=0`），避免一次失败被 SDK 悄悄重发。

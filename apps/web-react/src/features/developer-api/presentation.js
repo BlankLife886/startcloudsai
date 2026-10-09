@@ -13,6 +13,14 @@ export function modelNotes(model){
  if(model?.pendingPrice)notes.push(['info',`${day(model.pendingPrice.effectiveAt)} 起调整为 ${number(model.pendingPrice.priceCents)} 积分/次`]);
  return notes;
 }
+// sizeText / qualityText tell an integrator what size and quality to send.
+export function sizeText(model){
+ const exact=model?.exactSize;
+ if(!exact)return 'auto';
+ const range=`${exact.minWidth}–${exact.maxWidth} × ${exact.minHeight}–${exact.maxHeight}`;
+ return `auto，或 宽x高（${range}${exact.step>1?`，${exact.step} 的倍数`:''}）`;
+}
+export function qualityText(model){return ['auto',...(model?.qualities||[])].join(' / ');}
 // keyModels sorts a Key's allowlist by what calls with it will do.
 export function keyModels(ids,models){
  const found=ids.map(id=>models.find(model=>model.id===id)),usable=found.filter(callableModel).filter(Boolean);
@@ -89,17 +97,17 @@ export function chatCurlExample(base,model,apiKey){
 function pythonExample(base,model,apiKey,protocol){
  const client=['from openai import OpenAI','','client = OpenAI(',`    base_url=${JSON.stringify(trimBase(base))},`,`    api_key=${JSON.stringify(keyOrPlaceholder(apiKey))},`,`    timeout=${protocol==='chat'?'300.0':'270.0'},`,'    max_retries=0,',')',''];
  if(protocol==='chat')return [...client,'stream = client.chat.completions.create(',`    model=${JSON.stringify(model?.model||'CHAT_MODEL_NAME')},`,'    messages=[',...SAMPLE_CHAT.map(m=>`        {"role": "${m.role}", "content": ${JSON.stringify(m.content)}},`),'    ],','    stream=True,',')','for chunk in stream:','    if chunk.choices:','        print(chunk.choices[0].delta.content or "", end="", flush=True)'].join('\n');
- const save=['with open("output.png", "wb") as file:','    file.write(base64.b64decode(result.data[0].b64_json))'];
- if(protocol==='edits')return ['import base64',...client,'result = client.images.edit(',`    model=${JSON.stringify(model?.model||'MODEL_NAME')},`,`    image=open(${JSON.stringify(SAMPLE_REFERENCE)}, "rb"),`,`    prompt=${JSON.stringify(SAMPLE_EDIT_PROMPT)},`,')',...save].join('\n');
- return ['import base64',...client,'result = client.images.generate(',`    model=${JSON.stringify(model?.model||'MODEL_NAME')},`,`    prompt=${JSON.stringify(SAMPLE_IMAGE_PROMPT)},`,'    size="auto",',')',...save].join('\n');
+ const save=['image = result.data[0]','# 个别模型的上游只返回 url，两种都要处理','data = base64.b64decode(image.b64_json) if image.b64_json else urllib.request.urlopen(image.url).read()','with open("output.png", "wb") as file:','    file.write(data)'];
+ if(protocol==='edits')return ['import base64','import urllib.request',...client,'result = client.images.edit(',`    model=${JSON.stringify(model?.model||'MODEL_NAME')},`,`    image=open(${JSON.stringify(SAMPLE_REFERENCE)}, "rb"),`,`    prompt=${JSON.stringify(SAMPLE_EDIT_PROMPT)},`,')',...save].join('\n');
+ return ['import base64','import urllib.request',...client,'result = client.images.generate(',`    model=${JSON.stringify(model?.model||'MODEL_NAME')},`,`    prompt=${JSON.stringify(SAMPLE_IMAGE_PROMPT)},`,'    size="auto",',')',...save].join('\n');
 }
 
 function nodeExample(base,model,apiKey,protocol){
  const client=['import OpenAI from "openai";','','const client = new OpenAI({',`  baseURL: ${JSON.stringify(trimBase(base))},`,`  apiKey: ${JSON.stringify(keyOrPlaceholder(apiKey))},`,`  timeout: ${protocol==='chat'?'300_000':'270_000'},`,'  maxRetries: 0,','});',''];
  if(protocol==='chat')return [...client,'const stream = await client.chat.completions.create({',`  model: ${JSON.stringify(model?.model||'CHAT_MODEL_NAME')},`,'  messages: [',...SAMPLE_CHAT.map(m=>`    { role: "${m.role}", content: ${JSON.stringify(m.content)} },`),'  ],','  stream: true,','});','for await (const chunk of stream) {','  process.stdout.write(chunk.choices[0]?.delta?.content ?? "");','}'].join('\n');
- const save='fs.writeFileSync("output.png", Buffer.from(result.data[0].b64_json, "base64"));';
- if(protocol==='edits')return ['import fs from "node:fs";',...client,'const result = await client.images.edit({',`  model: ${JSON.stringify(model?.model||'MODEL_NAME')},`,`  image: fs.createReadStream(${JSON.stringify(SAMPLE_REFERENCE)}),`,`  prompt: ${JSON.stringify(SAMPLE_EDIT_PROMPT)},`,'});',save].join('\n');
- return ['import fs from "node:fs";',...client,'const result = await client.images.generate({',`  model: ${JSON.stringify(model?.model||'MODEL_NAME')},`,`  prompt: ${JSON.stringify(SAMPLE_IMAGE_PROMPT)},`,'  size: "auto",','});',save].join('\n');
+ const save=['const image = result.data[0];','// 个别模型的上游只返回 url，两种都要处理','const data = image.b64_json','  ? Buffer.from(image.b64_json, "base64")','  : Buffer.from(await (await fetch(image.url)).arrayBuffer());','fs.writeFileSync("output.png", data);'];
+ if(protocol==='edits')return ['import fs from "node:fs";',...client,'const result = await client.images.edit({',`  model: ${JSON.stringify(model?.model||'MODEL_NAME')},`,`  image: fs.createReadStream(${JSON.stringify(SAMPLE_REFERENCE)}),`,`  prompt: ${JSON.stringify(SAMPLE_EDIT_PROMPT)},`,'});',...save].join('\n');
+ return ['import fs from "node:fs";',...client,'const result = await client.images.generate({',`  model: ${JSON.stringify(model?.model||'MODEL_NAME')},`,`  prompt: ${JSON.stringify(SAMPLE_IMAGE_PROMPT)},`,'  size: "auto",','});',...save].join('\n');
 }
 
 export const CODE_LANGUAGES = [['python','Python'],['node','Node.js'],['curl','cURL']];

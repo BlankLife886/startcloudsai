@@ -122,9 +122,20 @@ func developerModelItems(entries []*store.DeveloperAPIModel, cfg modelconfig.Con
 			"status": listing.PublicStatus, "priceCents": price, "pendingPrice": pending,
 			"sunsetAt": iso(entry.SunsetAt), "retiredAt": iso(apicatalog.RetiredAt(entryIfRetired(entry, now))), "replacement": replacement,
 			"maxImages": model.GenerationMaxImages(), "maxReferenceImages": model.MaxReferenceImages, "resolutions": model.Resolutions,
+			"qualities": model.Qualities, "outputFormats": model.OutputFormats, "transparentBackground": model.TransparentBackground,
+			"exactSize": developerExactSize(model),
 		})
 	}
 	return items
+}
+
+// developerExactSize is the pixel range a model accepts for size="宽x高";
+// nil means only size="auto" is accepted.
+func developerExactSize(model modelconfig.Model) any {
+	if model.Kind != modelconfig.ModelKindImage || !model.SupportsExactSize {
+		return nil
+	}
+	return model.ExactSizeRules()
 }
 
 // normalizeAPIModelIDs validates a Key allowlist against catalog entries in

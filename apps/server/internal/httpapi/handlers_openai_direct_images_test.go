@@ -21,11 +21,18 @@ func TestDirectOpenAIImageResponseUsesRequestedDeliveryFormat(t *testing.T) {
 	}
 }
 
-func TestDirectOpenAIImageResponseRejectsMissingRequestedRepresentation(t *testing.T) {
-	if _, err := directOpenAIImageResponse(c2a.StandardImageResponse{Data: []c2a.StandardImageData{{URL: "https://cdn.example.test/image.png"}}}, "b64_json"); err == nil {
-		t.Fatal("expected b64_json response mismatch to fail")
+func TestDirectOpenAIImageResponsePassesOnWhatUpstreamReturned(t *testing.T) {
+	onlyURL := c2a.StandardImageResponse{Data: []c2a.StandardImageData{{URL: "https://cdn.example.test/image.png"}}}
+	result, err := directOpenAIImageResponse(onlyURL, "b64_json")
+	if err != nil || len(result.Data) != 1 || result.Data[0].URL != "https://cdn.example.test/image.png" || result.Data[0].B64JSON != "" {
+		t.Fatalf("url-only upstream for b64_json request: %#v err=%v", result, err)
 	}
-	if _, err := directOpenAIImageResponse(c2a.StandardImageResponse{Data: []c2a.StandardImageData{{B64JSON: "encoded"}}}, "url"); err == nil {
-		t.Fatal("expected url response mismatch to fail")
+	onlyB64 := c2a.StandardImageResponse{Data: []c2a.StandardImageData{{B64JSON: "encoded"}}}
+	result, err = directOpenAIImageResponse(onlyB64, "url")
+	if err != nil || len(result.Data) != 1 || result.Data[0].B64JSON != "encoded" || result.Data[0].URL != "" {
+		t.Fatalf("b64-only upstream for url request: %#v err=%v", result, err)
+	}
+	if _, err := directOpenAIImageResponse(c2a.StandardImageResponse{}, "b64_json"); err == nil {
+		t.Fatal("expected an empty upstream result to fail")
 	}
 }
