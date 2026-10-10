@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
@@ -25,34 +25,10 @@ func modelNotFoundError(requested string) error {
 	return apperr.E("model_not_found", fmt.Sprintf("模型 %q 不存在，或未开放给这把 API Key；可用模型见 GET /v1/models", requested), http.StatusNotFound)
 }
 
-var (
-	upstreamReasonURL    = regexp.MustCompile(`(?i)\b(?:https?|wss?)://\S+`)
-	upstreamReasonSecret = regexp.MustCompile(`(?i)\b(?:sk|pk|rk|key|token|bearer)[-_ ]?[A-Za-z0-9_\-]{12,}`)
-	upstreamReasonSpaces = regexp.MustCompile(`\s+`)
-)
-
-// upstreamReason keeps an upstream error message readable for the caller while
-// removing what identifies our provider: URLs, credential-like tokens and
-// overlong bodies.
-func upstreamReason(message string) string {
-	message = upstreamReasonURL.ReplaceAllString(message, "[链接已隐藏]")
-	message = upstreamReasonSecret.ReplaceAllString(message, "[已隐藏]")
-	message = strings.TrimSpace(upstreamReasonSpaces.ReplaceAllString(message, " "))
-	if runes := []rune(message); len(runes) > 300 {
-		message = string(runes[:300]) + "…"
-	}
-	return message
-}
-
-func withUpstreamReason(summary, reason string) string {
-	if reason = upstreamReason(reason); reason != "" {
-		return summary + "：" + reason
-	}
-	return summary
-}
-
-// developerUpstreamError explains an upstream failure to the /v1 caller: what
-// happened, whether it is the caller's to fix, and that nothing was charged.
+// developerUpstreamError explains a failed generation to the /v1 caller:
+// whether it is theirs to fix and that nothing was charged. Callers never see
+// the upstream's own message, status or address, which would reveal the
+// provider; the raw cause is only logged for the platform.
 // An upstream 401/403/404 describes our provider credentials or routing, never
 // the caller's API Key, so it is reported as a platform problem.
 func developerUpstreamError(err error) error {
@@ -60,36 +36,34 @@ func developerUpstreamError(err error) error {
 		return appErr
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return apperr.E("request_timeout", fmt.Sprintf("等待上游超过 %d 秒仍未返回，本次不扣费", int(openAIImageWaitTimeout.Seconds())), http.StatusGatewayTimeout)
+		return apperr.E("request_timeout", fmt.Sprintf("超过 %d 秒仍未完成，本次不扣费，可稍后重试", int(openAIImageWaitTimeout.Seconds())), http.StatusGatewayTimeout)
 	}
-	status, reason, known := 0, "", false
+	status, known := 0, false
 	var imageErr *c2a.UpstreamError
 	var chatErr *sub2api.UpstreamError
 	switch {
 	case errors.As(err, &imageErr):
-		status, reason, known = imageErr.StatusCode, imageErr.Message, true
+		status, known = imageErr.StatusCode, true
 	case errors.As(err, &chatErr):
-		status, reason, known = chatErr.Status, chatErr.Message, true
+		status, known = chatErr.Status, true
 	}
+	log.Printf("developer API upstream failure status=%d: %s", status, truncateRunes(err.Error(), 500))
 	var networkErr *c2a.NetworkError
 	var netErr net.Error
 	if !known && (errors.As(err, &networkErr) || errors.As(err, &netErr) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
-		return apperr.E("upstream_unreachable", "连接上游服务失败或连接中途断开，本次不扣费", http.StatusBadGateway)
+		return apperr.E("upstream_unreachable", "模型服务连接中断，本次不扣费，请稍后重试", http.StatusBadGateway)
 	}
 	switch {
 	case !known:
-		// Unclassified errors may carry internal details; say only what happened.
-		return apperr.E("upstream_error", "上游服务处理失败，本次不扣费", http.StatusBadGateway)
+		return apperr.E("upstream_error", "模型服务处理失败，本次不扣费，请稍后重试", http.StatusBadGateway)
 	case status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge || status == http.StatusUnprocessableEntity:
-		return apperr.E("upstream_rejected", withUpstreamReason(fmt.Sprintf("上游拒绝了这次请求（HTTP %d），本次不扣费", status), reason), http.StatusBadRequest)
+		return apperr.E("upstream_rejected", "请求未被模型接受，请检查提示词、参考图和参数后重试，本次不扣费", http.StatusBadRequest)
 	case status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound:
-		return apperr.E("upstream_misconfigured", fmt.Sprintf("平台的上游服务配置异常（上游返回 HTTP %d），与你的 API Key 无关，本次不扣费，请联系平台处理", status), http.StatusBadGateway)
+		return apperr.E("upstream_misconfigured", "该模型暂时不可用（平台侧问题，与你的 API Key 无关），本次不扣费，请稍后重试或联系平台", http.StatusBadGateway)
 	case status == http.StatusTooManyRequests:
-		return apperr.E("upstream_rate_limited", withUpstreamReason("上游当前限流（HTTP 429），本次不扣费，请稍后再发", reason), http.StatusTooManyRequests)
-	case status == 0:
-		return apperr.E("upstream_error", withUpstreamReason("上游返回了无法处理的结果，本次不扣费", reason), http.StatusBadGateway)
+		return apperr.E("upstream_rate_limited", "该模型当前请求较多，本次不扣费，请稍后再发", http.StatusTooManyRequests)
 	default:
-		return apperr.E("upstream_error", withUpstreamReason(fmt.Sprintf("上游服务出错（HTTP %d），本次不扣费", status), reason), http.StatusBadGateway)
+		return apperr.E("upstream_error", "模型服务暂时出错，本次不扣费，请稍后重试", http.StatusBadGateway)
 	}
 }
 
@@ -112,11 +86,13 @@ func developerUpstreamReason(err error) string {
 	return ""
 }
 
-// developerContentPolicyError 告诉调用方这次生图因内容违规被上游驳回，以及是否扣费。
+// developerContentPolicyError tells the caller the image was refused for its
+// content and whether that was charged, without the upstream's own wording.
 func developerContentPolicyError(reason string, charged bool) error {
-	summary := "内容违规，上游已驳回本次生成，按本次价格扣费"
+	log.Printf("developer API content policy rejection charged=%t: %s", charged, truncateRunes(reason, 500))
+	message := "内容不符合安全规范，本次生成被拒绝，按本次价格扣费"
 	if !charged {
-		summary = "内容违规，上游已驳回本次生成；本次在免扣范围内，不扣费"
+		message = "内容不符合安全规范，本次生成被拒绝；在每日免扣次数内，不扣费"
 	}
-	return apperr.E(openAIContentPolicyCode, withUpstreamReason(summary, reason), http.StatusBadRequest)
+	return apperr.E(openAIContentPolicyCode, message, http.StatusBadRequest)
 }

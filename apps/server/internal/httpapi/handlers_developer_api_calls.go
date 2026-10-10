@@ -16,15 +16,15 @@ import (
 // developerAPICallReasons explains, for the developer console, why a call was
 // refunded. Codes come from developerUpstreamError and the billing helpers.
 var developerAPICallReasons = map[string]string{
-	"upstream_rejected":         "上游拒绝了请求（如内容安全），已退回",
-	openAIContentPolicyCode:     "内容违规被上游驳回，在每日免扣次数内，已退回",
-	"upstream_misconfigured":    "平台上游配置异常，已退回",
-	"upstream_rate_limited":     "上游限流，已退回",
-	"upstream_error":            "上游服务出错，已退回",
-	"upstream_unreachable":      "连接上游失败或被上游中断，已退回",
-	"request_timeout":           "等待上游超时，已退回",
+	"upstream_rejected":         "请求未被模型接受，已退回",
+	openAIContentPolicyCode:     "内容不符合安全规范，在每日免扣次数内，已退回",
+	"upstream_misconfigured":    "模型暂时不可用，已退回",
+	"upstream_rate_limited":     "模型请求较多，已退回",
+	"upstream_error":            "模型服务出错，已退回",
+	"upstream_unreachable":      "模型服务连接中断，已退回",
+	"request_timeout":           "处理超时，已退回",
 	"request_aborted":           "收到回答前调用方已断开，已退回",
-	"image_result_unavailable":  "上游没有返回图片，已退回",
+	"image_result_unavailable":  "没有生成图片，已退回",
 	"billing_settlement_failed": "平台记账失败，已退回",
 }
 
@@ -92,7 +92,7 @@ func developerAPICallDict(call *store.DeveloperAPICall, modelNames map[string]st
 	if model == "" && call.ModelID != "" {
 		model = "已下线的模型"
 	}
-	status, charged, reason := "pending", int64(0), "等待上游返回"
+	status, charged, reason := "pending", int64(0), "处理中"
 	switch call.Status {
 	case store.DeveloperAPIRequestSucceeded:
 		status, charged, reason = "charged", call.PriceCents, ""
@@ -100,7 +100,7 @@ func developerAPICallDict(call *store.DeveloperAPICall, modelNames map[string]st
 			reason = "结果已产生，调用方中途断开，照常扣费"
 		}
 		if call.ErrorCode == openAIContentPolicyCode {
-			reason = "内容违规被上游驳回，照常扣费"
+			reason = "内容不符合安全规范被拒绝，照常扣费"
 		}
 	case store.DeveloperAPIRequestFailed:
 		status, reason = "refunded", developerAPICallReasons[call.ErrorCode]

@@ -96,12 +96,12 @@ func (s *Server) openAIChatCompletions(c *gin.Context) {
 	}
 	selection := &resolved.Selection
 	if strings.TrimSpace(selection.Provider.BaseURL) == "" || strings.TrimSpace(selection.Provider.APIKey) == "" {
-		failOpenAI(c, apperr.E("provider_misconfigured", "所选对话模型的上游服务尚未配置好，暂不可调用，请联系平台", http.StatusBadGateway), "model")
+		failOpenAI(c, apperr.E("provider_misconfigured", "所选对话模型暂不可调用，请联系平台", http.StatusBadGateway), "model")
 		return
 	}
 	client, err := providerclient.ChatForSelection(selection, "")
 	if err != nil {
-		failOpenAI(c, apperr.E("provider_misconfigured", "所选对话模型的上游服务尚未配置好，暂不可调用，请联系平台", http.StatusBadGateway), "model")
+		failOpenAI(c, apperr.E("provider_misconfigured", "所选对话模型暂不可调用，请联系平台", http.StatusBadGateway), "model")
 		return
 	}
 	if !s.enforceUsageLimit(c, "task-create-minute", user.ID.String(), highCostRequestsPerMinute, 1, time.Minute) {
@@ -156,6 +156,8 @@ type openAIChatChunk struct {
 	upstreamErr string // an error the upstream sent inside a 200 response
 }
 
+var openAIChatPublicFields = map[string]bool{"id": true, "object": true, "created": true, "model": true, "choices": true, "usage": true}
+
 // rewriteOpenAIChatPayload swaps the upstream model name in one completion
 // object for the caller's model name and reports what the object carries.
 func rewriteOpenAIChatPayload(raw []byte, publicModel string) (out []byte, chunk openAIChatChunk, err error) {
@@ -175,6 +177,13 @@ func rewriteOpenAIChatPayload(raw []byte, publicModel string) (out []byte, chunk
 	}
 	if _, ok := object["model"]; ok {
 		object["model"], _ = json.Marshal(publicModel)
+	}
+	// Only the standard completion fields reach the caller; vendor extras such
+	// as provider or system_fingerprint would reveal where the request ran.
+	for field := range object {
+		if !openAIChatPublicFields[field] {
+			delete(object, field)
+		}
 	}
 	type content struct {
 		Content   string          `json:"content"`

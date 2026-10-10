@@ -361,14 +361,14 @@ func TestDeveloperAPIChatStreamThatBreaksIsRefunded(t *testing.T) {
 	}
 }
 
-func TestDeveloperAPIChatExplainsUpstreamErrorsWithoutProviderURLs(t *testing.T) {
+func TestDeveloperAPIChatErrorsNeverEchoTheUpstream(t *testing.T) {
 	env := newOpenAIImagesIntegrationEnv(t)
 	env.withChatModel(t, 7, func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "secret-provider-detail https://internal.example/v1", http.StatusInternalServerError)
 	})
 	response := env.chat(t, `{"model":"compat-chat","messages":[{"role":"user","content":"hi"}]}`)
 	requireOpenAIIntegrationStatus(t, response, http.StatusBadGateway, "upstream_error")
-	if text := response.Body.String(); !strings.Contains(text, "HTTP 500") || !strings.Contains(text, "secret-provider-detail") || strings.Contains(text, "internal.example") {
+	if text := response.Body.String(); strings.Contains(text, "HTTP 500") || strings.Contains(text, "secret-provider-detail") || strings.Contains(text, "internal.example") || !strings.Contains(text, "不扣费") {
 		t.Fatalf("body=%s", text)
 	}
 	env.requireWallet(t, 1000, 0)
@@ -378,7 +378,7 @@ func TestDeveloperAPIChatExplainsUpstreamErrorsWithoutProviderURLs(t *testing.T)
 		fmt.Fprint(w, "data: {\"error\":{\"message\":\"context length exceeded\"}}\n\n")
 	})
 	text := env.chat(t, `{"model":"compat-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`).Body.String()
-	if !strings.Contains(text, "context length exceeded") || !strings.Contains(text, `"code":"upstream_error"`) {
+	if strings.Contains(text, "context length exceeded") || !strings.Contains(text, `"code":"upstream_error"`) {
 		t.Fatalf("stream=%s", text)
 	}
 	env.requireWallet(t, 1000, 0)

@@ -114,7 +114,7 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 	}
 	selection := &resolved.Selection
 	if strings.TrimSpace(selection.Provider.BaseURL) == "" || strings.TrimSpace(selection.Provider.APIKey) == "" {
-		failOpenAI(c, apperr.E("provider_misconfigured", "所选图片模型的上游服务尚未配置好，暂不可调用，请联系平台", http.StatusBadGateway), "model")
+		failOpenAI(c, apperr.E("provider_misconfigured", "所选图片模型暂不可调用，请联系平台", http.StatusBadGateway), "model")
 		return
 	}
 	params, err := openAIImageParams(request, selection.Model, len(files))
@@ -470,7 +470,7 @@ func directOpenAIImageResponse(upstream c2a.StandardImageResponse, requestedForm
 		}
 	}
 	if len(result.Data) == 0 {
-		return nil, apperr.E("image_result_unavailable", "上游没有返回任何图片，本次不扣费", http.StatusBadGateway)
+		return nil, apperr.E("image_result_unavailable", "本次没有生成图片，不扣费，请稍后重试", http.StatusBadGateway)
 	}
 	return result, nil
 }

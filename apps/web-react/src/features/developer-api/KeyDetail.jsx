@@ -17,7 +17,7 @@ function Row({label,children}){return <div className="dap-kd-row"><dt>{label}</d
 // which of its models are going away.
 function Alerts({item,models}){
  const status=keyStatus(item),alerts=[];
- if(status==='frozen')alerts.push(['bad','已被风控冻结',`${(item.freezeReason||'未记录原因').trim().replace(/[。.！!]+$/,'')}。冻结期间调用返回 403 api_key_frozen，请联系客服核实后解冻；上游故障或超时不会触发冻结。`]);
+ if(status==='frozen')alerts.push(['bad','已被风控冻结',`${(item.freezeReason||'未记录原因').trim().replace(/[。.！!]+$/,'')}。冻结期间调用返回 403 api_key_frozen，请联系客服核实后解冻；模型出错或超时不会触发冻结。`]);
  if(status==='paused')alerts.push(['info','已停用','调用返回 403 api_key_paused；重新启用后立即恢复，密钥不变。']);
  if(status==='expired')alerts.push(['bad','已过期','调用返回 401 api_key_expired。请创建新 Key 并撤销这把以释放保留名额。']);
  if(item.allowedModelIds?.length&&status!=='revoked'){
