@@ -1,0 +1,24 @@
+.m-page-header {
+  position: sticky;
+  z-index: 20;
+  top: 0;
+  height: calc(var(--m-header-h) + var(--m-safe-top));
+  padding: var(--m-safe-top) 20px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--m-bg);
+}
+
+/* 与 App 一级页顶栏一致：标题居左、22px */
+.m-page-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.m-tab-body {
+  min-height: calc(100dvh - var(--m-header-h) - var(--m-safe-top));
+  padding: 8px 20px calc(var(--m-tabbar-space, 0px) + 28px);
+}

@@ -14,6 +14,21 @@ const props = withDefaults(
 const loaded = ref(false)
 const failed = ref(false)
 
+const emit = defineEmits<{
+  load: [event: Event]
+  error: []
+}>()
+
+function onLoad(event: Event) {
+  loaded.value = true
+  emit('load', event)
+}
+
+function onError() {
+  failed.value = true
+  emit('error')
+}
+
 watch(
   () => props.src,
   () => {
@@ -32,8 +47,8 @@ watch(
       loading="lazy"
       decoding="async"
       draggable="false"
-      @load="loaded = true"
-      @error="failed = true"
+      @load="onLoad"
+      @error="onError"
     />
     <span v-if="!loaded && !failed && src" class="progressive-image__skeleton" aria-hidden="true" />
     <span v-if="failed || !src" class="progressive-image__fallback">{{ failed ? '图片加载失败' : '暂无图片' }}</span>

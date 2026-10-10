@@ -1,0 +1,69 @@
+/* 亮暗切换：36×36 圆钮；底座（果冻糖果风格）与隔壁按钮共用，见 NavBar.polish.css */
+.theme-key {
+  position: relative;
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  box-sizing: border-box;
+  cursor: pointer;
+  vertical-align: middle;
+  -webkit-tap-highlight-color: transparent;
+}
+.theme-key:focus-visible {
+  outline: 2px solid var(--nav-accent, #5b4dff);
+  outline-offset: 3px;
+}
+.theme-key__cap {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+}
+.theme-key__cap > .nav-glyph3d {
+  grid-area: 1 / 1;
+  width: 25px;
+  height: 25px;
+  transition: transform 520ms cubic-bezier(0.3, 1.4, 0.5, 1);
+}
+.theme-key__cap > .nav-glyph3d--moon {
+  transform: translateY(-34px);
+}
+.theme-key.is-night .nav-glyph3d--sun {
+  transform: translateY(34px);
+}
+.theme-key.is-night .nav-glyph3d--moon {
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-key__cap > .nav-glyph3d {
+    transition: none;
+  }
+}
+
+/* 跟随系统：右下角半圆角标，位置与语言按钮的语言角标一致 */
+.theme-key__face {
+  position: absolute;
+  right: -5px;
+  bottom: -3px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 15px;
+  border-radius: 999px;
+  background: linear-gradient(145deg, #7c6bff, #5b4dff);
+  box-shadow: 0 0 0 2px #fff, 0 2px 5px rgba(91, 77, 255, 0.35);
+  color: #fff;
+  font-size: 9px;
+  line-height: 1;
+}
+.site-header.is-dark .theme-key__face {
+  box-shadow: 0 0 0 2px #1c1d28, 0 2px 5px rgba(91, 77, 255, 0.35);
+}

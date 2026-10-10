@@ -1,0 +1,404 @@
+/* 模型状态页：桌面全宽卡片墙，一屏看完所有模型 */
+.msv {
+  --msv-text: #14182b;
+  --msv-muted: rgba(20, 24, 43, 0.62);
+  --msv-faint: rgba(20, 24, 43, 0.42);
+  --msv-line: rgba(20, 24, 43, 0.08);
+  --msv-line-strong: rgba(20, 24, 43, 0.14);
+  --msv-surface: #ffffff;
+  --msv-sunken: rgba(20, 24, 43, 0.03);
+  --msv-accent: #6a4fe0;
+  --msv-accent-soft: rgba(106, 79, 224, 0.1);
+  --msv-series: #6a4fe0;
+  --msv-series-fill: rgba(106, 79, 224, 0.12);
+  /* 状态色两种主题共用，始终配图标/文字/提示，不单靠颜色表达 */
+  --msv-good: #30a46c;
+  --msv-warning: #f0a020;
+  --msv-critical: #e5484d;
+  --msv-info: #2563eb;
+  --msv-idle: rgba(20, 24, 43, 0.08);
+  --msv-bar: #d4c9fc;
+  --msv-bar-today: #6a4fe0;
+  --msv-page: #f5f6fa;
+  --msv-glow: 10%;
+  --msv-good-soft: rgba(48, 164, 108, 0.12);
+  --msv-warning-soft: rgba(240, 160, 32, 0.14);
+  --msv-critical-soft: rgba(229, 72, 77, 0.11);
+  --msv-info-soft: rgba(37, 99, 235, 0.1);
+  --msv-idle-soft: rgba(20, 24, 43, 0.05);
+  --msv-good-ink: #1f8a55;
+  --msv-warning-ink: #c27803;
+  --msv-critical-ink: #d13438;
+  --msv-tip-bg: #14182b;
+  --msv-tip-ink: #ffffff;
+  --msv-shadow: 0 1px 2px rgba(20, 24, 43, 0.05), 0 4px 16px rgba(20, 24, 43, 0.05);
+
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  width: 100%;
+  min-height: calc(100dvh - var(--app-header-offset, 62px));
+  margin: 0 auto;
+  padding: 14px 32px 40px;
+  box-sizing: border-box;
+  background: var(--msv-page);
+  color: var(--msv-text);
+  font-family: "SF Pro Display", "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.msv.is-dark {
+  --msv-text: rgba(244, 242, 255, 0.95);
+  --msv-muted: rgba(214, 210, 240, 0.68);
+  --msv-faint: rgba(200, 194, 235, 0.46);
+  --msv-line: rgba(255, 255, 255, 0.075);
+  --msv-line-strong: rgba(255, 255, 255, 0.14);
+  --msv-surface: #151826;
+  --msv-sunken: rgba(255, 255, 255, 0.035);
+  --msv-accent: #a08bff;
+  --msv-accent-soft: rgba(160, 139, 255, 0.14);
+  --msv-series: #a08bff;
+  --msv-series-fill: rgba(160, 139, 255, 0.16);
+  --msv-info: #93c5fd;
+  --msv-idle: rgba(255, 255, 255, 0.1);
+  --msv-good: #0ca30c;
+  --msv-warning: #fab219;
+  --msv-critical: #d03b3b;
+  --msv-bar: #5c4f9e;
+  --msv-bar-today: #a08bff;
+  --msv-page: transparent;
+  --msv-glow: 16%;
+  --msv-good-soft: rgba(12, 163, 12, 0.18);
+  --msv-warning-soft: rgba(250, 178, 25, 0.16);
+  --msv-critical-soft: rgba(208, 59, 59, 0.2);
+  --msv-info-soft: rgba(147, 197, 253, 0.14);
+  --msv-idle-soft: rgba(255, 255, 255, 0.06);
+  --msv-good-ink: #6ee36e;
+  --msv-warning-ink: #ffcb5c;
+  --msv-critical-ink: #ff8a8a;
+  --msv-tip-bg: #f4f2ff;
+  --msv-tip-ink: #12101c;
+  --msv-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 22px rgba(0, 0, 0, 0.2);
+}
+
+/* ---------- 页头：一行 ---------- */
+.msv-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 36px;
+}
+.msv-head__title { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+.msv-head__title h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
+.msv-head__title span { color: var(--msv-faint); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msv-head__side { display: flex; align-items: center; gap: 8px; flex: none; }
+.msv-overall {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.msv-overall.is-good { background: var(--msv-good-soft); }
+.msv-overall.is-good i { color: var(--msv-good); }
+.msv-overall.is-warning { background: var(--msv-warning-soft); }
+.msv-overall.is-warning i { color: var(--msv-warning); }
+.msv-overall.is-critical { background: var(--msv-critical-soft); }
+.msv-overall.is-critical i { color: var(--msv-critical); }
+.msv-counts {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 4px;
+  border-radius: 10px;
+  background: var(--msv-surface);
+  border: 1px solid var(--msv-line);
+}
+.msv-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  font-size: 12px;
+  color: var(--msv-muted);
+}
+.msv-count + .msv-count { border-left: 1px solid var(--msv-line); }
+.msv-count b { color: var(--msv-text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.msv-count.is-zero,
+.msv-count.is-zero b,
+.msv-count.is-zero i { color: var(--msv-faint); }
+.msv-count.is-zero b { font-weight: 500; }
+.msv-refresh {
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid var(--msv-line);
+  background: var(--msv-surface);
+  color: var(--msv-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.msv-refresh { display: grid; place-items: center; width: 32px; padding: 0; }
+.msv-refresh:hover:not(:disabled) { color: var(--msv-text); }
+.msv-refresh:disabled { cursor: default; }
+.msv-refresh:focus-visible { outline: 2px solid var(--msv-accent); outline-offset: 2px; }
+.is-spinning { display: inline-block; animation: msv-spin 0.9s linear infinite; }
+@keyframes msv-spin { to { transform: rotate(360deg); } }
+
+/* ---------- 共用小部件 ---------- */
+/* 状态徽章：发光圆点 + 文字，正常/降级/故障带柔和呼吸光晕 */
+.msv-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--msv-tone-ink, var(--msv-muted));
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.msv-badge__dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--msv-tone, var(--msv-faint));
+  box-shadow: 0 0 0 3px var(--msv-tone-soft, transparent), 0 0 10px var(--msv-tone, transparent);
+}
+.msv-badge.is-good .msv-badge__dot::after,
+.msv-badge.is-warning .msv-badge__dot::after,
+.msv-badge.is-critical .msv-badge__dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--msv-tone);
+  animation: msv-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+.msv-badge.is-critical .msv-badge__dot::after { animation-duration: 1.3s; }
+.msv-badge.is-idle .msv-badge__dot { box-shadow: none; background: transparent; border: 1.5px solid var(--msv-faint); width: 7px; height: 7px; box-sizing: border-box; }
+@keyframes msv-ping { 75%, 100% { transform: scale(2.6); opacity: 0; } }
+
+/* 每种状态的色调变量，徽章与卡片光晕共用 */
+.msv .is-good { --msv-tone: var(--msv-good); --msv-tone-soft: var(--msv-good-soft); --msv-tone-ink: var(--msv-good-ink); }
+.msv .is-warning { --msv-tone: var(--msv-warning); --msv-tone-soft: var(--msv-warning-soft); --msv-tone-ink: var(--msv-warning-ink); }
+.msv .is-critical { --msv-tone: var(--msv-critical); --msv-tone-soft: var(--msv-critical-soft); --msv-tone-ink: var(--msv-critical-ink); }
+.msv .is-info { --msv-tone: var(--msv-info); --msv-tone-soft: var(--msv-info-soft); --msv-tone-ink: var(--msv-info); }
+
+.msv-count.is-good:not(.is-zero) i { color: var(--msv-good); }
+.msv-count.is-warning:not(.is-zero) i { color: var(--msv-warning); }
+.msv-count.is-critical:not(.is-zero) i { color: var(--msv-critical); }
+.msv-count.is-info:not(.is-zero) i { color: var(--msv-info); }
+
+.msv-hours { position: relative; display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 3px; height: 8px; }
+.msv-hours__cell { border-radius: 2px; transition: opacity 0.12s ease, transform 0.12s ease; }
+.msv-hours:hover .msv-hours__cell { opacity: 0.5; }
+.msv-hours .msv-hours__cell:hover { opacity: 1; transform: scaleY(1.6); }
+.msv-hours__cell:last-child { opacity: 0.6; }
+.msv-hours__cell.is-good, .msv-legend i.is-good { background-color: var(--msv-good); }
+.msv-hours__cell.is-warning, .msv-legend i.is-warning { background-color: var(--msv-warning); }
+.msv-hours__cell.is-critical, .msv-legend i.is-critical { background-color: var(--msv-critical); }
+.msv-hours__cell.is-idle, .msv-legend i.is-idle { background-color: var(--msv-idle); }
+
+.msv-spark { position: relative; width: 100%; }
+.msv-spark svg { display: block; width: 100%; height: 100%; overflow: visible; cursor: crosshair; }
+.msv-spark.is-empty { background: linear-gradient(to right, var(--msv-line-strong) 50%, transparent 0) center / 6px 1px repeat-x; }
+.msv-spark__stop-top { stop-color: var(--msv-series); stop-opacity: 0.28; }
+.msv-spark__stop-bottom { stop-color: var(--msv-series); stop-opacity: 0; }
+.msv-spark__line { fill: none; stroke: var(--msv-series); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.msv-spark__dot { fill: var(--msv-series); }
+.msv-spark__cross { stroke: var(--msv-faint); stroke-width: 1; stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; }
+/* 价格阶梯线：未调整时用中性色，期间调过价时用系列色 */
+.msv-price__line { fill: none; stroke: var(--msv-faint); stroke-width: 1.6; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.msv-price.is-changed .msv-price__line { stroke: var(--msv-series); }
+
+.msv-tip {
+  position: absolute;
+  bottom: calc(100% + 7px);
+  z-index: 30;
+  display: grid;
+  gap: 1px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: var(--msv-tip-bg);
+  color: var(--msv-tip-ink);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+}
+.msv-tip span { opacity: 0.72; }
+.msv-tip strong { font-weight: 600; }
+
+.msv-legend { display: inline-flex; align-items: center; gap: 12px; color: var(--msv-muted); font-size: 12px; white-space: nowrap; }
+.msv-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.msv-legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+/* ---------- 卡片墙 ---------- */
+.msg { display: grid; gap: 16px; }
+.msg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(345px, 1fr)); gap: 14px 18px; }
+.msg-card {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px 20px;
+  border-radius: 20px;
+  background: var(--msv-surface);
+  box-shadow: var(--msv-shadow);
+  overflow: hidden;
+}
+/* 异常卡片右上角一团柔和的状态色光晕，代替生硬的色条 */
+.msg-card.is-degraded { --msv-card-tone: var(--msv-warning); }
+.msg-card.is-outage { --msv-card-tone: var(--msv-critical); }
+.msg-card.is-maintenance { --msv-card-tone: var(--msv-info); }
+.msg-card.is-degraded::before,
+.msg-card.is-outage::before,
+.msg-card.is-maintenance::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -40% -20% auto auto;
+  width: 75%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--msv-card-tone) var(--msv-glow, 16%), transparent), transparent);
+  pointer-events: none;
+}
+
+.msg-card__head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.msg-card__icon { display: grid; place-items: center; }
+/* 名称与类型同一行，头部只占一行高度 */
+.msg-card__title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.msg-card__title strong {
+  font-size: 16px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-card__meta {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: var(--msv-sunken);
+  font-size: 11.5px;
+  color: var(--msv-muted);
+  white-space: nowrap;
+}
+.msg-change {
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--msv-accent-soft);
+  color: var(--msv-accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 17px;
+}
+
+/* 主数字：24 小时可用率，右侧是每小时耗时曲线 */
+/* 主数字行：左侧 24 小时可用率，右侧每小时耗时曲线 */
+.msg-card__hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42%;
+  align-items: end;
+  gap: 14px;
+  min-width: 0;
+}
+.msg-card__uptime { display: grid; gap: 2px; flex: none; }
+.msg-card__uptime strong {
+  font-size: 40px;
+  line-height: 1.05;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.msg-card__uptime strong small { margin-left: 2px; font-size: 22px; font-weight: 600; letter-spacing: 0; color: var(--msv-muted); }
+.msg-card__uptime strong.is-warning { color: var(--msv-warning-ink); }
+.msg-card__uptime strong.is-critical { color: var(--msv-critical-ink); }
+.msg-card__uptime strong.is-idle { color: var(--msv-faint); font-weight: 500; }
+.msg-card__spark { min-width: 0; }
+
+/* 三项指标压成一行小字 */
+.msg-card__stats { display: flex; justify-content: space-between; gap: 8px; min-width: 0; color: var(--msv-muted); font-size: 12px; }
+.msg-stat { white-space: nowrap; }
+.msg-stat b { margin-left: 4px; color: var(--msv-text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.msg-stat[title] { cursor: help; }
+.msg-card.is-no_data .msg-stat b { color: var(--msv-faint); font-weight: 500; }
+.msg-cap { font-size: 12px; color: var(--msv-faint); white-space: nowrap; }
+
+/* 30 天单价：每天一根柱子，今天高亮 */
+.msg-card__price { display: grid; gap: 6px; }
+.msg-card__price-head { margin-bottom: 2px; }
+.msg-card__axis { display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; color: var(--msv-faint); font-variant-numeric: tabular-nums; }
+.msg-card__price-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.msg-card__price-now { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.msg-card__price-now b { color: var(--msv-text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.msg-card__price-was { color: var(--msv-muted, #8b93a3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.msv-bars { position: relative; display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); align-items: end; gap: 3px; }
+.msv-bars__bar { border-radius: 2px 2px 1px 1px; background: var(--msv-bar); transition: opacity 0.12s ease; }
+.msv-bars__bar.is-today { background: var(--msv-bar-today); }
+.msv-bars__bar.is-empty { height: 3px; background: var(--msv-idle); opacity: 1; }
+.msv-bars:hover .msv-bars__bar:not(.is-empty) { opacity: 0.5; }
+.msv-bars .msv-bars__bar:not(.is-empty):hover { opacity: 1; }
+
+.msg-foot {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 2px;
+  color: var(--msv-faint);
+  font-size: 12px;
+}
+
+/* ---------- 底部口径、加载与错误 ---------- */
+.msv-notes {
+  display: grid;
+  gap: 3px;
+  padding: 0 2px;
+  color: var(--msv-faint);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.msv-state {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 80px 0;
+  color: var(--msv-muted);
+}
+.msv-state i { font-size: 28px; }
+.msv-state button {
+  padding: 6px 16px;
+  border-radius: 9px;
+  border: 1px solid var(--msv-line);
+  background: var(--msv-surface);
+  color: var(--msv-text);
+  font: inherit;
+  cursor: pointer;
+}
+.msv-skeleton {
+  height: 640px;
+  border-radius: 16px;
+  background: var(--msv-sunken);
+  animation: msv-pulse 1.4s ease-in-out infinite;
+}
+@keyframes msv-pulse { 50% { opacity: 0.5; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning, .msv-skeleton, .msv-badge__dot::after { animation: none; }
+}

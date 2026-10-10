@@ -1,0 +1,1744 @@
+/*
+ * 个人中心 · 换装工作台
+ * 全屏星空舞台：人物站在真实的反光地面上，控件用实色细边的小面板，不做发光胶囊。
+ */
+
+.pp-dressup-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 6, 10, 0.8);
+}
+
+.ai-cost-confirm-layer.is-elevated.pp-figure-cost {
+  z-index: 14000;
+}
+
+.pp-dressup {
+  --pc-text: #ecebf3;
+  --pc-muted: #a3a2b4;
+  --pc-faint: #6d6c80;
+  --pc-line: rgba(255, 255, 255, 0.08);
+  --pc-line-strong: rgba(255, 255, 255, 0.16);
+  --pc-accent: #f4f3f8;
+  --pc-accent-ink: #111116;
+  --pc-accent-soft: rgba(255, 255, 255, 0.06);
+  --pc-surface: #111118;
+  --pc-surface-soft: rgba(255, 255, 255, 0.035);
+  --pc-warn: #f0b27a;
+  --ds-panel: rgba(16, 16, 23, 0.94);
+  --ds-panel-edge: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --ds-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --ds-scene: #07071a;
+  --ds-scene-deep: #020209;
+  --ds-spot: rgba(150, 132, 255, 0.14);
+  position: relative;
+  width: 100vw;
+  height: 100svh;
+  overflow: hidden;
+  color: var(--pc-text);
+  background: var(--ds-scene);
+  outline: none;
+  font-feature-settings: "tnum";
+}
+
+.pp-dressup button {
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 图片组件外层自带灰底和加载闪烁；舞台上必须完全透明，否则人物身后会出现一块矩形 */
+.pp-dressup .authenticated-image {
+  background: transparent;
+  animation: none;
+}
+
+.pp-dressup button:focus {
+  outline: none;
+}
+
+.pp-dressup button:focus-visible {
+  outline: 1.5px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 2px;
+}
+
+.pp-ds-top,
+.pp-ds-dock,
+.pp-ds-spots,
+.pp-ds-drawer {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pp-ds-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ================= 场景 ================= */
+
+.pp-ds {
+  --ds-frame-top: 104px;
+  --ds-frame-bottom: 150px;
+  --ds-center: 50%;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.pp-ds.has-pop {
+  --ds-center: calc(50% - 150px);
+}
+
+.pp-ds-bg {
+  position: absolute;
+  inset: 0;
+  z-index: -3;
+  background:
+    radial-gradient(90% 80% at 50% 35%, transparent 30%, var(--ds-scene-deep) 100%),
+    var(--ds-scene);
+}
+
+.pp-ds-bg__spot {
+  position: absolute;
+  top: -10%;
+  left: calc(var(--ds-center) - 30%);
+  width: 60%;
+  height: 90%;
+  background: radial-gradient(46% 56% at 50% 34%, var(--ds-spot), transparent 72%);
+  transition: left 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.pp-ds-decor {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+}
+
+.pp-ds-nebula {
+  position: absolute;
+  inset: -10%;
+  background:
+    radial-gradient(30% 26% at 36% 28%, rgba(110, 86, 230, 0.22), transparent 70%),
+    radial-gradient(24% 22% at 64% 20%, rgba(70, 130, 230, 0.14), transparent 70%);
+  filter: blur(28px);
+  animation: pp-ds-drift 50s ease-in-out infinite alternate;
+}
+
+@keyframes pp-ds-drift {
+  to {
+    transform: translate3d(3%, -2%, 0) scale(1.06);
+  }
+}
+
+.pp-ds-starfield {
+  position: absolute;
+  inset: 0 0 30%;
+}
+
+.pp-ds-starfield i {
+  position: absolute;
+  border-radius: 50%;
+  background: #fff;
+  opacity: 0.25;
+  animation: pp-ds-twinkle 6s ease-in-out infinite;
+}
+
+@keyframes pp-ds-twinkle {
+  50% {
+    opacity: 0.8;
+  }
+}
+
+/* ---- 地面：反光地板 + 聚光灯光斑 + 脚下接触阴影 ---- */
+
+.pp-ds-floor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% - var(--ds-frame-bottom) - 70px);
+  bottom: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, transparent 0, rgba(255, 255, 255, 0.025) 70px, rgba(0, 0, 0, 0.55) 100%),
+    linear-gradient(180deg, transparent 0, #05050d 100%);
+}
+
+/* 地平线处一道很淡的亮边，让地面有「面」的感觉 */
+.pp-ds-floor::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 70px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06) 30%, rgba(255, 255, 255, 0.06) 70%, transparent);
+}
+
+/* 聚光灯落在地面上的椭圆光斑 */
+.pp-ds-floor::after {
+  content: "";
+  position: absolute;
+  top: 40px;
+  left: var(--ds-center);
+  width: min(70vh, 720px);
+  height: 150px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(200, 190, 255, 0.13), rgba(200, 190, 255, 0.04) 60%, transparent);
+  transform: translateX(-50%);
+  transition: left 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* ================= 取景框与人物 ================= */
+
+/* 取景框固定 2:3，与立绘同比例，光点百分比坐标才能落在身上 */
+.pp-ds-frame {
+  --ds-zoom: 1;
+  --ds-ox: 50%;
+  --ds-oy: 8%;
+  position: absolute;
+  top: var(--ds-frame-top);
+  bottom: var(--ds-frame-bottom);
+  left: var(--ds-center);
+  z-index: 1;
+  aspect-ratio: 2 / 3;
+  max-width: calc(100% - 64px);
+  transform: translateX(-50%);
+  transition: left 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* 脚下接触阴影 */
+.pp-ds-frame::before {
+  content: "";
+  position: absolute;
+  left: 22%;
+  right: 22%;
+  bottom: -10px;
+  height: 22px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(0, 0, 0, 0.75), transparent);
+  filter: blur(4px);
+  transition: opacity 0.3s ease;
+}
+
+.pp-ds.is-zoomed .pp-ds-frame::before {
+  opacity: 0;
+}
+
+.pp-ds-figure {
+  position: absolute;
+  inset: 0;
+  transition: filter 0.6s ease;
+}
+
+.pp-ds-figure > * {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: scale(var(--ds-zoom));
+  transform-origin: var(--ds-ox) var(--ds-oy);
+  transition: transform 0.35s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.pp-ds-figure img,
+.pp-ds-figure .authenticated-image-media,
+.pp-ds-reflect img,
+.pp-ds-reflect .authenticated-image-media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: bottom center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pp-ds-figure img,
+.pp-ds-figure .authenticated-image-media {
+  filter: drop-shadow(0 18px 30px rgba(0, 0, 0, 0.45));
+}
+
+/* 放大后底部渐隐，避免被取景框切出硬边 */
+.pp-ds.is-zoomed .pp-ds-figure > * {
+  -webkit-mask-image: linear-gradient(to bottom, #000 50%, transparent 72%);
+  mask-image: linear-gradient(to bottom, #000 50%, transparent 72%);
+}
+
+/* 地面倒影：翻转的立绘，越往下越淡 */
+.pp-ds-reflect {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 100%;
+  opacity: 0.2;
+  filter: blur(1.5px);
+  transform: scaleY(-1);
+  transform-origin: center;
+  -webkit-mask-image: linear-gradient(to top, #000 0, transparent 22%);
+  mask-image: linear-gradient(to top, #000 0, transparent 22%);
+  pointer-events: none;
+}
+
+.pp-ds-reflect > * {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.pp-ds.is-compare .pp-ds-figure > * {
+  transition: none;
+}
+
+.pp-ds.is-busy .pp-ds-figure {
+  filter: brightness(0.7) saturate(0.6);
+}
+
+.pp-ds-figure.is-after {
+  animation: pp-ds-develop 1s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes pp-ds-develop {
+  from {
+    opacity: 0;
+    filter: blur(12px) brightness(1.4);
+  }
+
+  to {
+    opacity: 1;
+    filter: none;
+  }
+}
+
+.pp-ds-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.85);
+  pointer-events: none;
+}
+
+.pp-ds-divider i {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  color: var(--pc-accent-ink);
+  background: var(--pc-accent);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  font-size: 15px;
+  transform: translate(-50%, -50%);
+}
+
+.pp-ds-range {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: ew-resize;
+}
+
+/* ================= 身上的部位点 ================= */
+
+.pp-ds-spots {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.pp-ds-spot {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--pc-text);
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+
+.pp-ds-spot.is-right {
+  flex-direction: row-reverse;
+}
+
+.pp-ds-spot > i {
+  position: relative;
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.pp-ds-spot > i::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  animation: pp-ds-ripple 2.8s ease-out infinite;
+}
+
+@keyframes pp-ds-ripple {
+  from {
+    transform: scale(0.8);
+    opacity: 0.8;
+  }
+
+  to {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+
+.pp-ds-spot > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(10, 10, 16, 0.78);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pp-ds-spot kbd {
+  color: var(--pc-faint);
+  font-family: inherit;
+  font-size: 10px;
+}
+
+.pp-ds-spot sup {
+  color: var(--pc-muted);
+  font-size: 10px;
+}
+
+.pp-ds-spot:hover > i,
+.pp-ds-spot.is-open > i,
+.pp-ds-spot.is-filled > i {
+  background: #fff;
+}
+
+.pp-ds-spot.is-open > i {
+  transform: scale(1.2);
+}
+
+.pp-ds-spots:has(.is-open) .pp-ds-spot:not(.is-open) {
+  opacity: 0.6;
+}
+
+/* ================= 右侧编辑卡片 ================= */
+
+.pp-ds-pop {
+  position: absolute;
+  top: 50%;
+  right: 32px;
+  z-index: 7;
+  display: grid;
+  gap: 14px;
+  width: 396px;
+  padding: 18px;
+  border: 1px solid var(--pc-line);
+  border-radius: 14px;
+  background: var(--ds-panel);
+  box-shadow: var(--ds-shadow), var(--ds-panel-edge);
+  transform: translateY(-50%);
+  animation: pp-ds-pop 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes pp-ds-pop {
+  from {
+    opacity: 0;
+    transform: translate(12px, -50%);
+  }
+}
+
+.pp-ds-pop__groups {
+  display: flex;
+  gap: 18px;
+  margin: -2px 0 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--pc-line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pp-ds-pop__groups button {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--pc-faint);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.pp-ds-pop__groups button:hover {
+  color: var(--pc-muted);
+}
+
+.pp-ds-pop__groups button.is-on {
+  color: var(--pc-text);
+  font-weight: 600;
+}
+
+.pp-ds-pop__groups button.is-on::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -13px;
+  height: 1px;
+  background: var(--pc-text);
+}
+
+.pp-ds-pop__groups sup {
+  margin-left: 2px;
+  color: var(--pc-muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.pp-ds-pop header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.pp-ds-pop header nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.pp-ds-pop header nav button {
+  position: relative;
+  padding: 5px 10px;
+  border: 1px solid var(--pc-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pc-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.pp-ds-pop header nav button:hover {
+  color: var(--pc-text);
+  border-color: var(--pc-line-strong);
+}
+
+.pp-ds-pop header nav button.is-on {
+  color: var(--pc-accent-ink);
+  border-color: var(--pc-accent);
+  background: var(--pc-accent);
+}
+
+.pp-ds-pop header nav button.is-filled:not(.is-on) {
+  color: var(--pc-text);
+  border-color: var(--pc-line-strong);
+}
+
+.pp-ds-pop header nav button.is-filled:not(.is-on)::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid var(--pc-surface);
+  border-radius: 50%;
+  background: var(--pc-text);
+}
+
+.pp-ds-pop header nav button.is-locked:not(.is-on) {
+  opacity: 0.4;
+}
+
+.pp-ds-pop__close {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pc-faint);
+  cursor: pointer;
+}
+
+.pp-ds-pop__close:hover {
+  color: var(--pc-text);
+  background: var(--pc-accent-soft);
+}
+
+.pp-ds-pop__hint {
+  margin: 0;
+  color: var(--pc-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pp-ds-pop__hint.is-warn {
+  color: var(--pc-warn);
+}
+
+.pp-ds-pop textarea {
+  width: 100%;
+  min-height: 92px;
+  padding: 10px 12px;
+  border: 1px solid var(--pc-line);
+  border-radius: 8px;
+  resize: none;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--pc-text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.pp-ds-pop textarea:focus {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.pp-ds-pop textarea::placeholder {
+  color: var(--pc-faint);
+}
+
+.pp-ds-pop footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pp-ds-pop footer > button {
+  padding: 6px 10px;
+  border: 1px solid var(--pc-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pc-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.pp-ds-pop footer > button:hover {
+  color: var(--pc-text);
+  border-color: var(--pc-line-strong);
+}
+
+.pp-ds-pop footer > button.is-end {
+  margin-left: auto;
+  border-color: transparent;
+}
+
+.pp-ds-ref {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border: 1px solid var(--pc-line-strong);
+  border-radius: 6px;
+}
+
+.pp-ds-ref img,
+.pp-ds-ref .authenticated-image,
+.pp-ds-ref .authenticated-image-media {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pp-ds-ref button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.65);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* ================= 生成中 ================= */
+
+.pp-ds-busy {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.pp-ds-busy__beam {
+  position: absolute;
+  left: 20%;
+  right: 20%;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
+  box-shadow: 0 0 30px 8px rgba(180, 170, 255, 0.2);
+  animation: pp-ds-sweep 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes pp-ds-sweep {
+  0% {
+    transform: translateY(8vh);
+    opacity: 0;
+  }
+
+  12%,
+  88% {
+    opacity: 1;
+  }
+
+  100% {
+    transform: translateY(80vh);
+    opacity: 0;
+  }
+}
+
+.pp-ds-busy em {
+  padding: 8px 14px;
+  border: 1px solid var(--pc-line);
+  border-radius: 8px;
+  color: var(--pc-text);
+  background: var(--ds-panel);
+  font-size: 13px;
+  font-style: normal;
+  letter-spacing: 0.08em;
+}
+
+/* ================= 顶栏 ================= */
+
+.pp-ds-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 8;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 28px 32px;
+  pointer-events: none;
+}
+
+.pp-ds-top > * {
+  pointer-events: auto;
+}
+
+.pp-ds-title .pp-ds-title__main {
+  margin: 0;
+  color: var(--pc-text);
+  font-size: 26px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+}
+
+.pp-ds-title .pp-ds-title__sub {
+  margin: 8px 0 0;
+  color: var(--pc-faint);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.pp-ds-top__tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pp-ds-seg {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 4px;
+  border: 1px solid var(--pc-line);
+  border-radius: 8px;
+  background: var(--ds-panel);
+  box-shadow: var(--ds-panel-edge);
+}
+
+.pp-ds-seg button {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--pc-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pp-ds-seg button:hover {
+  color: var(--pc-text);
+}
+
+.pp-ds-seg button.is-on {
+  color: var(--pc-text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.pp-ds-seg__zoom {
+  min-width: 48px;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid var(--pc-line);
+  color: var(--pc-faint);
+  font-size: 12px;
+  text-align: center;
+}
+
+.pp-ds-close {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--pc-line);
+  border-radius: 8px;
+  background: var(--ds-panel);
+  color: var(--pc-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.pp-ds-close:hover:not(:disabled) {
+  color: var(--pc-text);
+  border-color: var(--pc-line-strong);
+}
+
+/* ================= 抽屉（衣橱 / 灵感） ================= */
+
+.pp-ds-drawer {
+  position: absolute;
+  left: var(--ds-center);
+  bottom: 92px;
+  z-index: 8;
+  width: min(900px, calc(100% - 64px));
+  padding: 14px;
+  border: 1px solid var(--pc-line);
+  border-radius: 14px;
+  background: var(--ds-panel);
+  box-shadow: var(--ds-shadow), var(--ds-panel-edge);
+  transform: translateX(-50%);
+  animation: pp-ds-drawer 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes pp-ds-drawer {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 16px);
+  }
+}
+
+.pp-ds-drawer__empty {
+  margin: 0;
+  padding: 20px;
+  color: var(--pc-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.pp-ds-drawer__undo {
+  margin: 0 0 10px 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--pc-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pp-ds-drawer__undo:hover {
+  color: var(--pc-text);
+}
+
+.pp-ds-strip {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  list-style: none;
+  scrollbar-width: none;
+}
+
+.pp-ds-strip li {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  flex: 0 0 108px;
+}
+
+.pp-ds-strip__look {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--pc-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.pp-ds-strip__look:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.pp-ds-strip li.is-wearing .pp-ds-strip__look {
+  border-color: var(--pc-text);
+}
+
+.pp-ds-strip__look img,
+.pp-ds-strip__look .authenticated-image,
+.pp-ds-strip__look .authenticated-image-media {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: bottom center;
+}
+
+.pp-ds-strip b {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pp-ds-strip small {
+  color: var(--pc-faint);
+  font-size: 11px;
+}
+
+.pp-ds-strip__remove {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.pp-ds-strip li:hover .pp-ds-strip__remove,
+.pp-ds-strip__remove:focus-visible {
+  opacity: 1;
+}
+
+.pp-ds-strip.is-looks li {
+  flex: 0 0 150px;
+}
+
+.pp-ds-strip__preset {
+  display: grid;
+  align-content: end;
+  gap: 4px;
+  width: 100%;
+  min-height: 84px;
+  padding: 12px;
+  border: 1px solid var(--pc-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--pc-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.pp-ds-strip__preset:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.pp-ds-strip__preset b {
+  font-size: 14px;
+}
+
+/* ================= 底部操作条 ================= */
+
+.pp-ds-dock {
+  position: absolute;
+  left: var(--ds-center);
+  bottom: 28px;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100% - 48px);
+  height: 52px;
+  padding: 0 6px 0 16px;
+  border: 1px solid var(--pc-line);
+  border-radius: 12px;
+  background: var(--ds-panel);
+  box-shadow: var(--ds-shadow), var(--ds-panel-edge);
+  transform: translateX(-50%);
+  transition: left 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+  white-space: nowrap;
+}
+
+.pp-ds-dock__sep {
+  width: 1px;
+  height: 20px;
+  background: var(--pc-line);
+}
+
+.pp-ds-dock__hint {
+  color: var(--pc-faint);
+  font-size: 12px;
+}
+
+.pp-ds-worn {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pp-ds-worn button {
+  padding: 4px 8px;
+  border: 1px solid var(--pc-line-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pc-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pp-ds-worn button:hover {
+  background: var(--pc-accent-soft);
+}
+
+.pp-ds-meter {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  color: var(--pc-faint);
+  font-size: 12px;
+}
+
+.pp-ds-meter .is-full {
+  color: var(--pc-warn);
+}
+
+.pp-ds-dock > button {
+  border: 0;
+  cursor: pointer;
+  font-size: 13px;
+  transition: color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+.pp-ds-dock > button.is-text {
+  padding: 6px 8px;
+  margin: 0 -4px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pc-muted);
+}
+
+.pp-ds-dock > button.is-text:hover:not(:disabled),
+.pp-ds-dock > button.is-text.is-on {
+  color: var(--pc-text);
+  background: var(--pc-accent-soft);
+}
+
+.pp-ds-dock sup {
+  margin-left: 2px;
+  font-size: 10px;
+}
+
+.pp-ds-dock > button.is-primary {
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 8px;
+  color: var(--pc-accent-ink);
+  background: var(--pc-accent);
+  font-weight: 600;
+}
+
+.pp-ds-dock > button.is-primary:hover:not(:disabled) {
+  background: #fff;
+}
+
+.pp-ds-dock > button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ================= 资产选择 ================= */
+
+.pp-dressup__assets {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--pc-surface);
+}
+
+.pp-dressup__assets > header,
+.pp-dressup__assets > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--pc-line);
+}
+
+.pp-dressup__assets > footer {
+  border-bottom: 0;
+  border-top: 1px solid var(--pc-line);
+}
+
+.pp-dressup__assets p {
+  margin: 0;
+  color: var(--pc-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pp-dressup__assets strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 16px;
+}
+
+.pp-dressup__assets > header button {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--pc-surface-soft);
+  color: var(--pc-muted);
+  cursor: pointer;
+}
+
+.pp-dressup__assets-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.pp-dressup__assets-body > p,
+.pp-dressup__assets-empty {
+  color: var(--pc-muted);
+  font-size: 13px;
+}
+
+.pp-dressup__assets-empty {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
+.pp-dressup__assets-empty a {
+  color: var(--pc-accent);
+  font-weight: 700;
+}
+
+.pp-dressup__assets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 10px;
+}
+
+.pp-dressup__assets-grid button {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--pc-line);
+  border-radius: 16px;
+  background: var(--pc-surface-soft);
+  color: var(--pc-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pp-dressup__assets-grid .authenticated-image,
+.pp-dressup__assets-grid img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: var(--pc-surface);
+}
+
+.pp-dressup__assets-grid span {
+  display: block;
+  padding: 0 8px 8px;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pp-dressup__assets > footer button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--pc-line);
+  border-radius: 999px;
+  background: var(--pc-surface-soft);
+  color: var(--pc-text);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pp-dressup__assets {
+  z-index: 20;
+  background: var(--pc-surface);
+  color: var(--pc-text);
+}
+
+
+/* ================= 材质与光线 ================= */
+
+/*
+ * 去「塑料感」：面板不是一块纯色，而是上亮下暗的磨砂深色玻璃，
+ * 边框用上亮下暗的渐变描边，顶部一道内高光，底部压一层长投影。
+ */
+.pp-ds-pop,
+.pp-ds-dock,
+.pp-ds-drawer,
+.pp-ds-seg,
+.pp-ds-close {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, rgba(34, 33, 48, 0.72), rgba(12, 12, 18, 0.86)) padding-box,
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.04) 40%, rgba(255, 255, 255, 0.02)) border-box;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 1px 1px rgba(0, 0, 0, 0.4),
+    0 28px 60px -18px rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(22px) saturate(1.4);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+}
+
+.pp-ds-pop {
+  border-radius: 16px;
+}
+
+.pp-ds-dock {
+  border-radius: 14px;
+}
+
+/* 主按钮：有高光和下沿阴影的实体按键，而不是一块平色 */
+.pp-ds-dock > button.is-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #15141c;
+  background: linear-gradient(180deg, #ffffff 0%, #e7e5f0 55%, #d6d3e3 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    inset 0 -1px 0 rgba(0, 0, 0, 0.16),
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 10px 24px -8px rgba(0, 0, 0, 0.7);
+  letter-spacing: 0.02em;
+  transition: filter 0.15s ease, transform 0.1s ease;
+}
+
+.pp-ds-dock > button.is-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #efedf6 55%, #dedbea 100%);
+  filter: brightness(1.03);
+}
+
+.pp-ds-dock > button.is-primary:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.2),
+    0 1px 1px rgba(0, 0, 0, 0.4);
+}
+
+.pp-ds-dock > button.is-primary:disabled {
+  color: rgba(21, 20, 28, 0.55);
+  background: linear-gradient(180deg, #8f8d9c, #6f6d7c);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  opacity: 0.55;
+}
+
+.pp-ds-dock > button.is-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pp-ds-dock > button i {
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.pp-ds-dock__sep {
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.14), transparent);
+}
+
+/* 等宽数字：计数、缩放比例 */
+.pp-ds-meter,
+.pp-ds-seg__zoom {
+  font-family: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+/* 取景切换：选中块会滑动 */
+.pp-ds-seg {
+  position: relative;
+  padding: 0 3px;
+  border-radius: 10px;
+}
+
+.pp-ds-seg button {
+  position: relative;
+  z-index: 1;
+  width: 48px;
+  padding: 0;
+  text-align: center;
+}
+
+.pp-ds-seg button.is-on {
+  background: transparent;
+}
+
+.pp-ds-seg__thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 48px;
+  height: 26px;
+  border-radius: 7px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.08));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 1px 3px rgba(0, 0, 0, 0.5);
+  transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.2, 1), opacity 0.2s ease;
+}
+
+.pp-ds-seg[data-active="1"] .pp-ds-seg__thumb {
+  transform: translateX(48px);
+}
+
+.pp-ds-seg[data-active="none"] .pp-ds-seg__thumb {
+  opacity: 0;
+}
+
+.pp-ds-close {
+  border-radius: 10px;
+}
+
+/* 标题：英文小字 + 细体大字 */
+.pp-ds-title .pp-ds-title__over {
+  margin: 0 0 10px;
+  color: var(--pc-faint);
+  font-size: 10px;
+  letter-spacing: 0.34em;
+}
+
+.pp-ds-title .pp-ds-title__main {
+  font-size: 28px;
+  font-weight: 300;
+  letter-spacing: 0.1em;
+  background: linear-gradient(180deg, #ffffff, #b9b6cc);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* 卡片内部：输入框是凹进去的，选中的部位是凸起的小按键 */
+.pp-ds-pop textarea {
+  border-color: rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.32);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.pp-ds-pop textarea:focus {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.pp-ds-pop header nav button,
+.pp-ds-pop footer > button:not(.is-end) {
+  border-color: rgba(255, 255, 255, 0.07);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.pp-ds-pop header nav button.is-on {
+  color: #15141c;
+  border-color: transparent;
+  background: linear-gradient(180deg, #ffffff, #dcd9e6);
+  box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* ---- 光线：头顶聚光灯光束 + 光束里的尘粒 ---- */
+
+/* 裁形状放在子层、模糊放在父层：clip-path 先生效再模糊，光束边缘才是柔的 */
+.pp-ds-beam {
+  position: absolute;
+  top: -4%;
+  left: calc(var(--ds-center) - 22%);
+  width: 44%;
+  height: 92%;
+  filter: blur(34px);
+  mix-blend-mode: screen;
+  transition: left 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.pp-ds-beam::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(210, 200, 255, 0.2), rgba(180, 170, 240, 0.06) 60%, transparent 94%);
+  clip-path: polygon(42% 0, 58% 0, 92% 100%, 8% 100%);
+}
+
+.pp-ds-dust {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--ds-center) - 50%);
+  width: 100%;
+  transition: left 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.pp-ds-dust i {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(235, 230, 255, 0.9);
+  box-shadow: 0 0 4px rgba(235, 230, 255, 0.6);
+  opacity: 0;
+  animation: pp-ds-dust linear infinite;
+}
+
+@keyframes pp-ds-dust {
+  0% {
+    transform: translate(0, 0);
+    opacity: 0;
+  }
+
+  20% {
+    opacity: 0.55;
+  }
+
+  80% {
+    opacity: 0.4;
+  }
+
+  100% {
+    transform: translate(18px, -160px);
+    opacity: 0;
+  }
+}
+
+/* 地面薄雾 */
+.pp-ds-haze {
+  position: absolute;
+  left: -10%;
+  right: -10%;
+  bottom: calc(var(--ds-frame-bottom) - 70px);
+  z-index: 2;
+  height: 150px;
+  background:
+    radial-gradient(40% 50% at 35% 55%, rgba(170, 160, 220, 0.09), transparent 70%),
+    radial-gradient(40% 50% at 68% 45%, rgba(150, 150, 210, 0.08), transparent 70%);
+  filter: blur(18px);
+  pointer-events: none;
+  animation: pp-ds-haze 26s ease-in-out infinite alternate;
+}
+
+@keyframes pp-ds-haze {
+  to {
+    transform: translateX(4%);
+  }
+}
+
+/* 人物轮廓光：与场景同色的边缘光，让人物融进光里 */
+.pp-ds-figure img,
+.pp-ds-figure .authenticated-image-media {
+  filter:
+    drop-shadow(0 0 1px rgba(210, 200, 255, 0.35))
+    drop-shadow(-4px -6px 18px rgba(140, 120, 255, 0.16))
+    drop-shadow(0 22px 30px rgba(0, 0, 0, 0.5));
+}
+
+/* 胶片颗粒：整屏一层很淡的噪点，去掉 CG 的「干净感」 */
+.pp-ds-grain {
+  position: absolute;
+  inset: -50%;
+  z-index: 30;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  opacity: 0.07;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+  animation: pp-ds-grain 0.9s steps(4) infinite;
+}
+
+@keyframes pp-ds-grain {
+  25% {
+    transform: translate(-3%, 2%);
+  }
+
+  50% {
+    transform: translate(2%, -3%);
+  }
+
+  75% {
+    transform: translate(-1%, 3%);
+  }
+}
+
+/* 部位点：细准星 + 无底标签，像取景器里的标注 */
+.pp-ds-spot > span {
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  background: rgba(8, 8, 12, 0.62);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+
+/* 保存中：只是一行轻提示，不压暗人物 */
+.pp-ds-busy.is-saving {
+  place-items: end center;
+  padding-bottom: 104px;
+}
+
+.pp-ds.is-busy:has(.pp-ds-busy.is-saving) .pp-ds-figure {
+  filter: none;
+}
+
+/* 生成失败等提示：操作条上方一行，可关闭 */
+.pp-ds-notice {
+  position: absolute;
+  left: var(--ds-center);
+  bottom: 96px;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(560px, calc(100% - 32px));
+  padding: 8px 8px 8px 12px;
+  border: 1px solid rgba(240, 178, 122, 0.3);
+  border-radius: 10px;
+  color: var(--pc-warn);
+  background: rgba(40, 26, 14, 0.85);
+  box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.7);
+  font-size: 12px;
+  transform: translateX(-50%);
+  animation: pp-ds-drawer 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.pp-ds-notice span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pp-ds-notice button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.pp-ds-notice button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pp-ds.has-drawer .pp-ds-notice {
+  display: none;
+}
+
+/* 按住看原图：新造型淡出露出原图 */
+.pp-ds-figure.is-after {
+  transition: opacity 0.18s ease, filter 0.6s ease;
+}
+
+.pp-ds-figure.is-after.is-hidden {
+  opacity: 0;
+}
+
+.pp-ds-peek-tag {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 6;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  color: var(--pc-text);
+  background: rgba(8, 8, 12, 0.7);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.pp-ds-dock > button.pp-ds-peek {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ================= 移动端 ================= */
+
+@media (max-width: 900px) {
+  .pp-ds,
+  .pp-ds.has-pop {
+    --ds-center: 50%;
+    --ds-frame-top: 124px;
+    --ds-frame-bottom: 150px;
+  }
+
+  .pp-ds-top {
+    flex-direction: column;
+    gap: 12px;
+    padding: 18px 16px;
+  }
+
+  .pp-ds-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+  }
+
+  .pp-ds-title .pp-ds-title__main {
+    font-size: 20px;
+  }
+
+  .pp-ds-title .pp-ds-title__sub {
+    margin-top: 4px;
+  }
+
+  .pp-ds-spot kbd {
+    display: none;
+  }
+
+  .pp-ds-pop {
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: 80px;
+    width: auto;
+    max-height: 52svh;
+    overflow: auto;
+    transform: none;
+    animation-name: pp-ds-sheet;
+  }
+
+  .pp-ds-dock {
+    left: 12px;
+    right: 12px;
+    bottom: 14px;
+    gap: 10px;
+    max-width: none;
+    transform: none;
+  }
+
+  .pp-ds-worn,
+  .pp-ds-dock__sep,
+  .pp-ds-meter > span:last-child,
+  .pp-ds-dock__hint {
+    display: none;
+  }
+
+  .pp-ds-meter {
+    margin-right: auto;
+  }
+
+  .pp-ds-dock > button.is-primary {
+    height: 38px;
+    padding: 0 16px;
+  }
+
+  .pp-ds-drawer {
+    bottom: 80px;
+    width: calc(100% - 24px);
+  }
+}
+
+@keyframes pp-ds-sheet {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pp-ds *,
+  .pp-ds *::before,
+  .pp-ds *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

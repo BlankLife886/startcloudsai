@@ -9,11 +9,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const announcementCols = `id, title, body, active, starts_at, ends_at, config, created_at`
+const announcementCols = `id, title, body, active, starts_at, ends_at, config, created_at, push_id, pushed_at`
 
 func scanAnnouncement(row pgx.Row) (*Announcement, error) {
 	var a Announcement
-	err := row.Scan(&a.ID, &a.Title, &a.Body, &a.Active, &a.StartsAt, &a.EndsAt, &a.Config, &a.CreatedAt)
+	err := row.Scan(&a.ID, &a.Title, &a.Body, &a.Active, &a.StartsAt, &a.EndsAt, &a.Config, &a.CreatedAt, &a.PushID, &a.PushedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -44,6 +44,13 @@ func DeleteAnnouncement(ctx context.Context, q Q, id uuid.UUID) error {
 	return err
 }
 
+func PushActiveAnnouncement(ctx context.Context, q Q, id, pushID uuid.UUID, pushedAt time.Time) (*Announcement, error) {
+	return scanAnnouncement(q.QueryRow(ctx, `UPDATE announcements SET push_id=$2, pushed_at=$3
+		WHERE id=$1 AND active=true AND (starts_at IS NULL OR starts_at <= $3)
+		AND (ends_at IS NULL OR ends_at >= $3) RETURNING `+announcementCols,
+		id, pushID, pushedAt))
+}
+
 // ListAnnouncements activeAt 非 nil 时只取生效中的公告。
 func ListAnnouncements(ctx context.Context, q Q, activeAt *time.Time) ([]*Announcement, error) {
 	sql := `SELECT ` + announcementCols + ` FROM announcements`
@@ -52,8 +59,33 @@ func ListAnnouncements(ctx context.Context, q Q, activeAt *time.Time) ([]*Announ
 		args = append(args, *activeAt)
 		sql += ` WHERE active = true AND (starts_at IS NULL OR starts_at <= $1) AND (ends_at IS NULL OR ends_at >= $1)`
 	}
-	sql += ` ORDER BY created_at DESC`
+	if activeAt != nil {
+		sql += ` ORDER BY GREATEST(created_at, COALESCE(pushed_at, created_at)) DESC, created_at DESC, id DESC`
+	} else {
+		sql += ` ORDER BY created_at DESC, id DESC`
+	}
 	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Announcement
+	for rows.Next() {
+		a, err := scanAnnouncement(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ListAnnouncementHistory 用户端公告记录：已上线（启用且已到开始时间）的公告，含已过期的，按上线时间倒序。
+func ListAnnouncementHistory(ctx context.Context, q Q, now time.Time, limit int) ([]*Announcement, error) {
+	rows, err := q.Query(ctx, `SELECT `+announcementCols+` FROM announcements
+		WHERE active = true AND (starts_at IS NULL OR starts_at <= $1)
+		ORDER BY COALESCE(starts_at, created_at) DESC, created_at DESC, id DESC
+		LIMIT $2`, now, limit)
 	if err != nil {
 		return nil, err
 	}

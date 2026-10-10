@@ -6,19 +6,24 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/imageslots"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/pricerules"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
 func (s *Server) pricing(c *gin.Context) {
+	if !s.enforceUsageLimit(c, "public-pricing-minute", c.ClientIP(), publicMetadataPerMinute, 1, time.Minute) {
+		return
+	}
 	ctx := c.Request.Context()
 	legacyPrices, _, err := settings.TaskPrices(ctx, s.St.Pool)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	modelCfg, err := modelconfig.Load(ctx, s.St.Pool)
+	modelCfg, err := pricerules.LoadSiteConfig(ctx, s.St.Pool, time.Now())
 	if err != nil {
 		fail(c, err)
 		return
@@ -28,109 +33,262 @@ func (s *Server) pricing(c *gin.Context) {
 	for taskType, priceRange := range priceRanges {
 		pointRanges[taskType] = gin.H{"minPoints": priceRange.MinCents, "maxPoints": priceRange.MaxCents}
 	}
-	freeDaily, err := settings.GetInt(ctx, s.St.Pool, "free_daily_cents")
-	if err != nil {
-		fail(c, err)
-		return
-	}
 	ok(c, gin.H{
-		"taskPointPrices": prices, "taskPointPriceRanges": pointRanges, "freeDailyPoints": freeDaily,
+		"taskPointPrices": prices, "taskPointPriceRanges": pointRanges,
 		// Legacy aliases remain until older clients stop reading the historical Cents names.
-		"taskPrices": prices, "taskPriceRanges": priceRanges, "freeDailyCents": freeDaily,
+		"taskPrices": prices, "taskPriceRanges": priceRanges,
 	})
 }
 
 func (s *Server) runtimeConfig(c *gin.Context) {
-	cfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
+	c.Header("Cache-Control", "no-store")
+	if !s.enforceUsageLimit(c, "public-runtime-minute", c.ClientIP(), publicMetadataPerMinute, 1, time.Minute) {
+		return
+	}
+	ctx := c.Request.Context()
+	pageControls, err := s.resolvePageControls(ctx)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	// Site prices follow the dynamic-pricing rules in force now (Beijing
+	// time); nextChangeAt tells clients when to fetch prices again.
+	site, err := pricerules.LoadSite(ctx, s.St.Pool, time.Now())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	cfg := site.Config
+	decorate := func(item gin.H, modelID string) gin.H {
+		for key, value := range sitePricingMeta(site, modelID) {
+			item[key] = value
+		}
+		return item
+	}
+	unavailableResolutions, err := imageslots.UnavailableResolutions(ctx, s.St.Pool, cfg)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	allModels := modelconfig.PublicModels(cfg, "")
 	allImageModels := make([]gin.H, 0)
+	backgroundRemovalModels := make([]gin.H, 0)
+	mediaTools := make([]gin.H, 0)
 	catalogModels := make([]gin.H, 0, len(allModels))
-	providerModels := make(map[string][]gin.H)
-	imageItem := func(selection modelconfig.Selection, isDefault bool) gin.H {
+	imageItem := func(selection modelconfig.Selection, isDefault bool, workspace string) gin.H {
+		model := selection.Model
+		price := modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
+		low, high := modelconfig.WorkspacePriceBounds(cfg, workspace, model)
+		if modelconfig.HasImagePricing(model) {
+			// Tiered models list from their cheapest cell; the exact price
+			// comes from the quote for the chosen resolution and quality.
+			price = modelconfig.ResolvedWorkspacePrice{PriceCents: low, EffectiveCents: low}
+		}
+		return decorate(gin.H{
+			"imagePricing": modelconfig.PublicImagePricing(model), "defaultQuality": modelconfig.DefaultImageQuality(model),
+			"unavailableResolutions": nonNilStrings(unavailableResolutions[model.ID]),
+			"minPricePoints":         low, "maxPricePoints": high,
+			"id": model.ID, "publicModelKey": model.ID, "label": model.Name, "name": model.Name,
+			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
+			"kind":         model.Kind,
+			"description":  model.Description,
+			"capabilities": []string{"textToImage", "imageToImage", "image.generate", "image.edit"},
+			"billingMode":  "wallet", "creditCost": price.EffectiveCents,
+			"pricePoints": price.EffectiveCents, "priceCents": price.EffectiveCents,
+			"standardPricePoints": price.PriceCents, "discountPricePoints": price.DiscountPriceCents,
+			"workspacePriceOverridden": price.Overridden,
+			"default":                  isDefault, "fastMode": model.FastMode, "resolutions": model.Resolutions,
+			"aspectRatios": model.AspectRatios, "aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
+			"supportsExactSize": model.SupportsExactSize, "exactSizeLimits": model.ExactSizeRules(),
+			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
+			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages, "promptMaxChars": model.PromptMaxChars, "requiresReference": modelconfig.CRUNRequiresReference(model), "skillsDisabled": model.SkillsDisabled,
+			"maxImages": model.GenerationMaxImages(),
+		}, model.ID)
+	}
+	chatItem := func(selection modelconfig.Selection, isDefault bool, workspace string) gin.H {
+		model := selection.Model
+		price := modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
+		reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems := reasoningModelPayload(model, &cfg)
+		return decorate(gin.H{
+			"id": model.ID, "model": model.ID, "label": model.Name, "name": model.Name,
+			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
+			"kind":        model.Kind,
+			"description": model.Description,
+			"pricePoints": price.EffectiveCents, "standardPricePoints": price.PriceCents,
+			"discountPricePoints": price.DiscountPriceCents, "workspacePriceOverridden": price.Overridden,
+			"default":                   isDefault,
+			"supportedReasoningEfforts": reasoningEfforts, "defaultReasoningEffort": defaultReasoningEffort,
+			"reasoningPrices": reasoningPrices, "reasoningEfforts": reasoningEffortItems,
+		}, model.ID)
+	}
+	toolItem := func(selection modelconfig.Selection) gin.H {
 		model := selection.Model
 		price := modelconfig.EffectivePrice(model)
-		return gin.H{
+		item := gin.H{
 			"id": model.ID, "publicModelKey": model.ID, "label": model.Name, "name": model.Name,
-			"description": model.Description, "provider": selection.Provider.ID,
-			"providerId": selection.Provider.ID, "providerName": selection.Provider.Name,
-			"capabilities": []string{"textToImage", "imageToImage", "image.generate", "image.edit"},
-			"billingMode":  "wallet", "creditCost": price, "pricePoints": price, "priceCents": price,
-			"standardPricePoints": model.PriceCents, "discountPricePoints": model.DiscountPriceCents,
-			"default": isDefault, "fastMode": model.FastMode, "resolutions": model.Resolutions,
-			"aspectRatios": model.AspectRatios, "aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
-			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
-			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
+			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
+			"description": model.Description, "tool": model.Tool,
+			"pricePoints": price, "standardPricePoints": model.PriceCents,
+			"discountPricePoints": model.DiscountPriceCents, "default": model.Default,
+			"modality": model.Modality, "operations": model.Operations,
+			"inputFields":         model.UpstreamInputFields,
+			"requiredInputFields": model.UpstreamRequiredInputFields,
+			"inputSchema":         model.UpstreamInputSchema,
 		}
+		if pricing := model.ImageUpscalePricing; pricing != nil && model.Tool == modelconfig.ImageToolUpscale {
+			highPrice := pricing.HighPriceCents
+			if pricing.HighDiscountPriceCents != nil {
+				highPrice = *pricing.HighDiscountPriceCents
+			}
+			item["imageUpscalePricing"] = gin.H{
+				"thresholdPixels":         pricing.ThresholdPixels,
+				"lowStandardPricePoints":  model.PriceCents,
+				"lowDiscountPricePoints":  model.DiscountPriceCents,
+				"lowPricePoints":          price,
+				"highStandardPricePoints": pricing.HighPriceCents,
+				"highDiscountPricePoints": pricing.HighDiscountPriceCents,
+				"highPricePoints":         highPrice,
+			}
+		}
+		return decorate(item, model.ID)
 	}
 	for _, selection := range allModels {
 		model := selection.Model
+		if model.Kind == modelconfig.ModelKindImageTool {
+			if model.Tool == modelconfig.ImageToolBackgroundRemove {
+				backgroundRemovalModels = append(backgroundRemovalModels, toolItem(selection))
+			} else {
+				mediaTools = append(mediaTools, toolItem(selection))
+			}
+			continue
+		}
 		capabilities := []string{"text.chat", "text.analysis", "image.understand"}
 		if model.Kind == modelconfig.ModelKindImage {
 			capabilities = []string{"textToImage", "imageToImage", "image.generate", "image.edit"}
 		}
 		price := modelconfig.EffectivePrice(model)
+		low, high := modelconfig.ImagePriceBounds(model)
 		item := gin.H{
+			"imagePricing": modelconfig.PublicImagePricing(model), "minPricePoints": low, "maxPricePoints": high,
 			"id": model.ID, "label": model.Name, "name": model.Name,
-			"provider": selection.Provider.ID, "providerId": selection.Provider.ID,
-			"providerName": selection.Provider.Name,
-			"kind":         model.Kind, "description": model.Description, "capabilities": capabilities,
+			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
+			"kind": model.Kind, "tool": model.Tool, "description": model.Description, "capabilities": capabilities,
 			"adapterReady": true, "default": model.Default, "fastMode": model.FastMode,
 			"resolutions": model.Resolutions, "aspectRatios": model.AspectRatios,
 			"aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
+			"supportsExactSize": model.SupportsExactSize, "exactSizeLimits": model.ExactSizeRules(),
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
-			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
+			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages, "promptMaxChars": model.PromptMaxChars, "requiresReference": modelconfig.CRUNRequiresReference(model), "skillsDisabled": model.SkillsDisabled,
+			"maxImages": model.GenerationMaxImages(),
 			"pricing": gin.H{
 				"points": price, "cents": price, "standardPoints": model.PriceCents,
 				"discountPoints": model.DiscountPriceCents,
-				"unit":           map[bool]string{true: "image", false: "token"}[model.Kind == modelconfig.ModelKindImage],
+				"unit":           map[bool]string{true: "image", false: "token"}[model.Kind != modelconfig.ModelKindChat],
 			},
 		}
-		catalogModels = append(catalogModels, item)
-		providerModels[selection.Provider.ID] = append(providerModels[selection.Provider.ID], item)
+		catalogModels = append(catalogModels, decorate(item, model.ID))
 		if model.Kind == modelconfig.ModelKindImage {
-			allImageModels = append(allImageModels, imageItem(selection, model.Default))
+			allImageModels = append(allImageModels, imageItem(selection, model.Default, ""))
 		}
-	}
-	providers := make([]gin.H, 0, len(cfg.Providers))
-	for _, provider := range cfg.Providers {
-		if !provider.Enabled || len(providerModels[provider.ID]) == 0 {
-			continue
-		}
-		providers = append(providers, gin.H{
-			"id": provider.ID, "label": provider.Name, "adapter": provider.Adapter,
-			"note": "由后台统一连接", "models": providerModels[provider.ID],
-		})
 	}
 	workspaceImageModels := func(workspace string) []gin.H {
 		selections := modelconfig.PublicModelsForWorkspace(cfg, workspace, modelconfig.ModelKindImage)
 		items := make([]gin.H, 0, len(selections))
-		for index, selection := range selections {
-			items = append(items, imageItem(selection, index == 0))
+		defaultAssigned := false
+		for _, selection := range selections {
+			isDefault := !defaultAssigned && selection.Model.Available()
+			items = append(items, imageItem(selection, isDefault, workspace))
+			defaultAssigned = defaultAssigned || isDefault
 		}
 		return items
 	}
+	workspaceChatModels := func(workspace string) []gin.H {
+		selections := modelconfig.PublicModelsForWorkspace(cfg, workspace, modelconfig.ModelKindChat)
+		if workspace == modelconfig.WorkspaceUIDesign && len(selections) == 0 {
+			selections = modelconfig.PublicModelsForWorkspace(cfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindChat)
+		}
+		items := make([]gin.H, 0, len(selections))
+		defaultAssigned := false
+		for _, selection := range selections {
+			isDefault := !defaultAssigned && selection.Model.Available()
+			items = append(items, chatItem(selection, isDefault, workspace))
+			defaultAssigned = defaultAssigned || isDefault
+		}
+		return items
+	}
+	canvasImageModels := workspaceImageModels(modelconfig.WorkspaceCanvas)
+	canvasTextModels := workspaceChatModels(modelconfig.WorkspaceCanvas)
+	assistantImageModels := workspaceImageModels(modelconfig.WorkspaceAssistant)
+	assistantTextModels := workspaceChatModels(modelconfig.WorkspaceAssistant)
 	features := gin.H{
-		"ai.wallpaperGeneration":  gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
+		"ai.assistant": gin.H{"enabled": len(assistantImageModels)+len(assistantTextModels) > 0, "config": gin.H{
+			"imageModels": assistantImageModels,
+			"textModels":  assistantTextModels,
+		}},
+		"ai.imageTools": gin.H{"enabled": len(backgroundRemovalModels) > 0, "config": gin.H{"backgroundRemovalModels": backgroundRemovalModels}},
+		"ai.mediaTools": gin.H{"enabled": len(mediaTools) > 0, "config": gin.H{"tools": mediaTools}},
+		"ai.wallpaperGeneration": gin.H{"enabled": true, "config": gin.H{
+			"publicModels":         workspaceImageModels(modelconfig.WorkspaceT2I),
+			"profileFigureModelId": cfg.Workspaces[modelconfig.WorkspaceT2I].ProfileFigureModelID,
+			"profileFigurePrompt":  modelconfig.ProfileFigurePrompt(cfg),
+			"profileOutfitPrompt":  modelconfig.ProfileOutfitPrompt(cfg),
+		}},
 		"wallpaper":               gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
 		"ai.illustrationColoring": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceColoring)}},
-		"ai.uiDesign":             gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceUIDesign)}},
-		"ai.ultraModelSheet":      gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceModelSheet)}},
-		"ai.gameDesign":           gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceGameArt)}},
-		"ai.optimize":             gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
-		"ai.puzzle":               gin.H{"enabled": true, "config": gin.H{"publicModels": allImageModels}},
+		"ai.uiDesign": gin.H{"enabled": true, "config": gin.H{
+			"publicModels":   workspaceImageModels(modelconfig.WorkspaceUIDesign),
+			"analysisModels": workspaceChatModels(modelconfig.WorkspaceUIDesign),
+		}},
+		"ai.ecommerceDesign": gin.H{"enabled": true, "config": gin.H{
+			"publicModels":   workspaceImageModels(modelconfig.WorkspaceEcommerce),
+			"analysisModels": workspaceChatModels(modelconfig.WorkspaceEcommerce),
+		}},
+		"ai.ultraModelSheet": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceModelSheet)}},
+		"ai.gameDesign":      gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceGameArt)}},
+		"ai.optimize":        gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
+		"ai.puzzle":          gin.H{"enabled": true, "config": gin.H{"publicModels": allImageModels}},
+		"ai.infiniteCanvas": gin.H{"enabled": len(canvasImageModels)+len(canvasTextModels) > 0, "config": gin.H{
+			"imageModels":   canvasImageModels,
+			"textModels":    canvasTextModels,
+			"batchMaxCount": settings.ResolveCanvasBatchMaxCount(ctx, s.St.Pool),
+		}},
 	}
 	ok(c, gin.H{
-		"routes": gin.H{}, "features": features, "pageLayout": gin.H{},
+		"routes": gin.H{}, "features": features, "pageLayout": gin.H{}, "pageControls": pageControls,
+		"promptInputLimits": settings.ResolvePromptInputLimits(ctx, s.St.Pool),
 		"aiModelCatalog": gin.H{
-			"providers": providers, "models": catalogModels, "publicModels": allImageModels,
+			"providers": []any{}, "models": catalogModels, "publicModels": allImageModels,
 			"featurePublicModels": []any{}, "updatedAt": time.Now().UTC().Format(time.RFC3339),
 		},
 		"blacklist": gin.H{"blocked": false, "reason": ""}, "mqtt": nil,
+		"priceSchedule": gin.H{"timezone": "Asia/Shanghai", "nextChangeAt": optionalTime(site.NextChange)},
 	})
+}
+
+// sitePricingMeta tells the client why a model's price differs from usual:
+// the dynamic-pricing rule in force and the subscriber discount.
+func sitePricingMeta(site pricerules.SitePricing, modelID string) gin.H {
+	meta := gin.H{"priceAdjustment": nil, "subscriberDiscount": nil}
+	if active, ok := site.Active[modelID]; ok {
+		meta["priceAdjustment"] = gin.H{
+			"ruleName": active.RuleName, "kind": active.Kind,
+			"mode": active.Adjustment.Mode, "value": active.Adjustment.Value,
+			"endsAt": active.EndsAt.UTC().Format(time.RFC3339),
+		}
+	}
+	if site.Schedule.Subscriber.Enabled {
+		if discount, ok := site.Schedule.Subscriber.Models[modelID]; ok && discount.Value > 0 {
+			meta["subscriberDiscount"] = gin.H{"mode": discount.Mode, "value": discount.Value}
+		}
+	}
+	return meta
+}
+
+func optionalTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func (s *Server) metaChangelog(c *gin.Context) {
@@ -144,6 +302,19 @@ func (s *Server) metaChangelog(c *gin.Context) {
 		items = append(items, changelogDict(entry))
 	}
 	ok(c, gin.H{"items": items})
+}
+
+func (s *Server) metaChangelogLatest(c *gin.Context) {
+	entry, err := store.LatestChangelog(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if entry == nil {
+		ok(c, nil)
+		return
+	}
+	ok(c, changelogDict(entry))
 }
 
 func (s *Server) metaAnnouncements(c *gin.Context) {
@@ -160,8 +331,30 @@ func (s *Server) metaAnnouncements(c *gin.Context) {
 	ok(c, gin.H{"items": items})
 }
 
+const announcementHistoryLimit = 50
+
+// metaAnnouncementHistory 公告记录：过期公告也保留，供用户端公告中心回看。
+func (s *Server) metaAnnouncementHistory(c *gin.Context) {
+	if !s.enforceUsageLimit(c, "public-announcement-history-minute", c.ClientIP(), publicMetadataPerMinute, 1, time.Minute) {
+		return
+	}
+	rows, err := store.ListAnnouncementHistory(c.Request.Context(), s.St.Pool, time.Now().UTC(), announcementHistoryLimit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, a := range rows {
+		items = append(items, announcementDict(a))
+	}
+	ok(c, gin.H{"items": items})
+}
+
 // health H3：db + redis 连通性检查，任一失败返回 503（compose healthcheck 在用）。
 func (s *Server) health(c *gin.Context) {
+	if !s.enforceUsageLimit(c, "public-health-minute", c.ClientIP(), publicMetadataPerMinute, 1, time.Minute) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 	defer cancel()
 

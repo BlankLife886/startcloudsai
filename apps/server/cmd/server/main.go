@@ -19,11 +19,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/apicatalog"
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/diagnostics"
 	"github.com/BlankLife886/startcloudsai/server/internal/httpapi"
+	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -36,6 +38,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: server <serve|worker|create-admin> [flags]")
 		os.Exit(2)
 	}
+	platformlog.ConfigureConsole(os.Args[1])
 	cfg := config.Load()
 
 	var err error
@@ -44,10 +47,18 @@ func main() {
 		err = runServe(cfg)
 	case "worker":
 		err = runWorker(cfg)
+	case "check-worker":
+		err = checkWorker(cfg)
 	case "create-admin":
 		err = runCreateAdmin(cfg, os.Args[2:])
+	case "seed":
+		err = runSeed(cfg)
+	case "api-models-migrate":
+		err = runAPIModelsMigrate(cfg, os.Args[2:])
+	case "model-smoke":
+		err = runModelSmoke(cfg, os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: server <serve|worker|create-admin> [flags]\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: server <serve|worker|create-admin|seed|api-models-migrate|model-smoke> [flags]\n", os.Args[1])
 		os.Exit(2)
 	}
 	if err != nil {
@@ -55,7 +66,27 @@ func main() {
 	}
 }
 
-func runServe(cfg *config.Config) error {
+func seedBuiltinContent(ctx context.Context, st *store.Store) error {
+	seededTemplates, err := store.SeedDefaultCanvasWorkflowTemplates(ctx, st)
+	if err != nil {
+		return err
+	}
+	if seededTemplates > 0 {
+		log.Printf("seeded %d default canvas workflow templates", seededTemplates)
+	}
+	seededChangelog, err := store.SeedDefaultChangelogEntries(ctx, st)
+	if err != nil {
+		return err
+	}
+	if seededChangelog > 0 {
+		log.Printf("seeded %d changelog entries", seededChangelog)
+	} else {
+		log.Printf("changelog seed skipped or already applied")
+	}
+	return nil
+}
+
+func runSeed(cfg *config.Config) error {
 	if err := store.Migrate(cfg.DatabaseURL); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
@@ -65,6 +96,85 @@ func runServe(cfg *config.Config) error {
 		return err
 	}
 	defer st.Close()
+	return seedBuiltinContent(ctx, st)
+}
+
+// runAPIModelsMigrate builds the developer API model catalog from today's /v1
+// behaviour. Without --apply it only prints the report and changes nothing
+// (it does not even run schema migrations); with --apply it runs migrations
+// and writes the catalog, Key mappings and subscription policies at once.
+func runAPIModelsMigrate(cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("api-models-migrate", flag.ExitOnError)
+	apply := fs.Bool("apply", false, "写入目录（默认只输出迁移报告）")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *apply {
+		// Stop before the legacy Key allowlist column is dropped; the next
+		// serve start migrates the rest.
+		if err := store.MigrateTo(cfg.DatabaseURL, apicatalog.BackfillSchemaVersion); err != nil {
+			return fmt.Errorf("run migrations: %w", err)
+		}
+	}
+	ctx := context.Background()
+	st, err := newStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	tx, err := st.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	in, err := apicatalog.LoadMigrationInput(ctx, tx)
+	if err != nil {
+		return err
+	}
+	modelCfg := in.Config
+	now := time.Now()
+	plan := apicatalog.BuildPlan(in, now)
+	fmt.Print(plan.Report(modelCfg))
+	if !*apply {
+		fmt.Println("\n（演练模式，未写入任何数据；确认后加 --apply 执行）")
+		return nil
+	}
+	if err := apicatalog.Apply(ctx, tx, modelCfg, plan, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("\n已写入 %d 个 API 模型，改写 %d 把 Key、%d 份订阅策略\n", len(plan.Entries), len(plan.Keys), len(plan.Policies))
+	return nil
+}
+
+func runServe(cfg *config.Config) error {
+	if err := storage.ValidateConfig(cfg); err != nil {
+		return err
+	}
+	// /v1 resolves models through the catalog; build it on the first start
+	// after the catalog migration so the API never runs with it empty. It
+	// reads the legacy Key allowlist, which a later migration drops, so the
+	// schema is brought up in two steps around it.
+	if err := store.MigrateTo(cfg.DatabaseURL, apicatalog.BackfillSchemaVersion); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	ctx := context.Background()
+	st, err := newStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := apicatalog.EnsureInitialized(ctx, st.Pool); err != nil {
+		return fmt.Errorf("initialize developer API model catalog: %w", err)
+	}
+	if err := store.Migrate(cfg.DatabaseURL); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	if err := seedBuiltinContent(ctx, st); err != nil {
+		return err
+	}
 	if err := settings.EncryptStoredSecrets(ctx, st.Pool, cfg.AppSecret); err != nil {
 		return fmt.Errorf("encrypt stored settings: %w", err)
 	}
@@ -79,12 +189,13 @@ func runServe(cfg *config.Config) error {
 	}
 	defer queue.Close()
 
-	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.AppEnv == "development")
+	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.C2APrivateNetworkAllowed())
 	server, err := httpapi.New(cfg, st, stg, c2aClient, queue)
 	if err != nil {
 		return fmt.Errorf("initialize HTTP server: %w", err)
 	}
 	defer server.Close()
+	server.AssistantProber = worker.NewReviewProber(cfg, st)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8000"
@@ -129,6 +240,9 @@ func runServe(cfg *config.Config) error {
 }
 
 func runWorker(cfg *config.Config) error {
+	if err := storage.ValidateConfig(cfg); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	st, err := newStore(ctx, cfg)
 	if err != nil {
@@ -146,7 +260,7 @@ func runWorker(cfg *config.Config) error {
 	}
 	defer queue.Close()
 
-	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.AppEnv == "development")
+	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.C2APrivateNetworkAllowed())
 	stopPprof := diagnostics.StartPprof(cfg.WorkerPprofAddr, "worker")
 	defer stopPprof()
 	return worker.New(cfg, st, stg, c2aClient, queue).Run()

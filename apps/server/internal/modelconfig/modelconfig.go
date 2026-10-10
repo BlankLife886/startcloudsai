@@ -15,20 +15,38 @@ import (
 
 const (
 	SettingKey = "model_dispatch_config"
-	Version    = 3
+	Version    = 8
 
 	AdapterOpenAI = "openai"
 	AdapterCRUN   = "crun"
+	// AdapterGemini speaks Google's native API for images and its
+	// OpenAI-compatible endpoint for chat.
+	AdapterGemini = "gemini"
+	// AdapterDashScope speaks Alibaba Model Studio's native API for images
+	// (qwen-image) and its compatible mode for chat.
+	AdapterDashScope = "dashscope"
+	// AdapterMiniMax speaks MiniMax's image_generation API for images and its
+	// OpenAI-compatible endpoint for chat.
+	AdapterMiniMax = "minimax"
 
-	ModelKindImage = "image"
-	ModelKindChat  = "chat"
+	ModelKindImage     = "image"
+	ModelKindChat      = "chat"
+	ModelKindImageTool = "image_tool"
+
+	ModelStatusAvailable   = "available"
+	ModelStatusMaintenance = "maintenance"
+
+	ImageToolBackgroundRemove = "background_remove"
+	ImageToolUpscale          = "image_upscale"
 
 	WorkspaceAssistant  = "assistant"
 	WorkspaceT2I        = "t2i"
 	WorkspaceColoring   = "coloring"
 	WorkspaceUIDesign   = "ui_design"
+	WorkspaceEcommerce  = "ecommerce_design"
 	WorkspaceModelSheet = "model_sheet"
 	WorkspaceGameArt    = "game_art"
+	WorkspaceCanvas     = "infinite_canvas"
 )
 
 var WorkspaceKeys = []string{
@@ -36,26 +54,52 @@ var WorkspaceKeys = []string{
 	WorkspaceT2I,
 	WorkspaceColoring,
 	WorkspaceUIDesign,
+	WorkspaceEcommerce,
 	WorkspaceModelSheet,
 	WorkspaceGameArt,
+	WorkspaceCanvas,
 }
 
 var ImageTaskTypes = []string{
-	"t2i", "coloring", "ui_design", "ui_design_asset", "model_sheet", "game_art",
+	"t2i", "infinite_canvas", "coloring", "ui_design", "ui_design_asset", "ecommerce_design", "model_sheet", "game_art",
 }
 
 var ImageAspectRatios = []string{
 	"auto", "16:9", "9:16", "1:1", "3:2", "2:3", "5:4", "4:5", "4:3", "3:4", "21:9", "9:21",
 }
 
-var ImageQualities = []string{"low", "medium", "high"}
+// ImageQualities are every quality GPT Image accepts (xhigh and max are newer
+// models only; auto lets the upstream choose). New and legacy models start
+// with DefaultImageQualities; the admin opts into the rest per model.
+var ImageQualities = []string{"low", "medium", "high", "xhigh", "max", "auto"}
+var DefaultImageQualities = []string{"low", "medium", "high"}
 var ImageOutputFormats = []string{"png", "jpeg", "webp"}
 var ImageModerationLevels = []string{"auto", "low"}
 
+const (
+	DefaultMaxImages        = 4
+	MaxImagesLimit          = 100
+	MaxReferenceImagesLimit = 16
+	// MaxDeveloperAPIConcurrency bounds an API model's /v1 concurrency cap.
+	MaxDeveloperAPIConcurrency = 10000
+)
+
 type Provider struct {
-	ID               string          `json:"id"`
-	Name             string          `json:"name"`
-	Adapter          string          `json:"adapter"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Adapter string `json:"adapter"`
+	// Vendor names the preset the provider was created from (informational).
+	Vendor string `json:"vendor,omitempty"`
+	// APIPath is the OpenAI-compatible root under each route's Base URL, e.g.
+	// /v1beta/openai or /api/v3. Empty keeps the historical /v1 handling.
+	APIPath string `json:"apiPath,omitempty"`
+	// AuthStyle selects the header carrying the key; empty is the adapter default.
+	AuthStyle string `json:"authStyle,omitempty"`
+	// ImageAPI is ImageAPIStandard for vendors without chatgpt2api's task API.
+	ImageAPI string `json:"imageApi,omitempty"`
+	// Compat is legacy: request rules now live on each model. normalize moves
+	// any stored provider rules onto the provider's models and clears this.
+	Compat           *RequestCompat  `json:"compat,omitempty"`
 	Routes           []ProviderRoute `json:"routes"`
 	BaseURL          string          `json:"baseUrl"`
 	APIKey           string          `json:"apiKey"`
@@ -84,6 +128,11 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 		ID               string          `json:"id"`
 		Name             string          `json:"name"`
 		Adapter          string          `json:"adapter"`
+		Vendor           string          `json:"vendor"`
+		APIPath          string          `json:"apiPath"`
+		AuthStyle        string          `json:"authStyle"`
+		ImageAPI         string          `json:"imageApi"`
+		Compat           *RequestCompat  `json:"compat"`
 		Routes           []ProviderRoute `json:"routes"`
 		Type             string          `json:"type"`
 		BaseURL          string          `json:"baseUrl"`
@@ -119,6 +168,7 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 	}
 	*p = Provider{
 		ID: raw.ID, Name: raw.Name, Adapter: adapter, BaseURL: raw.BaseURL,
+		Vendor: raw.Vendor, APIPath: raw.APIPath, AuthStyle: raw.AuthStyle, ImageAPI: raw.ImageAPI, Compat: raw.Compat,
 		APIKey: apiKey, TimeoutSecs: raw.TimeoutSecs, MaxConcurrency: raw.MaxConcurrency, Enabled: raw.Enabled,
 		DiscoveredModels: raw.DiscoveredModels, Routes: raw.Routes,
 	}
@@ -126,32 +176,82 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 }
 
 type Model struct {
-	ID                          string              `json:"id"`
-	Name                        string              `json:"name"`
-	ProviderID                  string              `json:"providerId"`
-	UpstreamModel               string              `json:"upstreamModel"`
-	Kind                        string              `json:"kind"`
-	Description                 string              `json:"description,omitempty"`
-	PriceCents                  int64               `json:"priceCents"`
-	DiscountPriceCents          *int64              `json:"discountPriceCents"`
-	FastMode                    bool                `json:"fastMode"`
-	MinSeconds                  int                 `json:"minSeconds"`
-	MaxSeconds                  int                 `json:"maxSeconds"`
-	Resolutions                 []string            `json:"resolutions"`
-	AspectRatios                []string            `json:"aspectRatios"`
-	AspectRatiosByResolution    map[string][]string `json:"aspectRatiosByResolution"`
-	Qualities                   []string            `json:"qualities"`
-	TransparentBackground       bool                `json:"transparentBackground"`
-	OutputFormats               []string            `json:"outputFormats"`
-	ModerationLevels            []string            `json:"moderationLevels"`
-	MaxReferenceImages          int                 `json:"maxReferenceImages"`
-	Public                      bool                `json:"public"`
-	Default                     bool                `json:"default"`
-	Enabled                     bool                `json:"enabled"`
-	transparentBackgroundSet    bool
-	maxReferenceImagesSet       bool
-	aspectRatiosByResolutionSet bool
-	legacyAutoAspectRatios      map[string][]string
+	ID                          string               `json:"id"`
+	Name                        string               `json:"name"`
+	IconURL                     string               `json:"iconUrl,omitempty"`
+	Status                      string               `json:"status,omitempty"`
+	ProviderID                  string               `json:"providerId"`
+	UpstreamModel               string               `json:"upstreamModel"`
+	UpstreamInputFields         []string             `json:"upstreamInputFields,omitempty"`
+	UpstreamRequiredInputFields []string             `json:"upstreamRequiredInputFields,omitempty"`
+	UpstreamInputSchema         map[string]any       `json:"upstreamInputSchema,omitempty"`
+	UpstreamFixedInput          map[string]string    `json:"upstreamFixedInput,omitempty"` // pinned CRUN fields such as model_variant
+	PromptMaxChars              int                  `json:"promptMaxChars,omitempty"`     // overrides the global prompt limit; 0 follows it
+	SkillsDisabled              bool                 `json:"skillsDisabled,omitempty"`     // image skills are not added for this model
+	QualityNotSent              bool                 `json:"qualityNotSent,omitempty"`     // users pick and pay by quality, but it is not sent upstream
+	QualityAlwaysSent           bool                 `json:"qualityAlwaysSent,omitempty"`  // admin sends quality even where the CRUN schema lists none
+	Modality                    string               `json:"modality,omitempty"`
+	Operations                  []string             `json:"operations,omitempty"`
+	Kind                        string               `json:"kind"`
+	Tool                        string               `json:"tool,omitempty"`
+	Description                 string               `json:"description,omitempty"`
+	PriceCents                  int64                `json:"priceCents"`
+	DiscountPriceCents          *int64               `json:"discountPriceCents"`
+	UpstreamCostCents           int64                `json:"upstreamCostCents"`
+	AllowZeroPrice              bool                 `json:"allowZeroPrice"`
+	AllowLossLeader             bool                 `json:"allowLossLeader"`
+	ImageUpscalePricing         *ImageUpscalePricing `json:"imageUpscalePricing,omitempty"`
+	// ImagePricing bills an image model by resolution × quality
+	// (resolution → quality → cell); empty keeps the flat price above.
+	ImagePricing map[string]map[string]ImageTierPrice `json:"imagePricing,omitempty"`
+	// DefaultQuality is used when a request leaves quality out or asks for auto.
+	DefaultQuality string `json:"defaultQuality,omitempty"`
+	// ResolutionSlots route each resolution to a primary model and ordered
+	// backups (resolution → slot); a resolution without one runs on this model.
+	ResolutionSlots           map[string]ResolutionSlot `json:"resolutionSlots,omitempty"`
+	FastMode                  bool                      `json:"fastMode"`
+	MinSeconds                int                       `json:"minSeconds"`
+	MaxSeconds                int                       `json:"maxSeconds"`
+	Resolutions               []string                  `json:"resolutions"`
+	AspectRatios              []string                  `json:"aspectRatios"`
+	AspectRatiosByResolution  map[string][]string       `json:"aspectRatiosByResolution"`
+	SupportsExactSize         bool                      `json:"supportsExactSize"`
+	ExactSizeLimits           *ExactSizeLimits          `json:"exactSizeLimits,omitempty"`
+	Qualities                 []string                  `json:"qualities"`
+	TransparentBackground     bool                      `json:"transparentBackground"`
+	OutputFormats             []string                  `json:"outputFormats"`
+	ModerationLevels          []string                  `json:"moderationLevels"`
+	MaxReferenceImages        int                       `json:"maxReferenceImages"`
+	MaxImages                 int                       `json:"maxImages"`
+	ContextWindowTokens       int                       `json:"contextWindowTokens,omitempty"`
+	MaxOutputTokens           int                       `json:"maxOutputTokens,omitempty"`
+	SupportedReasoningEfforts []string                  `json:"supportedReasoningEfforts"`
+	ReasoningEnabled          *bool                     `json:"reasoningEnabled,omitempty"`
+	// ToolCallingDisabled marks a chat model whose upstream ignores function
+	// tools (some web-session proxies answer in text instead). It can answer
+	// questions but cannot drive Agent mode.
+	ToolCallingDisabled bool `json:"toolCallingDisabled,omitempty"`
+	// Compat adds model-specific request rewrites on top of the provider's.
+	Compat                       *RequestCompat    `json:"compat,omitempty"`
+	ReasoningPricing             *ReasoningPricing `json:"reasoningPricing,omitempty"`
+	Public                       bool              `json:"public"`
+	Default                      bool              `json:"default"`
+	Enabled                      bool              `json:"enabled"`
+	transparentBackgroundSet     bool
+	maxReferenceImagesSet        bool
+	maxImagesSet                 bool
+	aspectRatiosByResolutionSet  bool
+	supportedReasoningEffortsSet bool
+	legacyAutoAspectRatios       map[string][]string
+}
+
+// ImageUpscalePricing keeps the platform credit price separate from the
+// provider's USD cost. PriceCents on Model is the <= threshold tier.
+type ImageUpscalePricing struct {
+	ThresholdPixels        int    `json:"thresholdPixels"`
+	HighPriceCents         int64  `json:"highPriceCents"`
+	HighDiscountPriceCents *int64 `json:"highDiscountPriceCents"`
+	HighUpstreamCostCents  int64  `json:"highUpstreamCostCents"`
 }
 
 func (m *Model) UnmarshalJSON(data []byte) error {
@@ -161,6 +261,7 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 		Public                   *bool                      `json:"public"`
 		TransparentBackground    *bool                      `json:"transparentBackground"`
 		MaxReferenceImages       *int                       `json:"maxReferenceImages"`
+		MaxImages                *int                       `json:"maxImages"`
 		AspectRatiosByResolution map[string]json.RawMessage `json:"aspectRatiosByResolution"`
 		AutoAspectRatios         map[string]json.RawMessage `json:"autoAspectRatios"`
 	}
@@ -168,6 +269,11 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*m = Model(raw.alias)
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	_, m.supportedReasoningEffortsSet = keys["supportedReasoningEfforts"]
 	decodeRatioMap := func(source map[string]json.RawMessage) (map[string][]string, error) {
 		result := make(map[string][]string, len(source))
 		for resolution, encoded := range source {
@@ -213,19 +319,108 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 		m.MaxReferenceImages = *raw.MaxReferenceImages
 		m.maxReferenceImagesSet = true
 	}
+	if raw.MaxImages == nil && m.Kind == ModelKindImage {
+		m.MaxImages = DefaultMaxImages
+	} else if raw.MaxImages != nil {
+		m.MaxImages = *raw.MaxImages
+		m.maxImagesSet = true
+	}
 	return nil
 }
 
+func (m Model) GenerationMaxImages() int {
+	if m.Kind == ModelKindImageTool {
+		return 1
+	}
+	if m.MaxImages <= 0 {
+		return DefaultMaxImages
+	}
+	if m.MaxImages > MaxImagesLimit {
+		return MaxImagesLimit
+	}
+	return m.MaxImages
+}
+
+func (m Model) Available() bool {
+	return m.Status != ModelStatusMaintenance
+}
+
 type Config struct {
-	Version    int                         `json:"version"`
-	Providers  []Provider                  `json:"providers"`
-	Models     []Model                     `json:"models"`
-	Workspaces map[string]WorkspaceBinding `json:"workspaces"`
+	Version       int                         `json:"version"`
+	Providers     []Provider                  `json:"providers"`
+	Models        []Model                     `json:"models"`
+	Workspaces    map[string]WorkspaceBinding `json:"workspaces"`
+	EditableFiles EditableFileConfig          `json:"editableFiles"`
+	// DefaultProfileFigurePrompt 只在后台读取时回填，供编辑框展示内置提示词；保存时忽略。
+	DefaultProfileFigurePrompt string `json:"defaultProfileFigurePrompt,omitempty"`
+	DefaultProfileOutfitPrompt string `json:"defaultProfileOutfitPrompt,omitempty"`
+}
+
+type EditableFileConfig struct {
+	Enabled    bool   `json:"enabled"`
+	ProviderID string `json:"providerId"`
+	RouteID    string `json:"routeId"`
 }
 
 type WorkspaceBinding struct {
-	ModelIDs        []string          `json:"modelIds"`
-	DefaultModelIDs map[string]string `json:"defaultModelIds"`
+	ModelIDs        []string                         `json:"modelIds"`
+	DefaultModelIDs map[string]string                `json:"defaultModelIds"`
+	ModelPricing    map[string]WorkspaceModelPricing `json:"modelPricing,omitempty"`
+	ModelLimits     map[string]WorkspaceModelLimits  `json:"modelLimits,omitempty"`
+	// ProfileFigureModelID 仅对文生图页面生效：个人中心「参考生成 / 装扮」固定使用的模型，
+	// 为空时由用户端按能力自动挑选。
+	ProfileFigureModelID string `json:"profileFigureModelId,omitempty"`
+	// ProfileFigurePrompt 同样仅对文生图页面生效：个人中心「参考生成」的提示词，为空用内置默认。
+	ProfileFigurePrompt string `json:"profileFigurePrompt,omitempty"`
+	// ProfileOutfitPrompt 是个人中心「装扮」的提示词模板，{{items}} 处插入各部位要求。
+	ProfileOutfitPrompt string `json:"profileOutfitPrompt,omitempty"`
+}
+
+// WorkspaceModelLimits 是页面在模型自身配置之上追加的额度，只允许追加（>= 0）。
+// 最终值 = 模型配置 + 追加值，并受服务端硬上限约束。
+// MaxProfileFigurePromptRunes 限制后台可配置的个人中心参考生成提示词长度。
+const MaxProfileFigurePromptRunes = 4000
+
+// DefaultProfileFigurePrompt 是后台未配置时个人中心「参考生成」使用的提示词。
+const DefaultProfileFigurePrompt = "Create one new full-body standing character illustration of the person in the reference image, in a polished high-detail anime style. Use the reference only for identity: keep their face, hairstyle, outfit, color palette and overall vibe faithful to it, but do not copy its background, lighting setup or framing. Vertical 2:3 composition, the whole figure visible from head to toe, centered with a small margin on every side. Output the isolated character on a genuinely fully transparent alpha background; everything outside the character's silhouette stays transparent. No backdrop, floor, platform, cast shadow, glow, frame, border or text. Crisp, clean edges on hair, clothing and accessories."
+
+// ProfileOutfitItemsPlaceholder 标记装扮模板中插入部位清单的位置。
+const ProfileOutfitItemsPlaceholder = "{{items}}"
+
+// DefaultProfileOutfitPrompt 是后台未配置时个人中心「装扮」使用的提示词模板。
+const DefaultProfileOutfitPrompt = "Image 1 is the current character. Edit only the items listed below and keep everything else identical to image 1: the same person, face, body proportions, hair color, pose, art style and line quality.\nAny later reference images show items only: copy their design, color, material and structure onto the character, fitted to the character's body and perspective. Never copy the person, pose or background from them.\nChanges:\n{{items}}\nKeep the whole figure visible from head to toe in the same vertical 2:3 framing. Output the character on a genuinely fully transparent alpha background; everything outside the character's silhouette stays transparent. No backdrop, floor, platform, cast shadow, frame or text."
+
+// ProfileOutfitPrompt 返回个人中心「装扮」实际使用的提示词模板。
+func ProfileOutfitPrompt(cfg Config) string {
+	if prompt := strings.TrimSpace(cfg.Workspaces[WorkspaceT2I].ProfileOutfitPrompt); prompt != "" {
+		return prompt
+	}
+	return DefaultProfileOutfitPrompt
+}
+
+// ProfileFigurePrompt 返回个人中心「参考生成」实际使用的提示词。
+func ProfileFigurePrompt(cfg Config) string {
+	if prompt := strings.TrimSpace(cfg.Workspaces[WorkspaceT2I].ProfileFigurePrompt); prompt != "" {
+		return prompt
+	}
+	return DefaultProfileFigurePrompt
+}
+
+type WorkspaceModelLimits struct {
+	ExtraReferenceImages int `json:"extraReferenceImages"`
+	ExtraImages          int `json:"extraImages"`
+}
+
+type WorkspaceModelPricing struct {
+	PriceCents         int64  `json:"priceCents"`
+	DiscountPriceCents *int64 `json:"discountPriceCents"`
+}
+
+type ResolvedWorkspacePrice struct {
+	PriceCents         int64
+	DiscountPriceCents *int64
+	EffectiveCents     int64
+	Overridden         bool
 }
 
 type Selection struct {
@@ -271,7 +466,14 @@ func Save(ctx context.Context, q store.Q, cfg Config) error {
 }
 
 func normalize(cfg *Config) {
+	// Lookup helpers accept Config by value, but its slices still alias the
+	// caller's cached configuration. Own the writable containers before
+	// normalizing so concurrent readers/snapshot captures remain read-only.
+	cfg.Providers = append([]Provider(nil), cfg.Providers...)
+	cfg.Models = append([]Model(nil), cfg.Models...)
 	cfg.Version = Version
+	cfg.EditableFiles.ProviderID = strings.TrimSpace(cfg.EditableFiles.ProviderID)
+	cfg.EditableFiles.RouteID = strings.TrimSpace(cfg.EditableFiles.RouteID)
 	if cfg.Providers == nil {
 		cfg.Providers = []Provider{}
 	}
@@ -283,9 +485,15 @@ func normalize(cfg *Config) {
 	}
 	for index := range cfg.Providers {
 		provider := &cfg.Providers[index]
+		provider.Routes = append([]ProviderRoute(nil), provider.Routes...)
 		provider.ID = strings.TrimSpace(provider.ID)
 		provider.Name = strings.TrimSpace(provider.Name)
 		provider.Adapter = strings.TrimSpace(provider.Adapter)
+		provider.Vendor = strings.TrimSpace(provider.Vendor)
+		provider.APIPath = NormalizeAPIPath(provider.APIPath)
+		provider.AuthStyle = strings.TrimSpace(provider.AuthStyle)
+		provider.ImageAPI = strings.TrimSpace(provider.ImageAPI)
+		provider.Compat = normalizeCompat(provider.Compat)
 		provider.DiscoveredModels = cleanStrings(provider.DiscoveredModels)
 		if len(provider.Routes) == 0 && (provider.BaseURL != "" || provider.APIKey != "") {
 			provider.Routes = []ProviderRoute{{
@@ -312,25 +520,57 @@ func normalize(cfg *Config) {
 				route.MaxConcurrency = 100
 			}
 		}
-		if len(provider.Routes) > 0 {
-			primary := provider.Routes[0]
-			provider.BaseURL, provider.APIKey = primary.BaseURL, primary.APIKey
-			provider.TimeoutSecs, provider.MaxConcurrency = primary.TimeoutSecs, primary.MaxConcurrency
-		}
+		syncProviderPrimary(provider)
 	}
 	defaultKinds := map[string]bool{}
 	for index := range cfg.Models {
 		model := &cfg.Models[index]
 		model.ID = strings.TrimSpace(model.ID)
 		model.Name = strings.TrimSpace(model.Name)
+		model.IconURL = strings.TrimSpace(model.IconURL)
+		model.Status = strings.ToLower(strings.TrimSpace(model.Status))
+		if model.Status == "" {
+			model.Status = ModelStatusAvailable
+		}
 		model.ProviderID = strings.TrimSpace(model.ProviderID)
 		model.UpstreamModel = strings.TrimSpace(model.UpstreamModel)
+		model.UpstreamInputFields = cleanStrings(model.UpstreamInputFields)
+		model.UpstreamRequiredInputFields = cleanStrings(model.UpstreamRequiredInputFields)
+		model.UpstreamFixedInput = cleanFixedInput(model.UpstreamFixedInput)
+		model.Modality = strings.ToLower(strings.TrimSpace(model.Modality))
+		model.Operations = cleanStrings(model.Operations)
 		model.Kind = strings.TrimSpace(model.Kind)
+		model.Compat = normalizeCompat(model.Compat)
+		// Retired capability: do not advertise fast mode from old configurations.
+		model.FastMode = false
+		model.Tool = strings.TrimSpace(model.Tool)
 		if model.Kind == "" {
 			model.Kind = ModelKindImage
 		}
+		if model.Kind != ModelKindImageTool {
+			model.Tool = ""
+		}
+		normalizeModelReasoningPricing(model)
 		model.Description = strings.TrimSpace(model.Description)
+		if model.Kind == ModelKindChat {
+			if model.ContextWindowTokens <= 0 {
+				model.ContextWindowTokens = 128_000
+			}
+			if model.MaxOutputTokens <= 0 {
+				model.MaxOutputTokens = 8_192
+			}
+		} else {
+			model.ContextWindowTokens = 0
+			model.MaxOutputTokens = 0
+		}
 		model.Resolutions = cleanStrings(model.Resolutions)
+		if model.ExactSizeLimits != nil {
+			limits := *model.ExactSizeLimits
+			model.ExactSizeLimits = &limits
+		} else if model.Kind == ModelKindImage {
+			limits := DefaultExactSizeLimits()
+			model.ExactSizeLimits = &limits
+		}
 		if model.Kind == ModelKindImage {
 			if !model.transparentBackgroundSet {
 				model.TransparentBackground = true
@@ -338,11 +578,14 @@ func normalize(cfg *Config) {
 			if !model.maxReferenceImagesSet {
 				model.MaxReferenceImages = 4
 			}
+			if !model.maxImagesSet {
+				model.MaxImages = DefaultMaxImages
+			}
 			if model.AspectRatios == nil {
 				model.AspectRatios = append([]string(nil), ImageAspectRatios...)
 			}
 			if model.Qualities == nil {
-				model.Qualities = append([]string(nil), ImageQualities...)
+				model.Qualities = append([]string(nil), DefaultImageQualities...)
 			}
 			if model.OutputFormats == nil {
 				model.OutputFormats = append([]string(nil), ImageOutputFormats...)
@@ -350,7 +593,7 @@ func normalize(cfg *Config) {
 			if model.ModerationLevels == nil {
 				model.ModerationLevels = append([]string(nil), ImageModerationLevels...)
 			}
-			model.AspectRatios = cleanEnum(model.AspectRatios, ImageAspectRatios)
+			model.AspectRatios = cleanAspectRatios(model.AspectRatios)
 			model.AspectRatiosByResolution = normalizeAspectRatiosByResolution(*model)
 			if union := aspectRatioUnion(model.AspectRatiosByResolution); len(union) > 0 {
 				model.AspectRatios = union
@@ -359,9 +602,11 @@ func normalize(cfg *Config) {
 			model.OutputFormats = cleanEnum(model.OutputFormats, ImageOutputFormats)
 			model.ModerationLevels = cleanEnum(model.ModerationLevels, ImageModerationLevels)
 		}
+		normalizeImagePricing(model)
+		normalizeResolutionSlots(model)
 		if model.Default {
 			switch {
-			case !model.Enabled || !model.Public:
+			case !model.Enabled || !model.Public || !model.Available():
 				model.Default = false
 			case defaultKinds[model.Kind]:
 				model.Default = false
@@ -370,17 +615,32 @@ func normalize(cfg *Config) {
 			}
 		}
 	}
-	for _, kind := range []string{ModelKindImage, ModelKindChat} {
+	for _, kind := range []string{ModelKindImage, ModelKindChat, ModelKindImageTool} {
 		if defaultKinds[kind] {
 			continue
 		}
 		for index := range cfg.Models {
 			model := &cfg.Models[index]
-			if model.Kind == kind && model.Enabled && model.Public {
+			if model.Kind == kind && model.Enabled && model.Public && model.Available() {
 				model.Default = true
 				defaultKinds[kind] = true
 				break
 			}
+		}
+	}
+	// Request compat is per model. Fold legacy provider-level rules into each
+	// of the provider's models so nothing is lost, then drop them.
+	legacyCompat := map[string]*RequestCompat{}
+	for index := range cfg.Providers {
+		if provider := &cfg.Providers[index]; provider.Compat != nil {
+			legacyCompat[provider.ID] = provider.Compat
+			provider.Compat = nil
+		}
+	}
+	for index := range cfg.Models {
+		model := &cfg.Models[index]
+		if compat := legacyCompat[model.ProviderID]; compat != nil {
+			model.Compat = MergeCompat(compat, model.Compat)
 		}
 	}
 	normalizedWorkspaces := make(map[string]WorkspaceBinding, len(cfg.Workspaces))
@@ -395,6 +655,25 @@ func normalize(cfg *Config) {
 			}
 		}
 		binding.DefaultModelIDs = defaultModelIDs
+		modelPricing := make(map[string]WorkspaceModelPricing, len(binding.ModelPricing))
+		for modelID, pricing := range binding.ModelPricing {
+			modelID = strings.TrimSpace(modelID)
+			if modelID != "" {
+				modelPricing[modelID] = pricing
+			}
+		}
+		binding.ModelPricing = modelPricing
+		modelLimits := make(map[string]WorkspaceModelLimits, len(binding.ModelLimits))
+		for modelID, limits := range binding.ModelLimits {
+			modelID = strings.TrimSpace(modelID)
+			if modelID != "" && (limits.ExtraReferenceImages != 0 || limits.ExtraImages != 0) {
+				modelLimits[modelID] = limits
+			}
+		}
+		binding.ModelLimits = modelLimits
+		binding.ProfileFigureModelID = strings.TrimSpace(binding.ProfileFigureModelID)
+		binding.ProfileFigurePrompt = strings.TrimSpace(binding.ProfileFigurePrompt)
+		binding.ProfileOutfitPrompt = strings.TrimSpace(binding.ProfileOutfitPrompt)
 		normalizedWorkspaces[strings.TrimSpace(key)] = binding
 	}
 	cfg.Workspaces = normalizedWorkspaces
@@ -460,7 +739,7 @@ func normalizeAspectRatiosByResolution(model Model) map[string][]string {
 	for resolution, ratios := range model.legacyAutoAspectRatios {
 		legacy[strings.ToUpper(strings.TrimSpace(resolution))] = ratios
 	}
-	fallback := cleanEnum(model.AspectRatios, ImageAspectRatios)
+	fallback := cleanAspectRatios(model.AspectRatios)
 	if len(fallback) == 0 {
 		fallback = append([]string(nil), ImageAspectRatios...)
 	}
@@ -478,7 +757,7 @@ func normalizeAspectRatiosByResolution(model Model) map[string][]string {
 				source = fallback
 			}
 		}
-		ratios := cleanEnum(source, ImageAspectRatios)
+		ratios := cleanAspectRatios(source)
 		if len(ratios) == 0 {
 			ratios = append([]string(nil), fallback...)
 		}
@@ -494,13 +773,11 @@ func aspectRatioUnion(rules map[string][]string) []string {
 			selected[strings.ToLower(strings.TrimSpace(ratio))] = true
 		}
 	}
-	result := make([]string, 0, len(selected))
-	for _, ratio := range ImageAspectRatios {
-		if selected[ratio] {
-			result = append(result, ratio)
-		}
+	list := make([]string, 0, len(selected))
+	for ratio := range selected {
+		list = append(list, ratio)
 	}
-	return result
+	return cleanAspectRatios(list)
 }
 
 // AspectRatiosForResolution returns the user-selectable ratios for a resolution.
@@ -524,15 +801,37 @@ func AutoAspectRatioCandidates(model Model, resolution string) []string {
 	if len(result) > 0 {
 		return result
 	}
-	return []string{firstConcreteAspectRatio(model)}
+	// A model that offers only auto (some edit models keep the input's shape)
+	// gets no ratio constraint instead of an invented 1:1.
+	for _, ratio := range model.AspectRatios {
+		if ratio = strings.ToLower(strings.TrimSpace(ratio)); ratio != "" && ratio != "auto" {
+			return []string{ratio}
+		}
+	}
+	return nil
 }
 
 func ValidAdapter(value string) bool {
-	return value == AdapterOpenAI || value == AdapterCRUN
+	return value == AdapterOpenAI || value == AdapterCRUN || value == AdapterGemini ||
+		value == AdapterDashScope || value == AdapterMiniMax
 }
 
 func ValidModelKind(value string) bool {
-	return value == ModelKindImage || value == ModelKindChat
+	return value == ModelKindImage || value == ModelKindChat || value == ModelKindImageTool
+}
+
+func ValidImageTool(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 100 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func ValidWorkspace(value string) bool {
@@ -545,7 +844,8 @@ func ValidWorkspace(value string) bool {
 }
 
 func workspaceAllowsKind(workspace, kind string) bool {
-	return kind == ModelKindImage || (workspace == WorkspaceAssistant && kind == ModelKindChat)
+	return kind == ModelKindImage ||
+		((workspace == WorkspaceAssistant || workspace == WorkspaceUIDesign || workspace == WorkspaceEcommerce || workspace == WorkspaceCanvas) && kind == ModelKindChat)
 }
 
 func Validate(cfg Config) error {
@@ -560,6 +860,18 @@ func Validate(cfg Config) error {
 		}
 		if len(provider.Routes) == 0 {
 			return fmt.Errorf("服务商 %s 至少需要一条 Base URL 线路", provider.Name)
+		}
+		if err := validateAPIPath("服务商 "+provider.Name, provider.APIPath); err != nil {
+			return err
+		}
+		if provider.AuthStyle != "" && !containsExact(authStyles, provider.AuthStyle) {
+			return fmt.Errorf("服务商 %s 的鉴权方式无效", provider.Name)
+		}
+		if provider.ImageAPI != ImageAPIAuto && provider.ImageAPI != ImageAPIStandard {
+			return fmt.Errorf("服务商 %s 的生图接口类型无效", provider.Name)
+		}
+		if err := validateCompat("服务商 "+provider.Name, provider.Compat); err != nil {
+			return err
 		}
 		routeIDs := map[string]bool{}
 		enabledRoutes := 0
@@ -586,6 +898,22 @@ func Validate(cfg Config) error {
 		}
 		providers[provider.ID] = provider
 	}
+	if cfg.EditableFiles.Enabled {
+		provider, exists := providers[cfg.EditableFiles.ProviderID]
+		if !exists || !provider.Enabled || provider.Adapter != AdapterOpenAI {
+			return errors.New("PPT/PSD 必须指定一个已启用的 ChatGPT2API 兼容服务商")
+		}
+		selectedRoute := false
+		for _, route := range executionRoutes(provider) {
+			if route.RouteID == cfg.EditableFiles.RouteID && strings.TrimSpace(route.APIKey) != "" {
+				selectedRoute = true
+				break
+			}
+		}
+		if !selectedRoute {
+			return errors.New("PPT/PSD 指定的服务商线路不存在、未启用或缺少 API Key")
+		}
+	}
 	models := make(map[string]Model, len(cfg.Models))
 	defaults := map[string]bool{}
 	for _, model := range cfg.Models {
@@ -598,17 +926,102 @@ func Validate(cfg Config) error {
 		if _, exists := providers[model.ProviderID]; !exists {
 			return fmt.Errorf("模型 %s 没有关联有效服务商", model.Name)
 		}
+		if err := validateCompat("模型 "+model.Name, model.Compat); err != nil {
+			return err
+		}
+		if model.Status != ModelStatusAvailable && model.Status != ModelStatusMaintenance {
+			return fmt.Errorf("模型 %s 的状态无效", model.Name)
+		}
+		if model.IconURL != "" && !strings.HasPrefix(model.IconURL, "/api/v1/files/model-icons/") {
+			return fmt.Errorf("模型 %s 的图标地址无效，请通过模型目录上传", model.Name)
+		}
+		if err := validateExactSizeConfig(model, providers[model.ProviderID]); err != nil {
+			return err
+		}
+		if err := validateFixedInput(model, providers[model.ProviderID]); err != nil {
+			return err
+		}
+		if model.PromptMaxChars < 0 || model.PromptMaxChars > MaxPromptChars {
+			return fmt.Errorf("模型 %s 的提示词字数上限须在 0-%d 之间（0 为跟随全局）", model.Name, MaxPromptChars)
+		}
+		if model.Kind == ModelKindImageTool {
+			if !ValidImageTool(model.Tool) {
+				return fmt.Errorf("图片工具 %s 的工具能力无效", model.Name)
+			}
+			if providers[model.ProviderID].Adapter != AdapterCRUN {
+				return fmt.Errorf("图片工具 %s 当前只支持 CRUN 服务商", model.Name)
+			}
+			properties, _ := model.UpstreamInputSchema["properties"].(map[string]any)
+			if len(model.UpstreamInputFields) == 0 || len(properties) == 0 {
+				return fmt.Errorf("媒体工具 %s 缺少已验证的上游参数 schema", model.Name)
+			}
+			for _, field := range model.UpstreamInputFields {
+				if _, ok := properties[field]; !ok {
+					return fmt.Errorf("媒体工具 %s 的参数 %s 不在上游 schema 中", model.Name, field)
+				}
+			}
+		}
 		if model.PriceCents < 0 || (model.DiscountPriceCents != nil && *model.DiscountPriceCents < 0) {
 			return fmt.Errorf("模型 %s 的价格不能为负", model.Name)
+		}
+		if model.UpstreamCostCents < 0 {
+			return fmt.Errorf("模型 %s 的上游成本不能为负", model.Name)
 		}
 		if model.DiscountPriceCents != nil && *model.DiscountPriceCents > model.PriceCents {
 			return fmt.Errorf("模型 %s 的折扣价不能高于标准价", model.Name)
 		}
+		if model.Kind != ModelKindChat && model.Enabled && model.Public && EffectivePrice(model) == 0 && !model.AllowZeroPrice {
+			return fmt.Errorf("模型 %s 的用户价格为 0；如确需免费，请显式开启允许零价", model.Name)
+		}
+		if model.Kind != ModelKindChat && model.Enabled && model.Public && EffectivePrice(model) < model.UpstreamCostCents && !model.AllowLossLeader {
+			return fmt.Errorf("模型 %s 的用户价格低于上游成本；如确需补贴，请显式开启允许亏损", model.Name)
+		}
+		if pricing := model.ImageUpscalePricing; pricing != nil {
+			if model.Kind != ModelKindImageTool || model.Tool != ImageToolUpscale {
+				return fmt.Errorf("模型 %s 不是高清放大工具，不能配置分辨率分档价格", model.Name)
+			}
+			if pricing.ThresholdPixels != 2048 {
+				return fmt.Errorf("高清放大模型 %s 的价格分档阈值必须为 2048px", model.Name)
+			}
+			if pricing.HighPriceCents < 0 || (pricing.HighDiscountPriceCents != nil && *pricing.HighDiscountPriceCents < 0) {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档价格不能为负", model.Name)
+			}
+			if pricing.HighUpstreamCostCents < 0 {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档上游成本不能为负", model.Name)
+			}
+			highEffective := pricing.HighPriceCents
+			if pricing.HighDiscountPriceCents != nil {
+				highEffective = *pricing.HighDiscountPriceCents
+			}
+			if model.Enabled && model.Public && highEffective == 0 && !model.AllowZeroPrice {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档用户价格为 0", model.Name)
+			}
+			if model.Enabled && model.Public && highEffective < pricing.HighUpstreamCostCents && !model.AllowLossLeader {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档用户价格低于上游成本", model.Name)
+			}
+			if pricing.HighDiscountPriceCents != nil && *pricing.HighDiscountPriceCents > pricing.HighPriceCents {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档折扣价不能高于标准价", model.Name)
+			}
+		}
+		if err := validateImagePricing(model); err != nil {
+			return err
+		}
 		if model.MinSeconds < 0 || model.MaxSeconds < model.MinSeconds || model.MaxSeconds > 3600 {
 			return fmt.Errorf("模型 %s 的预计耗时无效", model.Name)
 		}
+		if model.Kind == ModelKindChat {
+			if model.ContextWindowTokens < 4_096 || model.ContextWindowTokens > 2_000_000 {
+				return fmt.Errorf("对话模型 %s 的上下文窗口须在 4096-2000000 tokens 之间", model.Name)
+			}
+			if model.MaxOutputTokens < 256 || model.MaxOutputTokens >= model.ContextWindowTokens {
+				return fmt.Errorf("对话模型 %s 的最大输出 tokens 无效", model.Name)
+			}
+			if err := validateModelReasoningPricing(model); err != nil {
+				return err
+			}
+		}
 		if model.Default {
-			if !model.Enabled || !model.Public {
+			if !model.Enabled || !model.Public || !model.Available() {
 				return fmt.Errorf("默认模型 %s 必须启用并对用户开放", model.Name)
 			}
 			if defaults[model.Kind] {
@@ -643,14 +1056,30 @@ func Validate(cfg Config) error {
 					}
 				}
 			}
-			if len(model.Qualities) == 0 {
+			requiresQuality := true
+			if providers[model.ProviderID].Adapter == AdapterCRUN && len(model.UpstreamInputFields) > 0 {
+				requiresQuality = false
+				for _, field := range model.UpstreamInputFields {
+					if field == "quality" {
+						requiresQuality = true
+						break
+					}
+				}
+			}
+			if requiresQuality && len(model.Qualities) == 0 {
 				return fmt.Errorf("模型 %s 至少需要一个输出质量", model.Name)
 			}
-			if model.MaxReferenceImages < 0 || model.MaxReferenceImages > 16 {
-				return fmt.Errorf("模型 %s 的参考图数量须在 0-16 之间", model.Name)
+			if model.MaxReferenceImages < 0 || model.MaxReferenceImages > MaxReferenceImagesLimit {
+				return fmt.Errorf("模型 %s 的参考图数量须在 0-%d 之间", model.Name, MaxReferenceImagesLimit)
+			}
+			if model.MaxImages < 1 || model.MaxImages > MaxImagesLimit {
+				return fmt.Errorf("模型 %s 的单次生成张数须在 1-%d 之间", model.Name, MaxImagesLimit)
 			}
 		}
 		models[model.ID] = model
+	}
+	if err := validateResolutionSlots(cfg.Models, models); err != nil {
+		return err
 	}
 	for workspace, binding := range cfg.Workspaces {
 		if !ValidWorkspace(workspace) {
@@ -675,8 +1104,80 @@ func Validate(cfg Config) error {
 				return fmt.Errorf("页面 %s 的默认模型类型无效：%s", workspace, kind)
 			}
 			model, exists := models[modelID]
-			if !exists || !assigned[modelID] || model.Kind != kind {
+			if !exists || !assigned[modelID] || model.Kind != kind || !model.Available() {
 				return fmt.Errorf("页面 %s 的默认模型必须包含在该页面的可选模型中", workspace)
+			}
+		}
+		if binding.ProfileFigurePrompt != "" && workspace != WorkspaceT2I {
+			return fmt.Errorf("页面 %s 不支持设置个人中心参考生成提示词", workspace)
+		}
+		if len([]rune(binding.ProfileFigurePrompt)) > MaxProfileFigurePromptRunes {
+			return fmt.Errorf("个人中心参考生成提示词不能超过 %d 字", MaxProfileFigurePromptRunes)
+		}
+		if outfit := binding.ProfileOutfitPrompt; outfit != "" {
+			if workspace != WorkspaceT2I {
+				return fmt.Errorf("页面 %s 不支持设置个人中心装扮提示词", workspace)
+			}
+			if len([]rune(outfit)) > MaxProfileFigurePromptRunes {
+				return fmt.Errorf("个人中心装扮提示词不能超过 %d 字", MaxProfileFigurePromptRunes)
+			}
+			if strings.Count(outfit, ProfileOutfitItemsPlaceholder) != 1 {
+				return fmt.Errorf("个人中心装扮提示词必须包含且只包含一个 %s", ProfileOutfitItemsPlaceholder)
+			}
+		}
+		if modelID := binding.ProfileFigureModelID; modelID != "" {
+			model, exists := models[modelID]
+			if workspace != WorkspaceT2I {
+				return fmt.Errorf("页面 %s 不支持设置个人中心参考生成模型", workspace)
+			}
+			if !exists || !assigned[modelID] || model.Kind != ModelKindImage {
+				return fmt.Errorf("个人中心参考生成模型必须是文生图页面的可选图像模型")
+			}
+			if model.MaxReferenceImages < 1 {
+				return fmt.Errorf("个人中心参考生成模型 %s 必须支持参考图", model.Name)
+			}
+		}
+		for modelID, pricing := range binding.ModelPricing {
+			model, exists := models[modelID]
+			if !exists || !assigned[modelID] {
+				return fmt.Errorf("页面 %s 的价格模型必须包含在该页面的可选模型中：%s", workspace, modelID)
+			}
+			if HasImagePricing(model) {
+				return fmt.Errorf("页面 %s 的模型 %s 已按分辨率和质量分档定价，不能再设页面单价", workspace, model.Name)
+			}
+			if pricing.PriceCents < 0 || (pricing.DiscountPriceCents != nil && *pricing.DiscountPriceCents < 0) {
+				return fmt.Errorf("页面 %s 的模型 %s 价格不能为负", workspace, model.Name)
+			}
+			if pricing.DiscountPriceCents != nil && *pricing.DiscountPriceCents > pricing.PriceCents {
+				return fmt.Errorf("页面 %s 的模型 %s 折扣价不能高于标准价", workspace, model.Name)
+			}
+			effective := pricing.PriceCents
+			if pricing.DiscountPriceCents != nil {
+				effective = *pricing.DiscountPriceCents
+			}
+			if effective == 0 && !model.AllowZeroPrice {
+				return fmt.Errorf("页面 %s 的模型 %s 用户价格为 0；如确需免费，请在模型中允许零价", workspace, model.Name)
+			}
+			if effective < model.UpstreamCostCents && !model.AllowLossLeader {
+				return fmt.Errorf("页面 %s 的模型 %s 用户价格低于上游成本", workspace, model.Name)
+			}
+		}
+		for modelID, limits := range binding.ModelLimits {
+			model, exists := models[modelID]
+			if !exists || !assigned[modelID] {
+				return fmt.Errorf("页面 %s 的追加额度模型必须包含在该页面的可选模型中：%s", workspace, modelID)
+			}
+			if model.Kind != ModelKindImage {
+				return fmt.Errorf("页面 %s 只能为生图模型追加参考图和生成张数：%s", workspace, model.Name)
+			}
+			if limits.ExtraReferenceImages < 0 || limits.ExtraImages < 0 {
+				return fmt.Errorf("页面 %s 的模型 %s 追加额度不能为负", workspace, model.Name)
+			}
+			if model.MaxReferenceImages+limits.ExtraReferenceImages > MaxReferenceImagesLimit {
+				return fmt.Errorf("页面 %s 的模型 %s 参考图总数不能超过 %d 张", workspace, model.Name, MaxReferenceImagesLimit)
+			}
+			if model.GenerationMaxImages()+limits.ExtraImages > MaxImagesLimit {
+				return fmt.Errorf("页面 %s 的模型 %s 单次生成张数不能超过 %d 张", workspace, model.Name, MaxImagesLimit)
 			}
 		}
 	}
@@ -694,13 +1195,26 @@ func maskSecret(secret string) string {
 	return "****" + string(runes[len(runes)-4:])
 }
 
+// syncProviderPrimary 把服务商级别的地址/密钥同步为「第一条启用的线路」。
+// SelectPublic、PublicModels、不带线路的 FindExecution 返回的正是服务商级别配置，
+// 开发者 API 直连生图等路径会直接用它发请求，所以绝不能指向已关闭的线路。
+// 所有线路都关闭时只保留第一条的地址作展示，密钥清空，使其无法被执行。
 func syncProviderPrimary(provider *Provider) {
 	if provider == nil || len(provider.Routes) == 0 {
 		return
 	}
-	primary := provider.Routes[0]
+	primary, enabled := provider.Routes[0], false
+	for _, route := range provider.Routes {
+		if route.Enabled {
+			primary, enabled = route, true
+			break
+		}
+	}
 	provider.BaseURL, provider.APIKey = primary.BaseURL, primary.APIKey
 	provider.TimeoutSecs, provider.MaxConcurrency = primary.TimeoutSecs, primary.MaxConcurrency
+	if !enabled {
+		provider.APIKey = ""
+	}
 }
 
 func AdminView(ctx context.Context, q store.Q, masterKey string) (Config, error) {
@@ -723,6 +1237,8 @@ func AdminView(ctx context.Context, q store.Q, masterKey string) (Config, error)
 		}
 		syncProviderPrimary(provider)
 	}
+	cfg.DefaultProfileFigurePrompt = DefaultProfileFigurePrompt
+	cfg.DefaultProfileOutfitPrompt = DefaultProfileOutfitPrompt
 	return cfg, nil
 }
 
@@ -732,6 +1248,8 @@ func PrepareAdminSave(ctx context.Context, q store.Q, input Config, masterKey st
 		return Config{}, err
 	}
 	normalize(&input)
+	input.DefaultProfileFigurePrompt = ""
+	input.DefaultProfileOutfitPrompt = ""
 	existingKeys := map[string]string{}
 	for _, provider := range existing.Providers {
 		for _, route := range provider.Routes {
@@ -758,6 +1276,9 @@ func PrepareAdminSave(ctx context.Context, q store.Q, input Config, masterKey st
 			route.APIKey = encrypted
 		}
 		syncProviderPrimary(provider)
+	}
+	if err := EmbedImageParamRules(ctx, q, &input); err != nil {
+		return Config{}, err
 	}
 	if err := Validate(input); err != nil {
 		return Config{}, err
@@ -796,6 +1317,109 @@ func EffectivePrice(model Model) int64 {
 	return model.PriceCents
 }
 
+func ResolveUpstreamCost(model Model, inputLongEdge int, scaleFactor float64) int64 {
+	pricing := model.ImageUpscalePricing
+	if model.Kind == ModelKindImageTool && model.Tool == ImageToolUpscale && pricing != nil &&
+		(inputLongEdge <= 0 || scaleFactor <= 0 || float64(inputLongEdge)*scaleFactor > float64(pricing.ThresholdPixels)) {
+		return pricing.HighUpstreamCostCents
+	}
+	return model.UpstreamCostCents
+}
+
+// ResolveImageUpscalePrice resolves the two provider resolution tiers using
+// trusted input dimensions. Missing dimensions or scale select the high tier
+// so an incomplete client quote can never undercharge the task.
+func ResolveImageUpscalePrice(model Model, inputLongEdge int, scaleFactor float64) ResolvedWorkspacePrice {
+	pricing := model.ImageUpscalePricing
+	if model.Kind != ModelKindImageTool || model.Tool != ImageToolUpscale || pricing == nil {
+		return ResolvedWorkspacePrice{
+			PriceCents: model.PriceCents, DiscountPriceCents: model.DiscountPriceCents,
+			EffectiveCents: EffectivePrice(model),
+		}
+	}
+	if inputLongEdge > 0 && scaleFactor > 0 && float64(inputLongEdge)*scaleFactor <= float64(pricing.ThresholdPixels) {
+		return ResolvedWorkspacePrice{
+			PriceCents: model.PriceCents, DiscountPriceCents: model.DiscountPriceCents,
+			EffectiveCents: EffectivePrice(model),
+		}
+	}
+	effective := pricing.HighPriceCents
+	if pricing.HighDiscountPriceCents != nil {
+		effective = *pricing.HighDiscountPriceCents
+	}
+	return ResolvedWorkspacePrice{
+		PriceCents: pricing.HighPriceCents, DiscountPriceCents: pricing.HighDiscountPriceCents,
+		EffectiveCents: effective,
+	}
+}
+
+func ResolveWorkspacePrice(cfg Config, workspace string, model Model) ResolvedWorkspacePrice {
+	standard := model.PriceCents
+	discount := model.DiscountPriceCents
+	overridden := false
+	if binding, ok := cfg.Workspaces[strings.TrimSpace(workspace)]; ok {
+		if pricing, ok := binding.ModelPricing[model.ID]; ok {
+			standard = pricing.PriceCents
+			discount = pricing.DiscountPriceCents
+			overridden = true
+		}
+	}
+	effective := standard
+	if discount != nil {
+		effective = *discount
+	}
+	return ResolvedWorkspacePrice{
+		PriceCents: standard, DiscountPriceCents: discount,
+		EffectiveCents: effective, Overridden: overridden,
+	}
+}
+
+func workspaceModelLimits(cfg Config, workspace string, model Model) WorkspaceModelLimits {
+	if binding, ok := cfg.Workspaces[strings.TrimSpace(workspace)]; ok {
+		return binding.ModelLimits[model.ID]
+	}
+	return WorkspaceModelLimits{}
+}
+
+// ApplyWorkspaceLimits 返回叠加了页面追加额度的模型副本。
+func ApplyWorkspaceLimits(cfg Config, workspace string, model Model) Model {
+	if model.Kind != ModelKindImage {
+		return model
+	}
+	model.MaxReferenceImages = WorkspaceMaxReferenceImages(cfg, workspace, model)
+	model.MaxImages = WorkspaceGenerationMaxImages(cfg, workspace, model)
+	return model
+}
+
+// WorkspaceMaxReferenceImages 返回模型在指定页面可用的参考图上限（模型配置 + 页面追加）。
+func WorkspaceMaxReferenceImages(cfg Config, workspace string, model Model) int {
+	total := model.MaxReferenceImages + max(0, workspaceModelLimits(cfg, workspace, model).ExtraReferenceImages)
+	return min(total, MaxReferenceImagesLimit)
+}
+
+// WorkspaceGenerationMaxImages 返回模型在指定页面的单次生成张数上限（模型配置 + 页面追加）。
+func WorkspaceGenerationMaxImages(cfg Config, workspace string, model Model) int {
+	base := model.GenerationMaxImages()
+	if model.Kind == ModelKindImageTool {
+		return base
+	}
+	return min(base+max(0, workspaceModelLimits(cfg, workspace, model).ExtraImages), MaxImagesLimit)
+}
+
+// WorkspacePriceBounds is the price range of one image on a page: the
+// matrix bounds for a tiered model, else the page price.
+func WorkspacePriceBounds(cfg Config, workspace string, model Model) (int64, int64) {
+	if HasImagePricing(model) {
+		return ImagePriceBounds(model)
+	}
+	price := EffectiveWorkspacePrice(cfg, workspace, model)
+	return price, price
+}
+
+func EffectiveWorkspacePrice(cfg Config, workspace string, model Model) int64 {
+	return ResolveWorkspacePrice(cfg, workspace, model).EffectiveCents
+}
+
 func activeProviders(cfg Config) map[string]Provider {
 	providers := make(map[string]Provider, len(cfg.Providers))
 	for _, provider := range cfg.Providers {
@@ -807,6 +1431,13 @@ func activeProviders(cfg Config) map[string]Provider {
 		}
 	}
 	return providers
+}
+
+// ActiveProvider returns the enabled provider with its first execution route
+// resolved, exactly as public model selection sees it.
+func ActiveProvider(cfg Config, providerID string) (Provider, bool) {
+	provider, ok := activeProviders(cfg)[providerID]
+	return provider, ok
 }
 
 func executionRoutes(provider Provider) []Provider {
@@ -833,6 +1464,25 @@ func executionRoutes(provider Provider) []Provider {
 
 func ExecutionRoutes(provider Provider) []Provider { return executionRoutes(provider) }
 
+// EditableFileProvider returns the administrator-selected ChatGPT2API route.
+func EditableFileProvider(cfg Config) (Provider, bool) {
+	normalize(&cfg)
+	if !cfg.EditableFiles.Enabled || cfg.EditableFiles.ProviderID == "" || cfg.EditableFiles.RouteID == "" {
+		return Provider{}, false
+	}
+	for _, provider := range cfg.Providers {
+		if provider.ID != cfg.EditableFiles.ProviderID || !provider.Enabled || provider.Adapter != AdapterOpenAI {
+			continue
+		}
+		for _, route := range executionRoutes(provider) {
+			if route.RouteID == cfg.EditableFiles.RouteID && strings.TrimSpace(route.APIKey) != "" {
+				return route, true
+			}
+		}
+	}
+	return Provider{}, false
+}
+
 func ExecutionRouteKey(provider Provider) string {
 	if provider.RouteID == "" {
 		return provider.ID
@@ -850,7 +1500,7 @@ func SelectPublic(cfg Config, kind, requestedModelID string) (*Selection, bool) 
 	var fallback *Selection
 	for _, model := range cfg.Models {
 		provider, providerOK := providers[model.ProviderID]
-		if !providerOK || !model.Enabled || !model.Public || model.Kind != kind {
+		if !providerOK || !model.Enabled || !model.Public || !model.Available() || model.Kind != kind {
 			continue
 		}
 		selection := &Selection{Provider: provider, Model: model}
@@ -871,6 +1521,39 @@ func SelectPublic(cfg Config, kind, requestedModelID string) (*Selection, bool) 
 	return fallback, fallback != nil
 }
 
+func PublicImageTools(cfg Config, tool string) []Selection {
+	models := PublicModels(cfg, ModelKindImageTool)
+	out := make([]Selection, 0, len(models))
+	for _, selection := range models {
+		if selection.Model.Tool == tool && selection.Model.Available() {
+			out = append(out, selection)
+		}
+	}
+	return out
+}
+
+func SelectPublicImageTool(cfg Config, tool, requestedModelID string) (*Selection, bool) {
+	requestedModelID = strings.TrimSpace(requestedModelID)
+	models := PublicImageTools(cfg, tool)
+	if requestedModelID != "" {
+		for index := range models {
+			if models[index].Model.ID == requestedModelID {
+				return &models[index], true
+			}
+		}
+		return nil, false
+	}
+	for index := range models {
+		if models[index].Model.Default {
+			return &models[index], true
+		}
+	}
+	if len(models) == 0 {
+		return nil, false
+	}
+	return &models[0], true
+}
+
 // PublicModelsForWorkspace returns only the models explicitly assigned to a
 // page. A missing binding keeps Version 2 behavior; a present empty binding
 // intentionally disables models for that page.
@@ -888,6 +1571,9 @@ func PublicModelsForWorkspace(cfg Config, workspace, kind string) []Selection {
 	out := make([]Selection, 0, len(models))
 	for _, selection := range models {
 		if allowed[selection.Model.ID] {
+			// 页面级追加额度直接折算进返回的模型，下游的能力校验、张数校验和
+			// 下发给用户端的 maxReferenceImages / maxImages 都自动使用页面有效值。
+			selection.Model = ApplyWorkspaceLimits(cfg, workspace, selection.Model)
 			out = append(out, selection)
 		}
 	}
@@ -916,7 +1602,7 @@ func SelectPublicForWorkspace(cfg Config, workspace, kind, requestedModelID stri
 	models := PublicModelsForWorkspace(cfg, workspace, kind)
 	if requestedModelID != "" {
 		for index := range models {
-			if models[index].Model.ID == requestedModelID {
+			if models[index].Model.ID == requestedModelID && models[index].Model.Available() {
 				return &models[index], true
 			}
 		}
@@ -925,16 +1611,18 @@ func SelectPublicForWorkspace(cfg Config, workspace, kind, requestedModelID stri
 	if binding, configured := cfg.Workspaces[workspace]; configured {
 		if defaultID := strings.TrimSpace(binding.DefaultModelIDs[kind]); defaultID != "" {
 			for index := range models {
-				if models[index].Model.ID == defaultID {
+				if models[index].Model.ID == defaultID && models[index].Model.Available() {
 					return &models[index], true
 				}
 			}
 		}
 	}
-	if len(models) == 0 {
-		return nil, false
+	for index := range models {
+		if models[index].Model.Available() {
+			return &models[index], true
+		}
 	}
-	return &models[0], true
+	return nil, false
 }
 
 func HasWorkspaceBinding(cfg Config, workspace string) bool {
@@ -946,10 +1634,14 @@ func WorkspaceForTaskType(taskType string) (string, bool) {
 	switch strings.TrimSpace(taskType) {
 	case "t2i":
 		return WorkspaceT2I, true
+	case "infinite_canvas":
+		return WorkspaceCanvas, true
 	case "coloring":
 		return WorkspaceColoring, true
 	case "ui_design", "ui_design_asset":
 		return WorkspaceUIDesign, true
+	case "ecommerce_design":
+		return WorkspaceEcommerce, true
 	case "model_sheet":
 		return WorkspaceModelSheet, true
 	case "game_art":
@@ -1009,6 +1701,16 @@ func ExecutionCandidates(cfg Config, providerID, modelID string) []Selection {
 }
 
 func ExecutionCandidatesRoute(cfg Config, providerID, modelID, routeID string) []Selection {
+	return executionCandidatesRoute(cfg, providerID, modelID, routeID, false, 0)
+}
+
+// ExecutionCandidatesRouteAcrossProviders expands execution capacity to enabled
+// public models with the same type, display name and effective task price.
+func ExecutionCandidatesRouteAcrossProviders(cfg Config, providerID, modelID, routeID string, expectedPrice int64) []Selection {
+	return executionCandidatesRoute(cfg, providerID, modelID, routeID, true, expectedPrice)
+}
+
+func executionCandidatesRoute(cfg Config, providerID, modelID, routeID string, acrossProviders bool, expectedPrice int64) []Selection {
 	normalize(&cfg)
 	var selected Model
 	found := false
@@ -1021,27 +1723,34 @@ func ExecutionCandidatesRoute(cfg Config, providerID, modelID, routeID string) [
 	if !found {
 		return nil
 	}
-	var selectedProvider Provider
-	for _, provider := range cfg.Providers {
-		if provider.ID == selected.ProviderID {
-			selectedProvider = provider
-			break
+	models := []Model{selected}
+	seenProviders := map[string]bool{selected.ProviderID: true}
+	if acrossProviders && EffectivePrice(selected) == expectedPrice {
+		for _, model := range cfg.Models {
+			if seenProviders[model.ProviderID] || !model.Enabled || !model.Public || !model.Available() || model.Kind != selected.Kind || model.Tool != selected.Tool ||
+				!strings.EqualFold(strings.TrimSpace(model.Name), strings.TrimSpace(selected.Name)) ||
+				EffectivePrice(model) != expectedPrice {
+				continue
+			}
+			models = append(models, model)
+			seenProviders[model.ProviderID] = true
 		}
 	}
-	if selectedProvider.ID == "" {
-		return nil
-	}
-	routes := executionRoutes(selectedProvider)
-	out := make([]Selection, 0, len(routes))
-	for _, route := range routes {
-		if strings.TrimSpace(route.APIKey) == "" {
-			continue
+	out := make([]Selection, 0)
+	for _, model := range models {
+		provider := cfgProviderByID(cfg, model.ProviderID)
+		for _, route := range executionRoutes(provider) {
+			if strings.TrimSpace(route.APIKey) == "" {
+				continue
+			}
+			out = append(out, Selection{Provider: route, Model: model})
 		}
-		out = append(out, Selection{Provider: route, Model: selected})
 	}
 	if routeID != "" {
 		sort.SliceStable(out, func(i, j int) bool {
-			return out[i].Provider.RouteID == routeID && out[j].Provider.RouteID != routeID
+			leftPreferred := out[i].Provider.ID == providerID && out[i].Provider.RouteID == routeID
+			rightPreferred := out[j].Provider.ID == providerID && out[j].Provider.RouteID == routeID
+			return leftPreferred && !rightPreferred
 		})
 	}
 	return out
@@ -1075,21 +1784,32 @@ func OverlayTaskPrices(cfg Config, legacy map[string]int64) (map[string]int64, m
 	for _, taskType := range ImageTaskTypes {
 		workspace, _ := WorkspaceForTaskType(taskType)
 		models := PublicModelsForWorkspace(cfg, workspace, ModelKindImage)
+		models = availableSelections(models)
 		if len(models) == 0 {
 			continue
 		}
-		rangeValue := PriceRange{MinCents: EffectivePrice(models[0].Model), MaxCents: EffectivePrice(models[0].Model)}
-		for _, selection := range models[1:] {
-			price := EffectivePrice(selection.Model)
-			if price < rangeValue.MinCents {
-				rangeValue.MinCents = price
+		var rangeValue PriceRange
+		for index, selection := range models {
+			low, high := WorkspacePriceBounds(cfg, workspace, selection.Model)
+			if index == 0 || low < rangeValue.MinCents {
+				rangeValue.MinCents = low
 			}
-			if price > rangeValue.MaxCents {
-				rangeValue.MaxCents = price
+			if index == 0 || high > rangeValue.MaxCents {
+				rangeValue.MaxCents = high
 			}
 		}
 		prices[taskType] = rangeValue.MaxCents
 		ranges[taskType] = rangeValue
 	}
 	return prices, ranges
+}
+
+func availableSelections(values []Selection) []Selection {
+	out := make([]Selection, 0, len(values))
+	for _, selection := range values {
+		if selection.Model.Available() {
+			out = append(out, selection)
+		}
+	}
+	return out
 }

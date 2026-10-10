@@ -37,6 +37,14 @@ func withDatabase(baseURL, dbName string) string {
 // Setup 建临时库 + 迁移，返回 store；测试结束自动删库。
 func Setup(t *testing.T) *store.Store {
 	t.Helper()
+	st, _ := SetupAt(t, 0)
+	return st
+}
+
+// SetupAt 与 Setup 相同，但只迁移到指定版本（0 为最新），并返回连接串，
+// 供测试升级路径。
+func SetupAt(t *testing.T, version int64) (*store.Store, string) {
+	t.Helper()
 	ctx := context.Background()
 
 	dbName := fmt.Sprintf("sc_test_%d_%s", time.Now().UnixNano(),
@@ -54,22 +62,20 @@ func Setup(t *testing.T) *store.Store {
 		t.Fatalf("create temp database: %v", err)
 	}
 	_ = admin.Close(ctx)
+	// Register cleanup before migration: an invalid migration can panic before
+	// the Store exists, and must not leave a temporary database behind.
+	t.Cleanup(func() { dropDatabase(t, dbName) })
 
 	dbURL := withDatabase(adminURL(), dbName)
-	if err := store.Migrate(dbURL); err != nil {
-		dropDatabase(t, dbName)
+	if err := store.MigrateTo(dbURL, version); err != nil {
 		t.Fatalf("migrate temp database: %v", err)
 	}
 	st, err := store.New(ctx, dbURL)
 	if err != nil {
-		dropDatabase(t, dbName)
 		t.Fatalf("connect temp database: %v", err)
 	}
-	t.Cleanup(func() {
-		st.Close()
-		dropDatabase(t, dbName)
-	})
-	return st
+	t.Cleanup(st.Close)
+	return st, dbURL
 }
 
 func dropDatabase(t *testing.T, dbName string) {

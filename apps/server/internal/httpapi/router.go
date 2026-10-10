@@ -3,17 +3,27 @@
 package httpapi
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/announcementstream"
+	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantreview"
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
+	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
+	"github.com/BlankLife886/startcloudsai/server/internal/notifystream"
+	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -24,44 +34,113 @@ var writeMethods = map[string]bool{"POST": true, "PATCH": true, "DELETE": true, 
 func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 	limit := int64(1 << 20)
 	switch {
+	case path == "/v1/images/edits":
+		// Reference images spool to disk and stream to the upstream; this only
+		// guards the disk. The model's reference-image limit bounds the count.
+		return openAIImageEditMaxBodyBytes
+	case path == "/v1/chat/completions":
+		// Messages may carry Base64 images next to the conversation.
+		return openAIChatMaxRequestBytes
+	case path == "/api/v1/canvas/html-shares":
+		// A shared page carries its images inline; the handler caps the page itself at 3 MiB.
+		return 4 << 20
 	case path == "/api/v1/uploads":
 		return uploadMaxBytes + (1 << 20)
 	case strings.HasPrefix(path, "/api/v1/assistant/"):
 		return 20 << 20
+	case strings.HasPrefix(path, "/api/v1/canvas-projects"):
+		// 传输层硬上限；实际单项目上限由后台 canvas_project_max_kb 在接口内判断。
+		return settings.CanvasProjectRequestMaxMB << 20
+	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates/") && strings.HasSuffix(path, "/cover"):
+		return promptCoverMaxBytes + (1 << 20)
+	case strings.HasPrefix(path, "/api/v1/admin/image-skills/") &&
+		(strings.HasSuffix(path, "/cover") || strings.HasSuffix(path, "/samples")):
+		return promptCoverMaxBytes + (1 << 20)
+	case strings.HasPrefix(path, "/api/v1/admin/image-skills/") && strings.HasSuffix(path, "/references"):
+		// 参考资料合计 512 KB，JSON 转义（中文、换行）后可能翻倍，留足余量。
+		return 2 << 20
+	case path == "/api/v1/admin/canvas-workflow-templates/analyze":
+		return 2 << 20
+	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates"):
+		// 完整画布导出包包含图片；multipart 边界需要额外空间。
+		return canvasTemplatePackageMaxBytes + (2 << 20)
 	case strings.HasPrefix(path, "/api/v1/admin/prompts/") && strings.HasSuffix(path, "/cover"):
 		// multipart 边界和字段会产生少量额外开销，不能直接使用图片净大小。
 		return promptCoverMaxBytes + (1 << 20)
+	case strings.HasPrefix(path, "/api/v1/admin/prompt-import-batches/") && strings.HasSuffix(path, "/cover"):
+		return promptCoverMaxBytes + (1 << 20)
+	case strings.HasPrefix(path, "/api/v1/admin/ecommerce/catalog"),
+		strings.HasPrefix(path, "/api/v1/admin/ecommerce/tryon-catalog"):
+		return tryonCatalogMaxBytes + (1 << 20)
+	case path == "/api/v1/admin/announcements/images":
+		return promptCoverMaxBytes + (1 << 20)
+	case path == "/api/v1/admin/home-banners/images":
+		return 0 // Admin banner originals stream to storage without a body-size cap.
+	case path == "/api/v1/admin/model-config/icons":
+		return modelIconMaxBytes + (1 << 20)
+	case path == "/api/v1/admin/prompt-import-batches/upload":
+		return promptTransferMaxBytes + (1 << 20)
 	default:
 		return limit
 	}
 }
 
 type Server struct {
-	Cfg               *config.Config
-	St                *store.Store
-	Storage           *storage.Storage
-	C2A               *c2a.Client
-	Queue             *taskflow.Queue
-	LoginLimiter      auth.AttemptLimiter
-	AdminLoginLimiter auth.AttemptLimiter
-	RedeemLimiter     auth.AttemptLimiter
-	PromptSync        *promptsync.Engine
-	Metrics           *systemMetrics
+	SubscriptionClock  func() time.Time
+	Cfg                *config.Config
+	St                 *store.Store
+	Storage            *storage.Storage
+	C2A                *c2a.Client
+	Queue              *taskflow.Queue
+	LoginLimiter       auth.AttemptLimiter
+	AdminLoginLimiter  auth.AttemptLimiter
+	RedeemLimiter      auth.AttemptLimiter
+	UsageLimiter       auth.UsageLimiter
+	ConcurrencyLimiter auth.ConcurrencyLimiter
+	PromptSync         *promptsync.Engine
+	Metrics            *systemMetrics
+	LanjingPay         *lanjingpay.Client
+	Logs               *platformlog.Recorder
+	AnnouncementStream *announcementstream.Source
+	// NotificationHub signals SSE connections the moment a user gets a new notification.
+	NotificationHub *notifystream.Hub
+	// AssistantProber runs the agent's first move for admin evaluations; the
+	// server's main wires in the worker's implementation.
+	AssistantProber   assistantreview.Prober
 	limiterClosers    []func() error
+	c2aCallbackRoutes func(context.Context, uuid.UUID) ([]store.AsyncPendingRoute, error)
+	enqueueImagePoll  func(context.Context, string, string, string, int, time.Duration) error
+	pageControls      pageControlCache
+	paymentListener   paymentListenerTracker
+	paymentAlerts     paymentAlertMailer
+	modelStatus       modelStatusCache
+	backgroundCancel  context.CancelFunc
+	backgroundWG      sync.WaitGroup
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) (*Server, error) {
 	s := &Server{
-		Cfg:               cfg,
-		St:                st,
-		Storage:           stg,
-		C2A:               c2aClient,
-		Queue:             queue,
-		LoginLimiter:      auth.NewLoginLimiter(),
-		AdminLoginLimiter: auth.NewLoginLimiter(),
-		RedeemLimiter:     auth.NewRedeemLimiter(),
-		PromptSync:        promptsync.New(st, cfg.AppEnv == "development"),
-		Metrics:           newSystemMetrics(time.Now()),
+		Cfg:                cfg,
+		St:                 st,
+		Storage:            stg,
+		C2A:                c2aClient,
+		Queue:              queue,
+		LoginLimiter:       auth.NewLoginLimiter(),
+		AdminLoginLimiter:  auth.NewLoginLimiter(),
+		RedeemLimiter:      auth.NewRedeemLimiter(),
+		UsageLimiter:       auth.NewMemoryUsageLimiter(),
+		ConcurrencyLimiter: auth.NewMemoryConcurrencyLimiter(),
+		PromptSync:         promptsync.New(st, cfg.AppEnv == "development"),
+		Metrics:            newSystemMetrics(time.Now()),
+		Logs:               platformlog.New(st.Pool, "api"),
+	}
+	if st != nil {
+		s.c2aCallbackRoutes = func(ctx context.Context, taskID uuid.UUID) ([]store.AsyncPendingRoute, error) {
+			return store.CallbackImagePollRoutes(ctx, st.Pool, taskID)
+		}
+	}
+	if queue != nil {
+		s.enqueueImagePoll = queue.EnqueueImagePoll
 	}
 	if cfg.AppEnv == "production" {
 		login, err := auth.NewRedisLoginLimiter(cfg.RedisURL, "user-login", false)
@@ -80,12 +159,52 @@ func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c
 			return nil, err
 		}
 		s.LoginLimiter, s.AdminLoginLimiter, s.RedeemLimiter = login, admin, redeem
-		s.limiterClosers = []func() error{login.Close, admin.Close, redeem.Close}
+		usage, err := auth.NewRedisUsageLimiter(cfg.RedisURL)
+		if err != nil {
+			_ = login.Close()
+			_ = admin.Close()
+			_ = redeem.Close()
+			return nil, err
+		}
+		s.UsageLimiter = usage
+		concurrency, err := auth.NewRedisConcurrencyLimiter(cfg.RedisURL)
+		if err != nil {
+			_ = login.Close()
+			_ = admin.Close()
+			_ = redeem.Close()
+			_ = usage.Close()
+			return nil, err
+		}
+		s.ConcurrencyLimiter = concurrency
+		s.limiterClosers = []func() error{login.Close, admin.Close, redeem.Close, usage.Close, concurrency.Close}
 	}
+	if st != nil {
+		var bus announcementstream.Bus
+		if cfg.RedisURL != "" {
+			redisBus, err := announcementstream.NewRedisBus(cfg.RedisURL, cfg.DatabaseURL)
+			if err != nil {
+				s.Close()
+				return nil, err
+			}
+			bus = redisBus
+		}
+		s.AnnouncementStream = announcementstream.New(s.announcementSnapshot, bus, announcementstream.Options{})
+		s.NotificationHub = notifystream.New()
+		s.NotificationHub.Start(st.Pool)
+	}
+	s.startBackgroundSecurityJobs()
 	return s, nil
 }
 
 func (s *Server) Close() {
+	if s.AnnouncementStream != nil {
+		_ = s.AnnouncementStream.Close()
+	}
+	s.NotificationHub.Close()
+	if s.backgroundCancel != nil {
+		s.backgroundCancel()
+		s.backgroundWG.Wait()
+	}
 	for _, closeLimiter := range s.limiterClosers {
 		_ = closeLimiter()
 	}
@@ -105,34 +224,66 @@ func (s *Server) Router() *gin.Engine {
 		log.Printf("invalid TRUSTED_PROXIES %q: %v", s.Cfg.TrustedProxies, err)
 	}
 	r.HandleMethodNotAllowed = true
-	r.Use(gin.Logger())
+	r.Use(s.platformLoggingMiddleware)
+	r.Use(openAICORSMiddleware)
+	r.Use(openAICompatRequestMiddleware)
 	r.Use(s.requestMetricsMiddleware)
-	r.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
+	legacyRecovery := gin.CustomRecovery(func(c *gin.Context, err any) {
 		log.Printf("panic on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
-		c.AbortWithStatusJSON(500, gin.H{"success": false, "code": "internal_error", "error": "服务器内部错误"})
-	}))
+		fail(c, apperr.E("internal_error", "服务器内部错误", http.StatusInternalServerError))
+	})
+	compatRecovery := gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, _ any) {
+		// Gin's default recovery dumps panic values and request headers before
+		// calling its handler. Compatibility requests log only safe error metadata.
+		failOpenAI(c, apperr.E("internal_error", "服务器内部错误", http.StatusInternalServerError), "")
+	})
+	r.Use(func(c *gin.Context) {
+		if isOpenAICompatPath(c.Request.URL.Path) {
+			compatRecovery(c)
+			return
+		}
+		legacyRecovery(c)
+	})
 	r.Use(func(c *gin.Context) {
 		limit := requestBodyLimit(c.Request.URL.Path, s.Cfg.UploadMaxBytes)
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		if limit > 0 {
+			if isOpenAICompatPath(c.Request.URL.Path) && c.Request.ContentLength > limit {
+				failOpenAI(c, &http.MaxBytesError{Limit: limit}, "")
+				return
+			}
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		}
 		c.Next()
 	})
 	r.Use(s.originGuard)
+	r.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(store.WithBillingClock(c.Request.Context(), s.subscriptionNow))
+		c.Next()
+	})
 
 	r.NoRoute(func(c *gin.Context) {
-		c.JSON(404, gin.H{"success": false, "code": "not_found", "error": "Not Found"})
+		fail(c, apperr.E("not_found", "Not Found", http.StatusNotFound))
 	})
 	r.NoMethod(func(c *gin.Context) {
-		c.JSON(405, gin.H{"success": false, "code": "bad_request", "error": "Method Not Allowed"})
+		fail(c, apperr.E("bad_request", "Method Not Allowed", http.StatusMethodNotAllowed))
 	})
+	r.POST("/internal/c2a/image-task-events", s.c2aImageTaskEvent)
 
 	api := r.Group("/api/v1")
 
 	// auth
 	api.GET("/auth/providers", s.authProviders)
+	api.GET("/referral-attribution", s.referralAttribution)
+	api.POST("/referral-attribution", s.referralAttribution)
+	api.DELETE("/referral-attribution", s.referralAttribution)
 	api.POST("/auth/email-verification-codes", s.requestEmailLoginCode)
 	api.POST("/auth/session", s.verifyEmailCode)
 	api.GET("/auth/session", s.authMe)
 	api.DELETE("/auth/session", s.logout)
+	api.GET("/trial-access-campaign", s.trialAccessCampaign)
+
+	// 公开模型状态页：只读、无需登录、进程内缓存 1 小时
+	api.GET("/model-status", s.publicModelStatus)
 
 	// assistant workspace (Sub2API server-side bridge)
 	api.GET("/assistant/config", s.assistantConfig)
@@ -141,37 +292,180 @@ func (s *Server) Router() *gin.Engine {
 	// api.POST("/assistant/images", s.assistantImages)
 	api.GET("/assistant/conversations", s.assistantConversations)
 	api.POST("/assistant/conversations", s.createAssistantConversation)
+	api.GET("/assistant/conversation-quota", s.assistantConversationQuotaEndpoint)
+	api.GET("/assistant/conversation-archive", s.archivedAssistantConversations)
+	api.POST("/assistant/conversations/:id/archive", s.archiveAssistantConversation)
+	api.POST("/assistant/conversations/:id/restore", s.restoreAssistantConversation)
+	api.PUT("/assistant/conversations/:id/pin", s.pinAssistantConversation)
+	api.GET("/assistant/conversations/:id", s.assistantConversation)
+	api.PATCH("/assistant/conversations/:id", s.patchAssistantConversation)
 	api.DELETE("/assistant/conversations/:id", s.deleteAssistantConversation)
+	api.POST("/assistant/conversations/:id/context-boundaries", s.createAssistantContextBoundary)
 	api.DELETE("/assistant/messages/:id", s.deleteAssistantMessage)
+	api.PUT("/assistant/messages/:id/feedback", s.setAssistantMessageFeedback)
+	api.DELETE("/assistant/messages/:id/images/:imageId", s.deleteAssistantMessageImage)
 	api.POST("/assistant/conversation-imports", s.importAssistantConversations)
+	api.GET("/assistant/files", s.assistantFiles)
+	api.POST("/assistant/files", s.createAssistantFile)
+	api.GET("/assistant/files/:id", s.assistantFile)
+	api.DELETE("/assistant/files/:id", s.deleteAssistantFile)
 	api.GET("/assistant/runs", s.assistantRuns)
+	api.GET("/assistant/saved-images", s.listAssistantSavedImages)
+	api.POST("/assistant/stats-query", s.rerunAssistantStats)
+	api.GET("/assistant/commerce-sets/:id", s.getAssistantCommerceSet)
+	api.POST("/assistant/commerce-sets/:id/generate", s.generateAssistantCommerceSet)
+	api.POST("/assistant/commerce-sets/:id/redo", s.redoAssistantCommerceSet)
+	api.POST("/assistant/commerce-sets/:id/review", s.reviewAssistantCommerceSet)
+	api.POST("/assistant/commerce-sets/:id/adopt", s.adoptAssistantCommerceShot)
+	api.GET("/assistant/commerce-sets/:id/archive", s.archiveAssistantCommerceSet)
+	api.POST("/assistant/asset-actions/execute", s.executeAssistantAssetAction)
+	api.POST("/assistant/asset-actions/undo", s.undoAssistantAssetAction)
+	api.GET("/assistant/memories", s.listAssistantMemories)
+	api.POST("/assistant/memories", s.createAssistantMemory)
+	api.PUT("/assistant/memories/settings", s.updateAssistantMemorySettings)
+	api.GET("/assistant/proactive/settings", s.getAssistantProactiveSettings)
+	api.PUT("/assistant/proactive/settings", s.updateAssistantProactiveSettings)
+	api.GET("/assistant/proactive/suggestions", s.getAssistantSuggestions)
+	api.PATCH("/assistant/memories/:id", s.updateAssistantMemory)
+	api.DELETE("/assistant/memories/:id", s.deleteAssistantMemory)
 	api.POST("/assistant/runs", s.createAssistantRun)
 	api.GET("/assistant/runs/:id", s.assistantRun)
+	api.GET("/assistant/runs/:id/trace", s.assistantRunTrace)
 	api.GET("/assistant/runs/:id/events", s.assistantRunStream)
+	api.POST("/assistant/runs/:id/tool-claims", s.postAssistantRunToolClaim)
+	api.POST("/assistant/runs/:id/tool-results", s.postAssistantRunToolResult)
 	api.PATCH("/assistant/runs/:id", s.patchAssistantRun)
 
 	// me
+	api.DELETE("/me/account", s.deleteAccount)
+	api.GET("/me/data-export", s.exportPersonalData)
+	api.GET("/me/sessions", s.userSessions)
+	api.DELETE("/me/sessions", s.deleteUserSessions)
+	api.DELETE("/me/sessions/:id", s.deleteUserSession)
 	api.PATCH("/me/profile", s.patchProfile)
 	api.GET("/me/overview", s.overview)
+	api.GET("/me/usage-stats", s.myUsageStats)
+	api.GET("/me/concurrency", s.myConcurrency)
 	api.GET("/me/wallet", s.myWallet)
+	api.GET("/me/referrals", s.myReferrals)
+	api.GET("/me/wallet/summary", s.myWalletSummary)
+	api.GET("/me/wallet/export", s.myWalletExport)
+	api.GET("/me/subscription", s.mySubscription)
+	api.GET("/me/subscriptions", s.mySubscriptions)
+	api.GET("/me/subscriptions/:id/grants", s.mySubscriptionGrants)
+	api.POST("/me/subscriptions/:id/upgrade-quote", s.mySubscriptionUpgradeQuote)
+	api.POST("/me/subscriptions/:id/refund", s.mySubscriptionRefund)
+	api.GET("/me/subscriptions/:id/refund-preview", s.mySubscriptionRefundPreview)
+	api.GET("/me/subscription-changes/:id", s.mySubscriptionChange)
 	api.GET("/me/wallet/entries", s.myLedger)
 	api.POST("/me/wallet/redemptions", s.redeemCode)
+	api.GET("/me/trial-access-application", s.myTrialAccessApplication)
+	api.POST("/me/trial-access-applications", s.submitTrialAccessApplication)
+	api.POST("/me/trial-access-application/reward", s.redeemTrialAccessReward)
+	// image skills（技能库：官方技能 + 用户存在云端的自建技能）
+	api.GET("/me/image-skills", s.myImageSkills)
+	api.POST("/me/image-skills", s.createMyImageSkill)
+	api.PATCH("/me/image-skills/:id", s.patchMyImageSkill)
+	api.DELETE("/me/image-skills/:id", s.deleteMyImageSkill)
 	api.GET("/me/notifications", s.myNotifications)
 	api.PATCH("/me/notifications", s.markNotificationsRead)
+	api.DELETE("/me/notifications", s.clearNotifications)
+	api.DELETE("/me/notifications/:id", s.dismissNotification)
+	api.GET("/me/notification-preferences", s.myNotificationPreferences)
+	api.PUT("/me/notification-preferences", s.saveMyNotificationPreferences)
 	api.GET("/me/tasks/events", s.userTaskStream)
 	api.GET("/me/gallery/submissions", s.mySubmissions)
 	api.DELETE("/me/gallery/submissions/:id", s.deleteSubmission)
+	api.GET("/me/blocked-users", s.myBlockedGalleryUsers)
 	api.GET("/me/assets", s.myAssets)
+	api.GET("/me/api-keys", s.developerAPIOnly(s.myAPIKeys))
+	api.POST("/me/api-keys", s.developerAPIOnly(s.createMyAPIKey))
+	api.PATCH("/me/api-keys/:id", s.developerAPIOnly(s.patchMyAPIKey))
+	api.POST("/me/api-keys/:id/rotate", s.developerAPIOnly(s.rotateMyAPIKey))
+	api.POST("/me/api-keys/:id/pause", s.developerAPIOnly(s.pauseMyAPIKey))
+	api.POST("/me/api-keys/:id/resume", s.developerAPIOnly(s.resumeMyAPIKey))
+	api.DELETE("/me/api-keys/:id", s.developerAPIOnly(s.revokeMyAPIKey))
+	api.GET("/me/api-models", s.developerAPIOnly(s.myOpenAPIModels))
+	api.GET("/me/api-usage-summary", s.myAPIUsageSummary)
+	api.GET("/me/api-calls", s.developerAPIOnly(s.myDeveloperAPICalls))
 	api.POST("/me/assets", s.createUserAsset)
+	api.PATCH("/me/assets/:id", s.updateUserAsset)
 	api.DELETE("/me/assets/:id", s.deleteUserAsset)
+	api.POST("/me/assets/batch", s.batchUserAssets)
+	api.POST("/me/assets/:id/restore", s.restoreUserAsset)
+	api.DELETE("/me/assets/:id/permanent", s.permanentlyDeleteUserAsset)
+	api.GET("/me/asset-groups", s.myAssetGroups)
+	api.POST("/me/asset-groups", s.createUserAssetGroup)
+	api.PATCH("/me/asset-groups/:id", s.updateUserAssetGroup)
+	api.DELETE("/me/asset-groups/:id", s.deleteUserAssetGroup)
+	api.GET("/me/feedback", s.myFeedback)
+	api.POST("/me/feedback", s.submitUserFeedback)
+	api.GET("/me/checkin", s.myCheckinState)
+	api.POST("/me/checkin", s.claimDailyCheckin)
+	api.GET("/me/growth", s.myGrowthPrograms)
+	api.POST("/me/growth/groups", s.createGrowthGroup)
+	api.POST("/me/growth/groups/join", s.joinGrowthGroup)
+	api.POST("/me/behavior-events", s.recordMyBehaviorEvents)
 
 	// tasks
 	api.POST("/tasks", s.createTask)
+	api.POST("/tasks/quote", s.quoteTask)
+	api.POST("/tasks/cancel-group", s.cancelTaskGroup)
+	api.GET("/tasks/by-idempotency", s.getTaskByIdempotency)
 	api.GET("/tasks", s.listTasks)
 	api.GET("/tasks/:id", s.getTask)
 	api.GET("/tasks/:id/events", s.taskStream)
 	api.PATCH("/tasks/:id", s.patchTask)
 	api.DELETE("/tasks/:id", s.deleteTask)
+	api.DELETE("/tasks/:id/outputs/:index", s.deleteTaskOutput)
+
+	// CRUN generic media catalog and point-billed tasks
+
+	// AI ecommerce product workspace
+	api.GET("/commerce/products", s.listEcommerceProducts)
+	api.POST("/commerce/products", s.createEcommerceProduct)
+	api.GET("/commerce/products/:id", s.getEcommerceProduct)
+	api.PATCH("/commerce/products/:id", s.updateEcommerceProduct)
+	api.DELETE("/commerce/products/:id", s.deleteEcommerceProduct)
+	api.POST("/commerce/product-briefs", s.generateEcommerceProductBrief)
+	api.POST("/commerce/tryon/garment-classifications", s.classifyTryonGarment)
+	api.POST("/commerce/listing-plans", s.generateEcommerceListingPlan)
+	api.GET("/commerce/aplus-catalog", s.ecommerceAplusCatalog)
+	api.POST("/commerce/aplus-plans", s.generateEcommerceAplusPlan)
+	api.POST("/commerce/detail-plans", s.generateEcommerceDetailPlan)
+	api.GET("/commerce/reviews", s.listEcommerceAssetReviews)
+	api.PUT("/commerce/reviews/:taskId", s.upsertEcommerceAssetReview)
+	api.GET("/commerce/catalog", s.publicEcommerceCatalog)
+	api.GET("/commerce/tryon-catalog", s.publicTryonCatalog)
+	api.GET("/commerce/handheld/catalog", s.publicHandheldCatalog)
+	api.POST("/commerce/handheld/quotes", s.quoteHandheldJob)
+	api.POST("/commerce/handheld/product-classifications", s.classifyHandheldProduct)
+	api.GET("/commerce/handheld/projects", s.listHandheldProjects)
+	api.POST("/commerce/handheld/projects", s.createHandheldProject)
+	api.GET("/commerce/handheld/projects/:id", s.getHandheldProject)
+	api.PUT("/commerce/handheld/projects/:id/draft", s.updateHandheldProjectDraft)
+	api.POST("/commerce/handheld/jobs", s.createHandheldJob)
+	api.GET("/commerce/handheld/jobs/:id", s.getHandheldJob)
+	api.POST("/commerce/handheld/jobs/:id/cancel", s.cancelHandheldJob)
+	api.POST("/commerce/handheld/items/:id/retry", s.retryHandheldItem)
+	api.POST("/commerce/handheld/items/:id/save-asset", s.saveHandheldItemAsset)
+
+	// canvas projects
+	api.GET("/me/canvas-project-quota", s.myCanvasProjectQuota)
+	api.GET("/canvas-projects", s.listCanvasProjects)
+	api.POST("/canvas-projects", s.createCanvasProject)
+	api.GET("/canvas-projects/:id", s.getCanvasProject)
+	api.PATCH("/canvas-projects/:id", s.patchCanvasProject)
+	api.DELETE("/canvas-projects/:id", s.deleteCanvasProject)
+	api.GET("/canvas-projects/:id/workflow-run", s.activeCanvasWorkflowRun)
+	api.POST("/canvas-projects/:id/workflow-runs", s.acquireCanvasWorkflowRun)
+	api.PATCH("/canvas-projects/:id/workflow-runs/:runId", s.patchCanvasWorkflowRun)
+	api.GET("/canvas-projects/:id/workflow-runs/:runId", s.canvasWorkflowRun)
+	api.GET("/canvas-workflow-templates", s.publicCanvasWorkflowTemplates)
+	api.GET("/public/html-shares/:id", s.publicCanvasHTMLShare)
+	api.POST("/canvas/html-shares", s.publishCanvasHTMLShare)
+	api.DELETE("/canvas/html-shares/:id", s.revokeCanvasHTMLShare)
+	api.GET("/canvas-workflow-templates/:id", s.publicCanvasWorkflowTemplate)
 
 	// uploads & files
 	api.POST("/uploads", s.upload)
@@ -181,20 +475,48 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/gallery/submissions", s.publicGallery)
 	api.GET("/gallery/categories", s.publicGalleryCategories)
 	api.POST("/gallery/submissions", s.submitGallery)
+	api.POST("/gallery/submissions/:id/reports", s.reportGallerySubmission)
+	api.POST("/gallery/users/:id/block", s.blockGalleryUser)
+	api.DELETE("/gallery/users/:id/block", s.unblockGalleryUser)
 
 	// prompts（提示词库，公开）
+	api.GET("/prompts/categories", s.publicPromptCategories)
 	api.GET("/prompts", s.publicPrompts)
 	api.POST("/prompts/:id/engagements", s.promptEngagement)
 
-	// plans（只读）。支付、订单创建和 webhook 仍未注册。
+	// plans & payments
 	api.GET("/plans", s.listPlans)
+	api.POST("/orders", s.createOrder)
+	api.GET("/orders", s.listOrders)
+	api.GET("/orders/:id", s.getOrder)
+	api.POST("/orders/:id/close", s.closeOrder)
+	api.POST("/orders/:id/payment-check", s.checkOrderPayment)
+	api.GET("/payments/lanjing/notify", s.lanjingPaymentNotify)
 
 	// meta
 	api.GET("/pricing", s.pricing)
 	api.GET("/runtime-config", s.runtimeConfig)
+	api.GET("/changelog/latest", s.metaChangelogLatest)
 	api.GET("/changelog", s.metaChangelog)
 	api.GET("/announcements", s.metaAnnouncements)
+	api.GET("/announcements/events", s.announcementEvents)
+	api.GET("/announcements/history", s.metaAnnouncementHistory)
+	api.GET("/home-banners", s.homeBanners)
 	api.GET("/health", s.health)
+
+	compat := r.Group("/v1")
+	compat.GET("/models", s.openAPIOnly(s.openAIModels))
+	compat.GET("/models/:model", s.openAPIOnly(s.openAIModel))
+	compat.POST("/chat/completions", s.openAPIOnly(s.openAIChatCompletions))
+	compat.POST("/images/generations", s.openAPIOnly(s.openAIGenerateImage))
+	compat.POST("/images/edits", s.openAPIOnly(s.openAIEditImage))
+
+	// OAuth 2.0 + PKCE for local image skills that call the Images API.
+	r.GET("/.well-known/oauth-authorization-server", s.imageSkillOAuthAuthorizationServer)
+	r.POST("/oauth/register", s.registerImageSkillOAuthClient)
+	r.GET("/oauth/authorize", s.authorizeImageSkillOAuth)
+	r.POST("/oauth/authorize", s.approveImageSkillOAuth)
+	r.POST("/oauth/token", s.exchangeImageSkillOAuthToken)
 
 	// admin auth（独立账号、会话与 Cookie）
 	api.POST("/admin/auth/session", s.adminLogin)
@@ -205,21 +527,106 @@ func (s *Server) Router() *gin.Engine {
 	// admin protected
 	admin := api.Group("/admin")
 	admin.Use(s.adminAudit)
+	// 管理员会话 Cookie 的 Path 是 /api/v1/admin，浏览器不会把它带给
+	// /api/v1/files/*，后台查看用户文件必须走这里的独立端点（跳过属主校验）。
+	admin.GET("/files/*key", s.adminOnly(s.adminGetFile))
+	admin.GET("/badge-counts", s.adminOnly(s.adminBadgeCounts))
 	admin.GET("/statistics", s.adminOnly(s.adminStats))
+	admin.GET("/profitability", s.adminOnly(s.adminProfitability))
+	admin.GET("/content-policy/config", s.adminOnly(s.adminContentPolicyConfig))
+	admin.PUT("/content-policy/config", s.adminOnly(s.adminContentPolicyConfig))
+	admin.POST("/content-policy/test", s.adminOnly(s.adminTestContentPolicy))
+	admin.GET("/content-policy/violations", s.adminOnly(s.adminContentPolicyViolations))
+	admin.GET("/content-policy/summary", s.adminOnly(s.adminContentPolicySummary))
+	admin.POST("/content-policy/violations/:id/refund", s.adminOnly(s.adminRefundContentPolicyViolation))
+	admin.GET("/developer-api/calls", s.adminOnly(s.adminDeveloperAPICalls))
+	admin.GET("/developer-api/summary", s.adminOnly(s.adminDeveloperAPISummary))
+	admin.GET("/developer-api/models", s.adminOnly(s.adminDeveloperAPIModels))
+	admin.POST("/developer-api/models", s.adminOnly(s.adminCreateDeveloperAPIModel))
+	admin.PATCH("/developer-api/models/:id", s.adminOnly(s.adminUpdateDeveloperAPIModel))
+	admin.POST("/developer-api/models/:id/publish", s.adminOnly(s.adminPublishDeveloperAPIModel))
+	admin.POST("/developer-api/models/:id/withdraw", s.adminOnly(s.adminWithdrawDeveloperAPIModel))
+	admin.POST("/developer-api/models/:id/maintenance", s.adminOnly(s.adminMaintainDeveloperAPIModel))
+	admin.POST("/developer-api/models/:id/resume", s.adminOnly(s.adminResumeDeveloperAPIModel))
+	admin.POST("/developer-api/models/:id/deprecate", s.adminOnly(s.adminDeprecateDeveloperAPIModel))
+	admin.POST("/developer-api/models/:id/undeprecate", s.adminOnly(s.adminUndeprecateDeveloperAPIModel))
+	admin.POST("/developer-api/models/:id/retire", s.adminOnly(s.adminRetireDeveloperAPIModel))
+	admin.GET("/developer-api/model-settings", s.adminOnly(s.adminDeveloperAPIModelSettings))
+	admin.PUT("/developer-api/model-settings", s.adminOnly(s.adminDeveloperAPIModelSettings))
+	admin.GET("/agent-quality", s.adminOnly(s.adminAgentQualityOverview))
+	admin.GET("/agent-quality/traces/:id", s.adminOnly(s.adminAgentTrace))
+	admin.PATCH("/agent-quality/eval-cases/:id", s.adminOnly(s.adminPatchAgentEvalCase))
+	admin.POST("/agent-quality/eval-runs", s.adminOnly(s.adminCreateAgentEvalRun))
+	admin.GET("/agent-quality/eval-runs/:id", s.adminOnly(s.adminAgentEvalRun))
 	admin.GET("/system/metrics", s.adminOnly(s.adminSystemMetrics))
+	admin.GET("/platform-logs", s.adminOnly(s.adminPlatformLogs))
+	admin.GET("/platform-logs/stats", s.adminOnly(s.adminPlatformLogStats))
+	admin.DELETE("/platform-logs", s.adminOnly(s.adminDeletePlatformLogs))
+	admin.POST("/platform-logs/cleanup", s.adminOnly(s.adminCleanupPlatformLogs))
+	admin.GET("/security/risks", s.adminOnly(s.adminSecurityRisks))
+	admin.POST("/security/risks/:id/resolve", s.adminOnly(s.adminResolveSecurityRisk))
+	admin.POST("/security/blocks/:id/revoke", s.adminOnly(s.adminRevokeSecurityBlock))
+	admin.POST("/security/api-keys/:id/unfreeze", s.adminOnly(s.adminUnfreezeAPIKey))
+	admin.GET("/security/upload-hashes", s.adminOnly(s.adminUploadHashBlocks))
+	admin.POST("/security/upload-hashes", s.adminOnly(s.adminAddUploadHashBlock))
+	admin.DELETE("/security/upload-hashes/:sha256", s.adminOnly(s.adminRemoveUploadHashBlock))
+	admin.GET("/payment-reconciliations", s.adminOnly(s.adminPaymentReconciliations))
+	admin.POST("/payment-reconciliations/run", s.adminOnly(s.adminRunPaymentReconciliation))
 	admin.GET("/users", s.adminOnly(s.adminListUsers))
+	admin.GET("/user-analytics", s.adminOnly(s.adminUserAnalytics))
 	admin.GET("/users/:id", s.adminOnly(s.adminGetUser))
+	admin.GET("/users/:id/billing", s.adminOnly(s.adminUserBilling))
+	admin.GET("/users/:id/credit-lots", s.adminOnly(s.adminUserCreditLots))
+	admin.GET("/users/:id/credit-lots/export", s.adminOnly(s.adminExportUserCreditLots))
 	admin.PATCH("/users/:id", s.adminOnly(s.adminPatchUser))
+	admin.POST("/users/:id/profile/refresh", s.adminOnly(s.adminRefreshUserProfile))
 	admin.GET("/users/:id/wallet/entries", s.adminOnly(s.adminUserLedger))
 	admin.POST("/users/:id/wallet/entries", s.adminOnly(s.adminWalletAdjust))
 	admin.GET("/wallet/entries", s.adminOnly(s.adminSiteLedger))
+	admin.GET("/orders", s.adminOnly(s.adminAccountingOrders))
+	admin.GET("/orders/export", s.adminOnly(s.adminExportOrderAccounting))
+	admin.GET("/orders/:id", s.adminOnly(s.adminOrderAccountingDetail))
+	admin.DELETE("/orders/:id", s.adminOnly(s.adminDeleteExpiredOrder))
+	admin.GET("/subscription-changes", s.adminOnly(s.adminSubscriptionChanges))
+	admin.GET("/subscription-changes/:id", s.adminOnly(s.adminSubscriptionChangeDetail))
+	admin.POST("/subscription-changes/:id/review", s.adminOnly(s.adminReviewSubscriptionRefund))
+	admin.GET("/orders/:id/subscription-refund", s.adminOnly(s.adminManualRefundPreview))
+	admin.GET("/orders/:id/subscription-audit", s.adminOnly(s.adminSubscriptionAudit))
+	admin.POST("/orders/:id/subscription-refund", s.adminOnly(s.adminRequestManualRefund))
+	admin.GET("/plans", s.adminOnly(s.adminListPlans))
+	admin.GET("/plans/:id/versions", s.adminOnly(s.adminPlanVersions))
+	admin.POST("/plans", s.adminOnly(s.adminCreatePlan))
+	admin.PATCH("/plan-order", s.adminOnly(s.adminReorderPlans))
+	admin.PATCH("/plans/order", s.adminOnly(s.adminReorderPlans))
+	admin.PATCH("/plans/:id", s.adminOnly(s.adminPatchPlan))
+	admin.DELETE("/plans/:id", s.adminOnly(s.adminDeletePlan))
 	admin.GET("/tasks", s.adminOnly(s.adminListTasks))
+	admin.DELETE("/tasks", s.adminOnly(s.adminPurgeTasks))
 	admin.PATCH("/tasks/:id", s.adminOnly(s.adminPatchTask))
+	admin.GET("/tasks/:id/timeline", s.adminOnly(s.adminTaskTimeline))
+	admin.GET("/canvas-workflow-templates", s.adminOnly(s.adminCanvasWorkflowTemplates))
+	admin.POST("/canvas-workflow-templates", s.adminOnly(s.adminCreateCanvasWorkflowTemplate))
+	admin.POST("/canvas-workflow-templates/analyze", s.adminOnly(s.adminAnalyzeCanvasWorkflowTemplate))
+	admin.PATCH("/canvas-workflow-templates/order", s.adminOnly(s.adminReorderCanvasWorkflowTemplates))
+	admin.PATCH("/canvas-workflow-templates/:id", s.adminOnly(s.adminPatchCanvasWorkflowTemplate))
+	admin.PUT("/canvas-workflow-templates/:id/cover", s.adminOnly(s.adminUploadCanvasWorkflowTemplateCover))
+	admin.DELETE("/canvas-workflow-templates/:id", s.adminOnly(s.adminDeleteCanvasWorkflowTemplate))
 	admin.GET("/audit-logs", s.adminOnly(s.adminAuditLogs))
 	admin.POST("/redemption-code-batches", s.adminOnly(s.adminGenerateRedemptionCodes))
 	admin.GET("/redemption-codes", s.adminOnly(s.adminListRedemptionCodes))
 	admin.PATCH("/redemption-codes/:id", s.adminOnly(s.adminDisableRedemptionCode))
 	admin.GET("/redemption-code-batches", s.adminOnly(s.adminRedemptionBatches))
+	admin.GET("/trial-access-applications", s.adminOnly(s.adminTrialAccessApplications))
+	admin.PATCH("/trial-access-applications/:id", s.adminOnly(s.adminReviewTrialAccessApplication))
+	admin.POST("/trial-access-applications/:id/reward-reissues", s.adminOnly(s.adminReissueTrialAccessReward))
+	admin.GET("/trial-campaigns", s.adminOnly(s.adminTrialCampaigns))
+	admin.POST("/trial-campaigns", s.adminOnly(s.adminCreateTrialCampaign))
+	admin.PATCH("/trial-campaigns/:id", s.adminOnly(s.adminUpdateTrialCampaign))
+	admin.DELETE("/trial-campaigns/:id", s.adminOnly(s.adminDeleteTrialCampaign))
+	admin.POST("/trial-campaigns/:id/activation", s.adminOnly(s.adminActivateTrialCampaign))
+	admin.POST("/trial-campaigns/:id/closure", s.adminOnly(s.adminCloseTrialCampaign))
+	admin.GET("/feedback", s.adminOnly(s.adminFeedback))
+	admin.PATCH("/feedback/:id", s.adminOnly(s.adminReviewFeedback))
 	admin.GET("/gallery/submissions", s.adminOnly(s.adminSubmissions))
 	admin.POST("/gallery/submissions/:id/reviews", s.adminOnly(s.adminReviewSubmission))
 	admin.PUT("/gallery/submissions/:id/curation", s.adminOnly(s.adminCurateSubmission))
@@ -234,7 +641,22 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/gallery/settings", s.adminOnly(s.adminGetGallerySettings))
 	admin.PUT("/gallery/settings", s.adminOnly(s.adminPutGallerySettings))
 	admin.GET("/gallery/authors", s.adminOnly(s.adminGalleryAuthors))
+	admin.GET("/image-skills", s.adminOnly(s.adminListImageSkills))
+	admin.POST("/image-skills", s.adminOnly(s.adminCreateImageSkill))
+	admin.PATCH("/image-skills/:id", s.adminOnly(s.adminPatchImageSkill))
+	admin.DELETE("/image-skills/:id", s.adminOnly(s.adminDeleteImageSkill))
+	admin.PUT("/image-skills/:id/cover", s.adminOnly(s.adminUploadImageSkillCover))
+	admin.DELETE("/image-skills/:id/cover", s.adminOnly(s.adminDeleteImageSkillCover))
+	admin.POST("/image-skills/:id/samples", s.adminOnly(s.adminAddImageSkillSample))
+	admin.PUT("/image-skills/:id/samples", s.adminOnly(s.adminSetImageSkillSamples))
+	admin.GET("/image-skills/:id/references", s.adminOnly(s.adminImageSkillReferences))
+	admin.PUT("/image-skills/:id/references", s.adminOnly(s.adminSetImageSkillReferences))
+	admin.GET("/prompt-categories", s.adminOnly(s.adminPromptCategories))
+	admin.POST("/prompt-categories", s.adminOnly(s.adminCreatePromptCategory))
+	admin.PATCH("/prompt-categories/:id", s.adminOnly(s.adminPatchPromptCategory))
+	admin.DELETE("/prompt-categories/:id", s.adminOnly(s.adminDeletePromptCategory))
 	admin.GET("/prompts", s.adminOnly(s.adminListPrompts))
+	admin.GET("/prompts/export", s.adminOnly(s.adminExportPrompts))
 	admin.POST("/prompts", s.adminOnly(s.adminCreatePrompt))
 	admin.PATCH("/prompts/order", s.adminOnly(s.adminReorderPrompts))
 	admin.GET("/prompts/:id/position", s.adminOnly(s.adminPromptPosition))
@@ -242,39 +664,119 @@ func (s *Server) Router() *gin.Engine {
 	admin.PATCH("/prompts/:id", s.adminOnly(s.adminPatchPrompt))
 	admin.DELETE("/prompts/:id", s.adminOnly(s.adminDeletePrompt))
 	admin.PUT("/prompts/:id/cover", s.adminOnly(s.adminUploadPromptCover))
+	admin.POST("/prompts/external-covers/cache", s.adminOnly(s.adminCacheExternalPromptCovers))
 	admin.POST("/gallery/submissions/:id/prompts", s.adminOnly(s.adminCreatePromptFromSubmission))
 	admin.GET("/prompt-sources", s.adminOnly(s.adminListPromptSources))
 	admin.POST("/prompt-sources", s.adminOnly(s.adminCreatePromptSource))
 	admin.PATCH("/prompt-sources/:id", s.adminOnly(s.adminPatchPromptSource))
 	admin.DELETE("/prompt-sources/:id", s.adminOnly(s.adminDeletePromptSource))
 	admin.POST("/prompt-sources/:id/synchronizations", s.adminOnly(s.adminSyncPromptSource))
+	admin.GET("/prompt-import-batches", s.adminOnly(s.adminListPromptImportBatches))
+	admin.POST("/prompt-import-batches", s.adminOnly(s.adminCreatePromptImportBatch))
+	admin.POST("/prompt-import-batches/upload", s.adminOnly(s.adminUploadPromptImport))
+	admin.GET("/prompt-import-batches/:id", s.adminOnly(s.adminGetPromptImportBatch))
+	admin.GET("/prompt-import-batches/:id/items", s.adminOnly(s.adminListPromptImportItems))
+	admin.GET("/prompt-import-batches/:id/items/:itemId/cover", s.adminOnly(s.adminPromptImportItemCover))
+	admin.PUT("/prompt-import-batches/:id/items/:itemId/cover", s.adminOnly(s.adminUploadPromptImportItemCover))
+	admin.PATCH("/prompt-import-batches/:id/items/:itemId", s.adminOnly(s.adminPatchPromptImportItem))
+	admin.POST("/prompt-import-batches/:id/analyze", s.adminOnly(s.adminAnalyzePromptImportBatch))
+	admin.POST("/prompt-import-batches/:id/bulk-review", s.adminOnly(s.adminBulkReviewPromptImportBatch))
+	admin.POST("/prompt-import-batches/:id/publish", s.adminOnly(s.adminPublishPromptImportBatch))
+	admin.GET("/home-banners", s.adminOnly(s.adminHomeBanners))
+	admin.GET("/referral-config", s.adminOnly(s.adminReferralConfig))
+	admin.PUT("/referral-config", s.adminOnly(s.adminSaveReferralConfig))
+	admin.GET("/referral-relations", s.adminOnly(s.adminReferralRelations))
+	admin.GET("/referral-rewards", s.adminOnly(s.adminReferralRewards))
+	admin.GET("/referral-rewards/:id/actions", s.adminOnly(s.adminReferralRewardActions))
+	admin.POST("/referral-rewards/:id/reversal", s.adminOnly(s.adminReverseReferralReward))
+	admin.POST("/home-banners", s.adminOnly(s.adminSaveHomeBanner))
+	admin.POST("/home-banners/images", s.adminOnly(s.adminUploadHomeBannerImage))
+	admin.PUT("/home-banners/:id", s.adminOnly(s.adminSaveHomeBanner))
+	admin.DELETE("/home-banners/:id", s.adminOnly(s.adminDeleteHomeBanner))
 	admin.GET("/announcements", s.adminOnly(s.adminAnnouncements))
+	admin.GET("/announcements/events", s.adminOnly(s.adminAnnouncementEvents))
 	admin.POST("/announcements", s.adminOnly(s.adminCreateAnnouncement))
+	admin.POST("/announcements/images", s.adminOnly(s.adminUploadAnnouncementImage))
+	admin.POST("/announcements/:id/push", s.adminOnly(s.adminPushAnnouncement))
 	admin.PATCH("/announcements/:id", s.adminOnly(s.adminPatchAnnouncement))
 	admin.DELETE("/announcements/:id", s.adminOnly(s.adminDeleteAnnouncement))
+	admin.GET("/changelog/export", s.adminOnly(s.adminExportChangelog))
+	admin.POST("/changelog/import", s.adminOnly(s.adminImportChangelog))
+	admin.POST("/changelog/draft", s.adminOnly(s.adminDraftChangelog))
 	admin.GET("/changelog", s.adminOnly(s.adminChangelog))
 	admin.POST("/changelog", s.adminOnly(s.adminCreateChangelog))
 	admin.PATCH("/changelog/:id", s.adminOnly(s.adminPatchChangelog))
 	admin.DELETE("/changelog/:id", s.adminOnly(s.adminDeleteChangelog))
 	admin.GET("/settings", s.adminOnly(s.adminGetSettings))
 	admin.PUT("/settings", s.adminOnly(s.adminPutSettings))
+	admin.GET("/growth/groups", s.adminOnly(s.adminGrowthGroups))
 	admin.POST("/providers/c2a/tests", s.adminOnly(s.adminTestC2A))
 	admin.POST("/providers/sub2api/tests", s.adminOnly(s.adminTestSub2API))
 	admin.POST("/providers/crun/tests", s.adminOnly(s.adminTestCRUN))
+	admin.POST("/providers/lanjing-pay/tests", s.adminOnly(s.adminTestLanjingPay))
+	admin.GET("/payment-listener", s.adminOnly(s.adminPaymentListenerStatus))
+	admin.POST("/payment-listener/test-alert", s.adminOnly(s.adminTestPaymentAlertEmail))
+	admin.GET("/assistant/quality", s.adminOnly(s.adminAssistantQuality))
+	admin.GET("/assistant/quality/cases", s.adminOnly(s.adminAssistantQualityCases))
+	admin.PATCH("/assistant/quality/cases/:id", s.adminOnly(s.adminPatchAssistantQualityCase))
+	admin.DELETE("/assistant/quality/cases/:id", s.adminOnly(s.adminDeleteAssistantQualityCase))
+	admin.POST("/assistant/quality/evals", s.adminOnly(s.adminRunAssistantQualityEval))
+	admin.POST("/assistant/quality/compare", s.adminOnly(s.adminCompareAssistantVersion))
+	admin.GET("/assistant/stats-evals/cases", s.adminOnly(s.adminAssistantStatsEvalCases))
+	admin.POST("/assistant/stats-evals", s.adminOnly(s.adminRunAssistantStatsEval))
 	admin.GET("/model-config", s.adminOnly(s.adminGetModelConfig))
 	admin.PUT("/model-config", s.adminOnly(s.adminPutModelConfig))
+	admin.POST("/model-config/icons", s.adminOnly(s.adminUploadModelIcon))
 	admin.POST("/model-config/discoveries", s.adminOnly(s.adminDiscoverProviderModels))
+	admin.POST("/model-config/connection-tests", s.adminOnly(s.adminTestProviderConnection))
+	admin.POST("/model-config/model-tests", s.adminOnly(s.adminTestModel))
+	admin.POST("/model-config/crun-price-quotes", s.adminOnly(s.adminCRUNPriceQuotes))
+	admin.GET("/model-config/price-schedule", s.adminOnly(s.adminGetPriceSchedule))
+	admin.PUT("/model-config/price-schedule", s.adminOnly(s.adminPutPriceSchedule))
+	admin.GET("/model-config/image-slots", s.adminOnly(s.adminGetImageSlots))
+	admin.PUT("/model-config/image-slots/settings", s.adminOnly(s.adminPutImageSlotSettings))
+	admin.POST("/model-config/image-slots/switch", s.adminOnly(s.adminSwitchImageSlot))
+	admin.POST("/model-config/image-slots/reset", s.adminOnly(s.adminResetImageSlotMember))
+	admin.POST("/model-config/image-slots/probe", s.adminOnly(s.adminProbeImageSlotMember))
+	admin.GET("/model-config/image-param-profiles", s.adminOnly(s.adminGetImageParamProfiles))
+	admin.PUT("/model-config/image-param-profiles", s.adminOnly(s.adminPutImageParamProfiles))
+	admin.DELETE("/model-config/image-param-profiles", s.adminOnly(s.adminResetImageParamProfiles))
+	admin.GET("/model-config/presets", s.adminOnly(s.adminGetModelPresets))
+	admin.PUT("/model-config/presets", s.adminOnly(s.adminPutModelPresets))
+	admin.DELETE("/model-config/presets", s.adminOnly(s.adminResetModelPresets))
+	admin.GET("/ecommerce/ai-assists", s.adminOnly(s.adminListEcommerceAIAssists))
+	admin.PUT("/ecommerce/ai-assists/:id", s.adminOnly(s.adminUpdateEcommerceAIAssist))
+	admin.GET("/ecommerce/catalog", s.adminOnly(s.adminListTryonCatalog))
+	admin.POST("/ecommerce/catalog", s.adminOnly(s.adminCreateTryonCatalog))
+	admin.POST("/ecommerce/catalog/analyze", s.adminOnly(s.adminAnalyzeEcommerceCatalogImage))
+	admin.PATCH("/ecommerce/catalog/order", s.adminOnly(s.adminReorderTryonCatalog))
+	admin.PATCH("/ecommerce/catalog/:id", s.adminOnly(s.adminPatchTryonCatalog))
+	admin.PUT("/ecommerce/catalog/:id/image", s.adminOnly(s.adminUploadTryonCatalogImage))
+	admin.DELETE("/ecommerce/catalog/:id", s.adminOnly(s.adminDeleteTryonCatalog))
+	admin.GET("/ecommerce/tryon-catalog", s.adminOnly(s.adminListTryonCatalog))
+	admin.POST("/ecommerce/tryon-catalog", s.adminOnly(s.adminCreateTryonCatalog))
+	admin.PATCH("/ecommerce/tryon-catalog/order", s.adminOnly(s.adminReorderTryonCatalog))
+	admin.PATCH("/ecommerce/tryon-catalog/:id", s.adminOnly(s.adminPatchTryonCatalog))
+	admin.PUT("/ecommerce/tryon-catalog/:id/image", s.adminOnly(s.adminUploadTryonCatalogImage))
+	admin.DELETE("/ecommerce/tryon-catalog/:id", s.adminOnly(s.adminDeleteTryonCatalog))
 
 	return r
 }
 
 // originGuard 写请求校验 Origin 白名单；无 Origin 头的非浏览器请求放行。
+// API 调用（/v1）只凭 Bearer Key 鉴权、不读 Cookie，跳过校验，
+// 否则任何带 Origin 头的第三方调用方都会被误拦。
 func (s *Server) originGuard(c *gin.Context) {
-	if writeMethods[c.Request.Method] {
+	if writeMethods[c.Request.Method] && !isOpenAICompatPath(c.Request.URL.Path) {
 		origin := c.GetHeader("Origin")
 		if origin != "" {
 			trimmed := strings.TrimRight(origin, "/")
-			allowed := false
+			// Browsers may open OAuth endpoints directly on the API origin (for
+			// example http://127.0.0.1:8000/oauth/authorize). That is a same-origin
+			// write and must remain valid even though AllowedOrigins primarily lists
+			// the separate frontend origins. The browser-supplied Origin must still
+			// exactly match the public scheme and request Host.
+			allowed := trimmed == strings.TrimRight(requestPublicOrigin(c), "/")
 			for _, o := range s.Cfg.AllowedOriginsList() {
 				if o == trimmed {
 					allowed = true
@@ -282,7 +784,7 @@ func (s *Server) originGuard(c *gin.Context) {
 				}
 			}
 			if !allowed {
-				c.AbortWithStatusJSON(403, gin.H{"success": false, "code": "admin_required", "error": "Origin 不在白名单内"})
+				fail(c, apperr.E("origin_not_allowed", "当前访问地址不在服务端允许列表", http.StatusForbidden))
 				return
 			}
 		}

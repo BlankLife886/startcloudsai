@@ -97,6 +97,11 @@ func IsUniqueViolation(err error, constraint string) bool {
 
 // Migrate 用 embed 的 goose 迁移把数据库升级到最新。
 func Migrate(databaseURL string) error {
+	return MigrateTo(databaseURL, 0)
+}
+
+// MigrateTo 升级到指定版本（0 表示最新）；已经更新的数据库不受影响。
+func MigrateTo(databaseURL string, version int64) error {
 	sqlDB, err := sql.Open("pgx", databaseURL)
 	if err != nil {
 		return fmt.Errorf("open database for migration: %w", err)
@@ -107,5 +112,8 @@ func Migrate(databaseURL string) error {
 		return err
 	}
 	goose.SetLogger(goose.NopLogger())
+	if version > 0 {
+		return goose.UpTo(sqlDB, ".", version)
+	}
 	return goose.Up(sqlDB, ".")
 }

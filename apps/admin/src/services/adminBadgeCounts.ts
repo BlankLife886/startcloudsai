@@ -1,0 +1,68 @@
+import { request } from "@/request";
+
+export interface AdminBadgeCounts {
+  pendingSubmissions: number;
+  runningTasks: number;
+  pendingTrialApplications: number;
+  pendingFeedback: number;
+  pendingRefunds: number;
+}
+
+const CACHE_MS = 30_000;
+const RETRY_DELAY_MS = 15_000;
+
+let cached: AdminBadgeCounts | null = null;
+let expiresAt = 0;
+let retryAfter = 0;
+let lastError: unknown = null;
+let inFlight: Promise<AdminBadgeCounts> | null = null;
+
+function normalizeBadgeCounts(data: Partial<AdminBadgeCounts>): AdminBadgeCounts {
+  return {
+    pendingSubmissions: Number(data.pendingSubmissions || 0),
+    runningTasks: Number(data.runningTasks || 0),
+    pendingTrialApplications: Number(data.pendingTrialApplications || 0),
+    pendingFeedback: Number(data.pendingFeedback || 0),
+    pendingRefunds: Number(data.pendingRefunds || 0),
+  };
+}
+
+/** 让缓存立即过期（审核等写操作之后调用），下一次读取会重新请求。 */
+export function invalidateAdminBadgeCounts() {
+  expiresAt = 0;
+  retryAfter = 0;
+}
+
+/**
+ * 侧栏徽标与通知铃共享请求、缓存与失败退避，连续切页不会重复访问接口。
+ * force 跳过缓存（打开通知面板、定时刷新时用），但仍复用进行中的请求。
+ */
+export function loadAdminBadgeCounts(options: { force?: boolean } = {}) {
+  const now = Date.now();
+  if (!options.force && cached && now < expiresAt) return Promise.resolve(cached);
+  if (inFlight) return inFlight;
+  if (!options.force && lastError && now < retryAfter)
+    return Promise.reject(lastError);
+
+  inFlight = request<Partial<AdminBadgeCounts>>(
+    "/api/v1/admin/badge-counts",
+    { silent: true, scope: "persistent" },
+  )
+    .then((data) => {
+      cached = normalizeBadgeCounts(data);
+      expiresAt = Date.now() + CACHE_MS;
+      retryAfter = 0;
+      lastError = null;
+      return cached;
+    })
+    .catch((error: unknown) => {
+      lastError = error;
+      retryAfter = Date.now() + RETRY_DELAY_MS;
+      throw error;
+    })
+    .finally(() => {
+      inFlight = null;
+    });
+
+  return inFlight;
+}

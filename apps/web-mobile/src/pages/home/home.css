@@ -1,0 +1,249 @@
+/* 与 App 首页（DiscoverScreen）一致：品牌行 + 三个子 Tab，下面内容滚动 */
+.m-home {
+  --m-home-head-h: 100px;
+  min-height: 100dvh;
+}
+
+.m-home-head {
+  position: sticky;
+  z-index: 20;
+  top: 0;
+  padding-top: var(--m-safe-top);
+  background: var(--m-bg);
+}
+
+.m-home-brand {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 20px 0;
+}
+
+.m-home-logo {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.m-home-logo img {
+  width: 100%;
+  height: 100%;
+}
+
+.m-home-brand h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.m-home-tabs {
+  position: relative;
+  height: 48px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.m-home-tab {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--m-text-2);
+  font-size: 16px;
+  font-weight: 600;
+  transition: color 200ms ease;
+}
+
+.m-home-tab.is-on {
+  color: var(--m-text);
+}
+
+.m-home-tab-indicator {
+  position: absolute;
+  bottom: 4px;
+  left: calc(100% / 6 - 10px);
+  width: 20px;
+  height: 2px;
+  border-radius: 99px;
+  background: var(--m-accent);
+  transform: translateX(calc(var(--m-sub-index) * 100vw / 3));
+  transition: transform 260ms cubic-bezier(0.215, 0.61, 0.355, 1);
+}
+
+.m-home-body {
+  padding: 16px 20px calc(var(--m-tabbar-space, 0px) + 16px);
+}
+
+/* ── 输入卡片 ─────────────────────────────────────────── */
+
+.m-home-composer {
+  padding: 20px;
+}
+
+.m-home-composer textarea {
+  width: 100%;
+  min-height: 48px;
+  max-height: 120px;
+  display: block;
+  padding: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: none;
+  color: var(--m-text);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.5;
+  field-sizing: content;
+}
+
+.m-home-composer textarea::placeholder {
+  color: var(--m-text-2);
+}
+
+.m-home-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* ── 灵感精选 ─────────────────────────────────────────── */
+
+.m-home-prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.m-home-prompt {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px;
+  color: inherit;
+  text-align: left;
+}
+
+.m-home-prompt-cover {
+  width: 112px;
+  height: 144px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--m-radius-md);
+  background: var(--m-surface-2);
+  color: var(--m-text-3);
+  font-size: 22px;
+  --height: 144px;
+  --width: 112px;
+  --border-radius: var(--m-radius-md);
+}
+
+.m-home-prompt-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 260ms ease;
+}
+
+.m-home-prompt-cover.is-loaded img {
+  opacity: 1;
+}
+
+.m-home-prompt-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.m-home-prompt-body strong {
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-home-prompt-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--m-text-2);
+}
+
+.m-home-prompt-stats {
+  display: flex;
+  gap: 14px;
+  margin-top: auto;
+  font-size: 12px;
+  color: var(--m-text-2);
+}
+
+.m-home-prompt-stats span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.m-home-prompt-stats svg {
+  font-size: 15px;
+}
+
+.m-home-inline-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 4px;
+  color: var(--m-danger);
+  font-size: 14px;
+}
+
+.m-home-community-link {
+  margin-top: 12px;
+}
+
+.m-home-prompt.m-card-surface {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 176px;
+}
+
+/* ── 社区（占位） ─────────────────────────────────────── */
+
+.m-home-soon {
+  min-height: calc(100dvh - var(--m-home-head-h) - var(--m-tabbar-space, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.m-home-soon strong {
+  font-size: 17px;
+}
+
+.m-home-soon span {
+  font-size: 14px;
+  color: var(--m-text-2);
+}
+
+.m-home-sub-fallback {
+  min-height: 50dvh;
+  display: grid;
+  place-items: center;
+}

@@ -1,0 +1,15 @@
+/* Generated from apps/web/src/features/home-commercial/components/GradientBlindsHero.vue. */
+
+.gradient-blinds-hero {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: #050706;
+}
+.gradient-blinds-hero :deep(canvas) {
+  display: block;
+  width: 100%;
+  height: 100%;
+}

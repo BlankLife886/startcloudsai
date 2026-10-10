@@ -4,6 +4,7 @@ package settings
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,16 +13,79 @@ import (
 
 // Defaults 与 Python 版 settings_service.DEFAULTS 一致。
 var Defaults = map[string]json.RawMessage{
-	"task_prices":                 json.RawMessage(`{"t2i": 20, "coloring": 30, "ui_design": 30, "model_sheet": 40, "game_art": 30, "puzzle": 10}`),
+	"task_prices":                 json.RawMessage(`{"t2i": 20, "coloring": 30, "ui_design": 30, "ecommerce_design": 30, "model_sheet": 40, "game_art": 30, "puzzle": 0}`),
 	"user_max_running_tasks":      json.RawMessage(`100`),
-	"user_max_concurrent_tasks":   json.RawMessage(`20`),
+	"user_max_running_images":     json.RawMessage(`400`),
+	"user_max_concurrent_tasks":   json.RawMessage(`4`),
+	"user_max_concurrent_chats":   json.RawMessage(`4`),
 	"global_max_concurrent_tasks": json.RawMessage(`2000`),
-	"global_max_active_tasks":     json.RawMessage(`5000`),
-	"signup_bonus_cents":          json.RawMessage(`100`),
-	"registration_enabled":        json.RawMessage(`true`),
-	"task_models":                 json.RawMessage(`{"default": "gpt-image-2"}`),
-	"image_service_routes":        json.RawMessage(`{"t2i":"c2a","coloring":"c2a","ui_design":"c2a","model_sheet":"c2a","game_art":"c2a","assistant_image":"sub2api","ui_design_asset":"sub2api"}`),
-	"free_daily_cents":            json.RawMessage(`0`),
+	"global_max_concurrent_chats": json.RawMessage(`128`),
+	"global_max_active_tasks":     json.RawMessage(`12000`),
+	"global_max_active_images":    json.RawMessage(`12000`),
+	"task_failure_retry_count":    json.RawMessage(`2`),
+	"task_retry_first_delay_secs": json.RawMessage(`3`),
+	"task_retry_backoff_secs":     json.RawMessage(`15`),
+	// 前端输入框字数上限（文生图 / AI 助手 / 创作台）
+	"t2i_prompt_max_chars":        json.RawMessage(`8000`),
+	"assistant_message_max_chars": json.RawMessage(`60000`),
+	"studio_hub_prompt_max_chars": json.RawMessage(`2000`),
+	// 图片三级图（小图/展示图/原图）中变体的编码配置
+	"image_variant_format":     json.RawMessage(`"webp"`),
+	"image_display_lossless":   json.RawMessage(`false`),
+	"image_display_quality":    json.RawMessage(`85`),
+	"image_display_max_edge":   json.RawMessage(`2048`),
+	"image_thumb_max_edge":     json.RawMessage(`512`),
+	"image_fetch_concurrency":  json.RawMessage(`8`),
+	"canvas_batch_max_count":   json.RawMessage(`100`),
+	"canvas_project_max_count": json.RawMessage(`30`),
+	"canvas_project_max_kb":    json.RawMessage(`3072`),
+	// AI 助手对话：每人保留数（基础）、每天新建数（0 不限）、单个对话消息数（0 不限）、归档后几天删除
+	"assistant_conversation_max_count":            json.RawMessage(`40`),
+	"assistant_conversation_daily_create_limit":   json.RawMessage(`100`),
+	"assistant_conversation_max_messages":         json.RawMessage(`0`),
+	"assistant_conversation_archive_days":         json.RawMessage(`7`),
+	"cross_provider_same_model_balancing_enabled": json.RawMessage(`false`),
+	// 生图分辨率槽位：连续失败几次判定故障、故障模型多久检测一次、24 小时内最多检测几次
+	"image_slot_failure_threshold":          json.RawMessage(`3`),
+	"image_slot_probe_interval_minutes":     json.RawMessage(`60`),
+	"image_slot_probe_daily_limit":          json.RawMessage(`48`),
+	"admin_image_analysis_provider_id":      json.RawMessage(`""`),
+	"admin_image_analysis_model_id":         json.RawMessage(`""`),
+	"admin_image_analysis_reasoning_effort": json.RawMessage(`""`),
+	"signup_bonus_cents":                    json.RawMessage(`100`),
+	"registration_enabled":                  json.RawMessage(`true`),
+	"task_models":                           json.RawMessage(`{"default": "gpt-image-2"}`),
+	"image_service_routes":                  json.RawMessage(`{"t2i":"c2a","coloring":"c2a","ui_design":"c2a","ecommerce_design":"c2a","model_sheet":"c2a","game_art":"c2a","assistant_image":"sub2api","ui_design_asset":"sub2api"}`),
+	"checkin_enabled":                       json.RawMessage(`true`),
+	"checkin_campaign_title":                json.RawMessage(`"连续签到领创作积分"`),
+	"checkin_rewards":                       json.RawMessage(`[10,15,20,25,30,40,80]`),
+	"growth_group_enabled":                  json.RawMessage(`true`),
+	"growth_group_campaign_key":             json.RawMessage(`"launch-2026"`),
+	"growth_group_target_members":           json.RawMessage(`3`),
+	"growth_group_reward_cents":             json.RawMessage(`30`),
+	"growth_group_duration_hours":           json.RawMessage(`48`),
+	"growth_failure_bonus_enabled":          json.RawMessage(`true`),
+	"growth_failure_bonus_cents":            json.RawMessage(`3`),
+	"growth_failure_bonus_daily_limit":      json.RawMessage(`3`),
+	"growth_usage_rewards_enabled":          json.RawMessage(`true`),
+	"growth_usage_milestones":               json.RawMessage(`[{"units":10,"rewardCents":20},{"units":30,"rewardCents":50},{"units":100,"rewardCents":150}]`),
+	"suggestion_reward_max_cents":           json.RawMessage(`10000`),
+	"page_controls":                         mustMarshalPageControls(PageControlDefaults()),
+	// AI 电商辅助：虚拟试衣上传服装后自动识别品类（使用“AI 电商 · 商品分析模型”）
+	"ecommerce_tryon_garment_classify_enabled": json.RawMessage(`true`),
+	// AI 电商辅助：手持商品上传商品图后自动识别品类与尺寸
+	"ecommerce_handheld_product_classify_enabled": json.RawMessage(`true`),
+	// 可选平台日志。总开关默认关闭；分类开关只在总开关开启后生效。
+	"platform_logging_enabled":            json.RawMessage(`false`),
+	"platform_log_security_enabled":       json.RawMessage(`true`),
+	"platform_log_operations_enabled":     json.RawMessage(`true`),
+	"platform_log_user_enabled":           json.RawMessage(`false`),
+	"platform_log_retention_days":         json.RawMessage(`7`),
+	"platform_log_max_mb":                 json.RawMessage(`256`),
+	"audit_log_retention_days":            json.RawMessage(`180`), // 7-365 天；默认同此前固定的 6 个月，升级不额外删除
+	"user_profile_rules":                  json.RawMessage(`{"version":1,"newUserDays":3,"activationDays":7,"activeDays":7,"churnRiskDays":14,"dormantDays":30,"frequentFailureMinRuns":5,"frequentFailureRatePercent":40,"powerUserActiveDays30":7,"powerUserSuccessfulRuns30":20,"powerUserFeatureDiversity30":2,"highValuePercentile":90}`),
+	"user_profile_history_retention_days": json.RawMessage(`180`),
+	"user_behavior_retention_days":        json.RawMessage(`90`),
 	// 社区投稿（v3）：开关 / 自动过审 / 每日限额（0 = 不限）
 	"submission_enabled": json.RawMessage(`true`),
 	"auto_approve":       json.RawMessage(`false`),
@@ -44,7 +108,7 @@ var Defaults = map[string]json.RawMessage{
 }
 
 var ImageServiceRouteKeys = []string{
-	"t2i", "coloring", "ui_design", "model_sheet", "game_art", "assistant_image", "ui_design_asset",
+	"t2i", "coloring", "ui_design", "ecommerce_design", "model_sheet", "game_art", "assistant_image", "ui_design_asset",
 }
 
 func validImageServiceRoute(key string) bool {
@@ -148,6 +212,177 @@ func GetInt(ctx context.Context, q store.Q, key string) (int64, error) {
 	return v, nil
 }
 
+// CanvasBatchHardMaxCount 是无限画布批量配置（一次批量生成的节点/任务数）的硬上限，
+// 与画布分镜解析的最大镜头数一致；后台 canvas_batch_max_count 只能在 1-100 内收紧。
+const CanvasBatchHardMaxCount = 100
+
+// ResolveCanvasBatchMaxCount 返回后台配置的画布批量上限，未配置或无效时取硬上限。
+func ResolveCanvasBatchMaxCount(ctx context.Context, q store.Q) int {
+	v, err := GetInt(ctx, q, "canvas_batch_max_count")
+	if err != nil || v < 1 || v > CanvasBatchHardMaxCount {
+		return CanvasBatchHardMaxCount
+	}
+	return int(v)
+}
+
+// 画布项目配额：每个用户的基础项目数（订阅可在此之上加成）与单个项目文档大小上限。
+// 单项目上限以 KB 配置（最大 9MB），低于传输层硬上限 CanvasProjectRequestMaxMB（服务端请求体与网关
+// 均为 10MB），留出标题等字段的余量，保证超限时总能返回明确的业务提示而不是被传输层截断。
+const (
+	DefaultCanvasProjectMaxCount = 30
+	CanvasProjectMaxCountLimit   = 10000
+	CanvasProjectRequestMaxMB    = 10
+	DefaultCanvasProjectMaxKB    = 3 << 10
+	CanvasProjectMinKB           = 1
+	CanvasProjectHardMaxKB       = 9 << 10
+)
+
+// ResolveCanvasProjectMaxCount 返回后台配置的每用户基础画布项目数，无效时取默认值。
+func ResolveCanvasProjectMaxCount(ctx context.Context, q store.Q) int {
+	v, err := GetInt(ctx, q, "canvas_project_max_count")
+	if err != nil || v < 1 || v > CanvasProjectMaxCountLimit {
+		return DefaultCanvasProjectMaxCount
+	}
+	return int(v)
+}
+
+// ResolveCanvasProjectMaxBytes 返回后台配置的单个画布项目大小上限（字节），无效时取默认值。
+func ResolveCanvasProjectMaxBytes(ctx context.Context, q store.Q) int64 {
+	v, err := GetInt(ctx, q, "canvas_project_max_kb")
+	if err != nil || v < CanvasProjectMinKB || v > CanvasProjectHardMaxKB {
+		v = DefaultCanvasProjectMaxKB
+	}
+	return v << 10
+}
+
+const (
+	DefaultT2IPromptMaxChars        = 8000
+	DefaultAssistantMessageMaxChars = 60000
+	DefaultStudioHubPromptMaxChars  = 2000
+	PromptMaxCharsMin               = 100
+	PromptMaxCharsMax               = 100000
+)
+
+// PromptInputLimits 前端输入字数上限（runtime-config / 服务端校验共用）。
+type PromptInputLimits struct {
+	T2IPromptMaxChars        int `json:"t2iPromptMaxChars"`
+	AssistantMessageMaxChars int `json:"assistantMessageMaxChars"`
+	StudioHubPromptMaxChars  int `json:"studioHubPromptMaxChars"`
+}
+
+func ClampPromptMaxChars(value, fallback int64) int {
+	if value < PromptMaxCharsMin || value > PromptMaxCharsMax {
+		return int(fallback)
+	}
+	return int(value)
+}
+
+func GetPromptMaxChars(ctx context.Context, q store.Q, key string, fallback int64) int {
+	value, err := GetInt(ctx, q, key)
+	if err != nil || value == 0 {
+		return int(fallback)
+	}
+	return ClampPromptMaxChars(value, fallback)
+}
+
+func ResolvePromptInputLimits(ctx context.Context, q store.Q) PromptInputLimits {
+	return PromptInputLimits{
+		T2IPromptMaxChars:        GetPromptMaxChars(ctx, q, "t2i_prompt_max_chars", DefaultT2IPromptMaxChars),
+		AssistantMessageMaxChars: GetPromptMaxChars(ctx, q, "assistant_message_max_chars", DefaultAssistantMessageMaxChars),
+		StudioHubPromptMaxChars:  GetPromptMaxChars(ctx, q, "studio_hub_prompt_max_chars", DefaultStudioHubPromptMaxChars),
+	}
+}
+
+func GetString(ctx context.Context, q store.Q, key string) (string, error) {
+	raw, err := Get(ctx, q, key)
+	if err != nil || raw == nil {
+		return "", err
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func GetStrings(ctx context.Context, q store.Q, key string) ([]string, error) {
+	raw, err := Get(ctx, q, key)
+	if err != nil || raw == nil {
+		return nil, err
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return []string{}, nil
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result, nil
+}
+
+func UserProfileRules(ctx context.Context, q store.Q) (store.UserProfileRules, error) {
+	rules := store.DefaultUserProfileRules()
+	raw, err := Get(ctx, q, "user_profile_rules")
+	if err != nil {
+		return rules, err
+	}
+	if raw != nil {
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return store.DefaultUserProfileRules(), err
+		}
+	}
+	if err := ValidateUserProfileRules(rules); err != nil {
+		return store.DefaultUserProfileRules(), err
+	}
+	return rules, nil
+}
+
+func ValidateUserProfileRules(rules store.UserProfileRules) error {
+	checks := []struct {
+		name    string
+		value   int
+		minimum int
+		maximum int
+	}{
+		{"新用户范围", rules.NewUserDays, 1, 14},
+		{"激活观察期", rules.ActivationDays, 1, 30},
+		{"活跃范围", rules.ActiveDays, 1, 30},
+		{"流失风险天数", rules.ChurnRiskDays, 2, 90},
+		{"沉默用户天数", rules.DormantDays, 7, 365},
+		{"失败最小样本", rules.FrequentFailureMinRuns, 3, 100},
+		{"高频失败率", rules.FrequentFailureRatePercent, 10, 100},
+		{"深度用户活跃天数", rules.PowerUserActiveDays30, 1, 30},
+		{"深度用户成功次数", rules.PowerUserSuccessfulRuns30, 1, 10000},
+		{"深度用户功能数量", rules.PowerUserFeatureDiversity30, 1, 10},
+		{"高价值百分位", rules.HighValuePercentile, 50, 99},
+	}
+	for _, check := range checks {
+		if check.value < check.minimum || check.value > check.maximum {
+			return fmt.Errorf("%s须在 %d-%d 之间", check.name, check.minimum, check.maximum)
+		}
+	}
+	if rules.ActivationDays < rules.NewUserDays {
+		return fmt.Errorf("激活观察期不能短于新用户范围")
+	}
+	if rules.ChurnRiskDays <= rules.ActiveDays {
+		return fmt.Errorf("流失风险天数必须大于活跃范围")
+	}
+	if rules.DormantDays <= rules.ChurnRiskDays {
+		return fmt.Errorf("沉默用户天数必须大于流失风险天数")
+	}
+	return nil
+}
+
 // TaskPrices 返回任务单价表（原始 JSON 对象）。
 func TaskPrices(ctx context.Context, q store.Q) (map[string]int64, json.RawMessage, error) {
 	raw, err := Get(ctx, q, "task_prices")
@@ -163,12 +398,19 @@ func TaskPrices(ctx context.Context, q store.Q) (map[string]int64, json.RawMessa
 			delete(prices, taskType)
 		}
 	}
+	// AI 拼图完全在浏览器 Canvas 中执行，没有上游调用，存在该配置时强制免费。
+	if _, exists := prices["puzzle"]; exists {
+		prices["puzzle"] = 0
+	}
 	filtered, _ := json.Marshal(prices)
 	return prices, filtered, nil
 }
 
 // TaskPriceCents 某类型单价（DB 值缺项时回落到默认表）。
 func TaskPriceCents(ctx context.Context, q store.Q, taskType string) (int64, error) {
+	if taskType == "puzzle" {
+		return 0, nil
+	}
 	prices, _, err := TaskPrices(ctx, q)
 	if err != nil {
 		return 0, err
@@ -198,6 +440,48 @@ func TaskModel(ctx context.Context, q store.Q, taskType string) (string, error) 
 		return m, nil
 	}
 	return "gpt-image-2", nil
+}
+
+// ImageVariantConfig 三级图变体（小图/展示图）的生效编码配置。
+type ImageVariantConfig struct {
+	Format         string // "webp" | "png"
+	Lossless       bool   // 仅 webp 有意义
+	Quality        int    // 仅有损 webp 有意义
+	DisplayMaxEdge int
+	ThumbMaxEdge   int
+}
+
+// ResolveImageVariants 读取后台配置并做边界兜底。
+func ResolveImageVariants(ctx context.Context, q store.Q) (ImageVariantConfig, error) {
+	cfg := ImageVariantConfig{Format: "webp", Quality: 85, DisplayMaxEdge: 2048, ThumbMaxEdge: 512}
+	format, err := GetString(ctx, q, "image_variant_format")
+	if err != nil {
+		return cfg, err
+	}
+	if format == "png" {
+		cfg.Format = "png"
+	}
+	lossless, err := GetBool(ctx, q, "image_display_lossless")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Lossless = lossless
+	if quality, err := GetInt(ctx, q, "image_display_quality"); err != nil {
+		return cfg, err
+	} else if quality >= 1 && quality <= 100 {
+		cfg.Quality = int(quality)
+	}
+	if edge, err := GetInt(ctx, q, "image_display_max_edge"); err != nil {
+		return cfg, err
+	} else if edge >= 512 && edge <= 8192 {
+		cfg.DisplayMaxEdge = int(edge)
+	}
+	if edge, err := GetInt(ctx, q, "image_thumb_max_edge"); err != nil {
+		return cfg, err
+	} else if edge >= 128 && edge <= 1024 {
+		cfg.ThumbMaxEdge = int(edge)
+	}
+	return cfg, nil
 }
 
 // C2AConfig chatgpt2api 生效配置。
@@ -334,6 +618,76 @@ type CRUNConfig struct {
 	TimeoutSecs int
 }
 
+type LanjingPayConfig struct {
+	Enabled       bool
+	BaseURL       string
+	Secret        string
+	NotifyURL     string
+	TimeoutSecs   int
+	AlipayEnabled bool
+	WechatEnabled bool
+}
+
+// ResolveLanjingPay returns the effective payment configuration. Persisted
+// admin settings override environment defaults and secrets stay encrypted at rest.
+func ResolveLanjingPay(ctx context.Context, q store.Q, env LanjingPayConfig, masterKey string) (LanjingPayConfig, error) {
+	cfg := env
+	read := func(key string) (json.RawMessage, error) {
+		return Get(ctx, q, key)
+	}
+	for key, target := range map[string]*string{
+		"lanjing_pay_base_url":   &cfg.BaseURL,
+		"lanjing_pay_notify_url": &cfg.NotifyURL,
+	} {
+		raw, err := read(key)
+		if err != nil {
+			return cfg, err
+		}
+		if raw != nil {
+			var value string
+			if json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != "" {
+				*target = strings.TrimSpace(value)
+			}
+		}
+	}
+	if raw, err := read("lanjing_pay_secret"); err != nil {
+		return cfg, err
+	} else if raw != nil {
+		var stored string
+		if json.Unmarshal(raw, &stored) == nil && stored != "" {
+			plain, decryptErr := DecryptSecret(stored, masterKey)
+			if decryptErr != nil {
+				return cfg, decryptErr
+			}
+			cfg.Secret = plain
+		}
+	}
+	for key, target := range map[string]*bool{
+		"lanjing_pay_enabled":        &cfg.Enabled,
+		"lanjing_pay_alipay_enabled": &cfg.AlipayEnabled,
+		"lanjing_pay_wechat_enabled": &cfg.WechatEnabled,
+	} {
+		raw, err := read(key)
+		if err != nil {
+			return cfg, err
+		}
+		if raw != nil {
+			_ = json.Unmarshal(raw, target)
+		}
+	}
+	if raw, err := read("lanjing_pay_timeout_secs"); err != nil {
+		return cfg, err
+	} else if raw != nil {
+		var timeout int
+		if json.Unmarshal(raw, &timeout) == nil && timeout > 0 {
+			cfg.TimeoutSecs = timeout
+		}
+	}
+	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	cfg.NotifyURL = strings.TrimSpace(cfg.NotifyURL)
+	return cfg, nil
+}
+
 // ResolveCRUN returns the effective CRUN configuration with admin settings
 // taking precedence over environment variables.
 func ResolveCRUN(ctx context.Context, q store.Q, env CRUNConfig, masterKey string) (CRUNConfig, error) {
@@ -375,6 +729,42 @@ func ResolveCRUN(ctx context.Context, q store.Q, env CRUNConfig, masterKey strin
 	}
 	if timeout > 0 {
 		cfg.TimeoutSecs = timeout
+	}
+	return cfg, nil
+}
+
+// PaymentAlertConfig controls how payment listener and payment issues reach
+// administrators.
+type PaymentAlertConfig struct {
+	Emails []string
+	// StaleAfterSecs treats an "online" listener whose last heartbeat is older
+	// than this as offline. 0 trusts the provider's online flag alone.
+	StaleAfterSecs int
+}
+
+const DefaultPaymentListenerStaleSecs = 120
+
+func ResolvePaymentAlerts(ctx context.Context, q store.Q) (PaymentAlertConfig, error) {
+	cfg := PaymentAlertConfig{StaleAfterSecs: DefaultPaymentListenerStaleSecs}
+	raw, err := Get(ctx, q, "payment_alert_emails")
+	if err != nil {
+		return cfg, err
+	}
+	if raw != nil {
+		_ = json.Unmarshal(raw, &cfg.Emails)
+	}
+	if cfg.Emails == nil {
+		cfg.Emails = []string{}
+	}
+	raw, err = Get(ctx, q, "payment_listener_stale_secs")
+	if err != nil {
+		return cfg, err
+	}
+	if raw != nil {
+		var secs int
+		if json.Unmarshal(raw, &secs) == nil && secs >= 0 {
+			cfg.StaleAfterSecs = secs
+		}
 	}
 	return cfg, nil
 }

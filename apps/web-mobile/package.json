@@ -1,0 +1,24 @@
+{
+  "name": "@starcloudsai/web-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 3106 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --port 3106",
+    "lan": "vite build && vite preview --host 127.0.0.1 --port 3108 --strictPort"
+  },
+  "dependencies": {
+    "antd-mobile": "^5.43.0",
+    "antd-mobile-icons": "^0.3.0",
+    "localforage": "^1.10.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router": "^8.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.2.0",
+    "vite": "^7.3.6"
+  }
+}

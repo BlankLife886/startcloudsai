@@ -1,0 +1,270 @@
+/* 通知页 / 公告页共用：颜色变量、页面骨架、页头、按钮、空状态与骨架屏 */
+.nt-page {
+  --nt-text: #151a2d;
+  --nt-muted: rgba(21, 26, 45, 0.62);
+  --nt-faint: rgba(21, 26, 45, 0.42);
+  --nt-line: rgba(21, 26, 45, 0.08);
+  --nt-surface: #ffffff;
+  --nt-sunken: rgba(21, 26, 45, 0.035);
+  --nt-row-hover: rgba(106, 79, 224, 0.045);
+  --nt-unread: rgba(106, 79, 224, 0.055);
+  --nt-accent: #6a4fe0;
+  --nt-accent-ink: #ffffff;
+  --nt-accent-soft: rgba(106, 79, 224, 0.12);
+  --nt-gold: #b45309;
+  --nt-gold-soft: rgba(245, 158, 11, 0.14);
+  --nt-success: #15803d;
+  --nt-success-soft: rgba(34, 197, 94, 0.14);
+  --nt-review: #2563eb;
+  --nt-review-soft: rgba(37, 99, 235, 0.12);
+  --nt-danger: #dc2626;
+  --nt-danger-soft: rgba(220, 38, 38, 0.1);
+  --nt-announce: #57546a;
+  --nt-announce-soft: rgba(87, 84, 106, 0.1);
+  --nt-shadow: 0 16px 42px rgba(58, 51, 112, 0.08);
+  position: relative;
+  isolation: isolate;
+  min-height: calc(100dvh - var(--app-header-offset, 62px));
+  padding: 20px 32px 48px;
+  color: var(--nt-text);
+  font-family: "SF Pro Display", "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.nt-page.is-dark {
+  --nt-text: rgba(244, 242, 255, 0.96);
+  --nt-muted: rgba(210, 205, 240, 0.7);
+  --nt-faint: rgba(190, 184, 230, 0.5);
+  --nt-line: rgba(255, 255, 255, 0.08);
+  --nt-surface: #151826;
+  --nt-sunken: rgba(255, 255, 255, 0.035);
+  --nt-row-hover: rgba(160, 139, 255, 0.08);
+  --nt-unread: rgba(160, 139, 255, 0.1);
+  --nt-accent: #a08bff;
+  --nt-accent-ink: #12101c;
+  --nt-accent-soft: rgba(160, 139, 255, 0.16);
+  --nt-gold: #fbbf24;
+  --nt-gold-soft: rgba(251, 191, 36, 0.16);
+  --nt-success: #4ade80;
+  --nt-success-soft: rgba(74, 222, 128, 0.16);
+  --nt-review: #93c5fd;
+  --nt-review-soft: rgba(147, 197, 253, 0.14);
+  --nt-danger: #f87171;
+  --nt-danger-soft: rgba(248, 113, 113, 0.14);
+  --nt-announce: #c4c0d6;
+  --nt-announce-soft: rgba(196, 192, 214, 0.12);
+  --nt-shadow: 0 18px 46px rgba(0, 0, 0, 0.32);
+}
+
+.nt-shell {
+  width: min(100%, 1080px);
+  margin: 0 auto;
+  display: grid;
+  gap: 18px;
+}
+
+/* 页头 */
+.nt-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px 20px;
+  padding: 8px 4px 0;
+}
+.nt-head__copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.nt-head__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--nt-accent);
+  font-size: 0.72rem;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+}
+.nt-head h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: clamp(1.6rem, 2.4vw, 2rem);
+  font-weight: 820;
+  letter-spacing: -0.04em;
+  line-height: 1.15;
+}
+.nt-head h1 em {
+  display: inline-flex;
+  min-width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--nt-accent);
+  color: var(--nt-accent-ink);
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+.nt-head p {
+  margin: 0;
+  color: var(--nt-muted);
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+.nt-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 按钮 */
+.nt-btn {
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--nt-surface);
+  box-shadow: inset 0 0 0 1px var(--nt-line);
+  color: var(--nt-text);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 720;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 140ms ease, box-shadow 140ms ease, color 140ms ease;
+}
+.nt-btn:hover:not(:disabled) {
+  background: var(--nt-row-hover);
+  color: var(--nt-text);
+}
+.nt-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.nt-btn.is-primary {
+  background: var(--nt-accent);
+  box-shadow: none;
+  color: var(--nt-accent-ink);
+}
+.nt-btn.is-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--nt-accent) 88%, #000);
+  color: var(--nt-accent-ink);
+}
+.nt-btn.is-icon {
+  width: 36px;
+  padding: 0;
+}
+.nt-btn:focus-visible {
+  outline: 2px solid var(--nt-accent);
+  outline-offset: 2px;
+}
+
+.spin {
+  animation: nt-spin 900ms linear infinite;
+}
+@keyframes nt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 内容卡片 */
+.nt-board {
+  min-width: 0;
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--nt-surface) 94%, transparent);
+  box-shadow: var(--nt-shadow), inset 0 0 0 1px var(--nt-line);
+  overflow: clip;
+}
+.nt-board.is-plain {
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+/* 空状态 / 错误 */
+.nt-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 64px 24px;
+  text-align: center;
+}
+.nt-empty > i {
+  display: inline-flex;
+  width: 56px;
+  height: 56px;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 4px;
+  border-radius: 18px;
+  background: var(--nt-accent-soft);
+  color: var(--nt-accent);
+  font-size: 1.5rem;
+}
+.nt-empty strong {
+  font-size: 1rem;
+  font-weight: 780;
+}
+.nt-empty p {
+  max-width: 340px;
+  margin: 0 0 6px;
+  color: var(--nt-muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+.nt-empty.is-error > i {
+  background: var(--nt-danger-soft);
+  color: var(--nt-danger);
+}
+
+/* 骨架屏 */
+.nt-skel {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+}
+.nt-skel__row {
+  height: 68px;
+  border-radius: 14px;
+  background: linear-gradient(90deg, var(--nt-sunken) 0%, var(--nt-line) 50%, var(--nt-sunken) 100%);
+  background-size: 200% 100%;
+  animation: nt-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes nt-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .nt-page {
+    padding: 14px 16px 36px;
+  }
+  .nt-head {
+    align-items: stretch;
+  }
+  .nt-head__actions {
+    width: 100%;
+  }
+  .nt-head__actions .nt-btn:not(.is-icon) {
+    flex: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin,
+  .nt-skel__row {
+    animation: none;
+  }
+}

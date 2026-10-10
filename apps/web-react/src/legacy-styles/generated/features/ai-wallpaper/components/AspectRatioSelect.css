@@ -1,0 +1,356 @@
+/* Generated from apps/web/src/features/ai-wallpaper/components/AspectRatioSelect.vue. */
+
+.ratio-select {
+  position: relative;
+  min-width: 0;
+}
+.ratio-select__trigger {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: #1a1a22;
+  color: rgba(255, 255, 255, 0.96);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease;
+}
+.ratio-select__trigger:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.ratio-select__trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+.ratio-select__trigger:focus-visible,
+.ratio-select.is-open .ratio-select__trigger {
+  border-color: #6d5cff;
+  box-shadow: 0 0 0 3px rgba(109, 92, 255, 0.22);
+  background: #17171e;
+}
+.ratio-select__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ratio-select__value-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ratio-select__swatch,
+.ratio-select__option-swatch {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+.ratio-select__option-swatch {
+  justify-self: center;
+}
+.ratio-select__chevron {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.8rem;
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.ratio-select.is-open .ratio-select__chevron {
+  transform: rotate(180deg);
+}
+.ratio-select__trigger.is-compact-text {
+  font-size: 0.72rem;
+  font-weight: 550;
+}
+.ratio-select__menu {
+  position: fixed;
+  z-index: 1300;
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: #242429;
+  box-shadow: 0 22px 55px rgba(0, 0, 0, 0.5);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  scrollbar-width: thin;
+  transform-origin: bottom left;
+}
+.ratio-select__menu.opens-down {
+  transform-origin: top left;
+}
+.ratio-select__menu::-webkit-scrollbar {
+  width: 6px;
+}
+.ratio-select__menu::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+}
+.ratio-select__option {
+  width: 100%;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.86);
+  font: inherit;
+  font-size: 1rem;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease;
+}
+.ratio-select__option.has-price {
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+}
+.ratio-select__menu.is-plain .ratio-select__option {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 42px;
+  padding-inline: 12px;
+}
+.ratio-select__menu.is-plain .ratio-select__option.has-price {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.ratio-select__menu.is-plain .ratio-select__option.has-icon {
+  grid-template-columns: 24px minmax(0, 1fr);
+}
+.ratio-select__menu.is-plain .ratio-select__option.has-icon.has-price {
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+}
+.ratio-select__option-content {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+}
+.ratio-select__option-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ratio-select__option-glyph {
+  color: rgba(139, 123, 255, 0.92);
+  font-size: 1rem;
+  text-align: center;
+}
+.ratio-select__menu.is-compact-text .ratio-select__option {
+  min-height: 38px;
+  font-size: 0.78rem;
+}
+.ratio-select__menu.is-compact-text .ratio-select__option-glyph {
+  font-size: 0.88rem;
+}
+.ratio-select__menu.is-compact-menu {
+  gap: 1px;
+  padding: 4px;
+  border-radius: 12px;
+}
+.ratio-select__menu.is-compact-menu .ratio-select__option {
+  min-height: 32px;
+  padding: 2px 10px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+.ratio-select__menu.is-compact-menu .ratio-select__option.has-price {
+  min-height: 46px;
+  padding-block: 4px;
+}
+.ratio-select__menu.is-compact-menu.is-plain.has-priced-options {
+  gap: 2px;
+  padding: 6px;
+  border-radius: 14px;
+}
+.ratio-select__menu.is-compact-menu.is-plain.has-priced-options .ratio-select__option.has-price {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 14px;
+  padding-inline: 12px;
+}
+.ratio-select__menu.is-compact-menu.is-plain.has-priced-options
+  .ratio-select__option.has-icon.has-price {
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+}
+.ratio-select__menu.is-compact-menu.is-plain.has-priced-options .ratio-select__option-label {
+  font-weight: 560;
+}
+.ratio-select__menu.has-priced-options .ratio-select__option :deep(.model-point-price) {
+  justify-self: end;
+}
+.ratio-select__option:hover,
+.ratio-select__option:focus-visible {
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+  outline: none;
+}
+.ratio-select__option.is-selected {
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+}
+.ratio-select__menu.is-glass-accent {
+  border-color: rgba(109, 92, 255, 0.38);
+  background:
+    linear-gradient(145deg, rgba(43, 40, 61, 0.82), rgba(17, 17, 25, 0.74)), rgba(18, 18, 26, 0.76);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    0 24px 64px rgba(0, 0, 0, 0.56),
+    0 0 0 1px rgba(109, 92, 255, 0.08);
+  backdrop-filter: blur(22px) saturate(155%);
+  -webkit-backdrop-filter: blur(22px) saturate(155%);
+}
+.ratio-select__menu.is-glass-accent .ratio-select__option {
+  color: rgba(255, 255, 255, 0.68);
+}
+.ratio-select__menu.is-glass-accent .ratio-select__option-glyph {
+  color: rgba(139, 123, 255, 0.7);
+}
+.ratio-select__menu.is-glass-accent .ratio-select__option:hover,
+.ratio-select__menu.is-glass-accent .ratio-select__option:focus-visible {
+  color: #fff;
+  background: rgba(109, 92, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(139, 123, 255, 0.2);
+}
+.ratio-select__menu.is-glass-accent .ratio-select__option.is-selected {
+  color: #fff;
+  background: linear-gradient(135deg, rgba(109, 92, 255, 0.42), rgba(109, 92, 255, 0.2));
+  box-shadow:
+    inset 0 0 0 1px rgba(169, 156, 255, 0.52),
+    0 8px 24px rgba(70, 51, 214, 0.2);
+  font-weight: 700;
+}
+.ratio-select__menu.is-glass-accent .ratio-select__option.is-selected .ratio-select__option-glyph {
+  color: #b8adff;
+  filter: drop-shadow(0 0 8px rgba(139, 123, 255, 0.55));
+}
+.ratio-select__icon {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+}
+.ratio-select__icon > span {
+  display: block;
+  border: 2px solid currentColor;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.92);
+}
+.ratio-select__icon > .is-square {
+  width: 22px;
+  height: 22px;
+}
+.ratio-select__icon > .is-landscape {
+  width: 24px;
+  height: auto;
+}
+.ratio-select__icon > .is-portrait {
+  width: auto;
+  height: 24px;
+}
+.ratio-select.is-light .ratio-select__trigger {
+  border-color: rgba(27, 29, 42, 0.11);
+  background: #ffffff;
+  color: rgba(25, 27, 38, 0.94);
+  box-shadow: 0 1px 2px rgba(30, 32, 48, 0.03);
+}
+.ratio-select.is-light .ratio-select__trigger:hover {
+  border-color: rgba(109, 92, 255, 0.36);
+  background: #fbfaff;
+}
+.ratio-select.is-light .ratio-select__trigger:focus-visible,
+.ratio-select.is-light.is-open .ratio-select__trigger {
+  border-color: #6d5cff;
+  background: #fbfaff;
+  box-shadow: 0 0 0 3px rgba(109, 92, 255, 0.14);
+}
+.ratio-select.is-light .ratio-select__chevron {
+  color: rgba(39, 41, 55, 0.46);
+}
+.ratio-select__menu.is-light {
+  border-color: rgba(27, 29, 42, 0.1);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 22px 55px rgba(41, 38, 76, 0.16);
+  scrollbar-color: rgba(109, 92, 255, 0.24) transparent;
+}
+.ratio-select__menu.is-light .ratio-select__option {
+  color: rgba(35, 37, 50, 0.76);
+}
+.ratio-select__menu.is-light .ratio-select__icon > span {
+  color: rgba(43, 45, 60, 0.78);
+}
+.ratio-select__menu.is-light .ratio-select__option:hover,
+.ratio-select__menu.is-light .ratio-select__option:focus-visible {
+  background: rgba(109, 92, 255, 0.08);
+  color: #211c4b;
+}
+.ratio-select__menu.is-light .ratio-select__option.is-selected {
+  background: rgba(109, 92, 255, 0.12);
+  color: #4e3fd1;
+}
+.ratio-select__menu.is-light.is-glass-accent {
+  border-color: rgba(109, 92, 255, 0.2);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 20px 48px rgba(41, 38, 76, 0.14),
+    0 0 0 1px rgba(109, 92, 255, 0.04);
+  backdrop-filter: blur(22px) saturate(130%);
+  -webkit-backdrop-filter: blur(22px) saturate(130%);
+}
+.ratio-select__menu.is-light.is-glass-accent .ratio-select__option {
+  color: rgba(45, 47, 61, 0.76);
+}
+.ratio-select__menu.is-light.is-glass-accent .ratio-select__option:hover,
+.ratio-select__menu.is-light.is-glass-accent .ratio-select__option:focus-visible {
+  color: #30275f;
+  background: rgba(109, 92, 255, 0.075);
+}
+.ratio-select__menu.is-light.is-glass-accent .ratio-select__option.is-selected {
+  color: #4334bd;
+  background: rgba(109, 92, 255, 0.105);
+  box-shadow: inset 0 0 0 1px rgba(109, 92, 255, 0.18);
+}
+.ratio-popover-enter-active,
+.ratio-popover-leave-active {
+  transition:
+    opacity 210ms ease,
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.ratio-popover-enter-from,
+.ratio-popover-leave-to {
+  opacity: 0;
+  transform: translateY(10px) scale(0.96);
+}
+.ratio-select__menu.opens-down.ratio-popover-enter-from,
+.ratio-select__menu.opens-down.ratio-popover-leave-to {
+  transform: translateY(-10px) scale(0.96);
+}
+@media (prefers-reduced-motion: reduce) {
+.ratio-select__trigger,
+  .ratio-select__trigger i,
+  .ratio-select__option,
+  .ratio-popover-enter-active,
+  .ratio-popover-leave-active {
+    transition: none;
+}
+}

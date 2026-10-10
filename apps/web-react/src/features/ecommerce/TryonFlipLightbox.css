@@ -1,0 +1,84 @@
+.tryon-flip-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  pointer-events: none;
+}
+.tryon-flip-lightbox.is-open {
+  pointer-events: auto;
+}
+.tryon-flip-lightbox__scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgb(10 11 18 / 58%);
+  cursor: zoom-out;
+  opacity: 0;
+  transition: opacity 0.24s ease;
+}
+.tryon-flip-lightbox.is-open .tryon-flip-lightbox__scrim {
+  opacity: 1;
+}
+.tryon-flip-lightbox__figure {
+  position: fixed;
+  z-index: 1;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  line-height: 0;
+  background: #111;
+  box-shadow: 0 24px 64px rgb(0 0 0 / 28%);
+  opacity: 0;
+  visibility: hidden;
+}
+.tryon-flip-lightbox__figure.is-shown {
+  opacity: 1;
+  visibility: visible;
+}
+.tryon-flip-lightbox__image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+.tryon-flip-lightbox__pending {
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: rgb(245 245 244 / 72%);
+  font-size: 13px;
+  font-weight: 650;
+}
+.tryon-flip-lightbox__close {
+  position: fixed;
+  top: 18px;
+  right: 20px;
+  z-index: 2;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: #fff;
+  background: rgb(255 255 255 / 12%);
+  border: 0;
+  border-radius: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.24s ease;
+}
+.tryon-flip-lightbox.is-open .tryon-flip-lightbox__close {
+  opacity: 1;
+}
+.tryon-flip-lightbox__close:hover {
+  background: rgb(255 255 255 / 18%);
+}
+html.color-scheme-dark .tryon-flip-lightbox__scrim {
+  background: rgb(8 8 8 / 62%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tryon-flip-lightbox__scrim,
+  .tryon-flip-lightbox__close {
+    transition: none;
+  }
+}

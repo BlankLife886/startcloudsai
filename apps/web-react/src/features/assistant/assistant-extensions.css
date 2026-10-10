@@ -1,0 +1,231 @@
+/* Planned conversation extensions. Colours come from the assistant tokens so
+   light and dark modes follow the workspace. */
+
+.assistant-workspace [class^="assistant-ext-"] button {
+  font: inherit;
+}
+
+.assistant-workspace .assistant-ext-btn,
+.assistant-workspace [class^="assistant-ext-"] footer button,
+.assistant-workspace .assistant-ext-share-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 8px;
+  color: var(--assistant-text-soft);
+  background: var(--assistant-card);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.assistant-workspace [class^="assistant-ext-"] footer button:hover:not(:disabled),
+.assistant-workspace .assistant-ext-share-actions button:hover {
+  border-color: var(--assistant-border-strong);
+  background: var(--assistant-panel-hover);
+  color: var(--assistant-text);
+}
+
+.assistant-workspace [class^="assistant-ext-"] button.is-primary {
+  border-color: transparent;
+  color: #fff;
+  background: var(--assistant-accent);
+}
+
+.assistant-workspace [class^="assistant-ext-"] button.is-primary:hover:not(:disabled) {
+  color: #fff;
+  background: color-mix(in srgb, var(--assistant-accent) 86%, #000);
+}
+
+.assistant-workspace.is-dark [class^="assistant-ext-"] button.is-primary,
+.assistant-workspace.is-dark [class^="assistant-ext-"] button.is-primary:hover:not(:disabled) {
+  color: #1a1428;
+}
+
+.assistant-workspace [class^="assistant-ext-"] button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.assistant-workspace .assistant-ext-card,
+.assistant-workspace .assistant-ext-task,
+.assistant-workspace .assistant-ext-share {
+  margin: 12px 0 0;
+  border: 1px solid var(--assistant-border);
+  border-radius: 14px;
+  background: var(--assistant-card);
+}
+
+/* 1 图片对比 */
+.assistant-workspace .assistant-ext-compare {
+  position: relative;
+  width: min(420px, 100%);
+  margin: 12px 0 0;
+  overflow: hidden;
+  border-radius: 14px;
+  aspect-ratio: 1;
+  user-select: none;
+}
+
+.assistant-workspace .assistant-ext-compare img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.assistant-workspace .assistant-ext-compare-after {
+  position: absolute;
+  inset: 0;
+  clip-path: inset(0 0 0 var(--compare-position));
+}
+
+.assistant-workspace .assistant-ext-compare-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--compare-position);
+  width: 2px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 12%);
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+
+.assistant-workspace .assistant-ext-compare-divider i {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 50%;
+  color: #1a1428;
+  background: #fff;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 22%);
+  transform: translate(-50%, -50%);
+}
+
+.assistant-workspace .assistant-ext-compare-tag {
+  position: absolute;
+  top: 10px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgb(0 0 0 / 46%);
+  font-size: 11px;
+  font-weight: 600;
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+
+.assistant-workspace .assistant-ext-compare-tag.is-before { left: 10px; }
+.assistant-workspace .assistant-ext-compare-tag.is-after { right: 10px; }
+
+.assistant-workspace .assistant-ext-compare input[type="range"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: ew-resize;
+}
+
+@keyframes assistant-ext-shimmer { to { background-position: -220% 0; } }
+
+.assistant-workspace .assistant-ext-task footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 12 后台任务 */
+.assistant-workspace .assistant-ext-task { display: grid; gap: 10px; max-width: 520px; padding: 14px; }
+.assistant-workspace .assistant-ext-task > header { display: flex; align-items: center; gap: 10px; }
+.assistant-workspace .assistant-ext-task > header > div { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.assistant-workspace .assistant-ext-task strong { color: var(--assistant-text); font-size: 14px; }
+.assistant-workspace .assistant-ext-task small { color: var(--assistant-muted); font-size: 12px; }
+
+.assistant-workspace .assistant-ext-task-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--assistant-accent-ink);
+  background: var(--assistant-accent-soft);
+  font-size: 16px;
+}
+
+.assistant-workspace .assistant-ext-task.is-done .assistant-ext-task-icon {
+  color: var(--assistant-success);
+  background: color-mix(in srgb, var(--assistant-success) 12%, transparent);
+}
+
+.assistant-workspace .assistant-ext-task-state {
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: var(--assistant-accent-ink);
+  background: var(--assistant-accent-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.assistant-workspace .assistant-ext-task.is-done .assistant-ext-task-state {
+  color: var(--assistant-success);
+  background: color-mix(in srgb, var(--assistant-success) 12%, transparent);
+}
+
+.assistant-workspace .assistant-ext-task-bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--assistant-panel-hover);
+}
+
+.assistant-workspace .assistant-ext-task-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--assistant-accent);
+  transition: width 0.3s ease;
+}
+
+.assistant-workspace .assistant-ext-task.is-done .assistant-ext-task-bar i { background: var(--assistant-success); }
+.assistant-workspace .assistant-ext-task footer { justify-content: space-between; }
+.assistant-workspace .assistant-ext-task footer small { display: inline-flex; align-items: center; gap: 5px; }
+
+.assistant-workspace .assistant-ext-share label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--assistant-text-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.assistant-workspace .assistant-ext-share input { accent-color: var(--assistant-accent); }
+
+/* 16 分享与导出 */
+.assistant-workspace .assistant-ext-share {
+  display: grid;
+  gap: 12px;
+  width: min(360px, 100%);
+  padding: 14px;
+  box-shadow: 0 16px 46px rgb(0 0 0 / 12%);
+}
+
+.assistant-workspace .assistant-ext-share strong { color: var(--assistant-text); font-size: 14px; }
+
+.assistant-workspace .assistant-ext-share-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.assistant-workspace .assistant-ext-share-actions .is-primary { grid-column: 1 / -1; }
+

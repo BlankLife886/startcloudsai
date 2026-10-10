@@ -1,0 +1,715 @@
+/* 电商套图卡片：沿用数据卡片的外框与原界面变量。 */
+.assistant-workspace .assistant-commerce {
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+}
+
+.assistant-commerce-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.assistant-commerce-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.assistant-commerce-title > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.assistant-commerce-title strong {
+  overflow: hidden;
+  color: var(--assistant-text);
+  font-size: 15px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-commerce-title span {
+  color: var(--assistant-muted);
+  font-size: 12px;
+}
+
+.assistant-commerce-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--assistant-accent-soft);
+  color: var(--assistant-accent-ink);
+  font-size: 16px;
+}
+
+.assistant-commerce-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12px;
+}
+
+.assistant-commerce-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--assistant-panel-hover);
+  color: var(--assistant-text-soft);
+  font-weight: 600;
+}
+
+.assistant-commerce-state.is-ready {
+  background: color-mix(in srgb, var(--assistant-success) 14%, transparent);
+  color: var(--assistant-success);
+}
+
+.assistant-commerce-state.is-running {
+  color: var(--assistant-accent-ink);
+}
+
+.assistant-commerce-spent {
+  color: var(--assistant-muted);
+}
+
+.assistant-commerce-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: assistant-commerce-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes assistant-commerce-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.assistant-commerce-bar {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--assistant-panel-hover);
+}
+
+.assistant-commerce-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--assistant-accent);
+  transition: width 400ms ease;
+}
+
+.assistant-workspace .assistant-commerce-summary {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  color: var(--assistant-text-soft);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.assistant-commerce-summary span {
+  flex: none;
+  height: fit-content;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: var(--assistant-panel-hover);
+  color: var(--assistant-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.assistant-commerce-grid {
+  --shot-height: 190px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.assistant-commerce-shot {
+  display: grid;
+  flex: none;
+  gap: 10px;
+  align-content: start;
+  width: calc(var(--shot-height) * var(--shot-ratio, 1));
+  min-width: 0;
+}
+
+/* 一行里的格子同样高，宽度按各自比例；图片铺满格子，不留边 */
+.assistant-commerce-shot-frame {
+  position: relative;
+  aspect-ratio: var(--shot-ratio, 1);
+  overflow: hidden;
+  border: 1px solid var(--assistant-border);
+  border-radius: 12px;
+  background: var(--assistant-panel-hover);
+}
+
+.assistant-commerce-shot-frame:hover {
+  border-color: var(--assistant-border-strong, var(--assistant-border));
+}
+
+.assistant-commerce-shot.is-flagged .assistant-commerce-shot-frame {
+  border-color: var(--assistant-danger);
+}
+
+.assistant-workspace .assistant-commerce-shot-open {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+.assistant-commerce-shot-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.assistant-commerce-shot-placeholder {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  height: 100%;
+  padding: 10px;
+  color: var(--assistant-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.assistant-commerce-shot-placeholder .bi {
+  font-size: 22px;
+}
+
+.assistant-commerce-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.assistant-commerce-badge.is-compact {
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: var(--assistant-success);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+}
+
+.assistant-commerce-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.assistant-commerce-badge.is-danger {
+  background: var(--assistant-danger);
+}
+
+.assistant-commerce-badge.is-busy,
+.assistant-commerce-badge.is-muted {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+/* 悬停时出现的操作；触屏上一直显示 */
+.assistant-commerce-shot-tools {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.assistant-commerce-shot-frame:hover .assistant-commerce-shot-tools,
+.assistant-commerce-shot-frame:focus-within .assistant-commerce-shot-tools,
+.assistant-commerce-shot.is-flagged .assistant-commerce-shot-tools {
+  opacity: 1;
+  transform: none;
+}
+
+@media (hover: none) {
+  .assistant-commerce-shot-tools {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  color: #1a1a1a;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button.is-icon {
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button:hover {
+  background: #fff;
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.assistant-workspace .assistant-commerce-link {
+  justify-self: start;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--assistant-accent-ink);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.assistant-workspace .assistant-commerce-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.assistant-commerce-shot-meta {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 2px;
+  font-size: 12px;
+}
+
+.assistant-commerce-shot-meta strong,
+.assistant-commerce-shot-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-commerce-shot-meta strong {
+  color: var(--assistant-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.assistant-commerce-shot-meta strong em {
+  margin-right: 6px;
+  color: var(--assistant-muted);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.assistant-commerce-shot-meta span {
+  color: var(--assistant-muted);
+}
+
+.assistant-workspace .assistant-commerce-stop-confirm {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--assistant-panel-hover);
+}
+
+.assistant-workspace .assistant-commerce-stop-confirm p {
+  margin: 0;
+  color: var(--assistant-text-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.assistant-workspace .assistant-commerce-stop-confirm div {
+  display: flex;
+  gap: 6px;
+}
+
+.assistant-workspace .assistant-commerce-stop-confirm button {
+  flex: 1;
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--assistant-panel);
+  color: var(--assistant-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.assistant-workspace .assistant-commerce-stop-confirm button.is-danger {
+  background: var(--assistant-danger);
+  color: #fff;
+}
+
+.assistant-workspace .assistant-commerce-stop-confirm button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.assistant-workspace .assistant-commerce-issues {
+  margin: 0;
+  color: var(--assistant-danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.assistant-commerce-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  padding-top: 2px;
+}
+
+.assistant-workspace .assistant-commerce-primary,
+.assistant-workspace .assistant-commerce-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.assistant-workspace .assistant-commerce-primary {
+  border: 0;
+  background: var(--assistant-accent);
+  color: #fff;
+}
+
+.assistant-workspace .assistant-commerce-secondary {
+  border: 1px solid var(--assistant-border-strong, var(--assistant-border));
+  background: transparent;
+  color: var(--assistant-text);
+}
+
+.assistant-workspace .assistant-commerce-secondary:hover:not(:disabled) {
+  background: var(--assistant-panel-hover);
+}
+
+.assistant-workspace .assistant-commerce-secondary.is-done {
+  border-color: transparent;
+  color: var(--assistant-success);
+}
+
+.assistant-workspace .assistant-commerce-primary:disabled,
+.assistant-workspace .assistant-commerce-secondary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.assistant-commerce-actions .assistant-data-note {
+  flex-basis: 100%;
+}
+
+.assistant-workspace .assistant-commerce-error {
+  margin: 0;
+  color: var(--assistant-danger);
+  font-size: 13px;
+}
+
+.assistant-commerce-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--assistant-border);
+  border-top-color: var(--assistant-accent);
+  border-radius: 50%;
+  animation: assistant-commerce-spin 0.9s linear infinite;
+}
+
+@keyframes assistant-commerce-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 560px) {
+  .assistant-commerce-grid {
+    --shot-height: 140px;
+    gap: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-commerce-spinner,
+  .assistant-commerce-dot {
+    animation: none;
+  }
+
+  .assistant-commerce-shot-tools {
+    transition: none;
+  }
+}
+
+/* ===== 精简版：一行头部、一行视觉主线、小号操作按钮（图片格子保持原样） ===== */
+.assistant-workspace .assistant-commerce {
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+}
+
+.assistant-workspace .assistant-commerce-head {
+  flex-wrap: nowrap;
+  align-items: baseline;
+}
+
+.assistant-workspace .assistant-commerce-title {
+  align-items: baseline;
+  gap: 8px;
+}
+
+.assistant-workspace .assistant-commerce-title strong { font-size: 14px; font-weight: 600; }
+.assistant-workspace .assistant-commerce-title span { flex: none; font-size: 12px; }
+
+.assistant-workspace .assistant-commerce-progress { flex: none; gap: 8px; }
+
+.assistant-workspace .assistant-commerce-state {
+  gap: 5px;
+  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.assistant-workspace .assistant-commerce-summary {
+  display: block;
+  margin-top: -6px;
+  overflow: hidden;
+  color: var(--assistant-muted);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-workspace .assistant-commerce-actions {
+  gap: 8px 10px;
+  padding-top: 2px;
+}
+
+.assistant-workspace .assistant-commerce-primary,
+.assistant-workspace .assistant-commerce-secondary {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+
+/* 重做：毛玻璃小胶囊，悬停时箭头转半圈，按下轻微回弹 */
+.assistant-workspace .assistant-commerce-shot-tools {
+  transition: opacity 200ms ease, transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button.assistant-commerce-redo {
+  gap: 5px;
+  height: 26px;
+  padding: 0 11px 0 9px;
+  border: 1px solid rgb(255 255 255 / 22%);
+  color: #fff;
+  background: rgb(18 14 28 / 46%);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 18%);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  transition: background-color 180ms ease, border-color 180ms ease, transform 160ms ease;
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button.assistant-commerce-redo:hover:not(:disabled) {
+  border-color: rgb(255 255 255 / 34%);
+  background: rgb(18 14 28 / 64%);
+}
+
+.assistant-workspace .assistant-commerce-shot-tools button.assistant-commerce-redo:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.assistant-workspace .assistant-commerce-redo > i {
+  display: inline-block;
+  font-size: 12px;
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.assistant-workspace .assistant-commerce-redo:hover:not(:disabled) > i {
+  transform: rotate(180deg);
+}
+
+.assistant-workspace .assistant-commerce-redo:disabled > i {
+  animation: assistant-commerce-spin 0.9s linear infinite;
+}
+
+@keyframes assistant-commerce-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-workspace .assistant-commerce-redo > i,
+  .assistant-workspace .assistant-commerce-shot-tools { transition: none; }
+  .assistant-workspace .assistant-commerce-redo:disabled > i { animation: none; }
+}
+
+/* 较早消息里的同一套图：一行引用 */
+.assistant-workspace .assistant-commerce-ref {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 10px;
+  color: var(--assistant-muted);
+  background: var(--assistant-card);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.assistant-workspace .assistant-commerce-ref strong {
+  overflow: hidden;
+  color: var(--assistant-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-workspace .assistant-commerce-ref:hover {
+  border-color: var(--assistant-border-strong);
+  color: var(--assistant-text-soft);
+}
+
+.assistant-workspace .assistant-commerce-ref > .bi-arrow-down { transition: transform 0.2s ease; }
+.assistant-workspace .assistant-commerce-ref:hover > .bi-arrow-down { transform: translateY(2px); }
+
+/* 较早一轮被换掉的成片：只读缩略图，留作对照 */
+.assistant-workspace .assistant-commerce-earlier {
+  display: grid;
+  gap: 10px;
+  max-width: 100%;
+  margin-top: 10px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 12px;
+  background: var(--assistant-card);
+}
+
+.assistant-workspace .assistant-commerce-earlier header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--assistant-muted);
+  font-size: 12.5px;
+}
+
+.assistant-workspace .assistant-commerce-earlier header strong { color: var(--assistant-text); font-weight: 600; }
+
+.assistant-workspace .assistant-commerce-earlier header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--assistant-text-soft);
+  font: inherit;
+  cursor: pointer;
+}
+
+.assistant-workspace .assistant-commerce-earlier header button:hover { background: var(--assistant-panel-hover); color: var(--assistant-text); }
+
+.assistant-workspace .assistant-commerce-earlier ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.assistant-workspace .assistant-commerce-earlier li { width: calc(96px * var(--shot-ratio, 1)); max-width: 100%; }
+
+.assistant-workspace .assistant-commerce-earlier li button {
+  display: block;
+  width: 100%;
+  height: 96px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--assistant-border);
+  border-radius: 8px;
+  background: var(--assistant-image-bg, var(--assistant-panel-hover));
+  cursor: zoom-in;
+}
+
+.assistant-workspace .assistant-commerce-earlier img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.assistant-workspace .assistant-commerce-earlier li button:hover { border-color: var(--assistant-border-strong); }
+
+.assistant-workspace .assistant-commerce-saved-hint {
+  color: var(--assistant-success);
+  font-size: 12.5px;
+  animation: assistant-commerce-hint 260ms ease both;
+}
+
+@keyframes assistant-commerce-hint {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: none; }
+}

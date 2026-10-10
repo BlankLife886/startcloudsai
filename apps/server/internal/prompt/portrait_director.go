@@ -5,6 +5,10 @@ import "strings"
 const femalePortraitDirectorSkillID = "female-portrait-director"
 
 // This runtime contract is adapted from female-portrait-director V1.6.
+//
+// 人像导演已改为官方技能（skills/female-portrait-director/SKILL.md，后台导入，
+// 用户用 @人像导演 调用，正文由前端展开进提示词）。这里的常量与该文件正文保持一致，
+// 由 portrait_director_test.go 校验。
 const femalePortraitDirectorPrompt = `[人像导演 Skill / FEMALE-PORTRAIT-DIRECTOR-V1.6]
 将用户需求导演为一张完整、可信、可拍摄的成年女性人像。以下规则是执行约束，不要把规则、Route 名称、分析过程或字段列表渲染到图片中。
 
@@ -57,7 +61,13 @@ func hasSkillID(params map[string]any, expected string) bool {
 	return false
 }
 
+// applyT2ISkills 只为兼容历史任务保留：文生图不再提供人像导演开关，新任务不会再带
+// skillIds=female-portrait-director，同一请求也就不会与 @ 展开的正文重复拼接。
+// 已入库的旧任务参数（例如服务端重试）仍按原约定执行；不再需要时连同常量一起删除。
 func applyT2ISkills(compiled string, params map[string]any) string {
+	if skillsDisabled, _ := params["_skillsDisabled"].(bool); skillsDisabled {
+		return compiled
+	}
 	if !hasSkillID(params, femalePortraitDirectorSkillID) {
 		return compiled
 	}

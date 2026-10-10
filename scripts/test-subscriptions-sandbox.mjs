@@ -1,0 +1,65 @@
+import assert from 'node:assert/strict'
+
+const base = 'http://127.0.0.1:8144'
+const state = await (await fetch(`${base}/__sandbox/state`)).json()
+assert.match(state.db, /^sc_payment_lab_[a-f0-9]{12}$/)
+const account = state.accounts.find(item => item.account.key === 'subscriptions')
+assert.ok(account, 'The current sandbox must include the dedicated subscription account')
+assert.equal(account.subscription, null, 'Do not interrupt an existing manual subscription test')
+assert.equal(account.summary.pending + account.summary.uncertain + account.summary.paid, 0)
+const html = await (await fetch(`${base}/__sandbox/`)).text()
+const key = JSON.parse(html.match(/const key=("[a-f0-9]+");/)[1])
+async function login(account) {
+  const r = await fetch(`${base}/__sandbox/enter`, { method: 'POST', redirect: 'manual', headers: { Origin: base }, body: new URLSearchParams({ key, account, dest: '/subscriptions' }) })
+  assert.equal(r.status, 303)
+  return r.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+}
+const cookie = await login('subscriptions'), admin = await login('admin')
+async function request(path, body, session = cookie) {
+  const r = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers: { Origin: base, Cookie: session, 'Content-Type': 'application/json', 'X-Sandbox-Key': key }, body: body === undefined ? undefined : JSON.stringify(body) })
+  const payload = await r.json()
+  assert.ok(r.ok, `${path}: ${JSON.stringify(payload)}`)
+  return payload.data ?? payload
+}
+const plans = (await request('/api/v1/plans')).items
+const basic = plans.find(plan => plan.code === 'lab-sub'), pro = plans.find(plan => plan.code === 'lab-sub-plus')
+const create = (plan, upgradeQuoteId) => request('/api/v1/orders', { planId: plan.id, paymentMethod: 'alipay', ...(upgradeQuoteId ? { upgradeQuoteId } : {}) })
+async function pay(order) {
+  const state = await request('/__sandbox/state')
+  const remote = state.gateways.find(item => item.merchantId === order.id)
+  assert.ok(remote)
+  await request('/__sandbox/action', { action: 'pay', id: remote.id })
+  assert.equal((await request(`/api/v1/orders/${order.id}`)).status, 'completed')
+}
+await pay(await create(basic))
+let current = await request('/api/v1/me/subscription')
+assert.equal(current.billingVersion, 2)
+assert.equal(Date.parse(current.endsAt) - Date.parse(current.startsAt), 3 * 86400000)
+assert.equal(Date.parse(current.nextGrantAt) - Date.parse(current.startsAt), 86400000)
+const subID = current.id, ends = current.endsAt
+const denied = await fetch(`${base}/api/v1/orders`, { method: 'POST', headers: { Origin: base, Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ planId: pro.id, paymentMethod: 'alipay' }) })
+assert.equal(denied.status, 409)
+console.log('PASS exact 24-hour period and single active subscription')
+const quote = await request(`/api/v1/me/subscriptions/${subID}/upgrade-quote`, { planId: pro.id })
+await pay(await create(pro, quote.id))
+current = await request('/api/v1/me/subscription')
+assert.ok(Date.parse(current.endsAt) > Date.parse(ends))
+assert.equal(Date.parse(current.endsAt) - Date.parse(current.startsAt), 3 * 86400000)
+assert.equal(current.dailyGrantCents, 300)
+let wallet = await request('/api/v1/me/wallet')
+assert.equal(wallet.normalBalanceCents, 0)
+assert.equal(wallet.subscriptionBalanceCents, 300)
+console.log('PASS upgrade replaces old quota and starts a full new period')
+const refund = await request(`/api/v1/me/subscriptions/${subID}/refund`, { reason: '沙盒自动验收：模拟购买错误申请退订' })
+await request(`/api/v1/admin/subscription-changes/${refund.id}/review`, { action: 'approve', note: '沙盒审核：未使用订阅积分，无真实扣款' }, admin)
+wallet = await request('/api/v1/me/wallet')
+assert.equal(wallet.subscriptionBalanceCents, 0)
+assert.equal(wallet.subscriptionFrozenCents, 300)
+await request(`/api/v1/admin/subscription-changes/${refund.id}/review`, { action: 'confirm_external_refund', note: '沙盒退款结果确认，未向任何真实渠道发起交易', providerReference: `lab-refund-${refund.id}` }, admin)
+assert.equal((await request('/api/v1/me/subscription')).active, false)
+console.log('PASS reviewed refund holds and revokes only scoped credits')
+await pay(await create(basic))
+current = await request('/api/v1/me/subscription')
+assert.equal(current.active, true)
+assert.equal((await request('/api/v1/me/wallet')).subscriptionBalanceCents, 100)
+console.log(`Ready for manual testing: active three-day subscription, 100 scoped credits, ${base}/__sandbox/`)

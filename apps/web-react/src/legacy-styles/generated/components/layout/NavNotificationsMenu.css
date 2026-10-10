@@ -1,0 +1,491 @@
+/* Generated from apps/web/src/components/layout/NavNotificationsMenu.vue. */
+
+.nav-notify {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+}
+.nav-notify__btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 1px solid rgba(21, 22, 31, 0.1);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--nav-accent, #5b4dff);
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  line-height: 1;
+}
+.nav-notify__btn i {
+  font-size: 1rem;
+  line-height: 1;
+}
+.nav-notify__btn:hover,
+.nav-notify.open .nav-notify__btn {
+  border-color: rgba(91, 77, 255, 0.28);
+  color: var(--nav-accent, #5b4dff);
+  filter: brightness(0.98);
+}
+.nav-notify__badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-style: normal;
+  font-size: 0.62rem;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 2px #fff;
+}
+/* 铃铛弹窗：通知中心式分类堆叠卡片（纯文字，无图标） */
+.nav-notify__panel {
+  --nn-ink: #1c1a27;
+  --nn-ink-2: rgba(28, 26, 39, 0.62);
+  --nn-ink-3: rgba(28, 26, 39, 0.4);
+  --nn-line: rgba(28, 26, 39, 0.07);
+  --nn-bg: #f5f4f9;
+  --nn-card: #ffffff;
+  --nn-card-line: rgba(28, 26, 39, 0.06);
+  --nn-card-shadow: 0 1px 2px rgba(28, 22, 60, 0.05), 0 4px 12px rgba(28, 22, 60, 0.04);
+  --nn-layer-1: #fbfaff;
+  --nn-layer-2: #efedf7;
+  --nn-accent: #5b4dff;
+  --nn-accent-soft: rgba(91, 77, 255, 0.1);
+  --nn-task: #5b4dff;
+  --nn-wallet: #b45309;
+  --nn-review: #be185d;
+  --nn-trial: #047857;
+  --nn-other: rgba(28, 26, 39, 0.5);
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 80;
+  width: min(360px, calc(100vw - 24px));
+  overflow: hidden;
+  border: 1px solid rgba(28, 26, 39, 0.08);
+  border-radius: 18px;
+  background: var(--nn-bg);
+  box-shadow: 0 24px 48px -12px rgba(28, 22, 60, 0.22), 0 2px 6px rgba(28, 22, 60, 0.06);
+  color: var(--nn-ink);
+  letter-spacing: 0.01em;
+}
+.nav-notify__panel::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  width: 64px;
+  height: 12px;
+}
+.site-header.is-dark .nav-notify__panel {
+  --nn-ink: rgba(255, 255, 255, 0.94);
+  --nn-ink-2: rgba(255, 255, 255, 0.6);
+  --nn-ink-3: rgba(255, 255, 255, 0.38);
+  --nn-line: rgba(255, 255, 255, 0.07);
+  --nn-bg: #15151c;
+  --nn-card: #1f1f29;
+  --nn-card-line: rgba(255, 255, 255, 0.06);
+  --nn-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --nn-layer-1: #1b1b24;
+  --nn-layer-2: #18181f;
+  --nn-accent: #a9a2ff;
+  --nn-accent-soft: rgba(169, 162, 255, 0.14);
+  --nn-task: #a9a2ff;
+  --nn-wallet: #f5b453;
+  --nn-review: #f49ac1;
+  --nn-trial: #5fd3a8;
+  --nn-other: rgba(255, 255, 255, 0.5);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 28px 56px -12px rgba(0, 0, 0, 0.6);
+}
+
+.nav-notify__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+.nav-notify__head strong {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--nn-ink);
+}
+.nav-notify__head small {
+  margin-left: 8px;
+  color: var(--nn-ink-3);
+  font-size: 0.7rem;
+}
+.nav-notify__read-all {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--nn-accent);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.nav-notify__read-all:hover:not(:disabled) {
+  background: var(--nn-accent-soft);
+}
+.nav-notify__read-all:disabled {
+  color: var(--nn-ink-3);
+  cursor: default;
+}
+.nav-notify__read-all:focus-visible,
+.nav-notify__more:focus-visible,
+.nav-notify__sound:focus-visible,
+.nav-notify__foot a:focus-visible,
+.nav-notify__card-link:focus-visible {
+  outline: 2px solid var(--nn-accent);
+  outline-offset: 2px;
+}
+
+.nav-notify__loading,
+.nav-notify__empty {
+  display: grid;
+  place-items: center;
+  gap: 4px;
+  min-height: 120px;
+  margin: 0 10px 10px;
+  padding: 20px 16px;
+  border-radius: 12px;
+  background: var(--nn-card);
+  color: var(--nn-ink-3);
+  font-size: 0.72rem;
+  text-align: center;
+}
+.nav-notify__empty strong {
+  color: var(--nn-ink-2);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.nav-notify__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(440px, 60vh);
+  margin: 0;
+  padding: 0 10px 12px;
+  overflow: auto;
+  list-style: none;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.nav-notify__group {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.nav-notify__group.is-stacked {
+  margin-bottom: 8px;
+}
+.nav-notify__group.is-stacked-deep {
+  margin-bottom: 14px;
+}
+.nav-notify__group.is-open {
+  gap: 5px;
+}
+/* 摞在下面的“纸片” */
+.nav-notify__group.is-stacked::after,
+.nav-notify__group.is-stacked-deep::before {
+  content: "";
+  position: absolute;
+  height: 16px;
+  border: 1px solid var(--nn-card-line);
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  background: var(--nn-layer-1);
+  box-shadow: 0 2px 4px rgba(28, 22, 60, 0.05);
+}
+.nav-notify__group.is-stacked::after {
+  left: 9px;
+  right: 9px;
+  bottom: -8px;
+  z-index: 1;
+}
+.nav-notify__group.is-stacked-deep::before {
+  left: 18px;
+  right: 18px;
+  bottom: -14px;
+  z-index: 0;
+  background: var(--nn-layer-2);
+}
+.nav-notify__group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px 0;
+}
+
+.nav-notify__card {
+  position: relative;
+  z-index: 2;
+  padding: 11px 14px 12px;
+  border: 1px solid var(--nn-card-line);
+  border-radius: 12px;
+  background: var(--nn-card);
+  box-shadow: var(--nn-card-shadow);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+.nav-notify__card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--nn-card-shadow), 0 6px 16px rgba(28, 22, 60, 0.06);
+}
+.nav-notify__card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+  margin-bottom: 4px;
+}
+.nav-notify__card time {
+  margin-left: auto;
+  color: var(--nn-ink-3);
+  font-size: 0.66rem;
+  white-space: nowrap;
+}
+.nav-notify__cat {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--nn-other);
+}
+.nav-notify__cat[data-group="task"],
+.nav-notify__cat[data-group="assistant"] {
+  color: var(--nn-task);
+}
+.nav-notify__cat[data-group="wallet"] {
+  color: var(--nn-wallet);
+}
+.nav-notify__cat[data-group="review"] {
+  color: var(--nn-review);
+}
+.nav-notify__cat[data-group="trial"] {
+  color: var(--nn-trial);
+}
+.nav-notify__more {
+  position: relative;
+  z-index: 3;
+  padding: 1px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--nn-line);
+  color: var(--nn-ink-2);
+  font-size: 0.64rem;
+  font-weight: 600;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.nav-notify__more:hover {
+  background: var(--nn-accent-soft);
+  color: var(--nn-accent);
+}
+.nav-notify__card-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.nav-notify__group.is-stacked {
+  cursor: pointer;
+}
+.nav-notify__group.is-stacked:hover .nav-notify__more {
+  background: var(--nn-accent-soft);
+  color: var(--nn-accent);
+}
+.nav-notify__group.is-open .nav-notify__card:nth-child(2) { z-index: 5; }
+.nav-notify__group.is-open .nav-notify__card:nth-child(3) { z-index: 4; }
+.nav-notify__group.is-open .nav-notify__card:nth-child(4) { z-index: 3; }
+/* 收起后底下的纸片晚一拍冒出来 */
+.nav-notify__group.is-stacked::after,
+.nav-notify__group.is-stacked-deep::before {
+  animation: nav-notify-layer-in 260ms 60ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes nav-notify-layer-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scaleX(0.96);
+  }
+}
+/* 整张卡片都可点，展开按钮浮在上面 */
+.nav-notify__card-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+}
+.nav-notify__card-link strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--nn-ink-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.nav-notify__card.is-unread .nav-notify__card-link strong {
+  font-weight: 650;
+  color: var(--nn-ink);
+}
+.nav-notify__card p {
+  display: -webkit-box;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--nn-ink-3);
+  font-size: 0.72rem;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.nav-notify__card.is-unread p {
+  color: var(--nn-ink-2);
+}
+.nav-notify__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--nn-accent);
+  box-shadow: 0 0 0 3px var(--nn-accent-soft);
+}
+
+.nav-notify__foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--nn-line);
+}
+.nav-notify__sound,
+.nav-notify__foot-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--nn-ink-3);
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 140ms ease;
+}
+.nav-notify__sound:hover,
+.nav-notify__foot-link:hover {
+  color: var(--nn-ink);
+}
+.nav-notify__switch {
+  position: relative;
+  width: 24px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--nn-line);
+  box-shadow: inset 0 0 0 1px var(--nn-card-line);
+  transition: background-color 160ms ease;
+}
+.nav-notify__switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 160ms ease;
+}
+.nav-notify__sound[aria-pressed="true"] .nav-notify__switch {
+  background: var(--nn-accent);
+}
+.nav-notify__sound[aria-pressed="true"] .nav-notify__switch::after {
+  transform: translateX(10px);
+}
+.nav-notify__all {
+  margin-left: auto;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--nn-accent-soft);
+  color: var(--nn-accent);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background-color 140ms ease;
+}
+.nav-notify__all:hover {
+  background: color-mix(in srgb, var(--nn-accent) 18%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .nav-notify__card,
+  .nav-notify__switch,
+  .nav-notify__switch::after {
+    transition: none;
+  }
+  .nav-notify__card:hover {
+    transform: none;
+  }
+  .nav-notify__group.is-stacked::after,
+  .nav-notify__group.is-stacked-deep::before {
+    animation: none;
+  }
+}
+.nav-notify-panel-enter-active,
+.nav-notify-panel-leave-active {
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+.nav-notify-panel-enter-from,
+.nav-notify-panel-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.nav-notify.compact {
+  height: 32px;
+}
+.nav-notify.compact .nav-notify__btn {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+}
+@media (hover: none), (max-width: 760px) {
+  .nav-notify__panel {
+    display: none;
+  }
+}

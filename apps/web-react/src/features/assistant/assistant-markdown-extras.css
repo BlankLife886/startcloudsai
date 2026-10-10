@@ -1,0 +1,556 @@
+/* 回复正文的增强：表格工具栏、流程图、引用角标、长回复目录、追问建议。 */
+
+/* ---------- 表格 ---------- */
+.assistant-workspace .assistant-markdown .assistant-table {
+  width: max-content;
+  max-width: 100%;
+  margin: 0.8em 0;
+  overflow: hidden;
+  border: 1px solid var(--assistant-border);
+  border-radius: 10px;
+}
+
+.assistant-workspace .assistant-table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 2px 6px 2px 12px;
+  border-bottom: 1px solid var(--assistant-border);
+  color: var(--assistant-muted);
+  font-size: 12px;
+}
+
+.assistant-workspace .assistant-table-toolbar button,
+.assistant-workspace .assistant-diagram-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--assistant-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.assistant-workspace .assistant-table-toolbar button:hover,
+.assistant-workspace .assistant-table-toolbar button.is-copied,
+.assistant-workspace .assistant-diagram-toolbar button:hover,
+.assistant-workspace .assistant-diagram-toolbar button.is-copied,
+.assistant-workspace .assistant-diagram-toolbar button[aria-pressed="true"] {
+  background: var(--assistant-panel-hover);
+  color: var(--assistant-text);
+}
+
+.assistant-workspace .assistant-table-scroll { max-width: 100%; overflow-x: auto; }
+
+/* 表格本身的边框交给外面的 figure */
+.assistant-workspace .assistant-markdown .assistant-table table {
+  display: table;
+  width: 100%;
+  margin: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+}
+
+.assistant-workspace .assistant-markdown .assistant-table th:has(.assistant-table-sort) { padding: 0; }
+
+.assistant-workspace .assistant-table-sort {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px 8px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.assistant-workspace .assistant-table-sort i {
+  margin-left: auto;
+  color: var(--assistant-muted);
+  font-size: 11px;
+  opacity: 0.45;
+  transition: opacity 150ms ease;
+}
+
+.assistant-workspace .assistant-table-sort:hover i,
+.assistant-workspace th[aria-sort="ascending"] .assistant-table-sort i,
+.assistant-workspace th[aria-sort="descending"] .assistant-table-sort i {
+  color: var(--assistant-text);
+  opacity: 1;
+}
+
+/* ---------- 流程图 ---------- */
+.assistant-workspace .assistant-diagram {
+  margin: 0.9em 0;
+  overflow: hidden;
+  border: 1px solid var(--assistant-border);
+  border-radius: 12px;
+}
+
+.assistant-workspace .assistant-diagram-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 2px 6px 2px 12px;
+  border-bottom: 1px solid var(--assistant-border);
+  color: var(--assistant-muted);
+  font-size: 12px;
+}
+
+.assistant-workspace .assistant-diagram-toolbar > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
+.assistant-workspace .assistant-diagram-actions { display: inline-flex; gap: 2px; }
+
+.assistant-workspace .assistant-diagram-canvas {
+  display: flex;
+  justify-content: center;
+  min-height: 72px;
+  padding: 18px 16px;
+  overflow-x: auto;
+}
+
+.assistant-workspace .assistant-diagram-canvas[hidden] { display: none; }
+.assistant-workspace .assistant-diagram-canvas svg { max-width: 100%; height: auto; }
+.assistant-workspace .assistant-diagram-loading { align-self: center; color: var(--assistant-muted); font-size: 12px; }
+
+.assistant-workspace .assistant-diagram-code {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  background: var(--assistant-panel-hover);
+  color: var(--assistant-text);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.assistant-workspace .assistant-diagram.is-error .assistant-diagram-canvas { min-height: 0; padding: 10px 16px; }
+
+/* 节点文字里有 <p>：正文段落的字号、边距不能套进来，否则比 mermaid 量的宽，最后一个字会被裁掉 */
+.assistant-workspace .assistant-diagram svg p,
+.assistant-workspace .assistant-diagram svg foreignObject div,
+.assistant-workspace .assistant-diagram svg foreignObject span {
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: normal;
+}
+
+/* mermaid 用中性主题画，颜色在这里按明暗主题统一覆盖，切换主题不用重画 */
+.assistant-workspace .assistant-diagram svg .node rect,
+.assistant-workspace .assistant-diagram svg .node polygon,
+.assistant-workspace .assistant-diagram svg .node circle,
+.assistant-workspace .assistant-diagram svg .node ellipse,
+.assistant-workspace .assistant-diagram svg .node path,
+.assistant-workspace .assistant-diagram svg rect.actor,
+.assistant-workspace .assistant-diagram svg .note {
+  fill: var(--assistant-card) !important;
+  stroke: color-mix(in srgb, var(--assistant-text) 26%, transparent) !important;
+  stroke-width: 1px !important;
+}
+
+.assistant-workspace .assistant-diagram svg text,
+.assistant-workspace .assistant-diagram svg .nodeLabel,
+.assistant-workspace .assistant-diagram svg .edgeLabel,
+.assistant-workspace .assistant-diagram svg tspan {
+  fill: var(--assistant-text) !important;
+  color: var(--assistant-text) !important;
+}
+
+.assistant-workspace .assistant-diagram svg .flowchart-link,
+.assistant-workspace .assistant-diagram svg .edgePath .path,
+.assistant-workspace .assistant-diagram svg .messageLine0,
+.assistant-workspace .assistant-diagram svg .messageLine1,
+.assistant-workspace .assistant-diagram svg .relation,
+.assistant-workspace .assistant-diagram svg .actor-line {
+  stroke: color-mix(in srgb, var(--assistant-text) 45%, transparent) !important;
+}
+
+.assistant-workspace .assistant-diagram svg marker path,
+.assistant-workspace .assistant-diagram svg .arrowheadPath,
+.assistant-workspace .assistant-diagram svg .arrowMarkerPath {
+  fill: color-mix(in srgb, var(--assistant-text) 45%, transparent) !important;
+  stroke: none !important;
+}
+
+.assistant-workspace .assistant-diagram svg .edgeLabel rect,
+.assistant-workspace .assistant-diagram svg .edgeLabel p,
+.assistant-workspace .assistant-diagram svg .edgeLabel span,
+.assistant-workspace .assistant-diagram svg .labelBkg {
+  fill: var(--assistant-bg, var(--assistant-card)) !important;
+  background-color: var(--assistant-bg, var(--assistant-card)) !important;
+  opacity: 1 !important;
+}
+
+.assistant-workspace .assistant-diagram svg .cluster rect {
+  fill: transparent !important;
+  stroke: var(--assistant-border) !important;
+  stroke-dasharray: 4 3;
+}
+
+/* ---------- 流程图：可点开大图 ---------- */
+.assistant-workspace .assistant-diagram[data-rendered] .assistant-diagram-canvas { cursor: zoom-in; }
+
+/* 挂在 body 上，颜色变量由脚本从工作区复制过来 */
+.assistant-diagram-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  display: flex;
+  flex-direction: column;
+  background: rgb(12 12 16 / 58%);
+  animation: assistant-diagram-viewer-in 160ms ease;
+}
+
+@keyframes assistant-diagram-viewer-in { from { opacity: 0; } }
+
+.assistant-diagram-viewer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 52px;
+  padding: 0 12px 0 18px;
+  border-bottom: 1px solid var(--assistant-border);
+  background: var(--assistant-card);
+  color: var(--assistant-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.assistant-diagram-viewer-bar > span:first-child { display: inline-flex; align-items: center; gap: 8px; }
+.assistant-diagram-viewer-actions { display: inline-flex; align-items: center; gap: 2px; }
+
+.assistant-diagram-viewer-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--assistant-text-soft);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.assistant-diagram-viewer-actions button:hover { background: var(--assistant-panel-hover); color: var(--assistant-text); }
+.assistant-diagram-viewer-scale { min-width: 54px; font-variant-numeric: tabular-nums; }
+
+.assistant-diagram-viewer-stage {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  cursor: grab;
+  touch-action: none;
+}
+
+.assistant-diagram-viewer-stage:active { cursor: grabbing; }
+
+/* 外边距 auto：小图居中，大图可以从左上角开始滚动 */
+.assistant-diagram-viewer-art {
+  flex: none;
+  margin: auto;
+  padding: 24px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--assistant-card);
+  box-shadow: var(--assistant-shadow);
+}
+
+.assistant-diagram-viewer-art svg { display: block; max-width: none; }
+
+/* ---------- 引用角标 ---------- */
+.assistant-workspace .assistant-markdown a.assistant-cite {
+  position: relative;
+  display: inline-grid;
+  min-width: 15px;
+  height: 15px;
+  margin: 0 1px 0 2px;
+  padding: 0 4px;
+  place-items: center;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--assistant-accent) 14%, transparent);
+  color: var(--assistant-accent-ink);
+  font-size: 10px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-decoration: none;
+  vertical-align: 0.3em;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.assistant-workspace .assistant-markdown a.assistant-cite:hover,
+.assistant-workspace .assistant-markdown a.assistant-cite:focus-visible {
+  background: var(--assistant-accent);
+  color: #fff;
+}
+
+/* 悬停显示来源标题和网站 */
+.assistant-workspace .assistant-markdown a.assistant-cite::after {
+  content: attr(data-title) "\A" attr(data-host);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  z-index: 5;
+  width: max-content;
+  max-width: 260px;
+  padding: 8px 10px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 8px;
+  background: var(--assistant-card);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  color: var(--assistant-text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: left;
+  white-space: pre-line;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 4px);
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.assistant-workspace .assistant-markdown a.assistant-cite:hover::after,
+.assistant-workspace .assistant-markdown a.assistant-cite:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* ---------- 长回复目录 ---------- */
+.assistant-workspace .assistant-outline {
+  width: fit-content;
+  min-width: 220px;
+  max-width: 100%;
+  margin: 2px 0 14px;
+  padding: 4px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 12px;
+}
+
+.assistant-workspace .assistant-outline-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--assistant-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.assistant-workspace .assistant-outline-toggle:hover { background: var(--assistant-panel-hover); }
+.assistant-workspace .assistant-outline-toggle small { color: var(--assistant-muted); font-size: 12px; font-weight: 500; }
+.assistant-workspace .assistant-outline-chevron { margin-left: auto; color: var(--assistant-muted); font-size: 11px; transition: transform 180ms ease; }
+.assistant-workspace .assistant-outline.is-open .assistant-outline-chevron { transform: rotate(180deg); }
+
+.assistant-workspace .assistant-outline ol {
+  display: grid;
+  gap: 1px;
+  margin: 2px 0 2px;
+  padding: 0;
+  list-style: none;
+}
+
+.assistant-workspace .assistant-outline li button {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  padding: 5px 8px 5px 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--assistant-text-soft);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.assistant-workspace .assistant-outline li.is-level-2 button { padding-left: 24px; font-size: 12.5px; }
+.assistant-workspace .assistant-outline li.is-level-3 button { padding-left: 38px; color: var(--assistant-muted); font-size: 12.5px; }
+.assistant-workspace .assistant-outline li button:hover { background: var(--assistant-panel-hover); color: var(--assistant-text); }
+.assistant-workspace .assistant-outline li.is-active button,
+.assistant-workspace .assistant-outline-menu li.is-active button { color: var(--assistant-accent-ink); font-weight: 600; }
+
+/* 读到后面时吸顶的目录按钮：不占版面（高度 0），浮在回复右上角 */
+.assistant-workspace .assistant-outline-dock {
+  position: sticky;
+  top: 10px;
+  z-index: 8;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  height: 0;
+  pointer-events: none;
+}
+
+.assistant-workspace .assistant-outline-float {
+  position: relative;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.assistant-workspace .assistant-outline-dock.is-visible .assistant-outline-float {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.assistant-workspace .assistant-outline-float-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(320px, 70vw);
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 999px;
+  background: var(--assistant-card);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 8%);
+  color: var(--assistant-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.assistant-workspace .assistant-outline-float-toggle span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-workspace .assistant-outline-float-toggle small { flex: none; color: var(--assistant-muted); font-size: 11.5px; font-weight: 500; }
+.assistant-workspace .assistant-outline-float-toggle:hover { background: var(--assistant-panel-hover); }
+.assistant-workspace .assistant-outline-float.is-open .assistant-outline-chevron { transform: rotate(180deg); }
+
+.assistant-workspace .assistant-outline-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: max-content;
+  min-width: 220px;
+  max-width: min(420px, 80vw);
+  max-height: min(60vh, 440px);
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--assistant-border);
+  border-radius: 12px;
+  background: var(--assistant-card);
+  box-shadow: var(--assistant-shadow, 0 12px 32px rgb(0 0 0 / 12%));
+}
+
+.assistant-workspace .assistant-outline-menu ol { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; }
+
+.assistant-workspace .assistant-outline-menu li button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--assistant-text-soft);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.assistant-workspace .assistant-outline-menu li.is-level-2 button { padding-left: 24px; font-size: 12.5px; }
+.assistant-workspace .assistant-outline-menu li.is-level-3 button { padding-left: 38px; color: var(--assistant-muted); font-size: 12.5px; }
+.assistant-workspace .assistant-outline-menu li button:hover { background: var(--assistant-panel-hover); color: var(--assistant-text); }
+
+/* 点目录跳过去时，标题不贴着顶 */
+.assistant-workspace .assistant-markdown > h1,
+.assistant-workspace .assistant-markdown > h2,
+.assistant-workspace .assistant-markdown > h3 { scroll-margin-top: 72px; }
+
+/* ---------- 追问建议 ---------- */
+.assistant-workspace .assistant-followups {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.assistant-workspace .assistant-followups-label { margin-right: 2px; color: var(--assistant-muted); font-size: 12px; }
+
+.assistant-workspace .assistant-followups button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 5px 10px 5px 12px;
+  border: 1px solid var(--assistant-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--assistant-text-soft);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.assistant-workspace .assistant-followups button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-workspace .assistant-followups button i { flex: none; color: var(--assistant-muted); font-size: 11px; transition: transform 150ms ease, color 150ms ease; }
+
+.assistant-workspace .assistant-followups button:hover {
+  border-color: var(--assistant-border-strong, var(--assistant-border));
+  background: var(--assistant-panel-hover);
+  color: var(--assistant-text);
+}
+
+.assistant-workspace .assistant-followups button:hover i { color: var(--assistant-text); transform: translate(1px, -1px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-workspace .assistant-markdown a.assistant-cite::after,
+  .assistant-workspace .assistant-outline-chevron,
+  .assistant-workspace .assistant-outline-float,
+  .assistant-diagram-viewer,
+  .assistant-workspace .assistant-followups button i { transition: none; }
+  .assistant-diagram-viewer { animation: none; }
+}

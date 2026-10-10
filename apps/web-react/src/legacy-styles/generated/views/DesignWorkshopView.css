@@ -1,0 +1,3710 @@
+/* Generated from apps/web/src/views/DesignWorkshopView.vue. */
+
+/* ————— 设计令牌：无边框、填充式分层 ————— */
+.dws {
+  --dws-bg: #0a0a10;
+  --dws-brand: #6d5cff;
+  --dws-ink: rgba(255, 255, 255, 0.95);
+  --dws-muted: rgba(255, 255, 255, 0.6);
+  --dws-faint: rgba(255, 255, 255, 0.34);
+  --dws-fill: rgba(255, 255, 255, 0.05);
+  --dws-fill-hover: rgba(255, 255, 255, 0.09);
+  --dws-fill-deep: rgba(255, 255, 255, 0.03);
+  --dws-accent: #6d5cff;
+  --dws-accent-2: #8a72ff;
+  --dws-accent-soft: rgba(109, 92, 255, 0.2);
+  --dws-radius: 12px;
+  min-height: calc(100vh - var(--app-header-offset, 64px));
+  color: var(--dws-ink);
+  background:
+    radial-gradient(
+      1100px 560px at 72% -12%,
+      color-mix(in srgb, var(--dws-brand) 13%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(760px 460px at 6% 108%, rgba(109, 92, 255, 0.07), transparent 60%),
+    var(--dws-bg);
+  transition: background 0.4s ease;
+}
+.dws-shell {
+  position: relative;
+  display: grid;
+  grid-template-columns: 332px minmax(0, 1fr);
+  width: 100%;
+  height: calc(100vh - var(--app-header-offset, 64px));
+  min-height: 620px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background-color: #08090f;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.014) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.014) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: center;
+}
+.dws-shell::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+  top: 40%;
+  right: -26%;
+  bottom: -54%;
+  left: -26%;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--dws-brand) 24%, transparent) 1px, transparent 1px),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--dws-brand) 24%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+  background-size:
+    120px 120px,
+    120px 120px,
+    24px 24px,
+    24px 24px;
+  background-position: calc(50% + 166px) top;
+  transform: perspective(640px) rotateX(58deg) scale(1.14);
+  transform-origin: calc(50% + 166px) 0;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 72%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 72%, transparent);
+}
+.dws-tablet-tabs {
+  display: none;
+}
+
+/* ————— 左栏：直排参数，统一节奏 ————— */
+.dws-panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  box-sizing: border-box;
+  overflow: hidden;
+  height: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  margin: 12px 0 12px 12px;
+  padding: 20px 18px 0;
+  border: 0;
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 24%), rgba(15, 16, 24, 0.58);
+  box-shadow: 0 22px 64px rgba(0, 0, 0, 0.34);
+  -webkit-backdrop-filter: blur(20px) saturate(120%);
+  backdrop-filter: blur(20px) saturate(120%);
+}
+.dws-panel-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 2px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+.dws-block {
+  margin-top: 17px;
+}
+.dws-panel > .dws-block:first-child {
+  margin-top: 0;
+}
+.dws-composer-block {
+  margin-top: 0;
+}
+.dws-iteration-guide {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--dws-accent) 12%, var(--dws-fill));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dws-accent) 28%, transparent);
+}
+.dws-iteration-guide > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.dws-iteration-guide > header small {
+  display: block;
+  margin-bottom: 4px;
+  color: #bdb3ff;
+  font: 700 0.56rem/1 monospace;
+  letter-spacing: 0.06em;
+}
+.dws-iteration-guide > header strong {
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+.dws-iteration-exit {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--dws-ink);
+  font: 650 0.68rem/1 inherit;
+  cursor: pointer;
+}
+.dws-iteration-guide ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dws-iteration-guide li {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--dws-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+.dws-iteration-guide li b {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dws-accent) 28%, transparent);
+  color: #efeaff;
+  font-size: 0.62rem;
+  font-weight: 750;
+}
+.dws-iteration-guide li em {
+  color: var(--dws-ink);
+  font-style: normal;
+  font-weight: 700;
+}
+.dws-iteration-lock,
+.dws-iteration-device {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 10px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.16);
+}
+.dws-iteration-lock i,
+.dws-iteration-device i {
+  margin-top: 1px;
+  color: #c7beff;
+  font-size: 0.9rem;
+}
+.dws-iteration-lock {
+  align-items: center;
+}
+.dws-iteration-lock strong,
+.dws-iteration-device span {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+.dws-iteration-lock small {
+  display: block;
+  margin-top: 3px;
+  color: var(--dws-faint);
+  font-size: 0.62rem;
+  line-height: 1.4;
+}
+.dws-iteration-device {
+  align-items: center;
+  color: var(--dws-muted);
+  font-size: 0.7rem;
+}
+.dws-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--dws-faint);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.dws-engine {
+  position: relative;
+  min-height: 58px;
+  margin-bottom: 16px;
+}
+.dws-engine-icon {
+  position: absolute;
+  z-index: 1;
+  top: 9px;
+  left: 9px;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--dws-accent-soft);
+  color: #bfb5ff;
+  font-size: 0.96rem;
+  pointer-events: none;
+}
+.dws-engine-control {
+  min-width: 0;
+}
+.dws-engine-control :deep(.ratio-select__trigger) {
+  min-height: 58px;
+  padding: 0 12px 0 59px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: none;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+.dws-engine-control :deep(.ratio-select__trigger:hover),
+.dws-engine-control :deep(.ratio-select__trigger:focus-visible),
+.dws-engine-control :deep(.ratio-select.is-open .ratio-select__trigger) {
+  border: 0;
+  background: rgba(255, 255, 255, 0.065);
+  box-shadow: none;
+}
+.dws-engine-control :deep(.ratio-select__chevron) {
+  color: #9e91ff;
+}
+
+/* 输入类：填充面，无外描边 */
+.dws-custom-structure {
+  width: 100%;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: var(--dws-radius);
+  background: var(--dws-fill);
+  color: var(--dws-ink);
+  font: inherit;
+  outline: none;
+  box-shadow: none;
+  transition: background 0.15s ease;
+}
+.dws-custom-structure:hover,
+.dws-custom-structure:focus {
+  background: var(--dws-fill-hover);
+  box-shadow: none;
+  outline: none;
+}
+.dws-custom-structure::placeholder {
+  color: var(--dws-faint);
+}
+
+/* 需求描述 + 参考图一体输入区：上输入、中参考、下 + / 清空 */
+.dws-composer {
+  display: flex;
+  flex-direction: column;
+  min-height: 196px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--dws-fill);
+  overflow: hidden;
+  transition:
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.dws-composer:focus-within {
+  background: color-mix(in srgb, var(--dws-accent) 5%, var(--dws-fill-hover));
+}
+.dws-composer.is-dragging {
+  background: color-mix(in srgb, var(--dws-accent) 9%, var(--dws-fill-hover));
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--dws-accent) 42%, transparent);
+}
+.dws-composer textarea {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 120px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 16px 16px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dws-ink);
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  outline: none;
+  box-shadow: none;
+  resize: none;
+}
+.dws-composer textarea::placeholder {
+  color: var(--dws-faint);
+}
+.dws-composer-media {
+  padding: 0 12px 8px;
+}
+.dws-composer-iteration {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dws-accent) 12%, transparent);
+}
+.dws-composer-iteration :deep(.authenticated-image) {
+  width: 48px;
+  height: 36px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #111119;
+}
+.dws-composer-iteration strong,
+.dws-composer-iteration small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-composer-iteration strong {
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+.dws-composer-iteration small {
+  margin-top: 3px;
+  color: var(--dws-faint);
+  font-size: 0.6rem;
+}
+.dws-composer-refs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.dws-composer-refs > article {
+  position: relative;
+  flex: 0 0 52px;
+  width: 52px;
+  height: 52px;
+  border: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #111119;
+}
+.dws-composer-refs > article img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.dws-composer-refs > article > button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(12, 12, 18, 0.72);
+  color: #fff;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.dws-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 14px 14px;
+}
+.dws-composer-add,
+.dws-composer-clear {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
+}
+.dws-composer-add {
+  width: 38px;
+  height: 38px;
+  border: 1.5px dashed color-mix(in srgb, var(--dws-accent) 48%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--dws-accent) 10%, transparent);
+  color: color-mix(in srgb, var(--dws-accent) 88%, var(--dws-ink));
+}
+.dws-composer-add i {
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1;
+}
+.dws-composer-add:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--dws-accent) 72%, transparent);
+  background: color-mix(in srgb, var(--dws-accent) 16%, transparent);
+  color: var(--dws-ink);
+}
+.dws-composer-clear {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dws-ink) 8%, transparent);
+  color: var(--dws-muted);
+}
+.dws-composer-clear i {
+  font-size: 0.92rem;
+  line-height: 1;
+}
+.dws-composer-clear:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dws-ink) 13%, transparent);
+  color: var(--dws-ink);
+}
+.dws-composer-add:disabled,
+.dws-composer-clear:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.dws-custom-structure {
+  margin-top: 8px;
+  padding: 10px 12px;
+  font-size: 0.79rem;
+}
+.dws-quick-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.dws-select-field {
+  min-width: 0;
+}
+.dws-select-field .dws-label {
+  margin-bottom: 6px;
+}
+.dws-select-field :deep(.ratio-select__trigger) {
+  min-height: 38px;
+  padding: 0 32px 0 11px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--dws-fill);
+  box-shadow: none;
+  color: var(--dws-ink);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dws-select-field :deep(.ratio-select__trigger:hover) {
+  background: var(--dws-fill-hover);
+}
+.dws-select-field :deep(.ratio-select__trigger:focus-visible),
+.dws-select-field :deep(.ratio-select.is-open .ratio-select__trigger) {
+  border: 0;
+  background: var(--dws-fill-hover);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dws-accent) 52%, transparent);
+}
+.dws-page-type-trigger {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 12px;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--dws-fill);
+  color: var(--dws-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.dws-page-type-trigger:hover,
+.dws-page-type-trigger[aria-expanded='true'] {
+  background: var(--dws-fill-hover);
+}
+.dws-page-type-trigger:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--dws-accent) 58%, transparent);
+  outline-offset: 2px;
+}
+.dws-page-type-trigger > i:first-child {
+  color: #a99cff;
+}
+.dws-page-type-trigger span {
+  overflow: hidden;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-page-type-trigger .bi-chevron-right {
+  color: var(--dws-faint);
+  font-size: 0.62rem;
+  transition: transform 0.18s ease;
+}
+.dws-page-type-trigger[aria-expanded='true'] .bi-chevron-right {
+  transform: rotate(180deg);
+}
+.dws-page-type-scrim {
+  position: fixed;
+  z-index: 2100;
+  inset: 0;
+  background: transparent;
+}
+.dws-page-type-picker {
+  --picker-bg: rgba(16, 17, 24, 0.98);
+  --picker-ink: rgba(255, 255, 255, 0.94);
+  --picker-muted: rgba(255, 255, 255, 0.55);
+  --picker-faint: rgba(255, 255, 255, 0.34);
+  --picker-fill: rgba(255, 255, 255, 0.045);
+  --picker-border: rgba(255, 255, 255, 0.075);
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--picker-border);
+  border-radius: 14px;
+  background: var(--picker-bg);
+  color: var(--picker-ink);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(24px) saturate(130%);
+  backdrop-filter: blur(24px) saturate(130%);
+  animation: dws-page-type-enter 0.18s ease-out both;
+}
+.dws-page-type-header {
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 32px;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  min-height: 68px;
+  padding: 0 16px 0 18px;
+  border-bottom: 1px solid var(--picker-border);
+  background: color-mix(in srgb, var(--picker-bg) 94%, transparent);
+}
+.dws-page-type-header > span {
+  display: grid;
+  gap: 4px;
+}
+.dws-page-type-header small {
+  color: #a99cff;
+  font: 700 0.56rem/1 monospace;
+}
+.dws-page-type-header strong {
+  font-size: 0.93rem;
+}
+.dws-page-type-header > em {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(109, 92, 255, 0.14);
+  color: #bdb3ff;
+  font: 600 0.62rem/1 monospace;
+  font-style: normal;
+}
+.dws-page-type-header > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: var(--picker-fill);
+  color: var(--picker-muted);
+  cursor: pointer;
+}
+.dws-page-type-header > button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--picker-ink);
+}
+.dws-page-type-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(109, 92, 255, 0.42) transparent;
+}
+.dws-page-type-grid > button {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-content: start;
+  gap: 9px;
+  min-width: 0;
+  min-height: 116px;
+  padding: 12px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--picker-fill);
+  color: var(--picker-ink);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.15s ease;
+}
+.dws-page-type-grid > button:hover {
+  border-color: rgba(138, 114, 255, 0.34);
+  background: rgba(109, 92, 255, 0.1);
+  transform: translateY(-1px);
+}
+.dws-page-type-grid > button.is-on {
+  border-color: rgba(138, 114, 255, 0.56);
+  background: rgba(109, 92, 255, 0.16);
+}
+.dws-page-type-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(109, 92, 255, 0.14);
+  color: #bdb3ff;
+  font-size: 0.86rem;
+}
+.dws-page-type-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.dws-page-type-copy strong {
+  padding-right: 14px;
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+.dws-page-type-copy small {
+  overflow: hidden;
+  color: var(--picker-muted);
+  font-size: 0.62rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-page-type-copy em {
+  display: -webkit-box;
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--picker-faint);
+  font-size: 0.58rem;
+  font-style: normal;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.dws-page-type-grid > button > .bi:last-child {
+  position: absolute;
+  top: 12px;
+  right: 10px;
+  color: var(--picker-faint);
+  font-size: 0.65rem;
+}
+.dws-page-type-grid > button.is-on > .bi:last-child {
+  color: #a99cff;
+}
+.dws-page-type-picker.is-light {
+  --picker-bg: rgba(255, 255, 255, 0.98);
+  --picker-ink: rgba(27, 29, 42, 0.96);
+  --picker-muted: rgba(43, 45, 60, 0.64);
+  --picker-faint: rgba(47, 49, 65, 0.45);
+  --picker-fill: rgba(34, 36, 50, 0.045);
+  --picker-border: rgba(35, 37, 52, 0.1);
+  box-shadow: 0 28px 80px rgba(48, 44, 78, 0.18);
+}
+.dws-page-type-picker.is-light .dws-page-type-header small,
+.dws-page-type-picker.is-light .dws-page-type-header > em,
+.dws-page-type-picker.is-light .dws-page-type-icon,
+.dws-page-type-picker.is-light .dws-page-type-grid > button.is-on > .bi:last-child {
+  color: #6250e8;
+}
+.dws-brand-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+.dws-brand-trigger > i:first-child {
+  color: transparent;
+}
+.dws-config-scrim {
+  position: fixed;
+  z-index: 2110;
+  inset: 0;
+  background: transparent;
+}
+.dws-config-picker {
+  --dws-ink: rgba(255, 255, 255, 0.94);
+  --dws-muted: rgba(255, 255, 255, 0.58);
+  --dws-faint: rgba(255, 255, 255, 0.36);
+  --dws-fill: rgba(255, 255, 255, 0.05);
+  --dws-fill-hover: rgba(255, 255, 255, 0.09);
+  --dws-fill-deep: rgba(255, 255, 255, 0.03);
+  --dws-accent: #6d5cff;
+  --dws-accent-soft: rgba(109, 92, 255, 0.18);
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(16, 17, 24, 0.98);
+  color: var(--dws-ink);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(24px) saturate(130%);
+  backdrop-filter: blur(24px) saturate(130%);
+  animation: dws-page-type-enter 0.18s ease-out both;
+}
+.dws-config-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 32px;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  min-height: 68px;
+  padding: 0 16px 0 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.dws-config-header > span {
+  display: grid;
+  gap: 4px;
+}
+.dws-config-header small {
+  color: #a99cff;
+  font: 700 0.56rem/1 monospace;
+}
+.dws-config-header strong {
+  font-size: 0.93rem;
+}
+.dws-config-header > em {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--dws-accent-soft);
+  color: #bdb3ff;
+  font: 600 0.62rem/1 monospace;
+  font-style: normal;
+}
+.dws-config-header > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: var(--dws-fill);
+  color: var(--dws-muted);
+  cursor: pointer;
+}
+.dws-config-header > button:hover {
+  background: var(--dws-fill-hover);
+  color: var(--dws-ink);
+}
+.dws-style-grid,
+.dws-brand-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(109, 92, 255, 0.42) transparent;
+}
+.dws-style-grid > button {
+  position: relative;
+  min-width: 0;
+  padding: 0 0 11px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--dws-fill);
+  color: var(--dws-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.dws-style-grid > button:hover,
+.dws-style-grid > button.is-on,
+.dws-brand-grid > button:hover,
+.dws-brand-grid > button.is-on {
+  border-color: rgba(138, 114, 255, 0.5);
+  background: rgba(109, 92, 255, 0.11);
+}
+.dws-style-preview {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 0.7fr;
+  height: 64px;
+  margin-bottom: 10px;
+}
+.dws-style-preview i {
+  display: block;
+}
+.dws-style-copy {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 4px 7px;
+  padding: 0 10px;
+}
+.dws-style-copy > i {
+  grid-row: 1 / span 2;
+  color: #a99cff;
+}
+.dws-style-copy strong {
+  padding-right: 12px;
+  font-size: 0.73rem;
+}
+.dws-style-copy small {
+  overflow: hidden;
+  color: var(--dws-faint);
+  font-size: 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-style-grid > button > .bi:last-child,
+.dws-brand-grid > button > .bi:last-child {
+  position: absolute;
+  right: 9px;
+  bottom: 11px;
+  color: var(--dws-faint);
+  font-size: 0.64rem;
+}
+.dws-style-grid > button.is-on > .bi:last-child,
+.dws-brand-grid > button.is-on > .bi:last-child {
+  color: #a99cff;
+}
+.dws-brand-grid > button {
+  position: relative;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  min-height: 104px;
+  padding: 11px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--dws-fill);
+  color: var(--dws-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.dws-brand-swatch {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+.dws-brand-grid > button > span:nth-child(2) {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+}
+.dws-brand-grid strong {
+  font-size: 0.73rem;
+}
+.dws-brand-grid small {
+  overflow: hidden;
+  color: var(--dws-faint);
+  font-size: 0.59rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-brand-grid em {
+  color: var(--dws-muted);
+  font: 600 0.56rem/1 monospace;
+  font-style: normal;
+}
+.dws-brand-tones {
+  position: absolute;
+  right: 11px;
+  bottom: 10px;
+  left: 11px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+}
+.dws-brand-tones i:nth-child(1) {
+  background: color-mix(in srgb, var(--picker-brand) 18%, white);
+}
+.dws-brand-tones i:nth-child(2) {
+  background: color-mix(in srgb, var(--picker-brand) 55%, white);
+}
+.dws-brand-tones i:nth-child(3) {
+  background: var(--picker-brand);
+}
+.dws-brand-tones i:nth-child(4) {
+  background: color-mix(in srgb, var(--picker-brand) 72%, black);
+}
+.dws-spec-editor {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.dws-spec-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.dws-spec-overview > span {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: center;
+  min-width: 0;
+  padding: 10px 10px 9px;
+  border-radius: 10px;
+  background: var(--dws-fill);
+}
+.dws-spec-overview i {
+  grid-row: 1 / span 2;
+  color: #a99cff;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.dws-spec-overview b,
+.dws-spec-overview small {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-spec-overview b {
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.dws-spec-overview small {
+  color: var(--dws-faint);
+  font-size: 0.58rem;
+  line-height: 1.2;
+}
+.dws-spec-hint {
+  margin: 0;
+  color: var(--dws-faint);
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
+.dws-config-picker .dws-spec-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 10px;
+  padding-top: 0;
+  border-top: 0;
+}
+.dws-config-picker .dws-spec-grid .is-wide {
+  grid-column: span 3;
+}
+.dws-config-picker .dws-state-field {
+  margin-top: 2px;
+}
+.dws-config-picker .dws-state-options {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+.dws-config-picker .dws-state-options button {
+  min-height: 34px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+.dws-config-picker .dws-state-options button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-config-picker.is-light {
+  --dws-ink: rgba(27, 29, 42, 0.96);
+  --dws-muted: rgba(43, 45, 60, 0.66);
+  --dws-faint: rgba(47, 49, 65, 0.45);
+  --dws-fill: rgba(34, 36, 50, 0.05);
+  --dws-fill-hover: rgba(34, 36, 50, 0.09);
+  --dws-fill-deep: rgba(34, 36, 50, 0.03);
+  --dws-accent: #6250e8;
+  --dws-accent-soft: rgba(98, 80, 232, 0.12);
+  border-color: rgba(35, 37, 52, 0.1);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 28px 80px rgba(48, 44, 78, 0.18);
+}
+.dws-config-picker.is-light .dws-config-header {
+  border-color: rgba(35, 37, 52, 0.09);
+}
+.dws-config-picker.is-light .dws-config-header small,
+.dws-config-picker.is-light .dws-config-header > em,
+.dws-config-picker.is-light .dws-style-copy > i,
+.dws-config-picker.is-light .dws-spec-overview i {
+  color: #6250e8;
+}
+.dws-config-picker.is-light .dws-state-options button.is-on {
+  color: #4e3bd0;
+}
+.dws-region-review {
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(114, 213, 177, 0.17);
+  border-radius: 9px;
+  background: rgba(114, 213, 177, 0.035);
+}
+.dws-region-review > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.dws-region-review > header > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.68rem;
+}
+.dws-region-review > header > span i {
+  color: #72d5b1;
+}
+.dws-region-review > header > button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: var(--quality-fill);
+  color: var(--quality-faint);
+  cursor: pointer;
+}
+.dws-region-review-body {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 14px;
+  padding: 12px;
+}
+.dws-region-review figure {
+  display: grid;
+  min-height: 118px;
+  margin: 0;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 7px;
+  background: rgba(8, 10, 14, 0.72);
+}
+.dws-region-review figure img {
+  width: 100%;
+  height: 100%;
+  max-height: 150px;
+  object-fit: contain;
+}
+.dws-region-review figure > span {
+  color: var(--quality-faint);
+  font-size: 1.2rem;
+}
+.dws-region-review-loading,
+.dws-region-review-error,
+.dws-region-review-copy {
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  min-width: 0;
+}
+.dws-region-review-loading > i {
+  color: #72d5b1;
+}
+.dws-region-review-loading strong,
+.dws-region-review-error strong,
+.dws-region-review-copy > strong {
+  font-size: 0.72rem;
+}
+.dws-region-review-loading p,
+.dws-region-review-copy p {
+  margin: 0;
+  color: var(--quality-faint);
+  font-size: 0.62rem;
+  line-height: 1.5;
+}
+.dws-region-review-copy > small {
+  overflow: hidden;
+  color: #72d5b1;
+  font-size: 0.55rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-region-review-copy ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+  color: var(--quality-muted);
+  font-size: 0.58rem;
+  line-height: 1.4;
+}
+.dws-region-review-copy > button,
+.dws-region-review-error > button {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: #5a4bd4;
+  color: #fff;
+  font-size: 0.62rem;
+  cursor: pointer;
+}
+@keyframes dws-page-type-enter {
+from {
+    opacity: 0;
+    transform: translateX(-8px) scale(0.985);
+}
+}
+.dws-quick-settings .dws-custom-structure {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+/* 设备载体：单行图标 + 尺寸 */
+.dws-devices {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 3px;
+  border-radius: calc(var(--dws-radius) + 2px);
+  background: var(--dws-fill-deep);
+}
+.dws-devices button {
+  display: grid;
+  flex: 1 1 0;
+  justify-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 2px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dws-muted);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.dws-devices button:hover:not(.is-on) {
+  background: var(--dws-fill);
+  color: var(--dws-ink);
+}
+.dws-devices button i {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.dws-devices button small {
+  color: var(--dws-faint);
+  font: 600 0.54rem/1 monospace;
+  letter-spacing: -0.02em;
+}
+.dws-devices button.is-on {
+  background: var(--dws-accent);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(109, 92, 255, 0.28);
+}
+.dws-devices button.is-on small {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+/* 配色行：主色 + 明暗，同一行两列对齐 */
+.dws-color-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+.dws-color-brand,
+.dws-color-scheme,
+.dws-count-wrap {
+  min-width: 0;
+}
+.dws-brand-select :deep(.ratio-select__swatch) {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+}
+.dws-scheme {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 11px;
+  background: var(--dws-fill-deep);
+}
+.dws-scheme button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dws-muted);
+  font-size: 0.71rem;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.dws-scheme button.is-on {
+  background: var(--dws-accent);
+  color: #fff;
+}
+
+/* 设计规范：参数可编辑，令牌摘要可快速核对 */
+.dws-specification {
+  overflow: visible;
+  border-radius: 13px;
+  background: var(--dws-fill-deep);
+}
+.dws-specification-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--dws-ink);
+  cursor: pointer;
+}
+.dws-specification-toggle > span {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 8px;
+  min-width: 0;
+  text-align: left;
+}
+.dws-specification-toggle > span > i {
+  grid-row: 1 / span 2;
+  color: #a99cff;
+  font-size: 0.95rem;
+}
+.dws-specification-toggle strong,
+.dws-specification-toggle small {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-specification-toggle strong {
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+.dws-specification-toggle small {
+  margin-top: 2px;
+  color: var(--dws-faint);
+  font: 600 0.58rem/1.25 monospace;
+}
+.dws-specification-toggle > .bi-chevron-down {
+  color: var(--dws-faint);
+  font-size: 0.66rem;
+  transition: transform 0.2s ease;
+}
+.dws-specification.is-open .dws-specification-toggle > .bi-chevron-down {
+  transform: rotate(180deg);
+}
+.dws-specification-body {
+  padding: 4px 10px 10px;
+}
+.dws-spec-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+}
+.dws-spec-grid .is-wide {
+  grid-column: 1 / -1;
+}
+.dws-state-field {
+  margin-top: 12px;
+}
+.dws-state-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+.dws-state-options button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--dws-fill);
+  color: var(--dws-faint);
+  font-size: 0.64rem;
+  cursor: pointer;
+}
+.dws-state-options button.is-on {
+  background: var(--dws-accent-soft);
+  color: #c9c1ff;
+}
+.dws-token-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+.dws-token-strip span {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 7px 2px;
+  background: var(--dws-fill-deep);
+  color: var(--dws-faint);
+  font-size: 0.55rem;
+  white-space: nowrap;
+}
+.dws-token-strip b {
+  color: var(--dws-muted);
+  font: 700 0.63rem/1 monospace;
+}
+.dws-count {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
+  padding: 4px;
+  border-radius: 11px;
+  background: var(--dws-fill-deep);
+}
+.dws-count button {
+  width: 100%;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dws-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.dws-count button.is-on {
+  background: var(--dws-accent);
+  color: #fff;
+}
+
+/* 提示词预览 */
+.dws-prompt-preview {
+  margin-top: 16px;
+  border-radius: var(--dws-radius);
+  background: var(--dws-fill-deep);
+}
+.dws-prompt-preview summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--dws-faint);
+  font-size: 0.71rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.dws-prompt-preview summary::-webkit-details-marker {
+  display: none;
+}
+.dws-prompt-preview summary .bi-chevron-down {
+  margin-left: auto;
+  transition: transform 0.2s ease;
+}
+.dws-prompt-preview summary .bi-chevron-down.is-open {
+  transform: rotate(180deg);
+}
+.dws-prompt-preview pre {
+  margin: 0;
+  padding: 0 12px 12px;
+  color: var(--dws-muted);
+  font-size: 0.69rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.dws-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 14px 0 0;
+  color: #ff9d9d;
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
+/* 生成按钮：固定在侧栏底部，上方内容单独滚动 */
+.dws-generate-dock {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  margin: 0 -18px;
+  padding: 10px 18px 14px;
+  background: linear-gradient(180deg, transparent, rgba(10, 10, 16, 0.92) 28%);
+  border-top: 1px solid color-mix(in srgb, var(--dws-ink) 6%, transparent);
+}
+.dws-generate {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 62px;
+  padding: 7px 12px 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--dws-accent) 62%, #fff 10%);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--dws-accent) 88%, #16131f 12%);
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--dws-accent) 34%, transparent);
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    transform 0.15s ease;
+}
+.dws-generate:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.52);
+  background: color-mix(in srgb, var(--dws-accent) 94%, #fff 6%);
+  transform: translateY(-1px);
+}
+.dws-generate:active:not(:disabled) {
+  transform: scale(0.985);
+}
+.dws-generate:disabled {
+  opacity: 0.78;
+  cursor: wait;
+}
+.dws-generate-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(8, 7, 14, 0.2);
+  font-size: 0.88rem;
+}
+.dws-generate-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+.dws-generate-copy strong {
+  overflow: hidden;
+  font-size: 0.84rem;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-generate-copy small {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.62rem;
+}
+.dws-generate-price {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  white-space: nowrap;
+}
+.dws-generate-price strong {
+  font: 800 0.88rem/1 monospace;
+}
+.dws-generate-price small {
+  color: rgba(255, 255, 255, 0.62);
+  font: 600 0.56rem/1 monospace;
+}
+
+/* ————— 右侧：无框沉浸画布 ————— */
+.dws-stage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: transparent;
+}
+
+/* 画布环境光：跟随品牌主色 */
+.dws-stage-ambient {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      58% 46% at 50% 43%,
+      color-mix(in srgb, var(--dws-brand) 9%, transparent),
+      transparent 74%
+    ),
+    linear-gradient(to bottom, transparent 40%, rgba(0, 0, 0, 0.18) 100%);
+  transition: background 0.4s ease;
+}
+.dws-stage-meta {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  background: rgba(12, 12, 19, 0.62);
+  color: var(--dws-muted);
+  font-size: 0.72rem;
+  backdrop-filter: blur(10px);
+}
+.dws-stage-meta b {
+  color: var(--dws-faint);
+  font: 600 0.66rem/1 monospace;
+}
+.dws-stage-meta em {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--dws-accent-soft);
+  color: #c3b8ff;
+  font: 700 0.64rem/1.3 monospace;
+}
+.dws-stage-spec {
+  position: absolute;
+  top: 55px;
+  left: 20px;
+  z-index: 4;
+  display: flex;
+  gap: 5px;
+  color: var(--dws-faint);
+  font: 600 0.56rem/1 monospace;
+}
+.dws-stage-spec span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: rgba(12, 12, 19, 0.48);
+  backdrop-filter: blur(8px);
+}
+.dws-stage-actions {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  z-index: 4;
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(12, 12, 19, 0.62);
+  backdrop-filter: blur(10px);
+}
+.dws-stage-actions button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dws-muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.dws-stage-actions button:hover:not(:disabled) {
+  background: var(--dws-accent-soft);
+  color: #fff;
+}
+.dws-stage-actions button.is-editor {
+  background: var(--dws-accent-soft);
+  color: #d4ceff;
+}
+.dws-stage-actions button.is-region.is-on {
+  background: rgba(18, 183, 106, 0.16);
+  color: #a7ead2;
+}
+.dws-stage-actions button.is-editor:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dws-accent) 34%, transparent);
+  color: #fff;
+}
+.dws-stage-actions button:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.dws-empty-editor {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 7px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--dws-accent-soft);
+  color: #c8bfff;
+  font-size: 0.69rem;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
+}
+.dws-empty-editor:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dws-accent) 32%, transparent);
+  color: #fff;
+  transform: translateY(-1px);
+}
+.dws-empty-editor:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.dws-canvas {
+  position: relative;
+  flex: 1;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  padding: clamp(56px, 7vh, 76px) clamp(20px, 3vw, 44px) 16px;
+}
+.dws-canvas.is-device-rail {
+  grid-template-columns: minmax(0, 1fr) 108px;
+  align-items: center;
+  justify-items: center;
+  gap: 14px;
+  padding-right: 18px;
+}
+.dws-canvas.is-multi-loading {
+  place-items: stretch;
+  align-content: center;
+}
+.dws-multi-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-content: center;
+  gap: 14px;
+  width: min(100%, 1100px);
+  max-height: 100%;
+  margin: 0 auto;
+  overflow: auto;
+  padding: 4px 2px 8px;
+}
+.dws-multi-slot {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.dws-multi-slot > header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dws-muted);
+  font-size: 0.66rem;
+}
+.dws-multi-slot > header em {
+  margin-left: auto;
+  color: var(--dws-faint);
+  font-style: normal;
+  font-family: monospace;
+  font-size: 0.58rem;
+}
+.dws-multi-frame {
+  position: relative;
+  width: 100%;
+  max-height: min(52vh, 420px);
+  border-radius: 12px;
+  background: #101018;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+.dws-multi-frame :deep(.authenticated-image) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.dws-multi-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 6px;
+  padding: 16px;
+  color: rgba(255, 255, 255, 0.78);
+  text-align: center;
+  background: linear-gradient(180deg, rgba(18, 18, 28, 0.2), rgba(18, 18, 28, 0.72));
+}
+.dws-multi-loading i {
+  position: relative;
+  z-index: 1;
+  font-size: 1.1rem;
+  color: #b7aeff;
+}
+.dws-multi-loading strong,
+.dws-multi-loading small {
+  position: relative;
+  z-index: 1;
+}
+.dws-multi-loading strong {
+  font-size: 0.74rem;
+}
+.dws-multi-loading small {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.6rem;
+}
+.dws-multi-slot.is-failed .dws-multi-loading i {
+  color: #ff8f8f;
+}
+.dws-running-cancel.is-multi {
+  grid-column: 1 / -1;
+  justify-self: center;
+  margin-top: 4px;
+}
+.dws-device-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 108px;
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  padding: 4px 2px;
+}
+.dws-device-rail > button {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--dws-ink) 10%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dws-fill) 86%, transparent);
+  color: var(--dws-muted);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
+}
+.dws-device-rail > button:hover {
+  color: var(--dws-ink);
+  transform: translateY(-1px);
+}
+.dws-device-rail > button.is-on {
+  border-color: color-mix(in srgb, var(--dws-accent) 48%, transparent);
+  background: color-mix(in srgb, var(--dws-accent) 12%, var(--dws-fill));
+  color: var(--dws-ink);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--dws-accent) 14%, transparent);
+}
+.dws-device-rail-thumb {
+  display: grid;
+  width: 100%;
+  place-items: center;
+  max-height: 96px;
+  border-radius: 8px;
+  background: #111119;
+  overflow: hidden;
+}
+.dws-device-rail-thumb :deep(.authenticated-image) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.dws-device-rail-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.dws-device-rail-meta strong,
+.dws-device-rail-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-device-rail-meta strong {
+  font-size: 0.62rem;
+  font-weight: 650;
+}
+.dws-device-rail-meta small {
+  color: var(--dws-faint);
+  font-size: 0.54rem;
+  font-family: monospace;
+}
+.dws-artboard {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 14px;
+  background: #0f0f16;
+  box-shadow:
+    0 40px 110px rgba(0, 0, 0, 0.62),
+    0 10px 34px color-mix(in srgb, var(--dws-brand) 14%, transparent);
+  overflow: hidden;
+  transition:
+    aspect-ratio 0.25s ease,
+    width 0.25s ease,
+    box-shadow 0.4s ease;
+}
+.dws-artboard.is-previewable {
+  cursor: zoom-in;
+}
+.dws-artboard.is-previewable:hover {
+  box-shadow:
+    0 44px 120px rgba(0, 0, 0, 0.68),
+    0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 12px 38px color-mix(in srgb, var(--dws-brand) 20%, transparent);
+}
+.dws-artboard.is-region-selecting {
+  cursor: crosshair;
+  box-shadow:
+    0 0 0 2px rgba(114, 213, 177, 0.7),
+    0 36px 100px rgba(0, 0, 0, 0.62);
+}
+.dws-artboard-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.dws-artboard-page {
+  position: absolute;
+  inset: 0;
+}
+.dws-artboard :deep(.authenticated-image) {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #0d0d12;
+}
+.dws-region-layer {
+  position: absolute;
+  z-index: 8;
+  inset: 0;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+.dws-region-layer.is-drawing {
+  pointer-events: auto;
+  background: rgba(7, 9, 13, 0.16);
+  touch-action: none;
+  user-select: none;
+}
+.dws-region-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(114, 213, 177, 0.32);
+  border-radius: 7px;
+  background: rgba(10, 13, 18, 0.82);
+  color: #b8f0dc;
+  font-size: 0.65rem;
+  pointer-events: none;
+  transform: translateX(-50%);
+  backdrop-filter: blur(8px);
+}
+.dws-region-hint.is-error {
+  border-color: rgba(240, 68, 56, 0.48);
+  background: rgba(48, 19, 22, 0.9);
+  color: #ffb0aa;
+}
+.dws-region-box {
+  position: absolute;
+  z-index: 2;
+  border: 2px solid #72d5b1;
+  background: rgba(114, 213, 177, 0.08);
+  box-shadow: 0 0 0 9999px rgba(5, 7, 10, 0.34);
+  box-sizing: border-box;
+  pointer-events: auto;
+}
+.dws-region-box.is-adjustable {
+  cursor: move;
+  touch-action: none;
+}
+.dws-region-box.is-picking {
+  cursor: move;
+  touch-action: none;
+}
+.dws-region-box.is-manual {
+  cursor: crosshair;
+  touch-action: none;
+}
+.dws-region-hits {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+}
+.dws-region-hits.is-manual .dws-region-hit {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.dws-region-manual-draft {
+  position: absolute;
+  z-index: 1900;
+  box-sizing: border-box;
+  border: 2px dashed #ff7d66;
+  border-radius: 4px;
+  background: rgba(255, 104, 82, 0.2);
+  box-shadow: 0 0 0 1px rgba(80, 18, 10, 0.28);
+  pointer-events: none;
+}
+.dws-region-hit {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: visible;
+  border: 2px solid rgba(94, 214, 170, 0.95);
+  border-radius: 4px;
+  background: rgba(46, 174, 129, 0.16);
+  color: #f4fffa;
+  cursor: pointer;
+  pointer-events: auto;
+  box-sizing: border-box;
+  box-shadow: 0 0 0 1px rgba(8, 16, 12, 0.25);
+}
+.dws-region-hit::after {
+  position: absolute;
+  content: '';
+  inset: -5px;
+}
+.dws-region-hit::before {
+  position: absolute;
+  z-index: 2;
+  top: -10px;
+  left: -10px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid rgba(224, 255, 244, 0.92);
+  border-radius: 50%;
+  background: #167f5e;
+  box-shadow: 0 1px 5px rgba(5, 26, 19, 0.4);
+  color: #ffffff;
+  content: attr(data-index);
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+}
+.dws-region-hit > span {
+  max-width: 100%;
+  margin: 2px;
+  padding: 1px 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgba(8, 14, 12, 0.72);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.dws-region-hit:hover {
+  background: rgba(46, 174, 129, 0.32);
+  border-color: #9fe7c8;
+}
+.dws-region-hit.is-marked {
+  border-color: #ff7d66;
+  background: rgba(255, 104, 82, 0.34);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 143, 122, 0.45),
+    0 0 0 1px rgba(120, 30, 18, 0.35);
+}
+.dws-region-hit.is-marked::before {
+  border-color: rgba(255, 225, 218, 0.96);
+  background: #d94730;
+}
+.dws-region-hit.is-marked > span {
+  background: rgba(90, 22, 14, 0.82);
+}
+.dws-region-handle {
+  position: absolute;
+  z-index: 2000;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 2px solid #effff9;
+  border-radius: 2px;
+  background: #2eae81;
+  box-shadow: 0 0 0 1px rgba(8, 16, 12, 0.35);
+  pointer-events: auto;
+}
+.dws-region-handle[data-handle='nw'] {
+  z-index: 2001;
+  top: -7px;
+  left: -7px;
+  cursor: nwse-resize;
+}
+.dws-region-handle[data-handle='n'] {
+  top: -7px;
+  left: 50%;
+  cursor: ns-resize;
+  transform: translateX(-50%);
+}
+.dws-region-handle[data-handle='ne'] {
+  z-index: 2001;
+  top: -7px;
+  right: -7px;
+  cursor: nesw-resize;
+}
+.dws-region-handle[data-handle='e'] {
+  top: 50%;
+  right: -7px;
+  cursor: ew-resize;
+  transform: translateY(-50%);
+}
+.dws-region-handle[data-handle='se'] {
+  z-index: 2001;
+  right: -7px;
+  bottom: -7px;
+  cursor: nwse-resize;
+}
+.dws-region-handle[data-handle='s'] {
+  bottom: -7px;
+  left: 50%;
+  cursor: ns-resize;
+  transform: translateX(-50%);
+}
+.dws-region-handle[data-handle='sw'] {
+  z-index: 2001;
+  bottom: -7px;
+  left: -7px;
+  cursor: nesw-resize;
+}
+.dws-region-handle[data-handle='w'] {
+  top: 50%;
+  left: -7px;
+  cursor: ew-resize;
+  transform: translateY(-50%);
+}
+.dws-region-close {
+  display: grid;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  background: #151820;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.42);
+  color: #fff;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.dws-region-close:focus-visible {
+  outline: 2px solid #effff9;
+  outline-offset: 2px;
+}
+.dws-region-layer.has-selection {
+  pointer-events: none;
+}
+.dws-region-workspace {
+  position: fixed;
+  z-index: 10020;
+  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  min-width: 0;
+  min-height: 0;
+  background: #090c11;
+  color: #eef6f2;
+}
+.dws-region-workspace__canvas {
+  display: grid;
+  grid-template-rows: 58px minmax(0, 1fr) 38px;
+  min-width: 0;
+  min-height: 0;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    #090c11;
+  background-size: 24px 24px;
+}
+.dws-region-workspace__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(12, 16, 22, 0.96);
+}
+.dws-region-workspace__header > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.dws-region-workspace__header > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+.dws-region-workspace__header strong {
+  font-size: 0.86rem;
+}
+.dws-region-workspace__header small {
+  color: rgba(224, 239, 232, 0.58);
+  font-size: 0.66rem;
+}
+.dws-region-workspace__viewport {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+}
+.dws-region-workspace__stage {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: visible;
+  background: #11151b;
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.46);
+}
+.dws-region-workspace__stage > .authenticated-image {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.dws-region-workspace__stage .authenticated-image-media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+.dws-region-workspace__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  color: rgba(222, 237, 230, 0.6);
+  font-size: 0.66rem;
+}
+.dws-region-workspace__footer em {
+  overflow: hidden;
+  color: #9fe7c8;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-region-size-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(114, 213, 177, 0.24);
+  border-radius: 6px;
+  background: rgba(46, 174, 129, 0.1);
+  color: #baf4df;
+  font: 700 0.68rem/1 monospace;
+  cursor: pointer;
+}
+.dws-region-composer__header {
+  position: sticky;
+  z-index: 8;
+  top: 0;
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(12, 16, 22, 0.97);
+}
+.dws-region-composer__header > strong {
+  color: #dff7ec;
+  font-size: 0.72rem;
+}
+.dws-region-composer {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  box-sizing: border-box;
+  align-content: start;
+  width: 100%;
+  min-width: 0;
+  max-height: 100vh;
+  gap: 8px;
+  padding: 0 12px 14px;
+  overflow: auto;
+  border: 0;
+  border-left: 1px solid rgba(114, 213, 177, 0.18);
+  border-radius: 0;
+  background: #0c1016;
+  box-shadow: none;
+  color: #eef6f2;
+  pointer-events: auto;
+  backdrop-filter: blur(10px);
+}
+.dws-region-close:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+@media (max-width: 900px) {
+  .dws-region-workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(360px, 58vh) minmax(0, 1fr);
+  }
+  .dws-region-composer {
+    max-height: 42vh;
+    border-top: 1px solid rgba(114, 213, 177, 0.18);
+    border-left: 0;
+  }
+  .dws-region-workspace__viewport {
+    padding: 16px;
+  }
+}
+.dws-region-composer figure,
+.dws-region-composer__preview {
+  position: relative;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #0b0e13;
+  aspect-ratio: 16 / 10;
+  max-height: 140px;
+}
+.dws-region-composer__preview.is-clickable {
+  cursor: zoom-in;
+}
+.dws-region-composer figure img,
+.dws-region-composer__preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.dws-region-composer__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 72px;
+  overflow: auto;
+}
+.dws-region-composer__recognition {
+  display: grid;
+  gap: 6px;
+}
+.dws-region-composer__recognition > strong {
+  color: #dff7ec;
+  font-size: 0.7rem;
+}
+.dws-region-composer__recognition > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.dws-region-composer__recognition label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #d7ebe1;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dws-region-composer__recognition input {
+  width: 15px;
+  height: 15px;
+  accent-color: #2eae81;
+}
+.dws-region-composer__modes {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+.dws-region-composer__modes button {
+  display: grid;
+  min-width: 0;
+  min-height: 48px;
+  place-items: center;
+  gap: 3px;
+  padding: 5px 3px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #aabcb4;
+  font: inherit;
+  font-size: 0.62rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dws-region-composer__modes button i {
+  font-size: 0.86rem;
+}
+.dws-region-composer__modes button.active {
+  background: rgba(46, 174, 129, 0.2);
+  color: #baf4df;
+}
+.dws-region-composer__modes button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.dws-region-composer__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 143, 122, 0.45);
+  border-radius: 999px;
+  background: rgba(255, 104, 82, 0.18);
+  color: #ffd4cc;
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dws-region-composer__chip > i {
+  font-size: 0.7rem;
+  opacity: 0.85;
+}
+.dws-region-composer__chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.dws-region-composer__zoom {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(8, 12, 18, 0.78);
+  color: #dff7ec;
+  font: inherit;
+  font-size: 0.64rem;
+  font-weight: 700;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.dws-region-composer__option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #d7ebe1;
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+  user-select: none;
+}
+.dws-region-composer__option input {
+  width: 14px;
+  height: 14px;
+  accent-color: #2eae81;
+}
+.dws-region-composer__cost {
+  margin: 0;
+  color: #9fe7c8;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+.dws-region-composer__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #b8f0dc;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+.dws-region-composer__status.is-error {
+  color: #ffb0aa;
+}
+.dws-region-composer__status.is-done {
+  color: #9fe7c8;
+}
+.dws-region-composer textarea {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #f4faf7;
+  font: inherit;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+.dws-region-composer textarea:focus {
+  outline: none;
+  border-color: rgba(114, 213, 177, 0.55);
+}
+.dws-region-composer textarea:disabled {
+  opacity: 0.65;
+}
+.dws-region-composer__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dws-region-composer__actions > button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #eef6f2;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dws-region-composer__actions > button.is-primary {
+  border-color: rgba(114, 213, 177, 0.42);
+  background: linear-gradient(135deg, #2eae81, #1f8f68);
+  color: #fff;
+}
+.dws-region-composer__actions > button.is-active {
+  border-color: rgba(114, 213, 177, 0.58);
+  background: rgba(46, 174, 129, 0.22);
+  color: #baf4df;
+}
+.dws-region-composer__actions > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.dws-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  color: var(--dws-faint);
+  background: radial-gradient(60% 60% at 50% 42%, rgba(255, 255, 255, 0.025), transparent 78%);
+}
+.dws-empty strong {
+  color: var(--dws-muted);
+  font-size: 0.94rem;
+}
+.dws-empty span {
+  font-size: 0.74rem;
+}
+.dws-empty-sketch {
+  display: grid;
+  width: clamp(210px, 34%, 360px);
+  aspect-ratio: 16 / 10;
+  margin-bottom: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.018);
+}
+.dws-empty-sketch > header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 14%;
+  padding: 0 5%;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.dws-empty-sketch > header > i {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--dws-brand) 72%, transparent);
+}
+.dws-empty-sketch > header > span {
+  width: 24%;
+  height: 4px;
+  margin-right: auto;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.dws-empty-sketch > header > b {
+  width: 8%;
+  height: 3px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+}
+.dws-empty-sketch > div {
+  display: grid;
+  grid-template-columns: 20% minmax(0, 1fr);
+  min-height: 0;
+}
+.dws-empty-sketch aside {
+  display: grid;
+  align-content: start;
+  gap: 9%;
+  padding: 18% 20%;
+  border-right: 1px solid rgba(255, 255, 255, 0.045);
+}
+.dws-empty-sketch aside i {
+  height: 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.065);
+}
+.dws-empty-content {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8%;
+  padding: 10%;
+}
+.dws-empty-content > span {
+  display: block;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.065);
+}
+.dws-empty-sketch .is-hero {
+  width: 58%;
+  height: 12px;
+  background: color-mix(in srgb, var(--dws-brand) 24%, rgba(255, 255, 255, 0.05));
+}
+.dws-empty-sketch .is-copy {
+  width: 74%;
+  height: 5px;
+}
+.dws-empty-content > section {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  width: 100%;
+  height: 36%;
+}
+.dws-empty-content > section i {
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.045);
+}
+.dws-running {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  background: rgba(9, 9, 13, 0.72);
+  color: #d8d2ff;
+  backdrop-filter: blur(5px);
+  overflow: hidden;
+}
+.dws-running i {
+  font-size: 1.6rem;
+  animation: dws-breathe 1.6s ease-in-out infinite;
+}
+.dws-running strong {
+  font-size: 0.82rem;
+}
+.dws-running span {
+  color: var(--dws-faint);
+  font-size: 0.7rem;
+}
+.dws-running-cancel {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  margin-top: 8px;
+  padding: 0 13px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.dws-running-cancel:hover:not(:disabled) {
+  border-color: rgba(255, 112, 112, 0.55);
+  background: rgba(224, 72, 72, 0.12);
+  color: #ff9d9d;
+}
+.dws-running-cancel:disabled {
+  cursor: wait;
+}
+.dws-running-scan {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(109, 92, 255, 0.14) 48%,
+    rgba(109, 92, 255, 0.32) 50%,
+    rgba(109, 92, 255, 0.14) 52%,
+    transparent 100%
+  );
+  background-size: 100% 260%;
+  animation: dws-scan 2.6s ease-in-out infinite;
+}
+.dws-error.is-stage {
+  position: relative;
+  z-index: 4;
+  margin: 0 20px 8px;
+}
+
+/* 历史：版本族与迭代胶片 */
+.dws-versions-wrap {
+  position: relative;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto 36px;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  width: 100%;
+  margin: 0;
+  padding: 8px 16px 14px;
+  border-top: 1px solid color-mix(in srgb, var(--dws-ink) 8%, transparent);
+}
+.dws-history-page {
+  display: grid;
+  width: 36px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--dws-ink) 10%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dws-fill) 82%, transparent);
+  color: var(--dws-ink);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    opacity 0.15s ease;
+}
+.dws-history-page:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--dws-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--dws-accent) 12%, var(--dws-fill));
+}
+.dws-history-page:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.dws-history-page-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 44px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dws-fill) 78%, transparent);
+  color: var(--dws-faint);
+  font-size: 0.58rem;
+  white-space: nowrap;
+}
+.dws-history-page-meta strong {
+  color: var(--dws-muted);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.dws-history-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex: none;
+  gap: 6px;
+  width: 228px;
+}
+.dws-history-tabs button {
+  display: inline-grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  justify-items: start;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--dws-ink) 10%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dws-fill) 82%, transparent);
+  color: var(--dws-faint);
+  cursor: pointer;
+  transition:
+    background-color 0.22s ease,
+    border-color 0.22s ease,
+    color 0.22s ease,
+    box-shadow 0.22s ease,
+    transform 0.22s ease;
+}
+.dws-history-tabs button:hover:not(:disabled) {
+  background: var(--dws-fill);
+  border-color: color-mix(in srgb, var(--dws-ink) 16%, transparent);
+  color: var(--dws-ink);
+  transform: translateY(-1px);
+}
+.dws-history-tabs button.is-on {
+  background: color-mix(in srgb, var(--dws-accent) 14%, var(--dws-fill));
+  border-color: color-mix(in srgb, var(--dws-accent) 46%, transparent);
+  color: var(--dws-ink);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--dws-accent) 12%, transparent);
+  transform: translateY(-1px);
+}
+.dws-history-tabs button:disabled {
+  cursor: default;
+  opacity: 0.45;
+  transform: none;
+}
+.dws-history-tabs button > i {
+  color: currentColor;
+  font-size: 0.62rem;
+  transition: color 0.22s ease;
+}
+.dws-history-tabs button.is-on > i {
+  color: var(--dws-accent);
+}
+.dws-history-tabs strong {
+  overflow: hidden;
+  color: inherit;
+  font-size: 0.6rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-history-tabs em {
+  display: grid;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  place-items: center;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--dws-accent) 10%, transparent);
+  color: #a99cff;
+  font: 700 0.52rem/1 monospace;
+  transition:
+    background-color 0.22s ease,
+    color 0.22s ease;
+}
+.dws-history-tabs button.is-on em {
+  background: color-mix(in srgb, var(--dws-accent) 18%, transparent);
+}
+.dws-history-panel-enter-active,
+.dws-history-panel-leave-active {
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease;
+}
+.dws-history-panel-enter-from,
+.dws-history-panel-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.dws-history-panel-enter-to,
+.dws-history-panel-leave-from {
+  opacity: 1;
+  transform: translateY(0);
+}
+.dws-version-history {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.dws-version-families {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 2px 0;
+  overflow: hidden;
+}
+.dws-version-family {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: stretch;
+  flex: 0 0 236px;
+  width: 236px;
+  max-width: 236px;
+  min-width: 0;
+  height: 64px;
+  border: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dws-fill) 88%, transparent);
+  color: var(--dws-muted);
+  overflow: hidden;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+.dws-version-family:hover,
+.dws-version-family.is-on {
+  color: var(--dws-ink);
+  background: color-mix(in srgb, var(--dws-fill) 96%, var(--dws-accent) 5%);
+}
+.dws-version-family:hover {
+  transform: translateY(-1px);
+}
+.dws-version-family.is-on {
+  background: color-mix(in srgb, var(--dws-accent) 12%, var(--dws-fill));
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--dws-accent) 14%, transparent);
+}
+.dws-family-main,
+.dws-family-detail {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.dws-family-main {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 4px 6px 6px;
+  text-align: left;
+}
+.dws-family-detail {
+  display: grid;
+  place-items: center;
+  color: var(--dws-muted);
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+.dws-family-detail:hover {
+  background: color-mix(in srgb, var(--dws-accent) 10%, transparent);
+  color: var(--dws-ink);
+}
+.dws-family-detail > i {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+.dws-family-thumb {
+  display: grid;
+  width: 70px;
+  height: 52px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: #111119;
+  box-shadow: none;
+  overflow: hidden;
+}
+.dws-family-thumb :deep(.authenticated-image) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 0;
+  box-shadow: none;
+}
+.dws-family-meta {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  align-content: center;
+}
+.dws-family-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.dws-family-head strong {
+  flex: none;
+  color: var(--dws-ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+.dws-family-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+.dws-family-tags em {
+  flex: none;
+  color: var(--dws-faint);
+  font:
+    500 0.58rem/1 system-ui,
+    sans-serif;
+  font-style: normal;
+  white-space: nowrap;
+}
+.dws-family-tags em.is-analyzed {
+  color: color-mix(in srgb, var(--dws-accent) 72%, var(--dws-ink));
+}
+.dws-family-devices {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+.dws-family-device {
+  flex: none;
+  color: var(--dws-muted);
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.dws-version-family.is-on .dws-family-device {
+  color: var(--dws-ink);
+}
+.dws-family-empty-device {
+  color: var(--dws-faint);
+  font-size: 0.58rem;
+}
+.dws-inline-iterations {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.dws-inline-iterations > i {
+  color: var(--dws-faint);
+  font-size: 0.72rem;
+}
+.dws-inline-iterations button {
+  position: relative;
+  flex: none;
+  width: 66px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: #101016;
+  cursor: pointer;
+  overflow: hidden;
+  opacity: 0.66;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+.dws-inline-iterations button:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+.dws-inline-iterations button.is-on {
+  opacity: 1;
+  box-shadow:
+    0 0 0 2px var(--dws-accent),
+    0 5px 14px rgba(109, 92, 255, 0.26);
+}
+.dws-inline-iterations :deep(.authenticated-image) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.dws-inline-iterations em {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: rgba(9, 9, 13, 0.78);
+  color: #cdc5ff;
+  font: 700 0.52rem/1.2 monospace;
+}
+.dws-versions-skeleton {
+  display: flex;
+  gap: 9px;
+}
+.dws-versions-skeleton i {
+  width: 236px;
+  height: 62px;
+  border-radius: 10px;
+  background: linear-gradient(
+    110deg,
+    rgba(255, 255, 255, 0.04) 30%,
+    rgba(255, 255, 255, 0.09) 50%,
+    rgba(255, 255, 255, 0.04) 70%
+  );
+  background-size: 220% 100%;
+  animation: dws-shimmer 1.5s ease-in-out infinite;
+}
+.dws-editable-history {
+  display: flex;
+  justify-content: safe center;
+  gap: 8px;
+  padding: 4px 20px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent);
+}
+.dws-editable-history > button {
+  display: grid;
+  grid-template-columns: 70px minmax(108px, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 236px;
+  min-width: 0;
+  height: 62px;
+  padding: 5px 9px 5px 5px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--dws-muted);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
+}
+.dws-editable-history > button:hover {
+  background: rgba(255, 255, 255, 0.085);
+  color: var(--dws-ink);
+  transform: translateY(-2px);
+}
+.dws-editable-thumb {
+  display: grid;
+  width: 70px;
+  height: 52px;
+  place-items: center;
+  border-radius: 7px;
+  background: #111119;
+  color: #aea3ff;
+  overflow: hidden;
+}
+.dws-editable-thumb :deep(.authenticated-image) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.dws-editable-meta {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.dws-editable-meta strong,
+.dws-editable-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-editable-meta strong {
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.dws-editable-meta small {
+  color: var(--dws-faint);
+  font-size: 0.6rem;
+}
+.dws-editable-history > button > i {
+  color: var(--dws-faint);
+  font-size: 0.68rem;
+}
+.dws-analysis-history-empty {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: min(360px, calc(100% - 40px));
+  min-height: 58px;
+  padding: 8px 12px;
+  border: 1px dashed color-mix(in srgb, var(--dws-ink) 14%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--dws-fill) 58%, transparent);
+  color: var(--dws-faint);
+}
+.dws-analysis-history-empty > i {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dws-accent) 12%, transparent);
+  color: var(--dws-accent);
+}
+.dws-analysis-history-empty > span {
+  display: grid;
+  gap: 3px;
+}
+.dws-analysis-history-empty strong {
+  color: var(--dws-ink);
+  font-size: 0.64rem;
+  font-weight: 650;
+}
+.dws-analysis-history-empty small {
+  font-size: 0.56rem;
+}
+@keyframes dws-shimmer {
+to {
+    background-position: -120% 0;
+}
+}
+
+/* ————— 焦点可见性 ————— */
+.dws-devices button:focus-visible,
+.dws-scheme button:focus-visible,
+.dws-specification-toggle:focus-visible,
+.dws-state-options button:focus-visible,
+.dws-count button:focus-visible,
+.dws-composer-add:focus-visible,
+.dws-composer-clear:focus-visible,
+.dws-composer-refs > article > button:focus-visible,
+.dws-generate:focus-visible,
+.dws-stage-actions button:focus-visible,
+.dws-artboard.is-previewable:focus-visible,
+.dws-history-tabs button:focus-visible,
+.dws-version-families button:focus-visible,
+.dws-editable-history button:focus-visible,
+.dws-inline-iterations button:focus-visible,
+.dws-region-review button:focus-visible,
+.dws-region-box button:focus-visible {
+  outline: 2px solid var(--dws-accent-2);
+  outline-offset: 2px;
+}
+
+/* ————— 动效 ————— */
+.spin {
+  animation: dws-spin 1s linear infinite;
+}
+@keyframes dws-spin {
+to {
+    transform: rotate(360deg);
+}
+}
+@keyframes dws-breathe {
+0%,
+  100% {
+    opacity: 1;
+}
+50% {
+    opacity: 0.45;
+}
+}
+@keyframes dws-scan {
+0% {
+    background-position: 0 130%;
+}
+100% {
+    background-position: 0 -130%;
+}
+}
+@media (prefers-reduced-motion: reduce) {
+.dws,
+  .dws-stage-ambient,
+  .dws-artboard,
+  .dws-page-type-picker,
+  .dws-config-picker,
+  .dws-history-tabs button,
+  .dws-history-panel-enter-active,
+  .dws-history-panel-leave-active {
+    transition: none;
+    animation: none;
+}
+.dws-history-tabs button:hover:not(:disabled),
+  .dws-history-tabs button.is-on {
+    transform: none;
+}
+.dws-history-panel-enter-from,
+  .dws-history-panel-leave-to,
+  .dws-history-panel-enter-to,
+  .dws-history-panel-leave-from {
+    opacity: 1;
+    transform: none;
+}
+.dws-running-scan,
+  .dws-running i,
+  .dws-empty-sketch span,
+  .dws-versions-skeleton i {
+    animation: none;
+}
+.dws-version-family:hover,
+  .dws-editable-history > button:hover,
+  .dws-inline-iterations button:hover {
+    transform: none;
+}
+}
+
+/* ————— 响应式 ————— */
+@media (max-width: 1080px) {
+.dws {
+    height: calc(100dvh - var(--app-header-offset, 64px));
+    min-height: 0;
+    overflow: hidden;
+}
+.dws-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: 48px minmax(0, 1fr);
+    height: calc(100dvh - var(--app-header-offset, 64px));
+    min-height: 0;
+}
+.dws-shell::before {
+    background-position: center top;
+    transform-origin: 50% 0;
+}
+.dws-tablet-tabs {
+    z-index: 8;
+    display: grid;
+    grid-row: 1;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    padding: 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    background: #0c0c13;
+}
+.dws-tablet-tabs button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-width: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--dws-faint);
+    font-size: 0.74rem;
+    cursor: pointer;
+}
+.dws-tablet-tabs button.is-on {
+    background: var(--dws-fill-hover);
+    color: #fff;
+}
+.dws-tablet-tabs button.is-on i {
+    color: #bdb3ff;
+}
+.dws-tablet-tabs em {
+    display: grid;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    place-items: center;
+    border-radius: 5px;
+    background: var(--dws-accent-soft);
+    color: #c9c1ff;
+    font: 700 0.58rem/1 monospace;
+    font-style: normal;
+}
+.dws-panel,
+  .dws-stage {
+    grid-row: 2;
+    grid-column: 1;
+    min-height: 0;
+    order: initial;
+}
+.dws-panel {
+    align-self: stretch;
+    height: 100%;
+    max-height: 100%;
+    margin: 0;
+    padding: 16px 16px 0;
+    border: 0;
+    border-radius: 0;
+    background: #0e0e16;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+.dws-stage {
+    height: 100%;
+}
+.dws.is-tablet-controls .dws-stage,
+  .dws.is-tablet-canvas .dws-panel {
+    display: none;
+}
+.dws-generate-dock {
+    margin: 0 -16px;
+    padding: 10px 16px 14px;
+}
+.dws-canvas {
+    padding-top: 64px;
+}
+.dws-stage-actions button span {
+    display: none;
+}
+.dws-stage-actions button {
+    padding: 8px 10px;
+}
+}
+@media (max-width: 767px) {
+.dws-history-tabs {
+    width: 212px;
+    gap: 5px;
+}
+.dws-history-tabs button {
+    min-height: 30px;
+    padding: 0 7px;
+}
+.dws-region-review-body {
+    grid-template-columns: 1fr;
+}
+.dws-region-review figure {
+    max-height: 170px;
+}
+.dws-page-type-grid,
+  .dws-style-grid,
+  .dws-brand-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.dws-config-picker .dws-spec-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.dws-config-picker .dws-spec-grid .is-wide {
+    grid-column: span 2;
+}
+.dws-spec-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.dws-config-picker .dws-state-options {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.dws-tablet-tabs {
+    padding-inline: 10px;
+}
+.dws-panel {
+    padding-inline: 12px;
+}
+.dws-generate-dock {
+    margin-inline: -12px;
+    padding-inline: 12px;
+}
+.dws-stage-meta {
+    left: 12px;
+}
+.dws-stage-actions {
+    right: 12px;
+}
+.dws-stage-spec {
+    display: none;
+}
+.dws-canvas {
+    padding: 62px 12px 12px;
+}
+.dws-empty-sketch {
+    width: min(72%, 300px);
+}
+}
+@media (max-width: 420px) {
+.dws-page-type-header,
+  .dws-config-header {
+    grid-template-columns: minmax(0, 1fr) 32px;
+}
+.dws-page-type-header > em,
+  .dws-config-header > em {
+    display: none;
+}
+.dws-page-type-grid,
+  .dws-style-grid,
+  .dws-brand-grid,
+  .dws-config-picker .dws-spec-grid {
+    grid-template-columns: 1fr;
+}
+.dws-config-picker .dws-spec-grid .is-wide {
+    grid-column: auto;
+}
+.dws-page-type-grid > button {
+    min-height: 104px;
+}
+.dws-stage-meta span {
+    display: none;
+}
+.dws-spec-grid {
+    grid-template-columns: 1fr;
+}
+.dws-spec-grid .is-wide {
+    grid-column: auto;
+}
+}
+
+/* Light appearance */
+.dws.is-light {
+  --dws-bg: #f2f3f7;
+  --dws-ink: rgba(27, 29, 42, 0.96);
+  --dws-muted: rgba(43, 45, 60, 0.66);
+  --dws-faint: rgba(47, 49, 65, 0.43);
+  --dws-fill: rgba(34, 36, 50, 0.055);
+  --dws-fill-hover: rgba(34, 36, 50, 0.09);
+  --dws-fill-deep: rgba(34, 36, 50, 0.035);
+  --dws-accent: #6250e8;
+  --dws-accent-2: #7564ee;
+  --dws-accent-soft: rgba(98, 80, 232, 0.12);
+  color-scheme: light;
+}
+.dws.is-light .dws-shell {
+  background-color: #f3f4f8;
+  background-image:
+    linear-gradient(rgba(35, 37, 52, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(35, 37, 52, 0.035) 1px, transparent 1px);
+}
+.dws.is-light .dws-shell::before {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--dws-brand) 12%, transparent) 1px, transparent 1px),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--dws-brand) 12%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(rgba(35, 37, 52, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(35, 37, 52, 0.035) 1px, transparent 1px);
+}
+.dws.is-light .dws-panel {
+  background:
+    linear-gradient(180deg, rgba(98, 80, 232, 0.05), transparent 24%), rgba(255, 255, 255, 0.88);
+  box-shadow: 0 22px 60px rgba(48, 44, 78, 0.1);
+  scrollbar-color: rgba(98, 80, 232, 0.28) transparent;
+}
+.dws.is-light .dws-engine-icon {
+  color: #6250e8;
+}
+.dws.is-light .dws-engine-control :deep(.ratio-select__trigger),
+.dws.is-light .dws-engine-control :deep(.ratio-select__trigger:hover),
+.dws.is-light .dws-engine-control :deep(.ratio-select__trigger:focus-visible),
+.dws.is-light .dws-engine-control :deep(.ratio-select.is-open .ratio-select__trigger) {
+  background: var(--dws-fill);
+  color: var(--dws-ink);
+}
+.dws.is-light .dws-empty-editor {
+  color: #6250e8;
+}
+.dws.is-light .dws-composer {
+  background: #eceef5;
+}
+.dws.is-light .dws-composer:focus-within {
+  background: color-mix(in srgb, #6250e8 6%, #eceef5);
+}
+.dws.is-light .dws-composer.is-dragging {
+  background: color-mix(in srgb, #6250e8 9%, #eceef5);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #6250e8 40%, transparent);
+}
+.dws.is-light .dws-composer-iteration {
+  background: color-mix(in srgb, #6250e8 10%, #ffffff);
+}
+.dws.is-light .dws-iteration-guide {
+  background: color-mix(in srgb, #6250e8 8%, #ffffff);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #6250e8 22%, transparent);
+}
+.dws.is-light .dws-iteration-guide > header small {
+  color: #6250e8;
+}
+.dws.is-light .dws-iteration-exit {
+  background: rgba(35, 37, 52, 0.06);
+}
+.dws.is-light .dws-iteration-guide li b {
+  background: color-mix(in srgb, #6250e8 16%, transparent);
+  color: #4e3bd0;
+}
+.dws.is-light .dws-iteration-lock,
+.dws.is-light .dws-iteration-device {
+  background: rgba(35, 37, 52, 0.04);
+}
+.dws.is-light .dws-iteration-lock i,
+.dws.is-light .dws-iteration-device i {
+  color: #6250e8;
+}
+.dws.is-light .dws-composer-add {
+  border-color: color-mix(in srgb, #7b6cf0 55%, transparent);
+  background: color-mix(in srgb, #7b6cf0 10%, #ffffff);
+  color: #6b5ce6;
+}
+.dws.is-light .dws-composer-add:hover:not(:disabled) {
+  border-color: #6b5ce6;
+  background: color-mix(in srgb, #7b6cf0 14%, #ffffff);
+  color: #4e3bd0;
+}
+.dws.is-light .dws-composer-clear {
+  background: rgba(35, 37, 52, 0.07);
+  color: #8a8d9a;
+}
+.dws.is-light .dws-panel-scroll {
+  scrollbar-color: rgba(98, 80, 232, 0.28) transparent;
+}
+.dws.is-light .dws-generate-dock {
+  background: linear-gradient(180deg, transparent, rgba(243, 244, 248, 0.98) 28%);
+  border-top-color: rgba(35, 37, 52, 0.06);
+}
+.dws.is-light .dws-stage-ambient {
+  background:
+    radial-gradient(
+      58% 46% at 50% 43%,
+      color-mix(in srgb, var(--dws-brand) 8%, transparent),
+      transparent 74%
+    ),
+    linear-gradient(to bottom, transparent 42%, rgba(70, 67, 90, 0.04) 100%);
+}
+.dws.is-light .dws-stage-meta,
+.dws.is-light .dws-stage-actions,
+.dws.is-light .dws-stage-spec span {
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 8px 24px rgba(48, 44, 78, 0.09);
+}
+.dws.is-light .dws-stage-meta em,
+.dws.is-light .dws-history-tabs em,
+.dws.is-light .dws-stage-actions button.is-editor {
+  color: #6250e8;
+}
+.dws.is-light .dws-history-tabs button {
+  border-color: rgba(35, 37, 52, 0.1);
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 4px 12px rgba(48, 44, 78, 0.05);
+}
+.dws.is-light .dws-history-tabs button:hover:not(:disabled) {
+  border-color: rgba(35, 37, 52, 0.16);
+  background: #ffffff;
+}
+.dws.is-light .dws-history-tabs button.is-on {
+  border-color: color-mix(in srgb, #6250e8 48%, transparent);
+  background: color-mix(in srgb, #6250e8 10%, #ffffff);
+  box-shadow: 0 8px 18px rgba(98, 80, 232, 0.12);
+}
+.dws.is-light .dws-stage-actions button:hover:not(:disabled),
+.dws.is-light .dws-empty-editor:hover:not(:disabled) {
+  color: #4e3bd0;
+}
+.dws.is-light .dws-artboard {
+  border: 1px solid rgba(35, 37, 52, 0.09);
+  background: #ffffff;
+  box-shadow:
+    0 30px 80px rgba(48, 44, 78, 0.14),
+    0 8px 28px color-mix(in srgb, var(--dws-brand) 10%, transparent);
+}
+.dws.is-light .dws-artboard.is-previewable:hover {
+  box-shadow:
+    0 34px 90px rgba(48, 44, 78, 0.18),
+    0 0 0 1px rgba(98, 80, 232, 0.22),
+    0 10px 32px color-mix(in srgb, var(--dws-brand) 14%, transparent);
+}
+.dws.is-light .dws-artboard :deep(.authenticated-image) {
+  background: #eef0f5;
+}
+.dws.is-light .dws-empty {
+  background: radial-gradient(60% 60% at 50% 42%, rgba(98, 80, 232, 0.06), transparent 78%);
+}
+.dws.is-light .dws-empty-sketch {
+  border-color: rgba(35, 37, 52, 0.09);
+  background: rgba(35, 37, 52, 0.025);
+}
+.dws.is-light .dws-empty-sketch > header,
+.dws.is-light .dws-empty-sketch aside {
+  border-color: rgba(35, 37, 52, 0.075);
+}
+.dws.is-light .dws-empty-sketch > header > span,
+.dws.is-light .dws-empty-sketch > header > b,
+.dws.is-light .dws-empty-sketch aside i,
+.dws.is-light .dws-empty-content > span,
+.dws.is-light .dws-empty-content > section i {
+  background: rgba(35, 37, 52, 0.09);
+}
+.dws.is-light .dws-empty-sketch .is-hero {
+  background: color-mix(in srgb, var(--dws-brand) 18%, rgba(35, 37, 52, 0.05));
+}
+.dws.is-light .dws-version-families,
+.dws.is-light .dws-editable-history {
+  scrollbar-color: rgba(98, 80, 232, 0.3) transparent;
+}
+.dws.is-light .dws-version-family,
+.dws.is-light .dws-inline-iterations button,
+.dws.is-light .dws-editable-history > button {
+  border: 0;
+  background: #ffffff;
+  color: var(--dws-ink);
+  box-shadow: 0 8px 20px rgba(48, 44, 78, 0.07);
+}
+.dws.is-light .dws-version-family:hover {
+  background: #ffffff;
+  box-shadow: 0 10px 22px rgba(48, 44, 78, 0.1);
+}
+.dws.is-light .dws-version-family.is-on {
+  background: color-mix(in srgb, #6250e8 8%, #ffffff);
+  box-shadow: 0 10px 22px rgba(98, 80, 232, 0.12);
+}
+.dws.is-light .dws-history-page {
+  border-color: rgba(35, 37, 52, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 12px rgba(48, 44, 78, 0.06);
+}
+.dws.is-light .dws-device-rail > button {
+  border-color: rgba(35, 37, 52, 0.1);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 6px 16px rgba(48, 44, 78, 0.07);
+}
+.dws.is-light .dws-device-rail > button.is-on {
+  border-color: color-mix(in srgb, #6250e8 48%, transparent);
+  background: color-mix(in srgb, #6250e8 10%, #ffffff);
+}
+.dws.is-light .dws-multi-frame {
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgba(48, 44, 78, 0.12);
+}
+.dws.is-light .dws-family-detail:hover {
+  background: color-mix(in srgb, #6250e8 8%, #ffffff);
+}
+.dws.is-light .dws-versions-skeleton i {
+  background: linear-gradient(
+    110deg,
+    rgba(35, 37, 52, 0.04) 30%,
+    rgba(35, 37, 52, 0.1) 50%,
+    rgba(35, 37, 52, 0.04) 70%
+  );
+  background-size: 220% 100%;
+}
+@media (max-width: 1080px) {
+.dws.is-light .dws-tablet-tabs,
+  .dws.is-light .dws-panel {
+    border-color: rgba(35, 37, 52, 0.09);
+    background: #f8f8fb;
+}
+.dws.is-light .dws-tablet-tabs button.is-on {
+    color: var(--dws-ink);
+}
+.dws.is-light .dws-tablet-tabs button.is-on i {
+    color: #6250e8;
+}
+}

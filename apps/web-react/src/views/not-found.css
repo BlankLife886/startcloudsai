@@ -1,0 +1,43 @@
+.not-found-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 70vh;
+  padding: 2rem 0;
+  color: #1b211f;
+  background: #f7f8f7;
+}
+
+html.color-scheme-dark .not-found-container {
+  color: #f2f4f3;
+  background: #0d100f;
+}
+
+html.color-scheme-dark .not-found-container h1,
+html.color-scheme-dark .not-found-container p {
+  color: #f2f4f3;
+}
+
+.not-found-container .error-code {
+  margin-bottom: 1rem;
+  color: var(--primary-color);
+  font-family: "Share Tech Mono", monospace;
+  font-size: 8rem;
+  font-weight: bold;
+  line-height: 1;
+  text-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+}
+
+.not-found-container h1 {
+  color: var(--text-color);
+  font-size: 2.5rem;
+}
+
+.not-found-container p {
+  max-width: 600px;
+  margin-right: auto;
+  margin-left: auto;
+  color: var(--text-color);
+  font-size: 1.2rem;
+  opacity: 0.8;
+}

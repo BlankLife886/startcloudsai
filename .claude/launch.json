@@ -1,0 +1,63 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "cwd": "apps/web-react",
+      "port": 3105
+    },
+    {
+      "name": "web-lan",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:lan"
+      ],
+      "cwd": "apps/web-react",
+      "port": 3107
+    },
+    {
+      "name": "mobile-prod",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "lan"
+      ],
+      "cwd": "apps/web-mobile",
+      "port": 3108
+    },
+    {
+      "name": "mobile-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "cwd": "apps/web-mobile",
+      "port": 3106
+    },
+    {
+      "name": "admin-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "cwd": "apps/admin",
+      "port": 3200
+    },
+    {
+      "name": "payment-diagnostics",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "scripts/payment-diagnostics.mjs"
+      ],
+      "port": 8150
+    }
+  ]
+}

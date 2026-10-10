@@ -1,0 +1,73 @@
+.sc-price-adjust-tag {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  min-height: 18px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.sc-price-adjust-tag .bi {
+  font-size: 10px;
+}
+
+.sc-price-adjust-tag.is-down {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.sc-price-adjust-tag.is-up {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+html[data-color-scheme="dark"] .sc-price-adjust-tag.is-down,
+.dark .sc-price-adjust-tag.is-down {
+  color: #fecaca;
+  background: rgb(185 28 28 / 32%);
+}
+
+html[data-color-scheme="dark"] .sc-price-adjust-tag.is-up,
+.dark .sc-price-adjust-tag.is-up {
+  color: #bfdbfe;
+  background: rgb(29 78 216 / 32%);
+}
+
+/*
+ * 各页面模型下拉里的价格都是竖排（现价、划线原价）。有限时调价时把标签放到左边一列，
+ * 跨两行居中，行高不变：文生图、AI 电商、创作台与画布分镜、AI 助手。
+ */
+.model-point-price.is-compact:has(> .sc-price-adjust-tag),
+.commerce-select-price:has(> .sc-price-adjust-tag),
+.studio-composer__model-price:has(> .sc-price-adjust-tag),
+.model-menu-price:has(> .sc-price-adjust-tag) {
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 6px;
+}
+
+:is(.model-point-price.is-compact, .commerce-select-price, .studio-composer__model-price, .model-menu-price):has(> .sc-price-adjust-tag) > :is(strong, del) {
+  grid-column: 2;
+}
+
+:is(.model-point-price.is-compact, .commerce-select-price, .studio-composer__model-price, .model-menu-price) > .sc-price-adjust-tag {
+  grid-row: 1 / span 2;
+  grid-column: 1;
+  align-self: center;
+}
+
+.commerce-select-hint:has(> .sc-price-adjust-tag) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.commerce-select-hint > .sc-price-adjust-tag {
+  order: -1;
+}

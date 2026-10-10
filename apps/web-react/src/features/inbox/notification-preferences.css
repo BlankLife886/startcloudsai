@@ -1,0 +1,56 @@
+.notify-prefs {
+  scroll-margin-top: calc(var(--app-header-offset, 62px) + 16px);
+}
+.notify-prefs__group {
+  display: grid;
+  gap: 8px;
+}
+.notify-prefs__subtitle {
+  margin: 16px 0 8px;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+.notify-prefs__quiet {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 0 4px;
+}
+.notify-prefs__quiet i {
+  margin-bottom: 9px;
+  color: var(--muted);
+}
+.notify-prefs__quiet label {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+}
+.notify-prefs__quiet span {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+.notify-prefs__quiet input {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color-scheme: light dark;
+}
+.notify-prefs__test {
+  margin-top: 12px;
+}
+
+/* 侧栏多了一块面板：各面板按内容高度排列，整列滚动 */
+.account .account-side {
+  grid-template-rows: none;
+  grid-auto-rows: max-content;
+  align-content: start;
+}
+.account .account-side .account-guide {
+  overflow: visible;
+}

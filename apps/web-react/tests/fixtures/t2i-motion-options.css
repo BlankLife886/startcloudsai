@@ -1,0 +1,46 @@
+.t2i-page.motion-lab {
+  --lab-bg: #0e1017; --lab-panel: #181c27; --lab-line: #2d3343; --lab-text: #e6e9f3; --lab-muted: #929bae;
+  display: block; height: auto; min-height: 100vh; overflow: visible; padding: 38px 28px 56px;
+  background: var(--lab-bg); color: var(--lab-text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.t2i-page.motion-lab.is-light { --lab-bg: #f7f8fb; --lab-panel: #fff; --lab-line: #e0e4ed; --lab-text: #262d3e; --lab-muted: #798194; }
+.motion-lab * { box-sizing: border-box; }
+.motion-lab-inner { max-width: 1120px; margin: 0 auto; }
+.motion-lab-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 26px; }
+.motion-lab-header p { margin: 0 0 8px; color: var(--lab-muted); font-size: 12px; letter-spacing: .16em; }
+.motion-lab-header h1 { font-size: 26px; font-weight: 600; letter-spacing: -.025em; margin: 0; }
+.motion-lab button { cursor: pointer; font: inherit; font-size: 12px; border: 1px solid var(--lab-line); color: var(--lab-text); background: var(--lab-panel); border-radius: 8px; padding: 8px 12px; }
+.motion-lab button:focus-visible { outline: 2px solid #829fe1; outline-offset: 3px; }
+.motion-lab button:hover { border-color: #8b9bbe; }
+.motion-lab-options { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+.motion-lab-options button { display: flex; align-items: center; gap: 13px; text-align: left; padding: 17px 18px; border-radius: 12px; }
+.motion-lab-options button[aria-selected="true"] { border-color: #8e9fc5; box-shadow: 0 0 0 1px #8e9fc525; }
+.motion-lab-option-number { font-size: 11px; color: var(--lab-muted); font-variant-numeric: tabular-nums; }
+.motion-lab-options strong { display: block; font-size: 14px; font-weight: 550; }
+.motion-lab-options small { display: block; margin-top: 5px; font-size: 11px; color: var(--lab-muted); line-height: 1.5; }
+.motion-lab-selected { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: #8a9ec9; margin-left: auto; }
+.motion-lab-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin: 25px 0 14px; }
+.motion-lab-stages { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--lab-panel); border: 1px solid var(--lab-line); }
+.motion-lab-stages button { border: 0; background: transparent; padding: 6px 15px; color: var(--lab-muted); }
+.motion-lab-stages button[aria-pressed="true"] { background: #8298c322; color: var(--lab-text); }
+.motion-lab-controls { display: flex; gap: 7px; flex-wrap: wrap; }
+.motion-lab-canvas { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 6px; border: 1px solid var(--lab-line); border-radius: 20px; overflow: hidden; background: var(--lab-bg); }
+.motion-lab-canvas[data-count="1"] { grid-template-columns: minmax(0,1fr); max-width: 620px; margin: 0 auto; }
+.motion-lab-canvas[data-count="1"][data-portrait="true"] { max-width: 326px; }
+.motion-lab-cell { position: relative; min-width: 0; }
+.motion-lab-canvas[data-stress="true"] .motion-lab-cell { height: 125px; }
+.motion-lab-result, .motion-lab-result .authenticated-image, .motion-lab-result img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.motion-lab-performance { margin-top: 24px; font-size: 12px; color: var(--lab-muted); }
+.motion-lab-performance summary { cursor: pointer; margin-bottom: 12px; }
+.motion-lab-performance output { display: block; margin-top: 12px; font-variant-numeric: tabular-nums; }
+.motion-lab-foot { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 12px; color: var(--lab-muted); font-size: 11px; }
+.motion-lab h2 { margin: 32px 0 14px; font-size: 14px; font-weight: 500; }
+.motion-lab-state-strip { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; }
+.motion-lab-state-example { position: relative; height: 220px; border-radius: 14px; border: 1px solid var(--lab-line); overflow: hidden; }
+@media(max-width: 800px) {
+  .t2i-page.motion-lab { padding: 22px 14px 36px; }
+  .motion-lab-options button { padding: 12px 10px; gap: 7px; }
+  .motion-lab-options small { display: none; }
+  .motion-lab-canvas { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .motion-lab-state-strip { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
