@@ -6,7 +6,9 @@ import { useTranslation } from "react-i18next";
 
 import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
 import { reasoningEffortLabel } from "@/components/text-settings-panel";
-import { applyCanvasImageModelSettings, canvasExactSizeSettingsForNode, canvasImageSettingsFromModel, resolveCanvasImageModel } from "@/lib/canvas/canvas-image-model";
+import { applyCanvasImageModelSettings, canvasExactSizeSettingsForNode, canvasImageSettingsFromModel, formatCanvasImagePriceParts, resolveCanvasImageModel } from "@/lib/canvas/canvas-image-model";
+import { estimateCanvasGenerationCost } from "@/lib/canvas/canvas-generation-cost";
+import { useCanvasImageQuote } from "@/lib/canvas/use-canvas-image-quote";
 import { catalogModelsByCapability, defaultConfig, formatModelPriceParts, modelMaintenance, modelOptionLabel, modelOptionMeta, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { ModelCatalogIcon, ModelMaintenanceBadge } from "@react/components/common/ModelCatalogIcon.jsx";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
@@ -50,6 +52,11 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const isEditingExistingContent = hasTextContent || hasImageContent;
     const [prompt, setPrompt] = useState(node.metadata?.composerContent ?? node.metadata?.prompt ?? "");
     const [expanded, setExpanded] = useState(false);
+    // What this send costs: the server quote for images (tier, price rules and
+    // discounts included), the local estimate until it arrives.
+    const estimate = mode === "image" || mode === "text" ? estimateCanvasGenerationCost({ config, kind: mode }) : null;
+    const quote = useCanvasImageQuote(config, estimate?.count ?? 1, mode === "image" && !mediaLocked);
+    const sendPrice = quote ? quote.total : estimate && !estimate.pricingUnavailable ? estimate.total : undefined;
 
     // Restore prompts only when switching nodes; preserve the current input after generation on the same node.
     useEffect(() => {
@@ -112,7 +119,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     </button>
                 </Tooltip>
                 <CanvasPromptLibrary onSelect={updatePrompt} />
-                <PromptSendButton isRunning={isRunning} mode={mode} startedAt={node.metadata?.generationStartedAt} durationMs={node.metadata?.generationDurationMs} disabled={(!isRunning && !prompt.trim()) || (mediaLocked && !isRunning)} locked={mediaLocked} onClick={submit} />
+                <PromptSendButton price={sendPrice} isRunning={isRunning} mode={mode} startedAt={node.metadata?.generationStartedAt} durationMs={node.metadata?.generationDurationMs} disabled={(!isRunning && !prompt.trim()) || (mediaLocked && !isRunning)} locked={mediaLocked} onClick={submit} />
             </div>
             <Modal className="canvas-prompt-editor-modal" title={null} open={expanded} centered width={720} footer={null} onCancel={() => setExpanded(false)} destroyOnHidden>
                 <div data-canvas-no-zoom data-canvas-shortcuts-ignore onWheelCapture={(event) => event.stopPropagation()}>
@@ -160,6 +167,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                             </button>
                         </Tooltip>
                         <PromptSendButton
+                            price={sendPrice}
                             isRunning={isRunning}
                             mode={mode}
                             startedAt={node.metadata?.generationStartedAt}
@@ -248,6 +256,7 @@ function PromptComposerTools({
 }
 
 function PromptSendButton({
+    price,
     isRunning,
     mode,
     startedAt,
@@ -256,6 +265,7 @@ function PromptSendButton({
     locked,
     onClick,
 }: {
+    price?: number;
     isRunning: boolean;
     mode: CanvasNodeGenerationMode;
     startedAt?: string;
@@ -269,24 +279,31 @@ function PromptSendButton({
     const elapsedMs = useGenerationElapsed(startedAt, durationMs, isRunning);
     const runningLabel = t("canvas.configNode.stopWithDuration", { duration: formatGenerationDuration(elapsedMs) });
     const running = isRunning;
+    const priced = !running && price !== undefined && price > 0;
+    const priceLabel = priced ? `${price.toLocaleString()} 积分` : "";
     return (
         <button
             type="button"
-            className={`inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full text-[12px] font-semibold tabular-nums text-white transition disabled:cursor-default disabled:opacity-35 ${running ? "px-3.5" : "w-9"}`}
+            className={`inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full text-[12px] font-semibold tabular-nums text-white transition disabled:cursor-default disabled:opacity-35 ${running || priced ? "px-3.5" : "w-9"}`}
             style={{
                 background: running ? theme.node.text : `linear-gradient(135deg, #9b7bff, ${theme.node.activeStroke})`,
                 color: running ? theme.node.panel : "#fff",
                 boxShadow: running || disabled ? "none" : "0 6px 16px rgba(109,92,255,.3)",
             }}
             disabled={disabled}
-            title={locked && !isRunning ? t("canvas.unavailable") : isRunning ? runningLabel : t("canvas.promptPanel.generate")}
+            title={locked && !isRunning ? t("canvas.unavailable") : isRunning ? runningLabel : [t("canvas.promptPanel.generate"), priceLabel].filter(Boolean).join(" · ")}
             onClick={onClick}
-            aria-label={isRunning ? runningLabel : t("canvas.promptPanel.generate")}
+            aria-label={isRunning ? runningLabel : [t("canvas.promptPanel.generate"), priceLabel].filter(Boolean).join(" · ")}
         >
             {isRunning ? (
                 <>
                     <Square className="size-3 fill-current" />
                     {formatGenerationDuration(elapsedMs)}
+                </>
+            ) : priced ? (
+                <>
+                    <ArrowUp className="size-4" />
+                    {priceLabel}
                 </>
             ) : (
                 <ArrowUp className="size-4" />
@@ -332,7 +349,7 @@ function PromptDockModel({
                 value={current}
                 options={options.map((model) => {
                     const meta = modelOptionMeta(config, model);
-                    const parts = formatModelPriceParts(meta, config.reasoningEffort);
+                    const parts = mode === "image" ? formatCanvasImagePriceParts(meta, config) : formatModelPriceParts(meta, config.reasoningEffort);
                     return {
                         value: model,
                         label: (

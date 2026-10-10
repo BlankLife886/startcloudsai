@@ -6,9 +6,10 @@ import { PriceAdjustmentTag } from "@react/components/common/PriceAdjustmentTag.
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { colorWash, nodeTypeColor } from "@/lib/canvas-ui";
+import { formatCanvasImagePriceParts } from "@/lib/canvas/canvas-image-model";
 import { cn } from "@/lib/utils";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { catalogModelsByCapability, formatModelDiscount, formatModelPrice, modelMaintenance, modelOptionLabel, modelOptionMeta, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { catalogModelsByCapability, formatModelDiscount, formatModelPrice, modelMaintenance, modelOptionLabel, modelOptionMeta, selectableModelsByCapability, type AiConfig, type ChannelModel, type ModelCapability } from "@/stores/use-config-store";
 
 type ModelPickerProps = {
     config: AiConfig;
@@ -71,7 +72,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                         <span className="min-w-0 flex-1 truncate text-[14px] font-semibold tracking-tight">{current ? modelOptionLabel(config, current) : placeholder}</span>
                         {current ? (
                             <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: colorWash(accent, 0.12), color: accent }}>
-                                {[formatModelPrice(currentMeta), currentMeta?.priceAdjustment ? "" : formatModelDiscount(currentMeta)].filter(Boolean).join(" · ")}
+                                {[pickerPrice(config, currentMeta, capability), currentMeta?.priceAdjustment ? "" : formatModelDiscount(currentMeta)].filter(Boolean).join(" · ")}
                             </span>
                         ) : null}
                         {current ? <PriceAdjustmentTag model={currentMeta} /> : null}
@@ -107,6 +108,12 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     );
 }
 
+// Image models may price by resolution × quality: show the tier the current settings pick.
+function pickerPrice(config: AiConfig, meta: ChannelModel | undefined, capability?: ModelCapability) {
+    if (capability === "image") return formatCanvasImagePriceParts(meta, config).price || "价格未配置";
+    return formatModelPrice(meta);
+}
+
 function emptyModelLabel(config: AiConfig, capability?: ModelCapability) {
     const label = capability === "image" ? "生图" : capability === "video" ? "视频" : capability === "text" ? "文本" : capability === "audio" ? "音频" : "";
     if (capability && config.models.length) return `后台暂未分发${label}模型`;
@@ -121,7 +128,7 @@ function ModelLabel({ config, model, capability }: { config: AiConfig; model: st
             <ModelIcon meta={meta} />
             <span className="min-w-0 flex-1 truncate">{modelOptionLabel(config, model)}</span>
             <ModelMaintenanceBadge model={meta} />
-            {!maintenance ? <span className="shrink-0 text-xs text-muted-foreground">{formatModelPrice(meta)}</span> : null}
+            {!maintenance ? <span className="shrink-0 text-xs text-muted-foreground">{pickerPrice(config, meta, capability)}</span> : null}
             {!maintenance && meta?.priceAdjustment ? <PriceAdjustmentTag model={meta} /> : null}
             {!maintenance && !meta?.priceAdjustment && formatModelDiscount(meta) ? <span className="shrink-0 rounded bg-red-50 px-1 py-0.5 text-[11px] font-medium text-red-600 dark:bg-red-950/40 dark:text-red-300">{formatModelDiscount(meta)}</span> : null}
         </span>

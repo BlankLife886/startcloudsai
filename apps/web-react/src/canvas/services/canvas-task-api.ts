@@ -269,6 +269,29 @@ export function canvasImageTaskParams(config: AiConfig) {
     };
 }
 
+export type CanvasImageQuote = { unit: number; standardUnit: number; total: number; count: number };
+
+/**
+ * The server's price for submitting these settings now: resolution × quality
+ * tier, time-limited price rules and subscriber discounts included. Throws on
+ * settings that would also fail at submission (e.g. an invalid exact size).
+ */
+export async function quoteCanvasImages(config: AiConfig, count: number, signal?: AbortSignal): Promise<CanvasImageQuote> {
+    const data = await starcloudsRequest<{ unitPriceCents?: number; standardUnitPriceCents?: number; totalPriceCents?: number; count?: number }>("/tasks/quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "t2i", params: canvasImageTaskParams(config), inputKeys: [], count }),
+        signal,
+    });
+    const unit = Math.max(0, Number(data?.unitPriceCents) || 0);
+    return {
+        unit,
+        standardUnit: Math.max(unit, Number(data?.standardUnitPriceCents) || 0),
+        total: Math.max(0, Number(data?.totalPriceCents) || 0),
+        count: Math.max(1, Number(data?.count) || count),
+    };
+}
+
 const TASK_POLL_BASE_MS = 2_000;
 const TASK_POLL_MAX_MS = 15_000;
 

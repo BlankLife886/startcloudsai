@@ -62,7 +62,13 @@ export function resolveModelTierPointPricing(model = {}, { resolution = '', qual
   const tier = width > 0 && height > 0
     ? resolutionTierForPixels(width, height)
     : String(resolution || '').toUpperCase() || (resolutions.includes('1K') || !resolutions.length ? '1K' : resolutions[0]);
-  const cell = matrix?.[tier]?.[quality || model.defaultQuality];
+  // 与服务端 ImageBillingTier 一致：没选质量，或选了 auto 但模型没有 auto 这一档时，按默认质量计价。
+  const qualities = Array.isArray(model.qualities) ? model.qualities : []
+  let wanted = String(quality || '').trim().toLowerCase()
+  if (wanted === 'standard') wanted = 'medium'
+  if (wanted === 'hd') wanted = 'high'
+  if (!wanted || (wanted === 'auto' && !qualities.includes('auto'))) wanted = model.defaultQuality || ''
+  const cell = matrix?.[tier]?.[wanted];
   if (!cell) return resolveModelPointPricing(model);
   return resolveModelPointPricing({
     pricePoints: cell.discountPriceCents ?? cell.priceCents,

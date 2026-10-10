@@ -35,6 +35,7 @@ import {
 } from "@/lib/audio-generation";
 import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
 import { estimateCanvasGenerationCost } from "@/lib/canvas/canvas-generation-cost";
+import { useCanvasImageQuote } from "@/lib/canvas/use-canvas-image-quote";
 import {
   detectStoryboardShotCount,
   resolveBatchMode,
@@ -49,6 +50,7 @@ import {
   applyCanvasImageModelSettings,
   canvasExactSizeSettingsForNode,
   canvasImageSettingsFromModel,
+  formatCanvasImagePriceParts,
   resolveCanvasImageModel,
 } from "@/lib/canvas/canvas-image-model";
 import { clampCanvasBatchCount } from "@/lib/canvas/canvas-batch-limit";
@@ -1146,10 +1148,16 @@ function CanvasGenerationConfigNodePanel({
     background: theme.toolbar.itemHover,
     color: theme.node.text,
   };
-  const cost = estimateCanvasGenerationCost({
+  const estimatedCost = estimateCanvasGenerationCost({
     config,
     kind: mode === "text" ? "text" : "image",
   });
+  // The server quote includes the resolution × quality tier, price rules and
+  // subscriber discounts; the local estimate shows until it arrives.
+  const quote = useCanvasImageQuote(config, estimatedCost.count, mode === "image");
+  const cost = quote
+    ? { ...estimatedCost, total: quote.total, compareTotal: quote.standardUnit > quote.unit ? quote.standardUnit * quote.count : undefined }
+    : estimatedCost;
   const hasPreviousOutput = Boolean(
     node.metadata?.workflowOutputNodeIds?.length,
   );
@@ -1988,7 +1996,7 @@ function ConfigModelField({
   const availableOptions = selectableModelsByCapability(config, mode);
   const current = config.model || "";
   const meta = current ? modelOptionMeta(config, current) : undefined;
-  const priceParts = formatModelPriceParts(meta, config.reasoningEffort);
+  const priceParts = mode === "image" ? formatCanvasImagePriceParts(meta, config) : formatModelPriceParts(meta, config.reasoningEffort);
 
   if (!availableOptions.length) {
     return (
@@ -2015,7 +2023,7 @@ function ConfigModelField({
       menuMinWidth={menuMinWidth ?? (compact ? 120 : 300)}
       options={options.map((model) => {
         const meta = modelOptionMeta(config, model);
-        const parts = formatModelPriceParts(meta, config.reasoningEffort);
+        const parts = mode === "image" ? formatCanvasImagePriceParts(meta, config) : formatModelPriceParts(meta, config.reasoningEffort);
         return {
           value: model,
           label: (

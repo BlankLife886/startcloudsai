@@ -190,6 +190,7 @@ import {
     cancelCanvasTask,
 	CANVAS_TASK_PROGRESS_EVENT,
     canvasImageTaskParams,
+    quoteCanvasImages,
     canvasManualTaskKey,
     canvasTaskConcurrencyLimit,
     canvasWorkflowTaskKey,
@@ -572,9 +573,18 @@ function InfiniteCanvasPage() {
                     return Promise.resolve(false);
                 }
             }
-            return requestCostEstimateConfirm(estimateCanvasGenerationCost(input), signal);
+            if (input.kind !== "image" || input.unitOverride !== undefined || auth.user?.requireCostConfirm === false) {
+                return requestCostEstimateConfirm(estimateCanvasGenerationCost(input), signal);
+            }
+            // Confirm with the server quote (resolution × quality tier, price rules,
+            // subscriber discount); fall back to the local estimate if it fails.
+            const estimate = estimateCanvasGenerationCost(input);
+            return quoteCanvasImages(input.config, 1, signal)
+                .then((quote) => estimateCanvasGenerationCost({ ...input, count: estimate.count, unitOverride: quote.unit, compareUnitOverride: quote.standardUnit > quote.unit ? quote.standardUnit : undefined }))
+                .catch(() => estimate)
+                .then((priced) => requestCostEstimateConfirm(priced, signal));
         },
-        [message, requestCostEstimateConfirm],
+        [auth.user?.requireCostConfirm, message, requestCostEstimateConfirm],
     );
 
     const finishCostConfirm = useCallback((confirmed: boolean) => {

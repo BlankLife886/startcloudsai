@@ -47,6 +47,9 @@ export type ChannelModel = {
         maxAspectRatio: number;
     };
     qualities?: string[];
+    defaultQuality?: string;
+    /** Resolution × quality price matrix; absent for flat-priced models. */
+    imagePricing?: Record<string, Record<string, { priceCents: number; discountPriceCents?: number }>>;
     transparentBackground?: boolean;
     maxReferenceImages?: number;
     requiresReference?: boolean;

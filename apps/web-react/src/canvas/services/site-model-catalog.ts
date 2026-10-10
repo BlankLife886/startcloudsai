@@ -24,6 +24,8 @@ type SiteModel = {
     supportsExactSize?: unknown;
     exactSizeLimits?: unknown;
     qualities?: unknown;
+    defaultQuality?: unknown;
+    imagePricing?: unknown;
     transparentBackground?: unknown;
     maxReferenceImages?: unknown;
     requiresReference?: unknown;
@@ -182,6 +184,8 @@ function mapSiteModel(raw: SiteModel, capability: "image" | "text"): ChannelMode
         aspectRatiosByResolution: stringListMap(raw.aspectRatiosByResolution),
         ...normalizeExactSizeCapabilities(raw),
         qualities: stringList(raw.qualities),
+        defaultQuality: String(raw.defaultQuality || "").trim() || undefined,
+        imagePricing: imagePricingMatrix(raw.imagePricing),
         transparentBackground: raw.transparentBackground !== false,
         maxReferenceImages: finiteNumber(raw.maxReferenceImages),
         requiresReference: raw.requiresReference === true,
@@ -190,6 +194,22 @@ function mapSiteModel(raw: SiteModel, capability: "image" | "text"): ChannelMode
         defaultReasoningEffort: reasoningEffort(raw.defaultReasoningEffort),
         reasoningPrices: reasoningPriceMap(raw.reasoningPrices),
     };
+}
+
+function imagePricingMatrix(value: unknown): ChannelModel["imagePricing"] {
+    if (!value || typeof value !== "object") return undefined;
+    const matrix: NonNullable<ChannelModel["imagePricing"]> = {};
+    for (const [resolution, row] of Object.entries(value as Record<string, unknown>)) {
+        if (!row || typeof row !== "object") continue;
+        for (const [quality, cell] of Object.entries(row as Record<string, unknown>)) {
+            const source = (cell || {}) as { priceCents?: unknown; discountPriceCents?: unknown };
+            const priceCents = finiteNumber(source.priceCents);
+            if (priceCents === undefined) continue;
+            const discountPriceCents = finiteNumber(source.discountPriceCents);
+            (matrix[resolution.toUpperCase()] ||= {})[quality] = discountPriceCents === undefined ? { priceCents } : { priceCents, discountPriceCents };
+        }
+    }
+    return Object.keys(matrix).length ? matrix : undefined;
 }
 
 function reasoningEffort(value: unknown): ModelReasoningEffort | undefined {

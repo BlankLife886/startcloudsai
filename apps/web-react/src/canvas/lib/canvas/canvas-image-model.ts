@@ -1,6 +1,7 @@
 import { normalizeGptImageOutputSize } from "@react/legacy-modules/services/aiImageOutputSize.js";
 import { normalizeExactSizeCapabilities, validateExactImageSize } from "@react/config/exactImageSize.js";
 import { normalizeAspectRatioList } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import { resolveModelTierPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import { modelMaintenance, modelOptionMeta, resolveModelForCapability, type AiConfig, type ChannelModel } from "@/stores/use-config-store";
 
 export const CANVAS_IMAGE_MAX_COUNT = 4;
@@ -243,4 +244,35 @@ function closestAspectRatio(width: number, height: number) {
         },
         { ratio: "1:1", diff: Number.POSITIVE_INFINITY },
     ).ratio;
+}
+
+export type CanvasImageUnitPrice = { effective?: number; standard?: number };
+
+/**
+ * Price of one image for the settings that will be submitted. Tiered models
+ * price by resolution × quality (exact sizes by pixel count), as the server
+ * bills them; flat models keep their single price.
+ */
+export function canvasImageUnitPrice(model: ChannelModel | null | undefined, config: Partial<CanvasImageSettings>): CanvasImageUnitPrice {
+    if (!model) return {};
+    const settings = coerceCanvasImageSettings(model, config);
+    const exact = settings.sizeMode === "exact";
+    const price = resolveModelTierPointPricing(model, {
+        resolution: settings.resolution,
+        quality: settings.quality,
+        exactWidth: exact ? Number(settings.exactWidth) || 0 : 0,
+        exactHeight: exact ? Number(settings.exactHeight) || 0 : 0,
+    });
+    if (!price.configured) return {};
+    return { effective: price.effective ?? undefined, standard: price.standard ?? undefined };
+}
+
+/** Menu label for an image model at the given settings, e.g. "8 积分/张". */
+export function formatCanvasImagePriceParts(model: ChannelModel | null | undefined, config: Partial<CanvasImageSettings>) {
+    const { effective, standard } = canvasImageUnitPrice(model, config);
+    if (effective === undefined) return { price: undefined as string | undefined, comparePrice: undefined as string | undefined };
+    return {
+        price: `${effective} 积分/张`,
+        comparePrice: standard !== undefined && standard > effective ? String(standard) : undefined as string | undefined,
+    };
 }
